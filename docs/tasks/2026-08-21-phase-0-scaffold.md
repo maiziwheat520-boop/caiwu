@@ -1,6 +1,6 @@
 # Task: Phase 0 scaffold
 
-- Status: active
+- Status: review
 - Implementation owner: Codex
 - Review owner: Claude
 - Branch: `ai/chatgpt/phase-0-scaffold`
@@ -40,7 +40,11 @@ without implementing financial business logic ahead of Phase 1.
 
 ## Implementation evidence
 
-Pending verification.
+- Local: ruff, format, mypy, pytest, Bandit, and pip-audit passed.
+- Hermes: API and PostgreSQL healthy; worker running.
+- `GET /health/live` and `GET /health/ready` returned HTTP 200.
+- API bound only to `127.0.0.1:8650`; dedicated runtime volumes created.
+- Docker was unavailable locally; Compose/build/runtime validation completed on Hermes.
 
 ## Review findings
 

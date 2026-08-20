@@ -4,7 +4,7 @@ Updated: 2026-08-21
 
 ## Current phase
 
-Phase 0 — engineering and governance scaffold.
+Phase 0 scaffold is implemented and running on Hermes; awaiting independent Claude review before merge.
 
 ## Completed
 
