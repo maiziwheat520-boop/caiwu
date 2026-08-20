@@ -1,0 +1,28 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Runtime state and financial evidence never belong in Git.
+var/
+data/
+secrets/
+*.eml
+*.xlsx
+*.xls
+*.csv
+*.zip
+
+# Local tooling.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
