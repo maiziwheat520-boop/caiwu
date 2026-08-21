@@ -41,10 +41,10 @@ def _manifest_files(root: Path, manifest_path: Path) -> dict[str, Path]:
             part in EXCLUDED_DIRECTORIES for part in relative.parts
         ):
             continue
-        if candidate.resolve() == manifest_path or candidate.name in EXCLUDED_FILENAMES:
-            continue
         if candidate.is_symlink():
             raise ValueError(f"deployment trees may not contain symlinks: {relative.as_posix()}")
+        if candidate.resolve() == manifest_path or candidate.name in EXCLUDED_FILENAMES:
+            continue
         if candidate.is_file():
             files[relative.as_posix()] = candidate
     return dict(sorted(files.items()))

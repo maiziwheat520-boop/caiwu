@@ -77,6 +77,17 @@ def test_manifest_rejects_symlink(tmp_path: Path) -> None:
         create_manifest(root, manifest, REVISION)
 
 
+def test_manifest_rejects_symlink_to_excluded_manifest(tmp_path: Path) -> None:
+    root, manifest = _tree(tmp_path)
+    try:
+        (root / "linked.py").symlink_to(manifest)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+
+    with pytest.raises(ValueError, match="symlinks"):
+        create_manifest(root, manifest, REVISION)
+
+
 @pytest.mark.parametrize("relative", ["../outside.py", "/absolute.py"])
 def test_manifest_rejects_unsafe_paths(tmp_path: Path, relative: str) -> None:
     root, manifest = _tree(tmp_path)

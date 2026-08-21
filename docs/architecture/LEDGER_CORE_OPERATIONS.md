@@ -24,10 +24,16 @@ only one such reversal entry per original.
 
 ## Immutable accounting dimensions
 
-Once an Account participates in a POSTED entry, its `entity_id` and
-`account_class` cannot change. Identifier and display name remain editable.
-This prevents historical expense/income totals and entity boundaries from being
-rewritten without touching immutable postings.
+Account `entity_id` and JournalEntry `entity_id` are immutable from creation;
+they are identity/tenant keys, not editable draft attributes. A draft created for
+the wrong entity must be deleted and recreated. Once an Account participates in a
+POSTED entry, its `account_class` also becomes immutable. Identifier and display
+name remain editable.
+
+Posting writes validate Account and JournalEntry entity equality, and the POSTED
+transition revalidates every Posting as a defense-in-depth guard. These controls
+prevent cross-entity history and expense/income totals from being rewritten
+without touching immutable postings.
 
 ## Audit chain
 

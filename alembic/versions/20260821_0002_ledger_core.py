@@ -283,13 +283,17 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE FUNCTION account_block_posted_dimension_change()
+        CREATE FUNCTION account_block_protected_dimension_change()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $function$
         BEGIN
-            IF (NEW.entity_id, NEW.account_class)
-               IS DISTINCT FROM (OLD.entity_id, OLD.account_class)
+            IF NEW.entity_id IS DISTINCT FROM OLD.entity_id THEN
+                RAISE EXCEPTION 'account entity_id is immutable'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+
+            IF NEW.account_class IS DISTINCT FROM OLD.account_class
                AND EXISTS (
                    SELECT 1
                    FROM posting AS p
@@ -298,16 +302,16 @@ def upgrade() -> None:
                      AND j.status = 'POSTED'
                ) THEN
                 RAISE EXCEPTION
-                    'entity_id and account_class are immutable after POSTED use'
+                    'account_class is immutable after POSTED use'
                     USING ERRCODE = 'integrity_constraint_violation';
             END IF;
             RETURN NEW;
         END
         $function$;
 
-        CREATE TRIGGER account_posted_dimensions_immutable
+        CREATE TRIGGER account_protected_dimensions_immutable
         BEFORE UPDATE OF entity_id, account_class ON account
-        FOR EACH ROW EXECUTE FUNCTION account_block_posted_dimension_change();
+        FOR EACH ROW EXECUTE FUNCTION account_block_protected_dimension_change();
         """
     )
 
@@ -469,6 +473,11 @@ def upgrade() -> None:
                 RAISE EXCEPTION 'POSTED journal entries are immutable'
                     USING ERRCODE = 'integrity_constraint_violation';
             END IF;
+            IF TG_OP = 'UPDATE'
+               AND NEW.entity_id IS DISTINCT FROM OLD.entity_id THEN
+                RAISE EXCEPTION 'journal entry entity_id is immutable'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
             IF TG_OP = 'DELETE' THEN
                 RETURN OLD;
             END IF;
@@ -610,6 +619,7 @@ def upgrade() -> None:
         AS $function$
         DECLARE
             v_posting_count bigint;
+            v_mismatched_account uuid;
         BEGIN
             IF NEW.status = 'POSTED' THEN
                 SELECT COUNT(*) INTO v_posting_count
@@ -617,6 +627,21 @@ def upgrade() -> None:
                 WHERE entry_id = NEW.id;
                 IF v_posting_count < 2 THEN
                     RAISE EXCEPTION 'POSTED journal entries require at least two postings'
+                        USING ERRCODE = 'integrity_constraint_violation';
+                END IF;
+
+                SELECT p.account_id INTO v_mismatched_account
+                FROM posting AS p
+                JOIN account AS a ON a.id = p.account_id
+                WHERE p.entry_id = NEW.id
+                  AND a.entity_id <> NEW.entity_id
+                ORDER BY p.account_id
+                LIMIT 1
+                FOR SHARE OF a;
+                IF FOUND THEN
+                    RAISE EXCEPTION
+                        'POSTED journal entry has an account from another entity: %',
+                        v_mismatched_account
                         USING ERRCODE = 'integrity_constraint_violation';
                 END IF;
             END IF;
@@ -684,8 +709,8 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION append_audit_event(text, text, text, text, jsonb)")
     op.execute("DROP TRIGGER audit_event_no_update_delete ON audit_event")
     op.execute("DROP FUNCTION audit_event_block_mutation()")
-    op.execute("DROP TRIGGER account_posted_dimensions_immutable ON account")
-    op.execute("DROP FUNCTION account_block_posted_dimension_change()")
+    op.execute("DROP TRIGGER account_protected_dimensions_immutable ON account")
+    op.execute("DROP FUNCTION account_block_protected_dimension_change()")
 
     op.drop_index("uq_journal_entry_reverses_entry_once", table_name="journal_entry")
     op.execute("DROP INDEX uq_audit_event_single_genesis")

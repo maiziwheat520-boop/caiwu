@@ -538,7 +538,7 @@ def test_posted_account_dimensions_are_immutable(runtime_engine: Engine) -> None
             )
         session.rollback()
 
-        with pytest.raises(DBAPIError, match="immutable after POSTED use"):
+        with pytest.raises(DBAPIError, match="account entity_id is immutable"):
             session.execute(
                 update(Account)
                 .where(Account.id == accounts["expense"])
@@ -556,6 +556,77 @@ def test_posted_account_dimensions_are_immutable(runtime_engine: Engine) -> None
         ).one()
         assert account_row == (entity_id, "EXPENSE", "Expenses:Renamed")
         assert actual_totals_by_class(session, entity_id)[AccountClass.EXPENSE] == 500
+
+
+def test_entity_identity_is_immutable_from_creation(runtime_engine: Engine) -> None:
+    with Session(runtime_engine, expire_on_commit=False) as session:
+        entity_id, accounts = _create_accounts(session)
+        other_entity_id, other_accounts = _create_accounts(session)
+
+        with pytest.raises(DBAPIError, match="account entity_id is immutable"):
+            session.execute(
+                update(Account)
+                .where(Account.id == accounts["expense"])
+                .values(entity_id=other_entity_id)
+            )
+        session.rollback()
+
+        entry = JournalEntry(
+            entity_id=entity_id,
+            occurred_at=datetime.now(UTC),
+            origin="pytest",
+            status=JournalStatus.DRAFT,
+            primary_account_id=accounts["bank"],
+            audit_event_id=_append_audit(session),
+        )
+        session.add(entry)
+        session.commit()
+
+        with pytest.raises(DBAPIError, match="journal entry entity_id is immutable"):
+            session.execute(
+                update(JournalEntry)
+                .where(JournalEntry.id == entry.id)
+                .values(
+                    entity_id=other_entity_id,
+                    primary_account_id=other_accounts["bank"],
+                )
+            )
+
+
+def test_posted_transition_rejects_preexisting_cross_entity_drift(
+    admin_engine: Engine,
+    runtime_engine: Engine,
+) -> None:
+    with Session(runtime_engine, expire_on_commit=False) as session:
+        entity_id, accounts = _create_accounts(session)
+        other_entity_id, _ = _create_accounts(session)
+        entry_id = _create_entry(
+            session,
+            entity_id,
+            [(accounts["bank"], -500), (accounts["expense"], 500)],
+            status=JournalStatus.DRAFT,
+        )
+
+    with admin_engine.begin() as connection:
+        connection.execute(
+            text("ALTER TABLE account DISABLE TRIGGER account_protected_dimensions_immutable")
+        )
+        connection.execute(
+            text("UPDATE account SET entity_id = :entity_id WHERE id = :account_id"),
+            {"entity_id": other_entity_id, "account_id": accounts["expense"]},
+        )
+        connection.execute(
+            text("ALTER TABLE account ENABLE TRIGGER account_protected_dimensions_immutable")
+        )
+
+    with Session(runtime_engine) as session:
+        session.execute(
+            update(JournalEntry)
+            .where(JournalEntry.id == entry_id)
+            .values(status=JournalStatus.POSTED)
+        )
+        with pytest.raises(DBAPIError, match="account from another entity"):
+            session.commit()
 
 
 def test_correction_target_must_be_posted_and_same_entity(runtime_engine: Engine) -> None:

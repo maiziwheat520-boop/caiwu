@@ -8,9 +8,15 @@ Phase 0 is approved, merged, and deployed on Hermes at
 `61ad9103d68d10a07191c7ad00a4fbb8953deddd`. Phase 1 Ledger Core is implemented
 on `ai/chatgpt/phase-1-core-schema` in PR #5. The first independent Claude review
 at review commit `88d4e775a42e924998173590a0d91f34830d1fbc` returned CHANGES REQUIRED
-(1 BLOCKER, 4 HIGH); Codex has completed the concentrated remediation locally.
-The remediation commit/push, fresh CI, and one final fixed-SHA Claude audit remain
-merge gates. Phase 1 has not been deployed to the production Hermes stack.
+(1 BLOCKER, 4 HIGH); those findings were remediated through `3e1e6fc`, whose
+push and pull-request CI runs both passed.
+
+At the user's direction, Codex then performed the final self-audit to conserve
+Claude capacity. It found and fixed one HIGH cross-entity identity bypass and one
+LOW deployment-manifest symlink exclusion-order issue. The final working tree
+passed 51 tests and all local/Hermes gates. The self-audit commit/push and fresh
+CI remain merge gates. Claude's separate clone and immutable report remain a
+later independent-audit entry point. Phase 1 has not been merged or deployed.
 
 ## Completed
 
@@ -22,22 +28,26 @@ merge gates. Phase 1 has not been deployed to the production Hermes stack.
 - Phase 1 implements Entity, Account, JournalEntry, Posting, AuditEvent, the
   append-only audit function, POSTED immutability, entity boundaries, deferred
   per-currency balance checks, and POSTED-only balance queries.
-- PR #5 head `80d01ee3afe9f6b9954e8a93ec206f174d73880f` passed both push and pull-request
-  CI before the independent review.
+- PR #5 head `3e1e6fcb58258abf188ba57e94c736431b18a339` passed all six jobs across
+  its push and pull-request CI runs after the first-review remediation.
 - Review remediation removes transactional `SET ROLE`; API/worker now log in as
   a separate non-owner runtime LOGIN while migrations use an owner-only one-shot
   service. Tests prove pool reuse and `RESET ROLE` cannot regain owner power.
-- Database guards now reject duplicate reversals, changes to entity/class on an
-  Account used by POSTED history, and audit-chain forks under stale snapshots.
+- Database guards reject duplicate reversals and stale-snapshot audit forks. Account
+  and JournalEntry entity identities are immutable from creation, Account class freezes
+  after POSTED use, and POSTED transition revalidates every Posting entity.
 - OLD/NEW posting-move and per-currency tests are behavior-sensitive; deployment
-  manifest root exclusions, unsafe paths, worker heartbeat placement, uv wheel
-  hash locking, role bootstrap/downgrade behavior, and lifecycle documentation
-  are hardened.
-- Latest Hermes isolated PostgreSQL 15 acceptance run: 48 tests passed and
-  coverage was 99.31%; Ruff, formatting, mypy, and Bandit passed. Local
-  sensitive-path scanning passed; Linux strict pip-audit found no vulnerabilities.
-  The hash-locked image/Compose build and isolated API ready/live/OpenAPI-404,
-  direct runtime identity, worker heartbeat, and migration-head smoke tests passed.
+  manifest root exclusions, unsafe paths, symlink-before-file-exclusion checks, worker
+  heartbeat placement, uv wheel hash locking, role bootstrap/downgrade behavior, and
+  lifecycle documentation are hardened.
+- Final Hermes isolated PostgreSQL 15 acceptance run: 51 tests passed and coverage
+  was 99.31%; Ruff, formatting, mypy, Bandit, migration downgrade/upgrade, local
+  sensitive-path scanning, and Linux strict pip-audit passed with no known vulnerabilities.
+  During the self-audit, the hash-locked image build and isolated API ready/live/OpenAPI-404,
+  direct runtime identity, worker heartbeat, UID, revision-label, and migration smoke passed.
+- Final Codex self-audit report:
+  `docs/reviews/2026-08-21-phase-1-core-schema-final-codex.md`; final verdict is
+  APPROVED FOR FINAL COMMIT AND CI with no open findings.
 - Production Hermes remains on Phase 0: API, worker, and PostgreSQL healthy;
   API is loopback-only and no production volume or schema was changed.
 
@@ -59,17 +69,17 @@ Codex, in the Codex clone and only on `ai/chatgpt/phase-1-core-schema`.
 
 ## Review owner
 
-Claude, in the Claude clone. Conserve Claude capacity until the remediation head
-is committed, pushed, fixed by full SHA, and CI is green. The final prompt must
-first require Claude to remove its own temporary defect-injection changes or
-review from a fresh clean clone; it may write only a new review report.
+Codex owns the current final self-audit. Claude remains the independent review
+option in the separate Claude clone, but the user deferred that run to conserve
+quota. Any later Claude audit must review a clean, fixed full SHA and write only
+a new review report.
 
 ## Next task
 
-Review the final diff, then request authorization for the remediation commit and
-push to PR #5. Wait for both CI runs before issuing one concentrated final
-Claude audit.
-Do not deploy Phase 1 to production before merge and review approval.
+Commit and push the final Codex self-audit remediation/report to PR #5, then wait
+for both CI runs at the new full SHA. If both are green, request separate merge
+authorization. Preserve the Claude audit hook for later; do not deploy Phase 1
+to production without separate authorization.
 
 ## Blocking decisions
 
