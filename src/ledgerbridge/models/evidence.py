@@ -50,6 +50,11 @@ class RawArtifact(Base):
             "storage_key ~ '^sha256/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{64}$'",
             name="raw_artifact_storage_key_content_addressed",
         ),
+        CheckConstraint(
+            "storage_key = 'sha256/' || substr(encode(sha256, 'hex'), 1, 2) || '/' "
+            "|| substr(encode(sha256, 'hex'), 3, 2) || '/' || encode(sha256, 'hex')",
+            name="raw_artifact_storage_key_matches_sha256",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(

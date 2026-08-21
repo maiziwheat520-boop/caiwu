@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 from collections.abc import Iterable, Iterator
@@ -139,6 +140,44 @@ class InvalidParseConnector(SyntheticConnector):
     def parse(self, stream: ReadableBinary) -> Iterable[ParsedSourceRecord]:
         stream.read()
         return cast(Iterable[ParsedSourceRecord], [{"raw": "dictionary"}])
+
+
+class NestedMutationConnector(SyntheticConnector):
+    def parse(self, stream: ReadableBinary) -> Iterable[ParsedSourceRecord]:
+        stream.read()
+        nested: dict[str, object] = {"amount_minor": 1, "currency": "CNY"}
+        normalized: dict[str, object] = {"nested": nested}
+
+        def values() -> Iterator[ParsedSourceRecord]:
+            yield ParsedSourceRecord(
+                record_locator="row:nested",
+                source=self.name,
+                parser_version=self.version,
+                raw_fields={"nested": {"memo": "original"}},
+                normalized_fields=normalized,
+            )
+            nested["amount_minor"] = 1.5
+
+        return values()
+
+
+class IdentityMutatingConnector(SyntheticConnector):
+    def parse(self, stream: ReadableBinary) -> Iterable[ParsedSourceRecord]:
+        stream.read()
+
+        def values() -> Iterator[ParsedSourceRecord]:
+            yield _record("row:before-mutation")
+            self.name = "mutated"
+            self.version = "2"
+            yield ParsedSourceRecord(
+                record_locator="row:after-mutation",
+                source=self.name,
+                parser_version=self.version,
+                raw_fields={},
+                normalized_fields={},
+            )
+
+        return values()
 
 
 def _record(
@@ -390,6 +429,36 @@ def test_mutated_float_output_is_revalidated_before_publication(
     assert outcome.error_code == "CONNECTOR_CONTRACT"
     with admin_engine.connect() as connection:
         assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
+
+
+def test_nested_output_is_detached_before_generator_can_mutate_it(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+) -> None:
+    outcome = _ingest(importer, b"nested mutation", [NestedMutationConnector()])
+
+    assert outcome.status is ImportJobStatus.SUCCEEDED
+    with admin_engine.connect() as connection:
+        normalized = connection.execute(
+            text("SELECT normalized_fields FROM source_record")
+        ).scalar_one()
+        assert normalized == {"nested": {"amount_minor": 1, "currency": "CNY"}}
+
+
+def test_connector_identity_is_frozen_before_detection_and_parse(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+) -> None:
+    outcome = _ingest(importer, b"identity mutation", [IdentityMutatingConnector()])
+
+    assert outcome.status is ImportJobStatus.FAILED
+    assert outcome.error_code == "CONNECTOR_CONTRACT"
+    with admin_engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
+        identity = connection.execute(
+            text("SELECT connector_name, connector_version FROM import_job")
+        ).one()
+        assert identity == ("synthetic", "1")
 
 
 def test_new_parser_version_gets_distinct_job_without_overwriting_provenance(
@@ -851,6 +920,142 @@ def test_post_transition_rejects_missing_wrong_and_stale_evidence(
             )
 
 
+def test_post_audit_trigger_cannot_be_shadowed_by_temporary_tables(
+    runtime_engine: Engine,
+    admin_engine: Engine,
+) -> None:
+    with Session(runtime_engine, expire_on_commit=False) as session:
+        entity_id, bank_id, expense_id = _create_accounts(session)
+        entry = _draft_entry(session, entity_id, bank_id, expense_id)
+        stale_event = append_audit_event(
+            session,
+            actor="pytest",
+            action="unrelated.action",
+            reason="must not authorize posting",
+            payload={},
+        )
+        session.commit()
+        entry_id = entry.id
+
+    with runtime_engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            assert connection.execute(
+                text("SELECT has_database_privilege(current_user, current_database(), 'TEMP')")
+            ).scalar_one()
+            connection.execute(
+                text("CREATE TEMP TABLE audit_event (id uuid, action text, payload jsonb)")
+            )
+            connection.execute(text("CREATE TEMP TABLE journal_entry (audit_event_id uuid)"))
+            connection.execute(
+                text(
+                    "INSERT INTO audit_event (id, action, payload) VALUES "
+                    "(:id, 'journal.post', "
+                    "jsonb_build_object('journal_entry_id', CAST(:target AS text)))"
+                ),
+                {"id": stale_event, "target": str(entry_id)},
+            )
+            with pytest.raises(DBAPIError, match="this transaction"):
+                connection.execute(
+                    text(
+                        "UPDATE public.journal_entry SET status = 'POSTED', "
+                        "posted_audit_event_id = :event_id WHERE id = :entry_id"
+                    ),
+                    {"event_id": stale_event, "entry_id": entry_id},
+                )
+        finally:
+            transaction.rollback()
+
+    with admin_engine.connect() as connection:
+        status = connection.execute(
+            text("SELECT status::text FROM journal_entry WHERE id = :id"),
+            {"id": entry_id},
+        ).scalar_one()
+        assert status == "DRAFT"
+
+
+def test_raw_artifact_requires_fresh_semantic_audit_and_digest_key_binding(
+    runtime_engine: Engine,
+) -> None:
+    content = b"direct raw artifact"
+    digest = hashlib.sha256(content).digest()
+    digest_hex = digest.hex()
+    storage_key = f"sha256/{digest_hex[:2]}/{digest_hex[2:4]}/{digest_hex}"
+    insert_statement = text(
+        "INSERT INTO raw_artifact "
+        "(sha256, source, original_filename, media_type, byte_size, "
+        "storage_key, audit_event_id) VALUES "
+        "(:sha256, 'pytest', 'direct.bin', 'application/octet-stream', "
+        ":byte_size, :storage_key, :audit_event_id)"
+    )
+
+    with Session(runtime_engine) as session:
+        payload = {
+            "sha256": digest_hex,
+            "byte_size": len(content),
+            "storage_key": storage_key,
+            "source": "pytest",
+            "media_type": "application/octet-stream",
+        }
+        wrong_action = append_audit_event(
+            session,
+            actor="pytest",
+            action="unrelated.action",
+            reason="wrong artifact action",
+            payload=payload,
+        )
+        with pytest.raises(DBAPIError, match=r"action must be artifact\.ingest"):
+            session.execute(
+                insert_statement,
+                {
+                    "sha256": digest,
+                    "byte_size": len(content),
+                    "storage_key": storage_key,
+                    "audit_event_id": wrong_action,
+                },
+            )
+        session.rollback()
+
+        stale_event = append_audit_event(
+            session,
+            actor="pytest",
+            action="artifact.ingest",
+            reason="stale artifact event",
+            payload=payload,
+        )
+        session.commit()
+        with pytest.raises(DBAPIError, match="appended in this transaction"):
+            session.execute(
+                insert_statement,
+                {
+                    "sha256": digest,
+                    "byte_size": len(content),
+                    "storage_key": storage_key,
+                    "audit_event_id": stale_event,
+                },
+            )
+        session.rollback()
+
+        mismatched_key = f"sha256/00/00/{'0' * 64}"
+        mismatch_event = append_audit_event(
+            session,
+            actor="pytest",
+            action="artifact.ingest",
+            reason="mismatched storage key",
+            payload={**payload, "storage_key": mismatched_key},
+        )
+        with pytest.raises(DBAPIError, match="storage_key_matches_sha256"):
+            session.execute(
+                insert_statement,
+                {
+                    "sha256": digest,
+                    "byte_size": len(content),
+                    "storage_key": mismatched_key,
+                    "audit_event_id": mismatch_event,
+                },
+            )
+
+
 def test_balance_failure_rolls_back_post_audit_atomically(runtime_engine: Engine) -> None:
     with Session(runtime_engine, expire_on_commit=False) as session:
         entity_id, bank_id, expense_id = _create_accounts(session)
@@ -896,6 +1101,7 @@ def test_phase2_migration_round_trip_and_objects(
             )
             expected_phase2_checks = {
                 "ck_raw_artifact_raw_artifact_sha256_length",
+                "ck_raw_artifact_raw_artifact_storage_key_matches_sha256",
                 "ck_import_job_import_job_state_timestamps",
                 "ck_source_record_source_record_raw_fields_object",
                 "ck_journal_entry_journal_entry_posted_audit_binding",
@@ -928,6 +1134,7 @@ def test_phase2_migration_round_trip_and_objects(
             )
             assert {
                 "raw_artifact_no_update_delete",
+                "raw_artifact_audit_binding",
                 "source_record_no_update_delete",
                 "import_job_state_machine",
                 "journal_entry_post_audit_binding",

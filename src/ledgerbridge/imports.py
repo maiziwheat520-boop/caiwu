@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+import json
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import BinaryIO
+from typing import BinaryIO, cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -71,6 +72,13 @@ class _StoredArtifact:
     created: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _ConnectorBinding:
+    connector: Connector
+    name: str
+    version: str
+
+
 class EvidenceImporter:
     def __init__(
         self,
@@ -98,9 +106,8 @@ class EvidenceImporter:
     ) -> ImportOutcome:
         published = self._store.publish(stream)
         artifact = self._ensure_artifact(published, metadata, actor=actor, reason=reason)
-        connector_list = list(connectors)
         try:
-            self._validate_connector_set(connector_list)
+            connector_bindings = self._validate_connector_set(connectors)
             prefix = self._store.read_prefix(artifact.published, self._detection_prefix_bytes)
             artifact_metadata = ArtifactMetadata(
                 source=artifact.source,
@@ -109,7 +116,7 @@ class EvidenceImporter:
                 byte_size=artifact.published.byte_size,
                 sha256_hex=artifact.published.sha256_hex,
             )
-            matches, ambiguous = self._detect(connector_list, artifact_metadata, prefix)
+            matches, ambiguous = self._detect(connector_bindings, artifact_metadata, prefix)
         except Exception:
             return self._route_terminal(
                 artifact,
@@ -153,99 +160,121 @@ class EvidenceImporter:
         actor: str,
         reason: str,
     ) -> _StoredArtifact:
-        created = False
-        with self._sessions() as session, session.begin():
+        with self._sessions() as session:
+            artifact = session.scalar(
+                select(RawArtifact).where(RawArtifact.sha256 == published.sha256)
+            )
+            if artifact is not None:
+                return self._stored_artifact(artifact, published, created=False)
+
+        try:
+            with self._sessions() as session, session.begin():
+                audit_event_id = append_audit_event(
+                    session,
+                    actor=actor,
+                    action="artifact.ingest",
+                    reason=reason,
+                    payload={
+                        "sha256": published.sha256_hex,
+                        "byte_size": published.byte_size,
+                        "storage_key": published.storage_key,
+                        "source": metadata.source,
+                        "media_type": metadata.media_type,
+                    },
+                )
+                artifact_id = session.execute(
+                    postgresql_insert(RawArtifact)
+                    .values(
+                        sha256=published.sha256,
+                        source=metadata.source,
+                        original_filename=metadata.original_filename,
+                        media_type=metadata.media_type,
+                        byte_size=published.byte_size,
+                        storage_key=published.storage_key,
+                        audit_event_id=audit_event_id,
+                    )
+                    .on_conflict_do_nothing(index_elements=[RawArtifact.sha256])
+                    .returning(RawArtifact.id)
+                ).scalar_one_or_none()
+                if artifact_id is None:
+                    raise _ConcurrentArtifact
+                artifact = session.get(RawArtifact, artifact_id)
+                if artifact is None:
+                    raise ArtifactIntegrityError("created artifact disappeared")
+                return self._stored_artifact(artifact, published, created=True)
+        except _ConcurrentArtifact:
+            pass
+
+        with self._sessions() as session:
             artifact = session.scalar(
                 select(RawArtifact).where(RawArtifact.sha256 == published.sha256)
             )
             if artifact is None:
-                try:
-                    with session.begin_nested():
-                        audit_event_id = append_audit_event(
-                            session,
-                            actor=actor,
-                            action="artifact.ingest",
-                            reason=reason,
-                            payload={
-                                "sha256": published.sha256_hex,
-                                "byte_size": published.byte_size,
-                                "storage_key": published.storage_key,
-                                "source": metadata.source,
-                                "media_type": metadata.media_type,
-                            },
-                        )
-                        artifact_id = session.execute(
-                            postgresql_insert(RawArtifact)
-                            .values(
-                                sha256=published.sha256,
-                                source=metadata.source,
-                                original_filename=metadata.original_filename,
-                                media_type=metadata.media_type,
-                                byte_size=published.byte_size,
-                                storage_key=published.storage_key,
-                                audit_event_id=audit_event_id,
-                            )
-                            .on_conflict_do_nothing(index_elements=[RawArtifact.sha256])
-                            .returning(RawArtifact.id)
-                        ).scalar_one_or_none()
-                        if artifact_id is None:
-                            raise _ConcurrentArtifact
-                        created = True
-                except _ConcurrentArtifact:
-                    artifact_id = None
-                if artifact_id is not None:
-                    artifact = session.get(RawArtifact, artifact_id)
-                else:
-                    artifact = session.scalar(
-                        select(RawArtifact).where(RawArtifact.sha256 == published.sha256)
-                    )
-            if artifact is None:
                 raise ArtifactIntegrityError("artifact identity race did not converge")
-            if (
-                artifact.byte_size != published.byte_size
-                or artifact.storage_key != published.storage_key
-            ):
-                raise ArtifactIntegrityError("artifact metadata conflicts with verified bytes")
-            return _StoredArtifact(
-                id=artifact.id,
-                source=artifact.source,
-                original_filename=artifact.original_filename,
-                media_type=artifact.media_type,
-                published=PublishedArtifact(
-                    sha256=artifact.sha256,
-                    byte_size=artifact.byte_size,
-                    storage_key=artifact.storage_key,
-                    created=published.created,
-                ),
-                created=created,
-            )
+            return self._stored_artifact(artifact, published, created=False)
+
+    @staticmethod
+    def _stored_artifact(
+        artifact: RawArtifact,
+        published: PublishedArtifact,
+        *,
+        created: bool,
+    ) -> _StoredArtifact:
+        if (
+            artifact.sha256 != published.sha256
+            or artifact.byte_size != published.byte_size
+            or artifact.storage_key != published.storage_key
+        ):
+            raise ArtifactIntegrityError("artifact metadata conflicts with verified bytes")
+        return _StoredArtifact(
+            id=artifact.id,
+            source=artifact.source,
+            original_filename=artifact.original_filename,
+            media_type=artifact.media_type,
+            published=PublishedArtifact(
+                sha256=artifact.sha256,
+                byte_size=artifact.byte_size,
+                storage_key=artifact.storage_key,
+                created=published.created,
+            ),
+            created=created,
+        )
 
     def _detect(
         self,
-        connectors: Iterable[Connector],
+        connectors: Iterable[_ConnectorBinding],
         metadata: ArtifactMetadata,
         prefix: bytes,
-    ) -> tuple[list[Connector], bool]:
-        matches: list[Connector] = []
+    ) -> tuple[list[_ConnectorBinding], bool]:
+        matches: list[_ConnectorBinding] = []
         ambiguous = False
-        for connector in connectors:
-            result = connector.detect(metadata, prefix)
+        for binding in connectors:
+            result = binding.connector.detect(metadata, prefix)
             if not isinstance(result, DetectionResult):
                 raise ConnectorContractError("detect() must return DetectionResult")
             if result is DetectionResult.MATCH:
-                matches.append(connector)
+                matches.append(binding)
             elif result is DetectionResult.AMBIGUOUS:
                 ambiguous = True
         return matches, ambiguous
 
-    def _validate_connector_set(self, connectors: Sequence[Connector]) -> None:
+    def _validate_connector_set(self, connectors: Sequence[Connector]) -> list[_ConnectorBinding]:
         identities: set[tuple[str, str]] = set()
+        bindings: list[_ConnectorBinding] = []
         for connector in connectors:
             validate_connector(connector)
             identity = (connector.name, connector.version)
             if identity in identities:
                 raise ConnectorContractError("connector identity must be unique")
             identities.add(identity)
+            bindings.append(
+                _ConnectorBinding(
+                    connector=connector,
+                    name=connector.name,
+                    version=connector.version,
+                )
+            )
+        return bindings
 
     def _route_terminal(
         self,
@@ -274,12 +303,12 @@ class EvidenceImporter:
     def _run_connector(
         self,
         artifact: _StoredArtifact,
-        connector: Connector,
+        binding: _ConnectorBinding,
         *,
         actor: str,
         reason: str,
     ) -> ImportOutcome:
-        job_id = self._find_or_create_job(artifact.id, connector.name, connector.version)
+        job_id = self._find_or_create_job(artifact.id, binding.name, binding.version)
         existing = self._job_outcome(artifact, job_id)
         if existing.status in {
             ImportJobStatus.SUCCEEDED,
@@ -290,7 +319,11 @@ class EvidenceImporter:
         self._mark_running(job_id)
         try:
             with self._store.open_verified(artifact.published) as stream:
-                parsed = self._validate_batch(connector, connector.parse(stream))
+                parsed = self._validate_batch(
+                    binding.name,
+                    binding.version,
+                    binding.connector.parse(stream),
+                )
         except (ConnectorContractError, ArtifactIntegrityError, OSError):
             return self._terminalize(
                 artifact,
@@ -342,7 +375,8 @@ class EvidenceImporter:
 
     def _validate_batch(
         self,
-        connector: Connector,
+        connector_name: str,
+        connector_version: str,
         values: Iterable[ParsedSourceRecord],
     ) -> list[ParsedSourceRecord]:
         parsed: list[ParsedSourceRecord] = []
@@ -356,11 +390,13 @@ class EvidenceImporter:
                 record_locator=value.record_locator,
                 source=value.source,
                 parser_version=value.parser_version,
-                raw_fields=dict(value.raw_fields),
-                normalized_fields=dict(value.normalized_fields),
+                raw_fields=_detached_json_object("raw_fields", value.raw_fields),
+                normalized_fields=_detached_json_object(
+                    "normalized_fields", value.normalized_fields
+                ),
                 external_transaction_id=value.external_transaction_id,
             )
-            if validated.source != connector.name or validated.parser_version != connector.version:
+            if validated.source != connector_name or validated.parser_version != connector_version:
                 raise ConnectorContractError("record provenance must match the connector")
             if validated.record_locator in locators:
                 raise ConnectorContractError("batch record locators must be unique")
@@ -584,3 +620,22 @@ class EvidenceImporter:
 def _validate_text(field: str, value: str, maximum: int) -> None:
     if not isinstance(value, str) or not value.strip() or len(value) > maximum:
         raise ValueError(f"{field} must be non-blank and at most {maximum} characters")
+
+
+def _detached_json_object(
+    field: str,
+    value: Mapping[str, object],
+) -> dict[str, object]:
+    try:
+        encoded = json.dumps(
+            dict(value),
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        decoded: object = json.loads(encoded)
+    except (TypeError, ValueError) as exc:
+        raise ConnectorContractError(f"{field} must contain JSON values only") from exc
+    if not isinstance(decoded, dict):
+        raise ConnectorContractError(f"{field} must be an object")
+    return cast(dict[str, object], decoded)

@@ -75,6 +75,11 @@ def upgrade() -> None:
             "storage_key ~ '^sha256/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{64}$'",
             name=op.f("ck_raw_artifact_raw_artifact_storage_key_content_addressed"),
         ),
+        sa.CheckConstraint(
+            "storage_key = 'sha256/' || substr(encode(sha256, 'hex'), 1, 2) || '/' "
+            "|| substr(encode(sha256, 'hex'), 3, 2) || '/' || encode(sha256, 'hex')",
+            name=op.f("ck_raw_artifact_raw_artifact_storage_key_matches_sha256"),
+        ),
         sa.ForeignKeyConstraint(
             ["audit_event_id"],
             ["audit_event.id"],
@@ -298,6 +303,48 @@ def upgrade() -> None:
         BEFORE UPDATE OR DELETE ON raw_artifact
         FOR EACH ROW EXECUTE FUNCTION raw_artifact_block_mutation();
 
+        CREATE FUNCTION public.raw_artifact_validate_audit()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SET search_path = pg_catalog
+        AS $function$
+        DECLARE
+            v_action text;
+            v_payload jsonb;
+            v_xmin xid;
+        BEGIN
+            SELECT action, payload, xmin
+            INTO v_action, v_payload, v_xmin
+            FROM public.audit_event
+            WHERE id = NEW.audit_event_id;
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'artifact audit evidence does not exist'
+                    USING ERRCODE = 'foreign_key_violation';
+            END IF;
+            IF v_xmin <> pg_current_xact_id()::text::xid THEN
+                RAISE EXCEPTION 'artifact audit evidence must be appended in this transaction'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+            IF v_action <> 'artifact.ingest' THEN
+                RAISE EXCEPTION 'artifact audit action must be artifact.ingest'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+            IF v_payload ->> 'sha256' IS DISTINCT FROM encode(NEW.sha256, 'hex')
+               OR v_payload ->> 'byte_size' IS DISTINCT FROM NEW.byte_size::text
+               OR v_payload ->> 'storage_key' IS DISTINCT FROM NEW.storage_key
+               OR v_payload ->> 'source' IS DISTINCT FROM NEW.source
+               OR v_payload ->> 'media_type' IS DISTINCT FROM NEW.media_type THEN
+                RAISE EXCEPTION 'artifact audit payload does not match artifact metadata'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+            RETURN NEW;
+        END
+        $function$;
+
+        CREATE TRIGGER raw_artifact_audit_binding
+        BEFORE INSERT ON public.raw_artifact
+        FOR EACH ROW EXECUTE FUNCTION public.raw_artifact_validate_audit();
+
         CREATE FUNCTION source_record_block_mutation()
         RETURNS trigger
         LANGUAGE plpgsql
@@ -363,9 +410,10 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE FUNCTION journal_entry_validate_post_audit()
+        CREATE FUNCTION public.journal_entry_validate_post_audit()
         RETURNS trigger
         LANGUAGE plpgsql
+        SET search_path = pg_catalog
         AS $function$
         DECLARE
             v_action text;
@@ -390,7 +438,7 @@ def upgrade() -> None:
                         USING ERRCODE = 'integrity_constraint_violation';
                 END IF;
                 IF EXISTS (
-                    SELECT 1 FROM journal_entry
+                    SELECT 1 FROM public.journal_entry
                     WHERE audit_event_id = NEW.posted_audit_event_id
                 ) THEN
                     RAISE EXCEPTION
@@ -400,7 +448,7 @@ def upgrade() -> None:
 
                 SELECT action, payload, xmin
                 INTO v_action, v_payload, v_xmin
-                FROM audit_event
+                FROM public.audit_event
                 WHERE id = NEW.posted_audit_event_id;
                 IF NOT FOUND THEN
                     RAISE EXCEPTION 'POSTED audit evidence does not exist'
@@ -434,8 +482,9 @@ def upgrade() -> None:
         $function$;
 
         CREATE TRIGGER journal_entry_post_audit_binding
-        BEFORE INSERT OR UPDATE OF status, posted_audit_event_id, audit_event_id ON journal_entry
-        FOR EACH ROW EXECUTE FUNCTION journal_entry_validate_post_audit();
+        BEFORE INSERT OR UPDATE OF status, posted_audit_event_id, audit_event_id
+        ON public.journal_entry
+        FOR EACH ROW EXECUTE FUNCTION public.journal_entry_validate_post_audit();
         """
     )
 
@@ -475,8 +524,8 @@ def downgrade() -> None:
         """
     )
 
-    op.execute("DROP TRIGGER journal_entry_post_audit_binding ON journal_entry")
-    op.execute("DROP FUNCTION journal_entry_validate_post_audit()")
+    op.execute("DROP TRIGGER journal_entry_post_audit_binding ON public.journal_entry")
+    op.execute("DROP FUNCTION public.journal_entry_validate_post_audit()")
     op.drop_constraint(
         op.f("ck_journal_entry_journal_entry_posted_audit_binding"),
         "journal_entry",
@@ -499,6 +548,8 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION import_job_enforce_transition()")
     op.execute("DROP TRIGGER source_record_no_update_delete ON source_record")
     op.execute("DROP FUNCTION source_record_block_mutation()")
+    op.execute("DROP TRIGGER raw_artifact_audit_binding ON public.raw_artifact")
+    op.execute("DROP FUNCTION public.raw_artifact_validate_audit()")
     op.execute("DROP TRIGGER raw_artifact_no_update_delete ON raw_artifact")
     op.execute("DROP FUNCTION raw_artifact_block_mutation()")
 
