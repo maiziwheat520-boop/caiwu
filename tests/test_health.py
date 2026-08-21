@@ -36,6 +36,10 @@ def test_liveness() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_openapi_schema_is_not_exposed() -> None:
+    assert TestClient(app).get("/openapi.json").status_code == 404
+
+
 def test_readiness_success() -> None:
     app.dependency_overrides[get_session] = _healthy_session
     try:

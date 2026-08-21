@@ -5,6 +5,8 @@ x-app: &app
   build:
     context: .
     dockerfile: docker/app.Dockerfile
+    args:
+      LEDGERBRIDGE_REVISION: ${DEPLOYED_REVISION:-dev}
   env_file:
     - .env
   depends_on:
@@ -47,7 +49,7 @@ services:
     volumes:
       - artifacts:/var/lib/ledgerbridge/artifacts
     healthcheck:
-      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
+      test: ["CMD", "python", "-c", "from ledgerbridge.worker import heartbeat_is_fresh; raise SystemExit(0 if heartbeat_is_fresh() else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
