@@ -14,9 +14,12 @@ push and pull-request CI runs both passed.
 At the user's direction, Codex then performed the final self-audit to conserve
 Claude capacity. It found and fixed one HIGH cross-entity identity bypass and one
 LOW deployment-manifest symlink exclusion-order issue. The final working tree
-passed 51 tests and all local/Hermes gates. The self-audit commit/push and fresh
-CI remain merge gates. Claude's separate clone and immutable report remain a
-later independent-audit entry point. Phase 1 has not been merged or deployed.
+passed 51 tests and all local/Hermes gates. Self-audit
+commit `a094b1abfd56c2eb625eae95275bb875e698c3b3` was pushed; push run
+`32468672289` and PR run `32468676815` passed secrets, quality, and compose
+(6/6 jobs). Phase 1 is ready for explicit merge authorization. Claude's separate
+clone and immutable report remain a later independent-audit entry point. Phase 1
+has not been merged or deployed.
 
 ## Completed
 
@@ -47,7 +50,7 @@ later independent-audit entry point. Phase 1 has not been merged or deployed.
   direct runtime identity, worker heartbeat, UID, revision-label, and migration smoke passed.
 - Final Codex self-audit report:
   `docs/reviews/2026-08-21-phase-1-core-schema-final-codex.md`; final verdict is
-  APPROVED FOR FINAL COMMIT AND CI with no open findings.
+  APPROVED FOR MERGE with no open findings; explicit user authorization is still required.
 - Production Hermes remains on Phase 0: API, worker, and PostgreSQL healthy;
   API is loopback-only and no production volume or schema was changed.
 
@@ -76,10 +79,9 @@ a new review report.
 
 ## Next task
 
-Commit and push the final Codex self-audit remediation/report to PR #5, then wait
-for both CI runs at the new full SHA. If both are green, request separate merge
-authorization. Preserve the Claude audit hook for later; do not deploy Phase 1
-to production without separate authorization.
+Request separate merge authorization for PR #5 once this documentation-only
+evidence commit passes CI. Preserve the Claude audit hook for later; do not deploy
+Phase 1 to production without separate authorization.
 
 ## Blocking decisions
 

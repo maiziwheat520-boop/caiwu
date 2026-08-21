@@ -6,12 +6,13 @@
 - Pull request: #5
 - Base revision: `55f88dd9f8125d34a8952e5af56844c0033d7b27`
 - Pre-audit head: `3e1e6fcb58258abf188ba57e94c736431b18a339`
-- Reviewed candidate: pre-audit head plus the working-tree remediation recorded below
-- Verdict: **APPROVED FOR FINAL COMMIT AND CI**
+- Final reviewed executable commit: `a094b1abfd56c2eb625eae95275bb875e698c3b3`
+- Verdict: **APPROVED FOR MERGE**
 - Open findings: **0 blocker, 0 high, 0 medium, 0 low**
 
-Final merge approval remains conditional on both GitHub push and pull-request CI runs
-passing for the commit that contains this report and the self-audit remediation.
+GitHub push run `32468672289` and pull-request run `32468676815` both passed
+at the reviewed commit. Each completed secrets, quality, and compose successfully
+(6/6 jobs). Merge still requires explicit user authorization.
 
 ## Threat model
 
@@ -127,7 +128,8 @@ Final isolated PostgreSQL 15 run on Hermes:
 - Bandit passed;
 - upgrade → downgrade to base → upgrade passed;
 - strict locked dependency audit reported no known vulnerabilities;
-- local sensitive-path scan passed.
+- local sensitive-path scan passed;
+- GitHub push run 32468672289 and PR run 32468676815 passed all six jobs.
 
 During the self-audit, an isolated production-style image also built successfully and
 API live/ready, OpenAPI 404, worker heartbeat, non-owner
@@ -151,7 +153,7 @@ the review without assuming a workbench scan occurred.
 
 ## Recommendation
 
-Commit and push the two self-audit remediations and this report, then require both GitHub
-CI runs to pass at the new immutable SHA. Do not merge or deploy until that evidence is
-recorded. Claude's review-only clone and the original immutable Claude report remain
-available as a later independent-audit entry point.
+The reviewed code is ready for an explicit merge decision. Do not deploy Phase 1 as part
+of the merge; production deployment requires separate authorization. The Claude
+review-only clone and the original immutable Claude report remain available as a later
+independent-audit entry point.

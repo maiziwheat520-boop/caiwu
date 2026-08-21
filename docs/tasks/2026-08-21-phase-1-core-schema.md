@@ -1,6 +1,6 @@
 # Task: Phase 1 Ledger Core schema
 
-- Status: final Codex self-audit remediated and validated; final commit/push/CI pending
+- Status: final Codex self-audit remediated; commit `a094b1a` and all six CI jobs passed; merge authorization pending
 - Implementation owner: Codex
 - Review owner: Codex self-audit; Claude independent-audit entry point preserved
 - Base commit: `55f88dd9f8125d34a8952e5af56844c0033d7b27`
@@ -94,10 +94,10 @@ before implementation begins.
 | ID | Trigger | Status and required evidence |
 |---|---|---|
 | F-1 | Before Phase 1 implementation | **Complete.** Separate `LedgerBridge-Codex` and `LedgerBridge-Claude` clones; identities configured; ownership HEAD and paths recorded in `PROJECT_STATUS.md`. The retired shared clone is read-only. |
-| F-2 | Before Phase 1 merge | **Implemented.** `uv.lock` is committed; local, CI, and Docker use frozen uv installs. The Docker/CI uv bootstrap wheel is version- and SHA-256-locked. PR #5 head `3e1e6fc` passed all six push/PR jobs; the final self-audit delta is pending push. |
+| F-2 | Before Phase 1 merge | **Implemented.** `uv.lock` is committed; local, CI, and Docker use frozen uv installs. The Docker/CI uv bootstrap wheel is version- and SHA-256-locked. PR #5 self-audit commit `a094b1a` passed all six push/PR jobs. |
 | F-3 | With Phase 1 schema | **Complete locally.** Core ledger modules, worker, and deployment-manifest script are in the denominator; CI threshold is 95%; the latest isolated PostgreSQL run reached 99.31%. |
 | F-4 | Before Phase 2 evidence ingestion | Add executable backup/restore automation and record a restore-to-empty-instance rehearsal with migration/checksum validation. |
-| F-5 | During Phase 1 | **Implemented.** Deployment manifest/revision label, OpenAPI 404, strict locked dependency audit, ephemeral worker heartbeat, root-safe manifest exclusions, and full-history gitleaks checkout are present. PR #5 head `3e1e6fc` passed CI; the final self-audit delta is pending push. |
+| F-5 | During Phase 1 | **Implemented.** Deployment manifest/revision label, OpenAPI 404, strict locked dependency audit, ephemeral worker heartbeat, root-safe manifest exclusions, and full-history gitleaks checkout are present. PR #5 self-audit commit `a094b1a` passed all six push/PR jobs. |
 | F-6 | Conditional blocker | Enable private branch protection or equivalent if a second human gets write access, Phase 2 real data/OAuth begins, or any direct push bypasses PR. |
 | F-7 | Every Phase 1 migration | **Complete locally.** The migration drops and recreates Phase 1 tables, functions, triggers, indexes, and enum types; an isolated-database test asserts object absence and presence. |
 
@@ -162,6 +162,8 @@ capacity. The immutable Claude report and separate Claude clone remain available
 for a later independent audit, but another Claude run is not required before the
 current commit/CI gate.
 
-Phase 1 may merge only after the final self-audit commit is pushed and both the
-push and pull-request CI runs pass at that exact SHA. Production deployment
-requires a separate authorization and is not part of this gate.
+Self-audit commit `a094b1abfd56c2eb625eae95275bb875e698c3b3` is pushed.
+Push run `32468672289` and pull-request run `32468676815` both passed
+secrets, quality, and compose (6/6 jobs). Phase 1 may merge only after explicit
+user authorization. Production deployment requires separate authorization and
+is not part of this gate.
