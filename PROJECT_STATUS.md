@@ -4,10 +4,10 @@ Updated: 2026-08-21
 
 ## Current phase
 
-Phase 1 Ledger Core is merged through PR #5 at merge commit
-`2028e3a99abe5e20c842a95ec22f2931878d39ee` and deployed on Hermes as
-`ledgerbridge-app:2028e3a`. The reviewed PR head was
-`e739088ad8f4d0eec91fda6e1e5ab3c268b1b2e6`.
+Phase 1 Ledger Core plus F-4 backup/restore automation is merged through PR #7
+at merge commit `0c5616f648d720da88dd37deac94610486e7e611` and deployed on
+Hermes as `ledgerbridge-app:0c5616f`. The F-4 reviewed PR head was
+`958a26106a3118afcdf0c27ec3b70ccb9b479733`.
 
 The first independent Claude review at
 `88d4e775a42e924998173590a0d91f34830d1fbc` returned CHANGES REQUIRED
@@ -23,19 +23,20 @@ empty. The previous image, deployment tree, database dump, role dump, and manife
 bundle remain available as rollback anchors. Claude's separate clone and immutable
 report remain a later independent-audit entry point for the fixed SHA.
 
-F-4 backup/restore automation is implemented on
-`ai/chatgpt/f4-backup-restore`. A Hermes-local dedicated GPG key and approved
-off-host private-key copy are in place. The encrypted backup and isolated
-restore-to-empty rehearsal passed against Phase 1: roles were restored before
-the database, runtime grants were non-empty, migration/checksum/object/row/
-artifact/deployment integrity matched, disposable resources were removed, and
-production remained unchanged. Local commit, PR/CI, merged-SHA deployment, and
-the final post-merge rehearsal remain.
+F-4 backup/restore automation is complete. PR #7 and the merged-main push passed
+the `secrets`, `quality`, and `compose` jobs. The merged SHA is deployed, and
+the final encrypted backup plus isolated restore-to-empty rehearsal passed:
+roles were restored before the database, runtime grants were non-empty,
+migration/checksum/object/row/artifact/deployment integrity matched, disposable
+resources were removed, and production remained unchanged. The previous
+deployment tree remains available for rollback. The GitHub repository is now
+public after a full-history secret and source-boundary audit found no credential
+or key exposure.
 
 ## Completed
 
 - Phase 0 scaffold and Claude blocker/high remediation.
-- Private GitHub source of truth: `maiziwheat520-boop/caiwu`.
+- Public GitHub source of truth: `maiziwheat520-boop/caiwu`.
 - PR #1 merged Phase 0; PR #4 merged the Phase 1 preflight and Claude report at
   merge commit `55f88dd9f8125d34a8952e5af56844c0033d7b27`.
 - F-1 shared-worktree risk is closed by separate private clones and identities.
@@ -66,13 +67,17 @@ the final post-merge rehearsal remain.
   `docs/reviews/2026-08-21-phase-1-hermes-deployment-codex.md`; API, worker, and
   PostgreSQL are healthy, migration head is `20260821_0002`, the API is loopback-only,
   the deployment manifest verifies, and all business tables contain zero rows.
+- F-4 PR #7 merged as `0c5616f`; the exact SHA is deployed and its final backup
+  `/srv/ai-center/backups/ledgerbridge/20260821T124742Z-0c5616f648d7`
+  passed isolated restore. Ciphertext SHA-256 is
+  `9d09705ebb482fc7a96f161e7f1b7db6b40f8e0000c6024b2d3e10f479d44e69`.
 
 ## Ownership checkpoint
 
 - Recorded: 2026-08-21
-- Deployment base: `2028e3a99abe5e20c842a95ec22f2931878d39ee`
+- Deployment revision: `0c5616f648d720da88dd37deac94610486e7e611`
 - Codex implementation clone: `G:\我的云端硬盘\AI\LedgerBridge-Codex`
-- Codex branch: `ai/chatgpt/f4-backup-restore`
+- Codex branch: `ai/chatgpt/f4-deployment-record`
 - Codex identity: `Codex <codex@ledgerbridge.local>`
 - Claude review-only clone: `G:\我的云端硬盘\AI\LedgerBridge-Claude`
 - Claude identity when explicitly authorized to commit:
@@ -81,7 +86,8 @@ the final post-merge rehearsal remain.
 
 ## Active implementation owner
 
-Codex, in the Codex clone and only on `ai/chatgpt/f4-backup-restore`.
+Codex, in the Codex clone and only on `ai/chatgpt/f4-deployment-record` while
+the final immutable deployment record is merged.
 
 ## Review owner
 
@@ -92,14 +98,14 @@ fixed full SHA and write only a new review report.
 
 ## Next task
 
-Create the F-4 local commit, obtain explicit authorization to push/open/merge
-the PR, require all CI jobs to pass, deploy the fixed merge SHA to Hermes, and
-repeat the encrypted backup plus isolated restore rehearsal on that deployed
-revision.
+Prepare the Phase 2 evidence/import task card and preflight from the frozen
+baseline. Before any real evidence is ingested, preserve the RawArtifact to
+SourceRecord non-cascade rule, add the deferred SourceRecord foreign key, and
+bind POSTED journal actions to reconstructable audit evidence.
 
 ## Blocking decisions
 
-None. GitHub Free cannot enforce branch protection on this private repository;
-PR/CI/one-writer controls remain mandatory manual gates. F-6 becomes blocking
-if a second human gains write access, real financial/OAuth data enters, or any
-direct push bypasses PR.
+None for F-4. PR/CI/one-writer controls remain mandatory gates. Re-evaluate F-6
+before Phase 2 real financial/OAuth data enters now that the repository is
+public, because GitHub plan capabilities and the original private-repository
+constraint may no longer be the same.

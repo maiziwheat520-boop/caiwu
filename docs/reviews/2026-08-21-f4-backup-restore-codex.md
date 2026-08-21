@@ -2,11 +2,14 @@
 
 - Date: 2026-08-21
 - Implementer/reviewer: Codex self-audit
-- Branch: `ai/chatgpt/f4-backup-restore`
+- Implementation branch: `ai/chatgpt/f4-backup-restore`
+- Deployment-record branch: `ai/chatgpt/f4-deployment-record`
 - Base: `e183c962db8c84afbd262105c773ad91946f4a45`
-- Production source revision rehearsed:
-  `2028e3a99abe5e20c842a95ec22f2931878d39ee`
-- Verdict: APPROVED FOR PR; merged-SHA deployment and final post-merge rehearsal pending
+- Implementation commit: `958a26106a3118afcdf0c27ec3b70ccb9b479733`
+- PR: `#7`, merged as `0c5616f648d720da88dd37deac94610486e7e611`
+- Production source revision rehearsed and deployed:
+  `0c5616f648d720da88dd37deac94610486e7e611`
+- Verdict: COMPLETE; merged-SHA deployment and post-merge restore rehearsal passed
 
 ## Scope and result
 
@@ -84,6 +87,38 @@ all three production container IDs. The report records
 Independent post-run checks found zero rehearsal resources and all production
 services healthy; the API ready endpoint returned `{"status":"ready"}`.
 
+## Merge, deployment, and final rehearsal evidence
+
+- PR #7 head `958a26106a3118afcdf0c27ec3b70ccb9b479733` passed the
+  `secrets`, `quality`, and `compose` jobs. The main push run `32482307666`
+  also completed successfully at merge commit
+  `0c5616f648d720da88dd37deac94610486e7e611`.
+- The exact merge commit was rendered as a 26-file manifest-protected
+  production tree and deployed as `ledgerbridge-app:0c5616f`. API, worker,
+  and PostgreSQL are healthy; API live/ready passed, OpenAPI remained 404,
+  and the runtime identity remained `ledgerbridge_app|ledgerbridge_app`.
+- The previous deployment remains at
+  `/srv/ai-center/ledgerbridge.previous-2028e3a-before-f4` and records
+  revision `2028e3a99abe5e20c842a95ec22f2931878d39ee`.
+- Final merged-SHA backup:
+  `/srv/ai-center/backups/ledgerbridge/20260821T124742Z-0c5616f648d7`.
+- Final ciphertext SHA-256:
+  `9d09705ebb482fc7a96f161e7f1b7db6b40f8e0000c6024b2d3e10f479d44e69`.
+- Final restore report:
+  `restore-rehearsal-20260821T124802Z.json`, status passed.
+- Final artifact archive SHA-256:
+  `6f1b0b5918450f42a87172e5ffc7e19a9b6bae33a01973dc24fc7634ae85c340`.
+- Final deployment-tree SHA-256:
+  `0dbbbdcfd4d2c6f2c42058cf6f0650eb9a975f1f08aaf7a763a44c760b9952c6`.
+
+The final restored database again reported migration `20260821_0002`, data
+checksums on, owner `ledgerbridge`, 17 runtime table grants, nine LedgerBridge
+functions, eight non-internal triggers, all five table counts at zero, an
+unprivileged runtime role, SELECT-only audit access, and denied public-schema
+CREATE. The report records `production_unchanged=true` and
+`isolated_resources_removed=true`. Independent checks found no rehearsal
+container, network, volume, or `/dev/shm/ledgerbridge-*` path after completion.
+
 ## Fail-closed findings resolved during rehearsal
 
 1. The first backup run could not write `artifacts.tar` through a mode-700
@@ -120,17 +155,37 @@ services healthy; the API ready endpoint returned `{"status":"ready"}`.
 - `git diff --check`: passed.
 - Hermes `docker compose config --quiet`, image revision binding, deployment
   manifest, and ready endpoint: passed.
+- GitHub PR and merged-main CI: all three jobs passed on both required heads.
 
-The Windows workstation has no Docker CLI, so the clean-checkout Compose build
-is left to the existing GitHub CI `compose` job. F-4 changes do not modify the
-Dockerfile, Compose file, application package, or migration files.
+The Windows workstation has no Docker CLI. The clean-checkout Compose build was
+therefore verified by GitHub CI and the exact merged SHA was independently built
+and started on Hermes.
 
-## Remaining gate
+## Public-repository security gate
 
-Create a local commit, push a PR, require all CI jobs to pass, and merge only
-with explicit user authorization. After merge, render and deploy the fixed
-merge SHA to Hermes, place the merged script in the production deployment tree,
-and rerun backup/rehearsal so the final evidence is bound to the merged
-deployment revision. Claude's later audit hook remains available: review the
-fixed full SHA and add a new immutable report without modifying implementation
-files.
+Before the repository visibility change, the full-history Gitleaks job passed
+on merged main and the local audit inspected all 27 historical commits. It found
+no private-key header, GitHub/AWS/Slack token, or JWT. Generic credential-pattern
+matches were confined to `.env.example`, CI-only test passwords, and runtime
+`secrets.token_urlsafe()` generation. The only tracked sensitive-looking
+filename is `.env.example`; real `.env`, key, credential, financial-evidence,
+dump, and archive paths remain ignored.
+
+The repository intentionally documents internal Hermes addresses, service
+paths, and the public GPG fingerprint. These are operational metadata, not
+credentials or public endpoints, and were accepted as low-risk disclosure. The
+repository was changed from private to public at
+`https://github.com/maiziwheat520-boop/caiwu`.
+
+The Codex Security desktop launcher itself could not start because its Windows
+subprocess decoded this workspace's Chinese path with GBK. It failed before
+source review or artifact creation, so no scanner result is claimed. The
+successful CI scanners and the source/history checks above form the recorded
+visibility gate.
+
+## Closure and later audit hook
+
+F-4 is closed. Claude's later audit hook remains available without consuming
+quota now: review fixed merge SHA
+`0c5616f648d720da88dd37deac94610486e7e611` and add a new immutable report
+without modifying implementation files.
