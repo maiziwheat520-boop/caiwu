@@ -4,22 +4,24 @@ Updated: 2026-08-21
 
 ## Current phase
 
-Phase 0 is approved, merged, and deployed on Hermes at
-`61ad9103d68d10a07191c7ad00a4fbb8953deddd`. Phase 1 Ledger Core is implemented
-on `ai/chatgpt/phase-1-core-schema` in PR #5. The first independent Claude review
-at review commit `88d4e775a42e924998173590a0d91f34830d1fbc` returned CHANGES REQUIRED
-(1 BLOCKER, 4 HIGH); those findings were remediated through `3e1e6fc`, whose
-push and pull-request CI runs both passed.
+Phase 1 Ledger Core is merged through PR #5 at merge commit
+`2028e3a99abe5e20c842a95ec22f2931878d39ee` and deployed on Hermes as
+`ledgerbridge-app:2028e3a`. The reviewed PR head was
+`e739088ad8f4d0eec91fda6e1e5ab3c268b1b2e6`.
 
-At the user's direction, Codex then performed the final self-audit to conserve
-Claude capacity. It found and fixed one HIGH cross-entity identity bypass and one
-LOW deployment-manifest symlink exclusion-order issue. The final working tree
-passed 51 tests and all local/Hermes gates. Self-audit
-commit `a094b1abfd56c2eb625eae95275bb875e698c3b3` was pushed; push run
-`32468672289` and PR run `32468676815` passed secrets, quality, and compose
-(6/6 jobs). Phase 1 is ready for explicit merge authorization. Claude's separate
-clone and immutable report remain a later independent-audit entry point. Phase 1
-has not been merged or deployed.
+The first independent Claude review at
+`88d4e775a42e924998173590a0d91f34830d1fbc` returned CHANGES REQUIRED
+(1 BLOCKER, 4 HIGH). Codex remediated those findings and, at the user's direction,
+completed the final self-audit to conserve Claude capacity. All four push/PR CI
+runs for the executable and evidence heads passed their six jobs.
+
+After separate deployment authorization, Hermes was upgraded in place from
+`20260821_0001` to `20260821_0002`. The legacy `ledgerbridge` role remains the
+migration owner; API and worker now log in directly as the unprivileged
+`ledgerbridge_app` role. The database and all five Phase 1 business tables remain
+empty. The previous image, deployment tree, database dump, role dump, and manifest
+bundle remain available as rollback anchors. Claude's separate clone and immutable
+report remain a later independent-audit entry point for the fixed SHA.
 
 ## Completed
 
@@ -31,8 +33,8 @@ has not been merged or deployed.
 - Phase 1 implements Entity, Account, JournalEntry, Posting, AuditEvent, the
   append-only audit function, POSTED immutability, entity boundaries, deferred
   per-currency balance checks, and POSTED-only balance queries.
-- PR #5 head `3e1e6fcb58258abf188ba57e94c736431b18a339` passed all six jobs across
-  its push and pull-request CI runs after the first-review remediation.
+- PR #5 final head `e739088ad8f4d0eec91fda6e1e5ab3c268b1b2e6` passed all six jobs
+  across its final push and pull-request CI runs and was merged as `2028e3a`.
 - Review remediation removes transactional `SET ROLE`; API/worker now log in as
   a separate non-owner runtime LOGIN while migrations use an owner-only one-shot
   service. Tests prove pool reuse and `RESET ROLE` cannot regain owner power.
@@ -50,16 +52,18 @@ has not been merged or deployed.
   direct runtime identity, worker heartbeat, UID, revision-label, and migration smoke passed.
 - Final Codex self-audit report:
   `docs/reviews/2026-08-21-phase-1-core-schema-final-codex.md`; final verdict is
-  APPROVED FOR MERGE with no open findings; explicit user authorization is still required.
-- Production Hermes remains on Phase 0: API, worker, and PostgreSQL healthy;
-  API is loopback-only and no production volume or schema was changed.
+  APPROVED FOR MERGE with no open findings.
+- Phase 1 Hermes deployment report:
+  `docs/reviews/2026-08-21-phase-1-hermes-deployment-codex.md`; API, worker, and
+  PostgreSQL are healthy, migration head is `20260821_0002`, the API is loopback-only,
+  the deployment manifest verifies, and all business tables contain zero rows.
 
 ## Ownership checkpoint
 
 - Recorded: 2026-08-21
-- Implementation base: `55f88dd9f8125d34a8952e5af56844c0033d7b27`
+- Deployment base: `2028e3a99abe5e20c842a95ec22f2931878d39ee`
 - Codex implementation clone: `G:\我的云端硬盘\AI\LedgerBridge-Codex`
-- Codex branch: `ai/chatgpt/phase-1-core-schema`
+- Codex branch: `ai/chatgpt/phase-1-deployment-record`
 - Codex identity: `Codex <codex@ledgerbridge.local>`
 - Claude review-only clone: `G:\我的云端硬盘\AI\LedgerBridge-Claude`
 - Claude identity when explicitly authorized to commit:
@@ -68,20 +72,20 @@ has not been merged or deployed.
 
 ## Active implementation owner
 
-Codex, in the Codex clone and only on `ai/chatgpt/phase-1-core-schema`.
+Codex, in the Codex clone and only on `ai/chatgpt/phase-1-deployment-record`.
 
 ## Review owner
 
-Codex owns the current final self-audit. Claude remains the independent review
-option in the separate Claude clone, but the user deferred that run to conserve
-quota. Any later Claude audit must review a clean, fixed full SHA and write only
-a new review report.
+Codex completed the final self-audit and production deployment record. Claude
+remains the independent review option in the separate Claude clone, but the user
+deferred that run to conserve quota. Any later Claude audit must review a clean,
+fixed full SHA and write only a new review report.
 
 ## Next task
 
-Request separate merge authorization for PR #5 once this documentation-only
-evidence commit passes CI. Preserve the Claude audit hook for later; do not deploy
-Phase 1 to production without separate authorization.
+Complete F-4 backup/restore automation and a restore-to-empty rehearsal before
+Phase 2 introduces evidence ingestion. Preserve the Claude audit hook for later;
+Phase 2 scope still requires its own task card and explicit implementation handoff.
 
 ## Blocking decisions
 

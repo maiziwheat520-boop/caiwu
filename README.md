@@ -17,8 +17,9 @@ account. It must not invent financial facts.
 
 ## Repository status
 
-Phase 0 is deployed. Phase 1 Ledger Core implementation is in progress, including
-database-enforced balance, immutability, and audit-chain invariants.
+Phase 1 Ledger Core is merged and deployed on Hermes at
+`2028e3a99abe5e20c842a95ec22f2931878d39ee`, including database-enforced
+balance, immutability, audit-chain invariants, and split runtime/migration identities.
 See [PROJECT_STATUS.md](PROJECT_STATUS.md) and
 [docs/architecture/IMPLEMENTATION_BASELINE.md](docs/architecture/IMPLEMENTATION_BASELINE.md).
 

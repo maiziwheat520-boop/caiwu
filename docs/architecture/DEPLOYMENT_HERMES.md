@@ -20,14 +20,19 @@ API binding: `127.0.0.1:8650` only
 
 ## Database identities
 
-Use distinct generated passwords in the protected `.env`:
+Use distinct generated passwords in the protected `.env`. For new volumes:
 
 - `POSTGRES_USER=ledgerbridge_owner` and `POSTGRES_PASSWORD` bootstrap the cluster
   and own migrations. The API and worker never receive these credentials.
 - `ledgerbridge_app` is an unprivileged LOGIN role. Its password is supplied as
   `LEDGERBRIDGE_APP_DB_PASSWORD`, and its URL is `LEDGERBRIDGE_DATABASE_URL`.
 - `LEDGERBRIDGE_MIGRATION_DATABASE_URL` is provided only to the one-shot `migrate`
-  service. It must use `ledgerbridge_owner`.
+  service. It must use the volume's existing owner role.
+
+The production volume created before Phase 1 uses `ledgerbridge` as its Phase 0
+bootstrap owner. Keep that existing role as the migration owner during an in-place
+upgrade, while API and worker switch to `ledgerbridge_app`. Do not rename the
+cluster role or transfer object ownership solely to match the new-volume example.
 
 On a new database volume, `docker/postgres-init-runtime-role.sh` creates the
 runtime role. For an existing pre-Phase-1 volume, run the same idempotent bootstrap
