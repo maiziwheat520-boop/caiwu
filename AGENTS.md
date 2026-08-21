@@ -43,7 +43,7 @@ This file governs coding work in the LedgerBridge repository.
 
 - Relevant unit/integration/property tests pass.
 - `ruff check .`, `ruff format --check .`, `mypy src alembic tests scripts`, Bandit,
-  strict dependency audit, and sensitive-path checks pass.
+  dependency audit (strict from F-5), and sensitive-path checks pass.
 - Migration upgrade and downgrade behavior is reviewed; destructive downgrade limitations are documented.
 - `PROJECT_STATUS.md` and the active task handoff are updated.
 - Claude review has no unresolved BLOCKER or HIGH findings before merge.

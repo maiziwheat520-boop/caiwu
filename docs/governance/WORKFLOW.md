@@ -20,6 +20,8 @@ the same task.
 - Claude review clone: `G:\我的云端硬盘\AI\LedgerBridge-Claude`.
 - Retired shared clone: `G:\我的云端硬盘\AI\LedgerBridge`; never write it.
 - Each clone has its own `.git`, branch, index, and local Git identity.
+- Reviewer branches must not track the implementation branch; create them with
+  `git switch --no-track -c ai/claude/<task>-review origin/<implementation-branch>`.
 - `PROJECT_STATUS.md` records the ownership timestamp and common base HEAD.
 - Reviewer output is handed off by an explicit `ai/claude/*-review` commit; the
   implementer consumes that commit only after review writing has stopped.

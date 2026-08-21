@@ -39,6 +39,21 @@ card is reviewed and merged.
 - Mail/OAuth, Hermes business endpoints, UI, dashboards, and LLM integration.
 - Real financial evidence, credentials, or production data migration.
 
+## Deferred baseline requirements
+
+The following frozen requirements are not waived. They remain assigned to the
+first phase that introduces the required objects:
+
+- Baseline requirement 3, preventing RawArtifact deletion from cascading to
+  SourceRecord, is mandatory in the Phase 2 evidence/import task.
+- Baseline requirement 6, structured reconciliation evidence JSON, is mandatory
+  in the Phase 5 reconciliation task.
+- Baseline requirement 7, a schema version on every rule action, is mandatory in
+  the Phase 5 classification/rule-engine task.
+
+Each later task must copy its deferred requirement into scope and acceptance tests
+before implementation begins.
+
 ## Frozen invariants
 
 - Every journal entry balances to zero per currency at transaction commit.
@@ -62,6 +77,12 @@ card is reviewed and merged.
 - Direct application insertion/update/deletion of audit events is rejected; the
   database function produces a valid serialized hash chain.
 - Actual-balance queries include POSTED entries only.
+- An equal ASSET-to-ASSET internal transfer changes actual income and expense by
+  exactly zero; assertions query the posted aggregates, not only entry balance.
+- A transfer fee of 0.10 CNY increases actual expense by exactly 10 minor units.
+- A credit-card purchase followed by repayment counts the purchase exactly once
+  as expense and counts the repayment as zero expense.
+- A partial refund reduces actual expense and leaves actual income unchanged.
 - Migration upgrade creates the tables/functions/triggers; downgrade removes them;
   upgrade after downgrade recreates them. CI asserts object absence/presence, not
   only the Alembic version number.
