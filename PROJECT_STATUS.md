@@ -23,6 +23,15 @@ empty. The previous image, deployment tree, database dump, role dump, and manife
 bundle remain available as rollback anchors. Claude's separate clone and immutable
 report remain a later independent-audit entry point for the fixed SHA.
 
+F-4 backup/restore automation is implemented on
+`ai/chatgpt/f4-backup-restore`. A Hermes-local dedicated GPG key and approved
+off-host private-key copy are in place. The encrypted backup and isolated
+restore-to-empty rehearsal passed against Phase 1: roles were restored before
+the database, runtime grants were non-empty, migration/checksum/object/row/
+artifact/deployment integrity matched, disposable resources were removed, and
+production remained unchanged. Local commit, PR/CI, merged-SHA deployment, and
+the final post-merge rehearsal remain.
+
 ## Completed
 
 - Phase 0 scaffold and Claude blocker/high remediation.
@@ -63,7 +72,7 @@ report remain a later independent-audit entry point for the fixed SHA.
 - Recorded: 2026-08-21
 - Deployment base: `2028e3a99abe5e20c842a95ec22f2931878d39ee`
 - Codex implementation clone: `G:\我的云端硬盘\AI\LedgerBridge-Codex`
-- Codex branch: `ai/chatgpt/phase-1-deployment-record`
+- Codex branch: `ai/chatgpt/f4-backup-restore`
 - Codex identity: `Codex <codex@ledgerbridge.local>`
 - Claude review-only clone: `G:\我的云端硬盘\AI\LedgerBridge-Claude`
 - Claude identity when explicitly authorized to commit:
@@ -72,7 +81,7 @@ report remain a later independent-audit entry point for the fixed SHA.
 
 ## Active implementation owner
 
-Codex, in the Codex clone and only on `ai/chatgpt/phase-1-deployment-record`.
+Codex, in the Codex clone and only on `ai/chatgpt/f4-backup-restore`.
 
 ## Review owner
 
@@ -83,9 +92,10 @@ fixed full SHA and write only a new review report.
 
 ## Next task
 
-Complete F-4 backup/restore automation and a restore-to-empty rehearsal before
-Phase 2 introduces evidence ingestion. Preserve the Claude audit hook for later;
-Phase 2 scope still requires its own task card and explicit implementation handoff.
+Create the F-4 local commit, obtain explicit authorization to push/open/merge
+the PR, require all CI jobs to pass, deploy the fixed merge SHA to Hermes, and
+repeat the encrypted backup plus isolated restore rehearsal on that deployed
+revision.
 
 ## Blocking decisions
 
