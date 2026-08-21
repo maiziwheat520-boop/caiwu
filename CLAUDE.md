@@ -13,6 +13,15 @@ assigns Claude implementation ownership.
 - Do not approve based only on tests written by the implementer; inspect whether
   the tests can fail for the intended defect.
 
+## Workspace isolation
+
+- Use only `G:\我的云端硬盘\AI\LedgerBridge-Claude` for Claude work.
+- Never write in `LedgerBridge-Codex` or the retired `LedgerBridge` clone.
+- Fetch the target Codex branch from `origin` and review by commit SHA.
+- When the user explicitly authorizes a report, create/use an `ai/claude/<task>-review`
+  branch in the Claude clone, write only the report, and return its commit SHA.
+- Do not write while Codex owns implementation files; the report branch is the
+  review handoff boundary, not permission to change implementation.
 ## Review output
 
 Write a report only when explicitly authorized to write review artifacts. Use
