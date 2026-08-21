@@ -33,10 +33,22 @@ deployment tree remains available for rollback. The GitHub repository is now
 public after a full-history secret and source-boundary audit found no credential
 or key exposure.
 
+Phase 2 Evidence and Import is in preflight on `ai/chatgpt/phase-2-prep` from
+base `f892f8a2e62759bbb44f85a561d386cb22ad79fa`. The task card fixes the
+RawArtifact/SourceRecord/ImportJob schema boundary, content-addressed atomic
+storage, idempotent Connector SDK, the deferred SourceRecord FK, and behavior-
+sensitive gates. Real parsers, OAuth, production evidence, and implementation
+code have not started. The user confirmed that Phase 2 also closes the M8
+DRAFT-to-POSTED audit binding before any posting workflow exists.
+
 ## Completed
 
 - Phase 0 scaffold and Claude blocker/high remediation.
 - Public GitHub source of truth: `maiziwheat520-boop/caiwu`.
+- F-6 main protection is enabled: PR required, strict `secrets`/`quality`/
+  `compose`, admins enforced, conversation resolution required, and force-push/
+  branch deletion disabled. Approval count remains zero for the current
+  single-human workflow.
 - PR #1 merged Phase 0; PR #4 merged the Phase 1 preflight and Claude report at
   merge commit `55f88dd9f8125d34a8952e5af56844c0033d7b27`.
 - F-1 shared-worktree risk is closed by separate private clones and identities.
@@ -77,7 +89,7 @@ or key exposure.
 - Recorded: 2026-08-21
 - Deployment revision: `0c5616f648d720da88dd37deac94610486e7e611`
 - Codex implementation clone: `G:\我的云端硬盘\AI\LedgerBridge-Codex`
-- Codex branch: `ai/chatgpt/f4-deployment-record`
+- Codex branch: `ai/chatgpt/phase-2-prep`
 - Codex identity: `Codex <codex@ledgerbridge.local>`
 - Claude review-only clone: `G:\我的云端硬盘\AI\LedgerBridge-Claude`
 - Claude identity when explicitly authorized to commit:
@@ -86,26 +98,25 @@ or key exposure.
 
 ## Active implementation owner
 
-Codex, in the Codex clone and only on `ai/chatgpt/f4-deployment-record` while
-the final immutable deployment record is merged.
+Codex, in the Codex clone and only on `ai/chatgpt/phase-2-prep` for the Phase 2
+task card and preflight. No Phase 2 implementation file is owned or modified yet.
 
 ## Review owner
 
-Codex completed the final self-audit and production deployment record. Claude
-remains the independent review option in the separate Claude clone, but the user
-deferred that run to conserve quota. Any later Claude audit must review a clean,
-fixed full SHA and write only a new review report.
+Codex prepares the Phase 2 task card and will implement independently to conserve
+Claude quota. Claude remains review-only in the separate clone. Any later Claude
+audit must review a clean, fixed full SHA and write only a new review report.
 
 ## Next task
 
-Prepare the Phase 2 evidence/import task card and preflight from the frozen
-baseline. Before any real evidence is ingested, preserve the RawArtifact to
-SourceRecord non-cascade rule, add the deferred SourceRecord foreign key, and
-bind POSTED journal actions to reconstructable audit evidence.
+Review and merge the Phase 2 preflight task card through protected main. Only
+then create `ai/chatgpt/phase-2-evidence-import` from the merged preflight SHA
+and begin implementation; production migration/deployment remains separately
+authorized.
 
 ## Blocking decisions
 
-None for F-4. PR/CI/one-writer controls remain mandatory gates. Re-evaluate F-6
-before Phase 2 real financial/OAuth data enters now that the repository is
-public, because GitHub plan capabilities and the original private-repository
-constraint may no longer be the same.
+None. F-4 and F-6 prerequisites are closed. The user confirmed that Phase 2
+retains RawArtifact metadata/SourceRecords when bytes are later removed by
+policy and includes the M8 POSTED-transition audit binding. The task card does
+not authorize implementation, real-data ingestion, migration, or deployment.
