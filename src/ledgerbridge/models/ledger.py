@@ -15,6 +15,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Identity,
+    Index,
     LargeBinary,
     String,
     Text,
@@ -91,6 +92,14 @@ class Account(Base):
 
 class AuditEvent(Base):
     __tablename__ = "audit_event"
+    __table_args__ = (
+        Index(
+            "uq_audit_event_prev_hash_once",
+            "prev_hash",
+            unique=True,
+            postgresql_where=text("prev_hash IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
@@ -124,6 +133,12 @@ class JournalEntry(Base):
             "(CASE WHEN adjusts_entry_id IS NULL THEN 0 ELSE 1 END + "
             "CASE WHEN reverses_entry_id IS NULL THEN 0 ELSE 1 END) <= 1",
             name="journal_entry_one_correction_relation",
+        ),
+        Index(
+            "uq_journal_entry_reverses_entry_once",
+            "reverses_entry_id",
+            unique=True,
+            postgresql_where=text("reverses_entry_id IS NOT NULL"),
         ),
         ForeignKeyConstraint(
             ["primary_account_id", "entity_id"],

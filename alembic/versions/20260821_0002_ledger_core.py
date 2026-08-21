@@ -42,11 +42,43 @@ def upgrade() -> None:
     op.execute(
         """
         DO $ledgerbridge$
+        DECLARE
+            v_role record;
         BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_app') THEN
-                CREATE ROLE ledgerbridge_app NOLOGIN;
+            SELECT oid, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolreplication,
+                   rolbypassrls
+            INTO v_role
+            FROM pg_roles
+            WHERE rolname = 'ledgerbridge_app';
+
+            IF NOT FOUND THEN
+                RAISE EXCEPTION USING MESSAGE =
+                    'required runtime role ledgerbridge_app is missing; ' ||
+                    'run database bootstrap first';
             END IF;
-            EXECUTE format('GRANT ledgerbridge_app TO %I', current_user);
+            IF NOT v_role.rolcanlogin
+               OR v_role.rolsuper
+               OR v_role.rolcreatedb
+               OR v_role.rolcreaterole
+               OR v_role.rolreplication
+               OR v_role.rolbypassrls
+               OR current_user = 'ledgerbridge_app'
+               OR EXISTS (
+                   SELECT 1 FROM pg_auth_members WHERE member = v_role.oid
+               )
+               OR EXISTS (
+                   SELECT 1
+                   FROM pg_database
+                   WHERE datname = current_database() AND datdba = v_role.oid
+               )
+               OR EXISTS (
+                   SELECT 1
+                   FROM pg_namespace
+                   WHERE nspname = 'public' AND nspowner = v_role.oid
+               ) THEN
+                RAISE EXCEPTION
+                    'ledgerbridge_app must be an unprivileged, non-owner LOGIN role';
+            END IF;
         END
         $ledgerbridge$;
         """
@@ -122,6 +154,17 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name="pk_audit_event"),
         sa.UniqueConstraint("sequence", name="uq_audit_event_sequence"),
     )
+    op.create_index(
+        "uq_audit_event_prev_hash_once",
+        "audit_event",
+        ["prev_hash"],
+        unique=True,
+        postgresql_where=sa.text("prev_hash IS NOT NULL"),
+    )
+    op.execute(
+        "CREATE UNIQUE INDEX uq_audit_event_single_genesis "
+        "ON audit_event ((true)) WHERE prev_hash IS NULL"
+    )
 
     op.create_table(
         "journal_entry",
@@ -195,6 +238,13 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name="pk_journal_entry"),
         sa.UniqueConstraint("audit_event_id", name="uq_journal_entry_audit_event_id"),
     )
+    op.create_index(
+        "uq_journal_entry_reverses_entry_once",
+        "journal_entry",
+        ["reverses_entry_id"],
+        unique=True,
+        postgresql_where=sa.text("reverses_entry_id IS NOT NULL"),
+    )
 
     op.create_table(
         "posting",
@@ -230,6 +280,36 @@ def upgrade() -> None:
     )
     op.create_index("ix_posting_account_id", "posting", ["account_id"], unique=False)
     op.create_index("ix_posting_entry_id", "posting", ["entry_id"], unique=False)
+
+    op.execute(
+        """
+        CREATE FUNCTION account_block_posted_dimension_change()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $function$
+        BEGIN
+            IF (NEW.entity_id, NEW.account_class)
+               IS DISTINCT FROM (OLD.entity_id, OLD.account_class)
+               AND EXISTS (
+                   SELECT 1
+                   FROM posting AS p
+                   JOIN journal_entry AS j ON j.id = p.entry_id
+                   WHERE p.account_id = OLD.id
+                     AND j.status = 'POSTED'
+               ) THEN
+                RAISE EXCEPTION
+                    'entity_id and account_class are immutable after POSTED use'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+            RETURN NEW;
+        END
+        $function$;
+
+        CREATE TRIGGER account_posted_dimensions_immutable
+        BEFORE UPDATE OF entity_id, account_class ON account
+        FOR EACH ROW EXECUTE FUNCTION account_block_posted_dimension_change();
+        """
+    )
 
     op.execute(
         """
@@ -572,13 +652,20 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute(
         """
-        REVOKE EXECUTE ON FUNCTION
-            append_audit_event(text, text, text, text, jsonb)
-        FROM ledgerbridge_app;
-        REVOKE ALL ON TABLE entity, account, journal_entry, posting, audit_event
-        FROM ledgerbridge_app;
-        REVOKE USAGE ON TYPE entity_type, account_class, journal_status
-        FROM ledgerbridge_app;
+        DO $ledgerbridge$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_app') THEN
+                REVOKE EXECUTE ON FUNCTION
+                    append_audit_event(text, text, text, text, jsonb)
+                FROM ledgerbridge_app;
+                REVOKE ALL ON TABLE entity, account, journal_entry, posting, audit_event
+                FROM ledgerbridge_app;
+                REVOKE USAGE ON TYPE entity_type, account_class, journal_status
+                FROM ledgerbridge_app;
+                REVOKE USAGE ON SCHEMA public FROM ledgerbridge_app;
+            END IF;
+        END
+        $ledgerbridge$;
         """
     )
 
@@ -597,6 +684,12 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION append_audit_event(text, text, text, text, jsonb)")
     op.execute("DROP TRIGGER audit_event_no_update_delete ON audit_event")
     op.execute("DROP FUNCTION audit_event_block_mutation()")
+    op.execute("DROP TRIGGER account_posted_dimensions_immutable ON account")
+    op.execute("DROP FUNCTION account_block_posted_dimension_change()")
+
+    op.drop_index("uq_journal_entry_reverses_entry_once", table_name="journal_entry")
+    op.execute("DROP INDEX uq_audit_event_single_genesis")
+    op.drop_index("uq_audit_event_prev_hash_once", table_name="audit_event")
 
     op.drop_index("ix_posting_entry_id", table_name="posting")
     op.drop_index("ix_posting_account_id", table_name="posting")

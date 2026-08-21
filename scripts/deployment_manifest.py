@@ -18,10 +18,8 @@ EXCLUDED_DIRECTORIES = {
     ".ruff_cache",
     ".venv",
     "__pycache__",
-    "data",
-    "secrets",
-    "var",
 }
+ROOT_EXCLUDED_DIRECTORIES = {"data", "secrets", "var"}
 EXCLUDED_FILENAMES = {".env", ".coverage", "DEPLOYED_REVISION", "MANIFEST.sha256"}
 
 
@@ -39,7 +37,9 @@ def _manifest_files(root: Path, manifest_path: Path) -> dict[str, Path]:
     files: dict[str, Path] = {}
     for candidate in root.rglob("*"):
         relative = candidate.relative_to(root)
-        if any(part in EXCLUDED_DIRECTORIES for part in relative.parts):
+        if relative.parts[0] in ROOT_EXCLUDED_DIRECTORIES or any(
+            part in EXCLUDED_DIRECTORIES for part in relative.parts
+        ):
             continue
         if candidate.resolve() == manifest_path or candidate.name in EXCLUDED_FILENAMES:
             continue

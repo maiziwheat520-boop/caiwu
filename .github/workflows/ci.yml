@@ -35,36 +35,49 @@ jobs:
         image: postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
         env:
           POSTGRES_DB: ledgerbridge_test
-          POSTGRES_USER: ledgerbridge_test
-          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_USER: ledgerbridge_owner
+          POSTGRES_PASSWORD: test-only-owner-password
           POSTGRES_INITDB_ARGS: --data-checksums
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U ledgerbridge_test -d ledgerbridge_test"
+          --health-cmd "pg_isready -U ledgerbridge_owner -d ledgerbridge_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
     env:
       LEDGERBRIDGE_ENV: test
-      LEDGERBRIDGE_DATABASE_URL: postgresql+psycopg://ledgerbridge_test:test-only-password@localhost:5432/ledgerbridge_test
+      LEDGERBRIDGE_DATABASE_URL: postgresql+psycopg://ledgerbridge_app:test-only-runtime-password@localhost:5432/ledgerbridge_test
+      LEDGERBRIDGE_MIGRATION_DATABASE_URL: postgresql+psycopg://ledgerbridge_owner:test-only-owner-password@localhost:5432/ledgerbridge_test
       LEDGERBRIDGE_ARTIFACT_ROOT: /tmp/ledgerbridge-artifacts
+      PGPASSWORD: test-only-owner-password
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # immutable upstream SHA
       - uses: actions/setup-python@751276eafca55f10f252026015f43c488f2322ba # immutable upstream SHA
         with:
           python-version: "3.12"
-      - run: python -m pip install "uv==0.12.5"
+      - run: python -m pip install --require-hashes --only-binary=:all: -r docker/uv-requirements.txt
       - run: uv sync --frozen --extra dev
+      - name: Bootstrap least-privileged runtime role
+        run: >-
+          psql -h localhost -U ledgerbridge_owner -d ledgerbridge_test
+          -v ON_ERROR_STOP=1
+          -c "CREATE ROLE ledgerbridge_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-runtime-password'"
       - run: mkdir -p "$LEDGERBRIDGE_ARTIFACT_ROOT"
       - run: uv run --frozen --extra dev python scripts/check_sensitive_paths.py
       - run: uv run --frozen --extra dev ruff check .
       - run: uv run --frozen --extra dev ruff format --check .
       - run: uv run --frozen --extra dev mypy src alembic tests scripts
-      - run: uv run --frozen --extra dev pytest --cov=ledgerbridge --cov-report=term-missing --cov-fail-under=95
+      - run: uv run --frozen --extra dev pytest --cov=ledgerbridge --cov=scripts.deployment_manifest --cov-report=term-missing --cov-fail-under=95
       - run: uv run --frozen --extra dev alembic upgrade head
+        env:
+          LEDGERBRIDGE_DATABASE_URL: ${{ env.LEDGERBRIDGE_MIGRATION_DATABASE_URL }}
       - run: uv run --frozen --extra dev alembic downgrade base
+        env:
+          LEDGERBRIDGE_DATABASE_URL: ${{ env.LEDGERBRIDGE_MIGRATION_DATABASE_URL }}
       - run: uv run --frozen --extra dev alembic upgrade head
+        env:
+          LEDGERBRIDGE_DATABASE_URL: ${{ env.LEDGERBRIDGE_MIGRATION_DATABASE_URL }}
       - run: uv run --frozen --extra dev bandit -c pyproject.toml -r src alembic scripts
       - run: uv export --quiet --frozen --extra dev --no-emit-project --format requirements.txt --output-file /tmp/ledgerbridge-audit-requirements.txt
       - run: uv run --frozen --extra dev pip-audit --strict --requirement /tmp/ledgerbridge-audit-requirements.txt

@@ -20,7 +20,6 @@ class Settings(BaseSettings):
     env: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
     database_url: str = Field(min_length=1)
-    database_role: str | None = "ledgerbridge_app"
     artifact_root: Path = Path("/var/lib/ledgerbridge/artifacts")
 
     @field_validator("artifact_root")

@@ -55,7 +55,4 @@ asyncio_mode = "auto"
 exclude_dirs = ["tests"]
 skips = []
 [tool.coverage.run]
-omit = [
-  "src/ledgerbridge/mail_collector.py",
-  "src/ledgerbridge/worker.py",
-]
+omit = ["src/ledgerbridge/mail_collector.py"]

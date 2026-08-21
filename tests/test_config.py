@@ -4,15 +4,16 @@ import pytest
 from pydantic import ValidationError
 
 from ledgerbridge.config import Settings, escape_alembic_ini_value, get_settings
-from ledgerbridge.db import build_engine
 
 
 def test_database_url_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEDGERBRIDGE_DATABASE_URL", raising=False)
     get_settings.cache_clear()
-
-    with pytest.raises(ValidationError, match="database_url"):
-        get_settings()
+    try:
+        with pytest.raises(ValidationError, match="database_url"):
+            get_settings()
+    finally:
+        get_settings.cache_clear()
 
 
 def test_artifact_root_must_be_absolute() -> None:
@@ -24,8 +25,3 @@ def test_alembic_url_escapes_config_interpolation() -> None:
     assert escape_alembic_ini_value("postgresql://user:p%ss@db/name") == (
         "postgresql://user:p%%ss@db/name"
     )
-
-
-def test_database_role_rejects_unsafe_identifier() -> None:
-    with pytest.raises(ValueError, match="database_role"):
-        build_engine("sqlite+pysqlite:///:memory:", "unsafe-role")

@@ -2,14 +2,13 @@ import logging
 import signal
 import time
 from pathlib import Path
+from tempfile import gettempdir
 from types import FrameType
-
-from ledgerbridge.config import get_settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 _running = True
-HEARTBEAT_FILENAME = ".worker-heartbeat"
+HEARTBEAT_PATH = Path(gettempdir()) / "ledgerbridge-worker-heartbeat"
 HEARTBEAT_INTERVAL_SECONDS = 5.0
 HEARTBEAT_MAX_AGE_SECONDS = 30.0
 
@@ -19,9 +18,8 @@ def _stop(_signum: int, _frame: FrameType | None) -> None:
     _running = False
 
 
-def heartbeat_path(artifact_root: Path | None = None) -> Path:
-    root = artifact_root if artifact_root is not None else get_settings().artifact_root
-    return root / HEARTBEAT_FILENAME
+def heartbeat_path() -> Path:
+    return HEARTBEAT_PATH
 
 
 def write_heartbeat(path: Path | None = None, now: float | None = None) -> None:
