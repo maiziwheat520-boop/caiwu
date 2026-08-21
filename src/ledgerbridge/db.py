@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from functools import lru_cache
 
 from sqlalchemy import MetaData, create_engine
 from sqlalchemy.engine import Engine
@@ -19,14 +20,16 @@ class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
-def build_engine(database_url: str | None = None) -> Engine:
-    return create_engine(database_url or get_settings().database_url, pool_pre_ping=True)
+def build_engine(database_url: str) -> Engine:
+    return create_engine(database_url, pool_pre_ping=True)
 
 
-engine = build_engine()
-SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+@lru_cache
+def get_session_factory(database_url: str) -> sessionmaker[Session]:
+    return sessionmaker(bind=build_engine(database_url), expire_on_commit=False)
 
 
 def get_session() -> Iterator[Session]:
-    with SessionLocal() as session:
+    session_factory = get_session_factory(get_settings().database_url)
+    with session_factory() as session:
         yield session

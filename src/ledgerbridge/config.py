@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,19 +13,27 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
         env_prefix="LEDGERBRIDGE_",
         extra="ignore",
     )
 
     env: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
-    database_url: str = Field(
-        default="postgresql+psycopg://ledgerbridge:change-me@localhost:5432/ledgerbridge"
-    )
-    artifact_root: Path = Path("var/artifacts")
+    database_url: str = Field(min_length=1)
+    artifact_root: Path = Path("/var/lib/ledgerbridge/artifacts")
+
+    @field_validator("artifact_root")
+    @classmethod
+    def artifact_root_must_be_absolute(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise ValueError("artifact_root must be an absolute path")
+        return value
+
+
+def escape_alembic_ini_value(value: str) -> str:
+    return value.replace("%", "%%")
 
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return Settings()  # type: ignore[call-arg]

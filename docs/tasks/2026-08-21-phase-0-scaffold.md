@@ -48,4 +48,6 @@ without implementing financial business logic ahead of Phase 1.
 
 ## Review findings
 
-Pending independent Claude review.
+Claude returned `NOT APPROVED FOR PHASE 1`. The authoritative review is
+`docs/reviews/2026-08-21-phase-0-scaffold-claude.md`; remediation is tracked in
+`docs/tasks/2026-08-21-phase-0-review-fixes.md`.

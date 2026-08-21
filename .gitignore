@@ -1,4 +1,5 @@
-.env
+.env*
+!.env.example
 .venv/
 __pycache__/
 *.py[cod]
@@ -15,11 +16,26 @@ build/
 var/
 data/
 secrets/
+*.pem
+*.key
+*.p12
+id_rsa*
+*token*.json
+*credential*.json
 *.eml
 *.xlsx
 *.xls
 *.csv
 *.zip
+*.ofx
+*.qif
+*.pdf
+*.sql
+*.tar.gz
+
+# Synthetic fixtures are the only allowed financial-looking files in Git.
+!tests/fixtures/
+!tests/fixtures/**
 
 # Local tooling.
 .idea/
