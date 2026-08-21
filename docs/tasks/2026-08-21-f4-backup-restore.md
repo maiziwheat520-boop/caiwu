@@ -1,10 +1,12 @@
 # Task: F-4 encrypted backup and isolated restore rehearsal
 
-- Status: implementation and pre-merge Hermes rehearsal passed; PR/CI/deployment pending
+- Status: complete; PR/CI, merged-SHA deployment, encrypted backup, and isolated restore passed
 - Implementation owner: Codex
 - Review owner: Codex self-audit; Claude fixed-SHA audit hook preserved
 - Base commit: `e183c962db8c84afbd262105c773ad91946f4a45`
 - Branch: `ai/chatgpt/f4-backup-restore`
+- Implementation commit: `958a26106a3118afcdf0c27ec3b70ccb9b479733`
+- PR/merge commit: `#7` / `0c5616f648d720da88dd37deac94610486e7e611`
 - Target: Hermes `/srv/ai-center/ledgerbridge`
 
 ## Goal
@@ -107,5 +109,16 @@ remove any production image, deployment tree, named volume, or prior backup.
   coverage. Ruff, format, strict mypy, Bandit, sensitive-path scan, strict
   pip-audit, diff check, Compose render, image revision binding, manifest, and
   ready probe passed.
-- Remaining: local commit, explicit push/PR/merge authorization, CI, merged-SHA
-  Hermes deployment, and final post-merge backup/rehearsal.
+- PR #7 and merged-main CI passed all `secrets`, `quality`, and `compose` jobs.
+- Merge commit `0c5616f648d720da88dd37deac94610486e7e611` is deployed on
+  Hermes as `ledgerbridge-app:0c5616f`; API, worker, and PostgreSQL are healthy.
+- Final merged-SHA backup:
+  `/srv/ai-center/backups/ledgerbridge/20260821T124742Z-0c5616f648d7`.
+- Final ciphertext SHA-256:
+  `9d09705ebb482fc7a96f161e7f1b7db6b40f8e0000c6024b2d3e10f479d44e69`.
+- Final restore report: `restore-rehearsal-20260821T124802Z.json`, passed with
+  production unchanged and all isolated resources removed.
+- The old production tree remains at
+  `/srv/ai-center/ledgerbridge.previous-2028e3a-before-f4` for rollback.
+- F-4 has no remaining acceptance gate. Claude may later audit the fixed merge
+  SHA and add an immutable review report without changing implementation files.
