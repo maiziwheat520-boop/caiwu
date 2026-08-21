@@ -50,7 +50,7 @@ services:
     <<: *app
     command: ["python", "-m", "ledgerbridge.worker"]
     volumes:
-      - artifacts:/var/lib/ledgerbridge/artifacts:ro
+      - artifacts:/var/lib/ledgerbridge/artifacts
     healthcheck:
       test: ["CMD", "python", "-c", "from ledgerbridge.worker import heartbeat_is_fresh; raise SystemExit(0 if heartbeat_is_fresh() else 1)"]
       interval: 30s

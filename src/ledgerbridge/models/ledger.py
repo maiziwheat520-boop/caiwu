@@ -146,6 +146,10 @@ class JournalEntry(Base):
             name="fk_journal_entry_primary_account_entity",
             ondelete="RESTRICT",
         ),
+        CheckConstraint(
+            "(status = 'POSTED') = (posted_audit_event_id IS NOT NULL)",
+            name="journal_entry_posted_audit_binding",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -162,7 +166,9 @@ class JournalEntry(Base):
     status: Mapped[JournalStatus] = mapped_column(
         Enum(JournalStatus, name="journal_status"), nullable=False
     )
-    source_record_id: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
+    source_record_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("source_record.id", ondelete="RESTRICT")
+    )
     adjusts_entry_id: Mapped[UUID | None] = mapped_column(
         PostgreSQLUUID(as_uuid=True), ForeignKey("journal_entry.id", ondelete="RESTRICT")
     )
@@ -174,6 +180,11 @@ class JournalEntry(Base):
         PostgreSQLUUID(as_uuid=True),
         ForeignKey("audit_event.id", ondelete="RESTRICT"),
         nullable=False,
+        unique=True,
+    )
+    posted_audit_event_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("audit_event.id", ondelete="RESTRICT"),
         unique=True,
     )
 

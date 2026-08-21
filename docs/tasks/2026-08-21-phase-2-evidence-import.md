@@ -1,12 +1,13 @@
 # Task: Phase 2 Evidence and Import
 
-- Status: preflight complete; task card ready; implementation not started
+- Status: implementation complete locally; fixed-SHA self-audit and protected PR pending
 - Preflight date: 2026-08-21
 - Implementation owner: Codex
 - Review owner: Codex self-audit; Claude fixed-SHA audit hook preserved
 - Base commit: `f892f8a2e62759bbb44f85a561d386cb22ad79fa`
+- Implementation base: preflight merge `232378ef70f3cfa24324dc6add61ce6089d107b4`
 - Preflight branch: `ai/chatgpt/phase-2-prep`
-- Planned implementation branch: `ai/chatgpt/phase-2-evidence-import`
+- Implementation branch: `ai/chatgpt/phase-2-evidence-import`
 - Planned migration: `20260821_0003`
 
 ## Goal
@@ -296,6 +297,33 @@ with no partial batch.
   PostgreSQL health, worker write/API read-only mounts, manifest/image revision,
   row counts, and a new encrypted backup plus isolated restore.
 
+## Implementation evidence
+
+- Migration `20260821_0003` creates RawArtifact, ImportJob, and SourceRecord,
+  binds the deferred SourceRecord FK, adds POSTED AuditEvent evidence, and has a
+  real `head -> 0002 -> head` object-presence round trip.
+- The content-addressed store streams and verifies SHA-256, publishes without
+  overwrite, rejects intermediate/final symlinks, and retains verified orphan
+  blobs when the database transaction fails.
+- The Connector SDK receives no path or write API. Core routing, output
+  revalidation, record limits, transaction ownership, idempotency, bounded
+  errors, and audit events are behavior-tested with synthetic values only.
+- PostgreSQL 15 isolated acceptance completed with 105 tests and 96.92%
+  coverage. Existing Phase 1 behavior, migration failure on orphan placeholders
+  and pre-existing POSTED entries, permissions, state transitions, audit
+  reconstruction, and atomic rollback all passed.
+- Ruff, format, strict mypy, sensitive-path scan, Bandit, strict dependency
+  audit (zero known vulnerabilities), Compose config/build, image revision label,
+  and worker-writable/API-read-only artifact mount tests passed. The 95% coverage
+  threshold and existing omit list were not changed.
+- No real parser, binary financial fixture, OAuth material, JournalEntry import,
+  production migration, or Hermes deployment was added. Hermes remains on
+  `0c5616f648d720da88dd37deac94610486e7e611`.
+- Full-history Gitleaks and protected push/PR CI remain pending until the fixed
+  implementation commit is pushed.
+- Alembic autogenerate comparison reports no Phase 2 object drift. It still
+  reports inherited Phase 1 check-constraint naming and audit-index metadata
+  drift; Phase 2 does not rewrite that deployed historical schema.
 ## Review and handoff gate
 
 - Preflight/task-card work may merge before implementation only after its own CI.
@@ -308,8 +336,8 @@ with no partial batch.
   boundary, POSTED audit binding, or real-data scope requires a new user-approved
   append-only decision rather than a silent task-card edit.
 
-## Preflight verdict
+## Implementation verdict
 
-READY FOR TASK-CARD REVIEW. Implementation and production changes have not
-started. F-4 and F-6 prerequisites are closed; M8 is explicitly accepted into
-scope. No unresolved architecture decision remains in this preflight.
+LOCALLY VERIFIED; READY FOR FIXED-SHA SELF-AUDIT. Implementation is complete on
+the dedicated branch and all non-GitHub gates pass. Push, protected PR, GitHub
+Gitleaks/CI, merge, migration, and production deployment remain separate steps.
