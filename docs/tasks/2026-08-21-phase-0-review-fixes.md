@@ -54,10 +54,13 @@ review without entering Phase 1 business-schema work.
 - API and worker are healthy on `ledgerbridge-app:207c9f8` and run as UID 10001.
 - API artifact mount is read-only, worker artifact mount is writable, and the
   API is published only on `127.0.0.1:8650`.
+- Private remote `maiziwheat520-boop/caiwu` is established; PR #1 is open.
+- Push and pull-request CI passed on `3ff2055`: `secrets`, `quality`, and `compose`.
+- Branch protection was attempted and rejected by GitHub because the private
+  repository is on GitHub Free. The user chose to keep the repository private;
+  PR/CI/one-writer enforcement is therefore a documented manual control.
 
 ## Remaining work
 
-- Receive the empty private GitHub repository URL from the user.
-- Publish `main` and `ai/chatgpt/phase-0-review-fixes`.
-- Run GitHub CI, open the review PR, and configure the protected workflow.
-- Request Claude re-review and record the final verdict.
+- Request Claude re-review of PR #1 and record the final verdict.
+- Merge only after Claude approval; do not begin Phase 1 before that gate.
