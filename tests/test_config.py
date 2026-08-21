@@ -9,9 +9,11 @@ from ledgerbridge.config import Settings, escape_alembic_ini_value, get_settings
 def test_database_url_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEDGERBRIDGE_DATABASE_URL", raising=False)
     get_settings.cache_clear()
-
-    with pytest.raises(ValidationError, match="database_url"):
-        get_settings()
+    try:
+        with pytest.raises(ValidationError, match="database_url"):
+            get_settings()
+    finally:
+        get_settings.cache_clear()
 
 
 def test_artifact_root_must_be_absolute() -> None:

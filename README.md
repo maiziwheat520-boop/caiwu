@@ -17,8 +17,8 @@ account. It must not invent financial facts.
 
 ## Repository status
 
-Phase 0 governance and engineering scaffolding is in place. Phase 1 ledger
-models and the first real schema migration are the next implementation task.
+Phase 0 is deployed. Phase 1 Ledger Core implementation is in progress, including
+database-enforced balance, immutability, and audit-chain invariants.
 See [PROJECT_STATUS.md](PROJECT_STATUS.md) and
 [docs/architecture/IMPLEMENTATION_BASELINE.md](docs/architecture/IMPLEMENTATION_BASELINE.md).
 
@@ -28,22 +28,24 @@ Requirements: Python 3.12+, Docker Compose, and PostgreSQL 15+.
 
 ```bash
 cp .env.example .env
-# Replace the example database password in .env before continuing.
-python -m venv .venv
-python -m pip install -e ".[dev]"
+# Replace both example database passwords in .env before continuing.
+uv sync --frozen --extra dev
 docker compose up -d postgres
-docker compose run --rm api alembic upgrade head
+docker compose exec -T postgres sh /docker-entrypoint-initdb.d/10-ledgerbridge-runtime-role.sh
+docker compose --profile tools run --rm migrate
 docker compose up -d api worker
 ```
 
 Quality gate:
 
 ```bash
-ruff check .
-ruff format --check .
-mypy src
-pytest
-bandit -c pyproject.toml -r src
+uv run --frozen --extra dev ruff check .
+uv run --frozen --extra dev ruff format --check .
+uv run --frozen --extra dev mypy src alembic tests scripts
+uv run --frozen --extra dev pytest
+uv run --frozen --extra dev bandit -c pyproject.toml -r src alembic scripts
+uv export --quiet --frozen --extra dev --no-emit-project --format requirements.txt --output-file /tmp/ledgerbridge-audit-requirements.txt
+uv run --frozen --extra dev pip-audit --strict --requirement /tmp/ledgerbridge-audit-requirements.txt
 ```
 
 ## Storage boundary
@@ -54,4 +56,7 @@ bandit -c pyproject.toml -r src
 - Historical design reviews: the parent workspace's `outputs/` directory.
 
 See [docs/architecture/STORAGE.md](docs/architecture/STORAGE.md) for the full
-layout and retention rules.
+layout and retention rules, [docs/architecture/LEDGER_CORE_OPERATIONS.md](docs/architecture/LEDGER_CORE_OPERATIONS.md)
+for the Phase 1 lifecycle and audit contract, and
+[docs/architecture/DEPLOYMENT_HERMES.md](docs/architecture/DEPLOYMENT_HERMES.md)
+for the split runtime/migration database identities.

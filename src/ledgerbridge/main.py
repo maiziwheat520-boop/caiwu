@@ -13,6 +13,7 @@ app = FastAPI(
     version=__version__,
     docs_url=None,
     redoc_url=None,
+    openapi_url=None,
 )
 
 

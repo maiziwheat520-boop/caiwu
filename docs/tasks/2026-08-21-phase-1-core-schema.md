@@ -1,18 +1,18 @@
 # Task: Phase 1 Ledger Core schema
 
-- Status: planned (preflight)
+- Status: final Codex self-audit remediated; commit `a094b1a` and all six CI jobs passed; merge authorization pending
 - Implementation owner: Codex
-- Review owner: Claude
-- Base commit: `61ad9103d68d10a07191c7ad00a4fbb8953deddd`
+- Review owner: Codex self-audit; Claude independent-audit entry point preserved
+- Base commit: `55f88dd9f8125d34a8952e5af56844c0033d7b27`
 - Preflight branch: `ai/chatgpt/phase-1-prep`
-- Implementation branch after preflight merge: `ai/chatgpt/phase-1-core-schema`
-- Owned files: core models, one Phase 1 Alembic revision, ledger invariants, and focused tests
+- Implementation branch: `ai/chatgpt/phase-1-core-schema`
+- Owned files: core models, one Phase 1 Alembic revision, ledger invariants, focused tests,
+  dependency lock/CI, and the F-5 operational hardening files
 
 ## Goal
 
 Implement the frozen double-entry Ledger Core with database-enforced balance,
-auditability, and POSTED immutability. This task begins only after the preflight
-card is reviewed and merged.
+auditability, and POSTED immutability. The preflight card and Claude report were merged in PR #4 before implementation began.
 
 ## In scope
 
@@ -94,16 +94,76 @@ before implementation begins.
 | ID | Trigger | Status and required evidence |
 |---|---|---|
 | F-1 | Before Phase 1 implementation | **Complete.** Separate `LedgerBridge-Codex` and `LedgerBridge-Claude` clones; identities configured; ownership HEAD and paths recorded in `PROJECT_STATUS.md`. The retired shared clone is read-only. |
-| F-2 | Before Phase 1 merge | Add `uv.lock` or hash-locked requirements; Docker and CI install the same lock; lock changes stay in PR. |
-| F-3 | With Phase 1 schema | Do not expand coverage omit; core ledger modules remain in the denominator; raise the threshold based on the new tested surface. |
+| F-2 | Before Phase 1 merge | **Implemented.** `uv.lock` is committed; local, CI, and Docker use frozen uv installs. The Docker/CI uv bootstrap wheel is version- and SHA-256-locked. PR #5 self-audit commit `a094b1a` passed all six push/PR jobs. |
+| F-3 | With Phase 1 schema | **Complete locally.** Core ledger modules, worker, and deployment-manifest script are in the denominator; CI threshold is 95%; the latest isolated PostgreSQL run reached 99.31%. |
 | F-4 | Before Phase 2 evidence ingestion | Add executable backup/restore automation and record a restore-to-empty-instance rehearsal with migration/checksum validation. |
-| F-5 | During Phase 1 | Correct Hermes deployment wording and add manifest verification; close `/openapi.json`; use `pip-audit --strict`; replace the worker PID probe with a real heartbeat; scan full Git history with gitleaks. |
+| F-5 | During Phase 1 | **Implemented.** Deployment manifest/revision label, OpenAPI 404, strict locked dependency audit, ephemeral worker heartbeat, root-safe manifest exclusions, and full-history gitleaks checkout are present. PR #5 self-audit commit `a094b1a` passed all six push/PR jobs. |
 | F-6 | Conditional blocker | Enable private branch protection or equivalent if a second human gets write access, Phase 2 real data/OAuth begins, or any direct push bypasses PR. |
-| F-7 | Every Phase 1 migration | Implement real downgrade logic and CI assertions that Phase 1 objects disappear and reappear across downgrade/upgrade. |
+| F-7 | Every Phase 1 migration | **Complete locally.** The migration drops and recreates Phase 1 tables, functions, triggers, indexes, and enum types; an isolated-database test asserts object absence and presence. |
+
+## Implementation evidence
+
+- Final isolated PostgreSQL 15 on Hermes: 51 tests passed; coverage 99.31% under the expanded denominator.
+- Migration exercised upgrade -> Phase 1 downgrade -> upgrade in a separate temporary database,
+  with table/function/trigger absence and presence assertions.
+- Business assertions query posted aggregates for internal transfer, 0.10 CNY fee,
+  credit-card purchase/repayment, and partial refund behavior.
+- The API/worker log in directly as non-owner `ledgerbridge_app`; pool reuse and `RESET ROLE` remain unprivileged, and direct audit INSERT, trigger ALTER, and TRUNCATE fail.
+- Owner-level update/delete triggers reject audit mutation; the serialized SHA-256 chain is independently recomputed, and unique indexes reject concurrent stale-snapshot forks.
+- Ruff, format, mypy, Bandit, sensitive-path scan, and locked strict dependency audit pass; Linux pip-audit reports no known vulnerabilities.
+- Frozen lock Docker image builds as UID 10001; revision label, worker heartbeat, API ready/live,
+  OpenAPI 404, runtime `session_user/current_user`, migration head, and deployment manifest
+  verification pass in isolated Hermes networks.
+- No production Hermes code, schema, credentials, database volume, or artifact volume changed.
+
+## First-review remediation
+
+The immutable Claude report is `docs/reviews/2026-08-21-phase-1-core-schema-claude.md`
+(review commit `88d4e775a42e924998173590a0d91f34830d1fbc`, verdict CHANGES REQUIRED).
+The committed remediation through `3e1e6fc` resolves:
+
+- P1-B1/P1-H1: remove `SET ROLE`; split runtime LOGIN from owner/migration credentials.
+- P1-H2: one partial unique reversal per original POSTED entry.
+- P1-H3: freeze Account class after POSTED use; the final self-audit further makes Account and JournalEntry entity identities immutable from creation.
+- P1-H4: make the posting-move test fail when the OLD-entry check is removed.
+- M1/M2/M3: unique audit successors/genesis with REPEATABLE READ concurrency,
+  deterministic runtime pool-reuse coverage, and a behavioral per-currency test.
+- M4-M7 and safe LOW items: external role bootstrap, guarded downgrade revokes,
+  explicit lifecycle/sequence-gap documentation, expanded coverage, root-only
+  manifest exclusions plus unsafe-path/symlink tests, strict shell blocks,
+  hash-locked uv bootstrap, cache restoration, and ephemeral worker heartbeat.
+- M8 is explicitly deferred to the workflow/API phase without weakening the
+  Phase 1 creation-authorization AuditEvent binding.
+
+## Final Codex self-audit
+
+The final report is
+`docs/reviews/2026-08-21-phase-1-core-schema-final-codex.md`.
+The self-audit found and fixed:
+
+- a HIGH cross-entity POSTED-entry path caused by mutable draft entity identities;
+- a LOW deployment-manifest symlink exclusion-order bypass.
+
+Account and JournalEntry `entity_id` values are now immutable from creation,
+POSTED transition revalidates every Posting entity, and the manifest rejects a
+non-excluded symlink before file exclusions. Final isolated validation passed
+51 tests, 99.31% coverage, migration round-trip, static analysis, and strict
+dependency audit.
+
+The Codex Security workbench could not create a scan because of a GBK decode
+failure on the Chinese Windows path, and Codex Security Access reported
+`not_granted`. The report preserves this limitation and the complete manual
+review evidence.
 
 ## Review gate
 
-Claude reviews the implementation diff from its separate clone and writes only the
-explicitly authorized review report. Phase 1 cannot merge on test output alone:
-Claude must inspect trigger SQL, audit function permissions/hash serialization,
-POSTED immutability, downgrade behavior, and whether tests can fail for the intended defects.
+The user directed Codex to perform the final review while conserving Claude
+capacity. The immutable Claude report and separate Claude clone remain available
+for a later independent audit, but another Claude run is not required before the
+current commit/CI gate.
+
+Self-audit commit `a094b1abfd56c2eb625eae95275bb875e698c3b3` is pushed.
+Push run `32468672289` and pull-request run `32468676815` both passed
+secrets, quality, and compose (6/6 jobs). Phase 1 may merge only after explicit
+user authorization. Production deployment requires separate authorization and
+is not part of this gate.

@@ -21,15 +21,20 @@ class Base(DeclarativeBase):
 
 
 def build_engine(database_url: str) -> Engine:
+    """Build an engine whose login role is already the least-privileged runtime role."""
     return create_engine(database_url, pool_pre_ping=True)
 
 
 @lru_cache
 def get_session_factory(database_url: str) -> sessionmaker[Session]:
-    return sessionmaker(bind=build_engine(database_url), expire_on_commit=False)
+    return sessionmaker(
+        bind=build_engine(database_url),
+        expire_on_commit=False,
+    )
 
 
 def get_session() -> Iterator[Session]:
-    session_factory = get_session_factory(get_settings().database_url)
+    settings = get_settings()
+    session_factory = get_session_factory(settings.database_url)
     with session_factory() as session:
         yield session
