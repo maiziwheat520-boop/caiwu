@@ -1,7 +1,7 @@
 from collections.abc import Iterator
 from functools import lru_cache
 
-from sqlalchemy import MetaData, create_engine
+from sqlalchemy import MetaData, create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -20,16 +20,35 @@ class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
-def build_engine(database_url: str) -> Engine:
-    return create_engine(database_url, pool_pre_ping=True)
+def build_engine(database_url: str, database_role: str | None = None) -> Engine:
+    if database_role is not None and not database_role.replace("_", "").isalnum():
+        raise ValueError("database_role must contain only letters, digits, and underscores")
+    engine = create_engine(database_url, pool_pre_ping=True)
+    if database_role is not None and engine.dialect.name == "postgresql":
+
+        @event.listens_for(engine, "connect")
+        def set_runtime_role(dbapi_connection: object, _connection_record: object) -> None:
+            cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+            try:
+                cursor.execute(f'SET ROLE "{database_role}"')
+            finally:
+                cursor.close()
+
+    return engine
 
 
 @lru_cache
-def get_session_factory(database_url: str) -> sessionmaker[Session]:
-    return sessionmaker(bind=build_engine(database_url), expire_on_commit=False)
+def get_session_factory(
+    database_url: str, database_role: str | None = None
+) -> sessionmaker[Session]:
+    return sessionmaker(
+        bind=build_engine(database_url, database_role),
+        expire_on_commit=False,
+    )
 
 
 def get_session() -> Iterator[Session]:
-    session_factory = get_session_factory(get_settings().database_url)
+    settings = get_settings()
+    session_factory = get_session_factory(settings.database_url, settings.database_role)
     with session_factory() as session:
         yield session

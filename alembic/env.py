@@ -8,7 +8,10 @@ from ledgerbridge.config import escape_alembic_ini_value, get_settings
 from ledgerbridge.db import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", escape_alembic_ini_value(get_settings().database_url))
+database_url = config.attributes.get("database_url")
+if database_url is None:
+    database_url = get_settings().database_url
+config.set_main_option("sqlalchemy.url", escape_alembic_ini_value(database_url))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
