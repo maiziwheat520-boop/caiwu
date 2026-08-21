@@ -4,30 +4,73 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
-  quality:
+  secrets:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # immutable upstream SHA
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@751276eafca55f10f252026015f43c488f2322ba # immutable upstream SHA
+        with:
+          python-version: "3.12"
+      - run: python scripts/check_sensitive_paths.py
+      - uses: gitleaks/gitleaks-action@bcfb9cce635345aac9996cedc19b2de8e01b894f
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  quality:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
+        env:
+          POSTGRES_DB: ledgerbridge_test
+          POSTGRES_USER: ledgerbridge_test
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_INITDB_ARGS: --data-checksums
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ledgerbridge_test -d ledgerbridge_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      LEDGERBRIDGE_ENV: test
+      LEDGERBRIDGE_DATABASE_URL: postgresql+psycopg://ledgerbridge_test:test-only-password@localhost:5432/ledgerbridge_test
+      LEDGERBRIDGE_ARTIFACT_ROOT: /tmp/ledgerbridge-artifacts
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # immutable upstream SHA
+      - uses: actions/setup-python@751276eafca55f10f252026015f43c488f2322ba # immutable upstream SHA
         with:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install -e ".[dev]"
+      - run: mkdir -p "$LEDGERBRIDGE_ARTIFACT_ROOT"
+      - run: python scripts/check_sensitive_paths.py
       - run: ruff check .
       - run: ruff format --check .
-      - run: mypy src
-      - run: pytest --cov=ledgerbridge --cov-report=term-missing
-      - run: bandit -c pyproject.toml -r src
+      - run: mypy src alembic tests scripts
+      - run: pytest --cov=ledgerbridge --cov-report=term-missing --cov-fail-under=80
+      - run: alembic upgrade head
+      - run: alembic downgrade base
+      - run: alembic upgrade head
+      - run: bandit -c pyproject.toml -r src alembic scripts
       - run: pip-audit
 
   compose:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # immutable upstream SHA
       - run: cp .env.example .env
       - run: docker compose config --quiet
-      - run: docker compose build api worker
+      - run: docker compose build api

@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN useradd --create-home --uid 10001 ledgerbridge
+RUN install -d -o 10001 -g 10001 /var/lib/ledgerbridge/artifacts
 
 COPY pyproject.toml README.md ./
 COPY src ./src

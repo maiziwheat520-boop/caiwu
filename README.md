@@ -27,11 +27,13 @@ See [PROJECT_STATUS.md](PROJECT_STATUS.md) and
 Requirements: Python 3.12+, Docker Compose, and PostgreSQL 15+.
 
 ```bash
+cp .env.example .env
+# Replace the example database password in .env before continuing.
 python -m venv .venv
 python -m pip install -e ".[dev]"
 docker compose up -d postgres
-alembic upgrade head
-uvicorn ledgerbridge.main:app --reload
+docker compose run --rm api alembic upgrade head
+docker compose up -d api worker
 ```
 
 Quality gate:

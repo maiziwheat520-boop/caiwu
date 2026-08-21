@@ -1,6 +1,7 @@
 name: ledgerbridge
 
 x-app: &app
+  image: ledgerbridge-app:${LEDGERBRIDGE_REVISION:-dev}
   build:
     context: .
     dockerfile: docker/app.Dockerfile
@@ -10,29 +11,58 @@ x-app: &app
     postgres:
       condition: service_healthy
   restart: unless-stopped
-  volumes:
-    - artifacts:/var/lib/ledgerbridge/artifacts
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  pids_limit: 128
+  mem_limit: 256m
+  networks:
+    - backend
 
 services:
   api:
     <<: *app
     command: ["uvicorn", "ledgerbridge.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    networks:
+      - backend
+      - ingress
     ports:
       - "127.0.0.1:8650:8000"
+    volumes:
+      - artifacts:/var/lib/ledgerbridge/artifacts:ro
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')"]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 20s
 
   worker:
     <<: *app
     command: ["python", "-m", "ledgerbridge.worker"]
+    volumes:
+      - artifacts:/var/lib/ledgerbridge/artifacts
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   mail-collector:
     <<: *app
     profiles: ["phase3"]
     command: ["python", "-m", "ledgerbridge.mail_collector"]
+    restart: "no"
+    volumes:
+      - artifacts:/var/lib/ledgerbridge/artifacts
+    networks:
+      - backend
+      - egress
 
   postgres:
     image: postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
@@ -40,7 +70,12 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: --data-checksums
     restart: unless-stopped
+    mem_limit: 512m
+    pids_limit: 128
+    networks:
+      - backend
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -48,6 +83,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+networks:
+  backend:
+    internal: true
+  ingress:
+  egress:
 
 volumes:
   artifacts:

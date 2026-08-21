@@ -2,12 +2,13 @@ from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config, pool
 
+import ledgerbridge.models  # noqa: F401
 from alembic import context
-from ledgerbridge.config import get_settings
+from ledgerbridge.config import escape_alembic_ini_value, get_settings
 from ledgerbridge.db import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+config.set_main_option("sqlalchemy.url", escape_alembic_ini_value(get_settings().database_url))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
