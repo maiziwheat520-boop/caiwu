@@ -1,6 +1,6 @@
 # Task: Phase 1 Ledger Core schema
 
-- Status: implementation complete; CI and independent review pending
+- Status: first review remediated locally; final commit/CI/fixed-SHA review pending
 - Implementation owner: Codex
 - Review owner: Claude
 - Base commit: `55f88dd9f8125d34a8952e5af56844c0033d7b27`
@@ -94,27 +94,46 @@ before implementation begins.
 | ID | Trigger | Status and required evidence |
 |---|---|---|
 | F-1 | Before Phase 1 implementation | **Complete.** Separate `LedgerBridge-Codex` and `LedgerBridge-Claude` clones; identities configured; ownership HEAD and paths recorded in `PROJECT_STATUS.md`. The retired shared clone is read-only. |
-| F-2 | Before Phase 1 merge | **Implemented; CI confirmation pending.** `uv.lock` is committed with the implementation; local, CI, and Docker use frozen uv installs. |
-| F-3 | With Phase 1 schema | **Complete locally.** Core ledger modules remain in the denominator; CI threshold is 95%; isolated PostgreSQL coverage is 97.53%. |
+| F-2 | Before Phase 1 merge | **Implemented.** `uv.lock` is committed; local, CI, and Docker use frozen uv installs. The Docker/CI uv bootstrap wheel is version- and SHA-256-locked. Original PR #5 CI passed; remediation CI is pending push. |
+| F-3 | With Phase 1 schema | **Complete locally.** Core ledger modules, worker, and deployment-manifest script are in the denominator; CI threshold is 95%; the latest isolated PostgreSQL run reached 99.31%. |
 | F-4 | Before Phase 2 evidence ingestion | Add executable backup/restore automation and record a restore-to-empty-instance rehearsal with migration/checksum validation. |
-| F-5 | During Phase 1 | **Implemented; CI confirmation pending.** Deployment manifest/revision label, OpenAPI 404, strict locked dependency audit, real worker heartbeat, and full-history gitleaks checkout are present and locally/Hermes validated where applicable. |
+| F-5 | During Phase 1 | **Implemented.** Deployment manifest/revision label, OpenAPI 404, strict locked dependency audit, ephemeral worker heartbeat, root-safe manifest exclusions, and full-history gitleaks checkout are present. Original CI passed; remediation CI is pending push. |
 | F-6 | Conditional blocker | Enable private branch protection or equivalent if a second human gets write access, Phase 2 real data/OAuth begins, or any direct push bypasses PR. |
 | F-7 | Every Phase 1 migration | **Complete locally.** The migration drops and recreates Phase 1 tables, functions, triggers, indexes, and enum types; an isolated-database test asserts object absence and presence. |
 
 ## Implementation evidence
 
-- Isolated PostgreSQL 15 on Hermes: 31 tests passed; coverage 97.53%.
+- Latest isolated PostgreSQL 15 on Hermes: 48 tests passed; coverage 99.31% under the expanded denominator.
 - Migration exercised upgrade -> Phase 1 downgrade -> upgrade in a separate temporary database,
   with table/function/trigger absence and presence assertions.
 - Business assertions query posted aggregates for internal transfer, 0.10 CNY fee,
   credit-card purchase/repayment, and partial refund behavior.
-- Runtime-role ACL rejects direct AuditEvent inserts; owner-level update/delete triggers reject
-  mutation; the serialized SHA-256 chain is independently recomputed in tests.
-- Ruff, format, mypy, Bandit, sensitive-path scan, and locked strict dependency audit pass.
-- Frozen lock Docker image builds as UID 10001; revision label, worker heartbeat, API ready,
-  OpenAPI 404, and deployment manifest verification pass in an isolated Hermes network.
+- The API/worker log in directly as non-owner `ledgerbridge_app`; pool reuse and `RESET ROLE` remain unprivileged, and direct audit INSERT, trigger ALTER, and TRUNCATE fail.
+- Owner-level update/delete triggers reject audit mutation; the serialized SHA-256 chain is independently recomputed, and unique indexes reject concurrent stale-snapshot forks.
+- Ruff, format, mypy, Bandit, sensitive-path scan, and locked strict dependency audit pass; Linux pip-audit reports no known vulnerabilities.
+- Frozen lock Docker image builds as UID 10001; revision label, worker heartbeat, API ready/live,
+  OpenAPI 404, runtime `session_user/current_user`, migration head, and deployment manifest
+  verification pass in isolated Hermes networks.
 - No production Hermes code, schema, credentials, database volume, or artifact volume changed.
 
+## First-review remediation
+
+The immutable Claude report is `docs/reviews/2026-08-21-phase-1-core-schema-claude.md`
+(review commit `88d4e775a42e924998173590a0d91f34830d1fbc`, verdict CHANGES REQUIRED).
+The current uncommitted remediation resolves:
+
+- P1-B1/P1-H1: remove `SET ROLE`; split runtime LOGIN from owner/migration credentials.
+- P1-H2: one partial unique reversal per original POSTED entry.
+- P1-H3: block entity/class changes once an Account participates in POSTED history.
+- P1-H4: make the posting-move test fail when the OLD-entry check is removed.
+- M1/M2/M3: unique audit successors/genesis with REPEATABLE READ concurrency,
+  deterministic runtime pool-reuse coverage, and a behavioral per-currency test.
+- M4-M7 and safe LOW items: external role bootstrap, guarded downgrade revokes,
+  explicit lifecycle/sequence-gap documentation, expanded coverage, root-only
+  manifest exclusions plus unsafe-path/symlink tests, strict shell blocks,
+  hash-locked uv bootstrap, cache restoration, and ephemeral worker heartbeat.
+- M8 is explicitly deferred to the workflow/API phase without weakening the
+  Phase 1 creation-authorization AuditEvent binding.
 ## Review gate
 
 Claude reviews the implementation diff from its separate clone and writes only the

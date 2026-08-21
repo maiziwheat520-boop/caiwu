@@ -28,10 +28,11 @@ Requirements: Python 3.12+, Docker Compose, and PostgreSQL 15+.
 
 ```bash
 cp .env.example .env
-# Replace the example database password in .env before continuing.
+# Replace both example database passwords in .env before continuing.
 uv sync --frozen --extra dev
 docker compose up -d postgres
-docker compose run --rm api alembic upgrade head
+docker compose exec -T postgres sh /docker-entrypoint-initdb.d/10-ledgerbridge-runtime-role.sh
+docker compose --profile tools run --rm migrate
 docker compose up -d api worker
 ```
 
@@ -55,4 +56,7 @@ uv run --frozen --extra dev pip-audit --strict --requirement /tmp/ledgerbridge-a
 - Historical design reviews: the parent workspace's `outputs/` directory.
 
 See [docs/architecture/STORAGE.md](docs/architecture/STORAGE.md) for the full
-layout and retention rules.
+layout and retention rules, [docs/architecture/LEDGER_CORE_OPERATIONS.md](docs/architecture/LEDGER_CORE_OPERATIONS.md)
+for the Phase 1 lifecycle and audit contract, and
+[docs/architecture/DEPLOYMENT_HERMES.md](docs/architecture/DEPLOYMENT_HERMES.md)
+for the split runtime/migration database identities.
