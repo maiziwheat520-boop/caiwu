@@ -1,6 +1,6 @@
 # Task: Phase 0 review fixes
 
-- Status: implementation
+- Status: review
 - Implementation owner: Codex
 - Review owner: Claude
 - Branch: `ai/chatgpt/phase-0-review-fixes`
@@ -46,12 +46,18 @@ review without entering Phase 1 business-schema work.
 - Hermes services are healthy on the pre-remediation deployment.
 - Hermes database contains only the `alembic_version` table.
 - Hermes artifact volume contains zero files.
-- Hermes PostgreSQL currently reports `data_checksums=off`.
+- Hermes pre-remediation PostgreSQL reported `data_checksums=off`.
+- Remediation commits: `43a7fbb` and port-publishing hotfix `207c9f8`.
+- Hermes backup: `/srv/ai-center/backups/ledgerbridge/20260821-phase0-review-43a7fbb-r2`.
+- Hermes PostgreSQL now reports `data_checksums=on`.
+- PostgreSQL migration upgrade/downgrade/upgrade passed.
+- API and worker are healthy on `ledgerbridge-app:207c9f8` and run as UID 10001.
+- API artifact mount is read-only, worker artifact mount is writable, and the
+  API is published only on `127.0.0.1:8650`.
 
 ## Remaining work
 
-- Obtain explicit authorization to commit and publish the remediation.
-- Create/configure the private GitHub repository and protected workflow.
-- Back up and rebuild the empty Hermes PostgreSQL volume with checksums enabled.
-- Deploy the reviewed revision, run PostgreSQL migrations, and verify service hardening.
+- Receive the empty private GitHub repository URL from the user.
+- Publish `main` and `ai/chatgpt/phase-0-review-fixes`.
+- Run GitHub CI, open the review PR, and configure the protected workflow.
 - Request Claude re-review and record the final verdict.
