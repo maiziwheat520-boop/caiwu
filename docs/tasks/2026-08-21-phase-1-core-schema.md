@@ -1,18 +1,18 @@
 # Task: Phase 1 Ledger Core schema
 
-- Status: planned (preflight)
+- Status: implementation complete; CI and independent review pending
 - Implementation owner: Codex
 - Review owner: Claude
-- Base commit: `61ad9103d68d10a07191c7ad00a4fbb8953deddd`
+- Base commit: `55f88dd9f8125d34a8952e5af56844c0033d7b27`
 - Preflight branch: `ai/chatgpt/phase-1-prep`
-- Implementation branch after preflight merge: `ai/chatgpt/phase-1-core-schema`
-- Owned files: core models, one Phase 1 Alembic revision, ledger invariants, and focused tests
+- Implementation branch: `ai/chatgpt/phase-1-core-schema`
+- Owned files: core models, one Phase 1 Alembic revision, ledger invariants, focused tests,
+  dependency lock/CI, and the F-5 operational hardening files
 
 ## Goal
 
 Implement the frozen double-entry Ledger Core with database-enforced balance,
-auditability, and POSTED immutability. This task begins only after the preflight
-card is reviewed and merged.
+auditability, and POSTED immutability. The preflight card and Claude report were merged in PR #4 before implementation began.
 
 ## In scope
 
@@ -94,12 +94,26 @@ before implementation begins.
 | ID | Trigger | Status and required evidence |
 |---|---|---|
 | F-1 | Before Phase 1 implementation | **Complete.** Separate `LedgerBridge-Codex` and `LedgerBridge-Claude` clones; identities configured; ownership HEAD and paths recorded in `PROJECT_STATUS.md`. The retired shared clone is read-only. |
-| F-2 | Before Phase 1 merge | Add `uv.lock` or hash-locked requirements; Docker and CI install the same lock; lock changes stay in PR. |
-| F-3 | With Phase 1 schema | Do not expand coverage omit; core ledger modules remain in the denominator; raise the threshold based on the new tested surface. |
+| F-2 | Before Phase 1 merge | **Implemented; CI confirmation pending.** `uv.lock` is committed with the implementation; local, CI, and Docker use frozen uv installs. |
+| F-3 | With Phase 1 schema | **Complete locally.** Core ledger modules remain in the denominator; CI threshold is 95%; isolated PostgreSQL coverage is 97.53%. |
 | F-4 | Before Phase 2 evidence ingestion | Add executable backup/restore automation and record a restore-to-empty-instance rehearsal with migration/checksum validation. |
-| F-5 | During Phase 1 | Correct Hermes deployment wording and add manifest verification; close `/openapi.json`; use `pip-audit --strict`; replace the worker PID probe with a real heartbeat; scan full Git history with gitleaks. |
+| F-5 | During Phase 1 | **Implemented; CI confirmation pending.** Deployment manifest/revision label, OpenAPI 404, strict locked dependency audit, real worker heartbeat, and full-history gitleaks checkout are present and locally/Hermes validated where applicable. |
 | F-6 | Conditional blocker | Enable private branch protection or equivalent if a second human gets write access, Phase 2 real data/OAuth begins, or any direct push bypasses PR. |
-| F-7 | Every Phase 1 migration | Implement real downgrade logic and CI assertions that Phase 1 objects disappear and reappear across downgrade/upgrade. |
+| F-7 | Every Phase 1 migration | **Complete locally.** The migration drops and recreates Phase 1 tables, functions, triggers, indexes, and enum types; an isolated-database test asserts object absence and presence. |
+
+## Implementation evidence
+
+- Isolated PostgreSQL 15 on Hermes: 31 tests passed; coverage 97.53%.
+- Migration exercised upgrade -> Phase 1 downgrade -> upgrade in a separate temporary database,
+  with table/function/trigger absence and presence assertions.
+- Business assertions query posted aggregates for internal transfer, 0.10 CNY fee,
+  credit-card purchase/repayment, and partial refund behavior.
+- Runtime-role ACL rejects direct AuditEvent inserts; owner-level update/delete triggers reject
+  mutation; the serialized SHA-256 chain is independently recomputed in tests.
+- Ruff, format, mypy, Bandit, sensitive-path scan, and locked strict dependency audit pass.
+- Frozen lock Docker image builds as UID 10001; revision label, worker heartbeat, API ready,
+  OpenAPI 404, and deployment manifest verification pass in an isolated Hermes network.
+- No production Hermes code, schema, credentials, database volume, or artifact volume changed.
 
 ## Review gate
 
