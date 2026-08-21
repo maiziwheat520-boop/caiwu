@@ -1,6 +1,6 @@
 # Task: Phase 0 review fixes
 
-- Status: review
+- Status: complete
 - Implementation owner: Codex
 - Review owner: Claude
 - Branch: `ai/chatgpt/phase-0-review-fixes`
@@ -62,5 +62,5 @@ review without entering Phase 1 business-schema work.
 
 ## Remaining work
 
-- Request Claude re-review of PR #1 and record the final verdict.
-- Merge only after Claude approval; do not begin Phase 1 before that gate.
+- None. PR #1 merged at `61ad9103`; follow-ups moved to
+  `docs/tasks/2026-08-21-phase-1-core-schema.md`.

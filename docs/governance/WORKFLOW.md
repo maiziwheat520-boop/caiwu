@@ -14,6 +14,15 @@ The user can reverse ownership explicitly. When reversed, Claude uses
 `ai/claude/<task>` and Codex becomes reviewer. Never allow concurrent writes to
 the same task.
 
+## Workspace isolation and handoff
+
+- Codex implementation clone: `G:\我的云端硬盘\AI\LedgerBridge-Codex`.
+- Claude review clone: `G:\我的云端硬盘\AI\LedgerBridge-Claude`.
+- Retired shared clone: `G:\我的云端硬盘\AI\LedgerBridge`; never write it.
+- Each clone has its own `.git`, branch, index, and local Git identity.
+- `PROJECT_STATUS.md` records the ownership timestamp and common base HEAD.
+- Reviewer output is handed off by an explicit `ai/claude/*-review` commit; the
+  implementer consumes that commit only after review writing has stopped.
 ## Task lifecycle
 
 1. Copy `docs/tasks/TEMPLATE.md` to a dated task file.

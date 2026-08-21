@@ -15,6 +15,11 @@ This file governs coding work in the LedgerBridge repository.
 - Claude implementation branches use `ai/claude/<task>` only when the user explicitly transfers write ownership.
 - One model writes at a time. The other model reviews only.
 - Do not silently alter frozen architecture. Record a proposed change as an open issue in the task document and wait for user approval.
+- Codex writes only from `G:\我的云端硬盘\AI\LedgerBridge-Codex`.
+- Claude writes only from `G:\我的云端硬盘\AI\LedgerBridge-Claude` when explicitly authorized.
+- `G:\我的云端硬盘\AI\LedgerBridge` is a retired clone; never write or resume work there.
+- Before any write, verify the repository root, branch, identity, clean/staged state,
+  and the ownership checkpoint in `PROJECT_STATUS.md`.
 
 ## Financial safety invariants
 
@@ -37,7 +42,8 @@ This file governs coding work in the LedgerBridge repository.
 ## Definition of done
 
 - Relevant unit/integration/property tests pass.
-- `ruff check .`, `ruff format --check .`, `mypy src`, and Bandit pass.
+- `ruff check .`, `ruff format --check .`, `mypy src alembic tests scripts`, Bandit,
+  strict dependency audit, and sensitive-path checks pass.
 - Migration upgrade and downgrade behavior is reviewed; destructive downgrade limitations are documented.
 - `PROJECT_STATUS.md` and the active task handoff are updated.
 - Claude review has no unresolved BLOCKER or HIGH findings before merge.
