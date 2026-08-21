@@ -27,6 +27,9 @@ services:
   api:
     <<: *app
     command: ["uvicorn", "ledgerbridge.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    networks:
+      - backend
+      - ingress
     ports:
       - "127.0.0.1:8650:8000"
     volumes:
@@ -84,6 +87,7 @@ services:
 networks:
   backend:
     internal: true
+  ingress:
   egress:
 
 volumes:
