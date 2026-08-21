@@ -1,6 +1,7 @@
 # Task: Phase 1 Ledger Core schema
 
-- Status: final Codex self-audit remediated; commit `a094b1a` and all six CI jobs passed; merge authorization pending
+- Status: complete; PR #5 merged as `2028e3a` and the reviewed Phase 1 revision is
+  deployed and verified on Hermes
 - Implementation owner: Codex
 - Review owner: Codex self-audit; Claude independent-audit entry point preserved
 - Base commit: `55f88dd9f8125d34a8952e5af56844c0033d7b27`
@@ -114,7 +115,25 @@ before implementation begins.
 - Frozen lock Docker image builds as UID 10001; revision label, worker heartbeat, API ready/live,
   OpenAPI 404, runtime `session_user/current_user`, migration head, and deployment manifest
   verification pass in isolated Hermes networks.
-- No production Hermes code, schema, credentials, database volume, or artifact volume changed.
+- Production deployment was separately authorized after merge; the validated
+  results are recorded below.
+
+## Production deployment
+
+PR #5 merged as `2028e3a99abe5e20c842a95ec22f2931878d39ee`. Hermes now runs
+`ledgerbridge-app:2028e3a`, whose OCI revision label matches the full merge SHA.
+The 25-file deployment manifest verifies against the rendered runtime tree.
+
+The existing Phase 0 owner role `ledgerbridge` was retained for migrations after
+explicit user confirmation; API and worker use `ledgerbridge_app`. Migration head
+is `20260821_0002`; all five business tables and the audit table contain zero rows.
+API live/ready, OpenAPI 404, worker heartbeat, UID 10001, container hardening,
+loopback-only port binding, role attributes/grants, and database checksums passed.
+
+Backups are under `/srv/ai-center/backups/ledgerbridge/20260821-phase1-deploy-2028e3a`.
+The old deployment tree remains at
+`/srv/ai-center/ledgerbridge.previous-61ad910-before-phase1-20260821`.
+No real financial evidence was introduced.
 
 ## First-review remediation
 
@@ -159,11 +178,9 @@ review evidence.
 
 The user directed Codex to perform the final review while conserving Claude
 capacity. The immutable Claude report and separate Claude clone remain available
-for a later independent audit, but another Claude run is not required before the
-current commit/CI gate.
+for a later independent audit, but another Claude run was not required for merge.
 
-Self-audit commit `a094b1abfd56c2eb625eae95275bb875e698c3b3` is pushed.
-Push run `32468672289` and pull-request run `32468676815` both passed
-secrets, quality, and compose (6/6 jobs). Phase 1 may merge only after explicit
-user authorization. Production deployment requires separate authorization and
-is not part of this gate.
+Self-audit commit `a094b1abfd56c2eb625eae95275bb875e698c3b3` and evidence head
+`e739088ad8f4d0eec91fda6e1e5ab3c268b1b2e6` passed their push/PR CI gates.
+PR #5 merged only after explicit user authorization. Production deployment then
+received separate authorization and passed the deployment record's acceptance gates.
