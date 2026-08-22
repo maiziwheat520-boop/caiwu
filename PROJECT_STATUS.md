@@ -85,8 +85,12 @@ Slice A findings are remediated; same-UID open-inode identity separation is
 deferred to Slice B. A final fixed-SHA scan is pending before any protected PR.
 The final fixed-SHA scan is complete with zero unclosed Slice A findings; its
 only low-severity result is the explicitly deferred same-UID inode boundary.
-Slice B remains unstarted and independently gated. Production is unchanged at
-`c56b6ff` / `20260821_0003`.
+Slice B remains unstarted and independently gated. The follow-up CI fixes are
+on `cdcac19de3f28c6c42db4629995b79764b48db7c` and protected PR #14 is open at
+`https://github.com/maiziwheat520-boop/caiwu/pull/14`. Both the push and
+pull-request workflows passed all six `secrets`, `quality`, and `compose` jobs
+(runs `32568176284` and `32568174194`). Production is unchanged at `c56b6ff` /
+`20260821_0003`; the PR has not been merged and no deployment has been run.
 
 ## Completed
 
@@ -161,10 +165,10 @@ runner boundary.
 
 ## Next task
 
-The final fixed-SHA security scan for `b72b229` is complete. Request separate
-authorization before publishing/opening a protected PR. Do not deploy, start
-Slice B, register a real Connector, ingest evidence, or enable the mail
-collector without the corresponding later authorization.
+PR #14 is open with all required checks green. Await separate user
+authorization before merging it. Do not deploy, start Slice B, register a real
+Connector, ingest evidence, or enable the mail collector without the
+corresponding later authorization.
 
 ## Blocking decisions
 

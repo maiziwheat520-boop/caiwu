@@ -1,6 +1,6 @@
 # Task: Phase 3 Platform Security Foundation
 
-- Status: Slice A implemented, remediated, and locally/Hermes-probe validated; production unchanged
+- Status: Slice A implemented, remediated, protected PR #14 green; production unchanged
 - Preflight date: 2026-08-22
 - Implementation owner: Codex
 - Review owner: Codex fixed-SHA self-audit; preserve a narrow Claude recheck entry point
@@ -372,6 +372,15 @@ fixed-SHA security rescan is recorded in
 `docs/reviews/2026-08-22-phase-3-security-scan-final-codex.md`: it has zero
 unclosed Slice A findings and one low-severity same-UID inode finding explicitly
 deferred to Slice B. Slice B and every deployment remain separately gated.
+
+The follow-up CI fixes are committed as
+`cdcac19de3f28c6c42db4629995b79764b48db7c`. They route unknown connector source
+systems through the internal failure job before the provenance foreign key is
+written and make the state-machine assertion accept PostgreSQL's invariant
+evaluation order. Protected PR #14 is open and both its push and
+pull-request workflows passed all six `secrets`, `quality`, and `compose` jobs
+(`32568176284`, `32568174194`). The PR is not merged; production remains on
+`c56b6ff` / `20260821_0003`.
 
 ## Review findings
 
