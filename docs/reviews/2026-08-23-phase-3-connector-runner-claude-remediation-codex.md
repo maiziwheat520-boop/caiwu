@@ -110,8 +110,10 @@ the previously declared container/peer-loss/concurrency notes.
 
 After that report, Codex independently closed the text-helper, upload-metadata,
 worker-call, and full-size chunk regression gaps in `e296b0d`; the associated
-local suite now passes 109 tests with 118 Windows/POSIX skips. The one remaining
-chunk-count headroom item is a capacity note, not a correctness failure.
+local suite now passes 109 tests with 118 Windows/POSIX skips. Hosted run
+`32595863205` for head `8c43ffa` passed `secrets`, `quality`, and `compose`.
+The one remaining chunk-count headroom item is a capacity note, not a
+correctness failure; Claude's report does not claim to audit `e296b0d`.
 
 ## Gate status
 

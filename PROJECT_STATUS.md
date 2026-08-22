@@ -21,7 +21,7 @@ the state-machine columns. Same-UID open-inode identity separation remains an
 explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is now implemented
 and pushed on the Codex branch `ai/chatgpt/phase-3-connector-runner` at head
-`65b15df54cfc6063b1f04f5dea53c24789e2b57e`; the fixed code/test head for final audit is
+`8c43ffae0881c2c4147e30cc8f3e27b7b424eb1e`; the fixed code/test head for final audit is
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e`;
 the isolated runner image was tested only as a disposable Hermes image and is
 not deployed.
@@ -110,7 +110,9 @@ LOW notes. Hosted CI run `32593102155` for the current branch head is green
 across `secrets`, `quality`, and `compose`.
 Codex then applied independent post-approval hardening in `e296b0d` for the
 shared text predicate, upload metadata validation, worker-call assertion, and
-full-size chunk regression; this follow-up is local pending the next push.
+full-size chunk regression. Hosted CI run `32595863205` for the resulting head
+is green across `secrets`, `quality`, and `compose`; Claude's approval applies to
+the earlier fixed code/test SHA, while this follow-up is Codex-verified.
 
 ## Next task
 

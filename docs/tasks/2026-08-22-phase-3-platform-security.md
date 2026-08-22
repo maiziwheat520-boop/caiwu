@@ -462,4 +462,5 @@ authorization for merge or production deployment.
 After approval, Codex independently applied `e296b0d` to share the text safety
 predicate, reject unsafe upload metadata, assert the worker composition-root
 call, and stream-test the full 50 MiB artifact limit; local verification is
-`109 passed / 118 skipped` with strict mypy and Ruff green.
+`109 passed / 118 skipped` with strict mypy and Ruff green. Hosted run
+`32595863205` for head `8c43ffa` also passed `secrets`, `quality`, and `compose`.
