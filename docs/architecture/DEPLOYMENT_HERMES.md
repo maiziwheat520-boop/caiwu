@@ -6,7 +6,8 @@ API binding: `127.0.0.1:8650` only
 
 ## Boundaries
 
-- The private GitHub repository is the source of reviewed code and migrations.
+- The public GitHub repository is the source of reviewed code and migrations;
+  secrets and runtime data remain outside it.
 - The Hermes directory is a rendered deployment tree, not a Git checkout or a
   second source of truth.
 - `DEPLOYED_REVISION` contains the full reviewed Git SHA. `MANIFEST.sha256`

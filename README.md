@@ -17,9 +17,11 @@ account. It must not invent financial facts.
 
 ## Repository status
 
-Phase 1 Ledger Core is merged and deployed on Hermes at
-`2028e3a99abe5e20c842a95ec22f2931878d39ee`, including database-enforced
-balance, immutability, audit-chain invariants, and split runtime/migration identities.
+Phase 2 Evidence and Import plus the Claude-audit remediation are merged and
+deployed on Hermes at `c56b6ffdde9f723efe1792ae1312ec8795bba165`. The
+deployment includes database-enforced ledger invariants, split runtime/migration
+identities, immutable evidence provenance, deterministic import orchestration,
+and hardened runtime TEMP/search-path boundaries. No real evidence is ingested.
 See [PROJECT_STATUS.md](PROJECT_STATUS.md) and
 [docs/architecture/IMPLEMENTATION_BASELINE.md](docs/architecture/IMPLEMENTATION_BASELINE.md).
 

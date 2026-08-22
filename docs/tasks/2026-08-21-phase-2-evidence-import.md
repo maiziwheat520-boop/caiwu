@@ -1,8 +1,8 @@
 # Task: Phase 2 Evidence and Import
 
-- Status: PR #10 merged; independent Claude audit returned CHANGES REQUIRED;
-  remediation executable `40fcd022ae6d3127aa7bdc17afecb6b1a159cda0` is locally
-  and Hermes validated; PR #11 protected CI passed, with merge pending
+- Status: remediation PR #11 merged as
+  `c56b6ffdde9f723efe1792ae1312ec8795bba165` and deployed on Hermes at
+  Alembic `20260821_0003`; pre/post backups passed isolated restore
 - Preflight date: 2026-08-21
 - Implementation owner: Codex
 - Review owner: Claude fixed-SHA audit at `cc07e08aa264c5a2aa42d9b422a049cf5c926ee9`;
@@ -369,6 +369,18 @@ with no partial batch.
 - PR #11 push run `32559469055` and pull-request run `32559511616` completed
   `secrets`, `quality`, and `compose` successfully (6/6 jobs) against evidence
   head `0cc3b39c4393324b46608bd12ec26f2e00b371ed`.
+- Final PR head `8d64ba60fd44962f4f2ce0ecf4617edc8fa07940` passed push run
+  `32559631320` and pull-request run `32559633040`; merged-main run
+  `32559778786` also passed all three required jobs.
+- After separate authorization, pre-deploy backup
+  `20260822T073427Z-0c5616f648d7` passed isolated restore. Hermes then deployed
+  merge SHA `c56b6ff...`, migrated to `20260821_0003`, and passed health,
+  loopback, runtime identity/TEMP denial, 14 pinned functions, 13 enabled
+  triggers, empty eight-table/artifact, mount, and container-hardening probes.
+- Post-deploy backup `20260822T074234Z-c56b6ffdde9f` passed isolated restore;
+  production remained unchanged by the rehearsal and disposable resources were
+  removed. Full evidence is in
+  `docs/reviews/2026-08-22-phase-2-hermes-deployment-codex.md`.
 ## Review and handoff gate
 
 - Preflight/task-card work may merge before implementation only after its own CI.
@@ -383,7 +395,7 @@ with no partial batch.
 
 ## Implementation verdict
 
-PR #10 IS MERGED BUT CLAUDE'S CHANGES-REQUIRED VERDICT SUPERSEDES THE PRIOR
-SELF-AUDIT VERDICT. The remediation executable is locally and Hermes validated,
-and PR #11 protected CI passed. Merge remains a user decision; production
-migration/deployment and real-data ingestion remain separately authorized.
+PHASE 2 REMEDIATION IS MERGED, DEPLOYED, BACKED UP, RESTORED IN ISOLATION, AND
+VERIFIED. Claude's findings are answered by immutable executable and deployment
+evidence. Real-data ingestion and Phase 3 connector/OAuth work remain separately
+authorized.
