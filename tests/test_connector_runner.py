@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 
 import ledgerbridge.connector_runner as runner_module
+import ledgerbridge.runner_client as client_module
 from ledgerbridge.connector_runner import ConnectorSupervisor, RunnerExecutionError
 from ledgerbridge.connectors import (
     ArtifactMetadata,
@@ -22,6 +23,7 @@ from ledgerbridge.connectors import (
 )
 from ledgerbridge.runner_client import ConnectorRunnerClient, RunnerClientError, RunnerConnector
 from ledgerbridge.runner_protocol import (
+    MAX_RESPONSE_BYTES,
     FrameKind,
     RunnerOperation,
     RunnerRequest,
@@ -34,6 +36,7 @@ from ledgerbridge.runner_protocol import (
     parse_terminal_payload,
     read_async_frame,
     read_frame,
+    record_payload,
     request_control,
     terminal_payload,
 )
@@ -156,6 +159,21 @@ class _MemoryWriter:
 
     async def wait_closed(self) -> None:
         return None
+
+
+def _read_client_frames(
+    client: ConnectorRunnerClient,
+    request: RunnerRequest,
+    frames: list[bytes],
+) -> object:
+    sender, receiver = socket.socketpair()
+    try:
+        sender.sendall(b"".join(frames))
+        sender.shutdown(socket.SHUT_WR)
+        return client._read_result(receiver, request)
+    finally:
+        sender.close()
+        receiver.close()
 
 
 def _request(content: bytes, operation: RunnerOperation = RunnerOperation.PARSE) -> RunnerRequest:
@@ -492,6 +510,154 @@ def test_runner_client_rejects_invalid_calls_and_unavailable_socket() -> None:
     )
     with pytest.raises(ValueError, match="parse request"):
         client.parse(detect_request, BytesIO(b"ok"))
+
+
+def test_runner_client_response_validation_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = ConnectorRunnerClient("unused")
+    request = _request(b"ok")
+    terminal = RunnerTerminal(
+        request_id=request.request_id,
+        status=RunnerStatus.OK,
+        operation=RunnerOperation.PARSE,
+        error_code=None,
+        summary="connector completed",
+        detection=None,
+        parsed_count=0,
+        byte_count=request.declared_artifact_size,
+        sha256_hex=request.verified_sha256_hex,
+    )
+    record = ParsedSourceRecord(
+        record_locator="row:1",
+        source="synthetic",
+        parser_version="1",
+        raw_fields={},
+        normalized_fields={},
+    )
+
+    def assert_error(frames: list[bytes], code: str) -> None:
+        with pytest.raises(RunnerClientError) as error:
+            _read_client_frames(client, request, frames)
+        assert error.value.error_code == code
+
+    assert_error(
+        [
+            encode_frame(
+                FrameKind.TERMINAL,
+                terminal_payload(
+                    RunnerTerminal(
+                        request_id=request.request_id,
+                        status=RunnerStatus.ERROR,
+                        operation=RunnerOperation.PARSE,
+                        error_code="BOUNDED",
+                        summary="failed",
+                        detection=None,
+                        parsed_count=0,
+                        byte_count=0,
+                        sha256_hex=None,
+                    )
+                ),
+            )
+        ],
+        "BOUNDED",
+    )
+    assert_error(
+        [
+            encode_frame(FrameKind.RECORD, record_payload(request.request_id, record)),
+            encode_frame(FrameKind.TERMINAL, terminal_payload(terminal)),
+        ],
+        "RUNNER_PROTOCOL",
+    )
+    mismatch = RunnerTerminal(
+        request_id=request.request_id,
+        status=RunnerStatus.OK,
+        operation=RunnerOperation.PARSE,
+        error_code=None,
+        summary="connector completed",
+        detection=None,
+        parsed_count=1,
+        byte_count=request.declared_artifact_size,
+        sha256_hex=request.verified_sha256_hex,
+    )
+    assert_error([encode_frame(FrameKind.TERMINAL, terminal_payload(mismatch))], "RUNNER_PROTOCOL")
+    assert_error([encode_frame(FrameKind.CONTROL, b"x")], "RUNNER_PROTOCOL")
+
+    wrong_operation = RunnerTerminal(
+        request_id=request.request_id,
+        status=RunnerStatus.OK,
+        operation=RunnerOperation.DETECT,
+        error_code=None,
+        summary="connector completed",
+        detection=None,
+        parsed_count=0,
+        byte_count=request.declared_artifact_size,
+        sha256_hex=request.verified_sha256_hex,
+    )
+    assert_error(
+        [encode_frame(FrameKind.TERMINAL, terminal_payload(wrong_operation))], "RUNNER_PROTOCOL"
+    )
+    for field, code in [
+        ("byte_count", "ARTIFACT_SIZE_MISMATCH"),
+        ("sha256_hex", "ARTIFACT_DIGEST_MISMATCH"),
+    ]:
+        byte_count = request.declared_artifact_size + 1
+        sha256_hex = request.verified_sha256_hex
+        if field == "sha256_hex":
+            sha256_hex = "0" * 64
+        bad = RunnerTerminal(
+            request_id=request.request_id,
+            status=RunnerStatus.OK,
+            operation=RunnerOperation.PARSE,
+            error_code=None,
+            summary="connector completed",
+            detection=None,
+            parsed_count=0,
+            byte_count=byte_count,
+            sha256_hex=sha256_hex,
+        )
+        assert_error([encode_frame(FrameKind.TERMINAL, terminal_payload(bad))], code)
+
+    monkeypatch.setattr(client_module, "MAX_RESPONSE_BYTES", 1)
+    assert_error([encode_frame(FrameKind.TERMINAL, terminal_payload(terminal))], "RESPONSE_LIMIT")
+    monkeypatch.setattr(client_module, "MAX_RESPONSE_BYTES", MAX_RESPONSE_BYTES)
+    monkeypatch.setattr(client_module, "MAX_RECORDS", 0)
+    assert_error(
+        [encode_frame(FrameKind.RECORD, record_payload(request.request_id, record))], "RECORD_LIMIT"
+    )
+
+
+def test_runner_client_health_response_validation() -> None:
+    client = ConnectorRunnerClient("unused")
+    request_id = str(uuid4())
+    sender, receiver = socket.socketpair()
+    try:
+        sender.sendall(encode_frame(FrameKind.RECORD, b"x"))
+        sender.shutdown(socket.SHUT_WR)
+        with pytest.raises(RunnerClientError, match="not terminal"):
+            client._read_terminal(receiver, request_id)
+    finally:
+        sender.close()
+        receiver.close()
+
+    sender, receiver = socket.socketpair()
+    try:
+        terminal = RunnerTerminal(
+            request_id=str(uuid4()),
+            status=RunnerStatus.OK,
+            operation=None,
+            error_code=None,
+            summary="runner ready",
+            detection=None,
+            parsed_count=0,
+            byte_count=0,
+            sha256_hex=None,
+        )
+        sender.sendall(encode_frame(FrameKind.TERMINAL, terminal_payload(terminal)))
+        sender.shutdown(socket.SHUT_WR)
+        with pytest.raises(RunnerClientError, match="request_id"):
+            client._read_terminal(receiver, request_id)
+    finally:
+        sender.close()
+        receiver.close()
 
 
 def _bytes(content: bytes) -> BinaryIO:

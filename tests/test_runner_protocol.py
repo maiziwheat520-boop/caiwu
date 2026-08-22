@@ -24,6 +24,7 @@ from ledgerbridge.runner_protocol import (
     chunk_frames,
     decode_frame,
     encode_frame,
+    frame_limit,
     health_control,
     is_health_control,
     parse_artifact_end_payload,
@@ -306,3 +307,75 @@ def test_chunk_and_artifact_end_limits() -> None:
         artifact_end_payload(MAX_ARTIFACT_BYTES + 1, "0" * 64)
     with pytest.raises(RunnerProtocolError, match="byte count"):
         parse_artifact_end_payload(struct.pack("!Q", MAX_ARTIFACT_BYTES + 1) + b"0" * 64)
+
+
+def test_protocol_helper_error_branches() -> None:
+    request = _request()
+    with pytest.raises(RunnerProtocolError, match="request_id"):
+        RunnerRequest(
+            request_id=request.request_id.replace("-", ""),
+            operation=request.operation,
+            connector_name=request.connector_name,
+            connector_version=request.connector_version,
+            source_system=request.source_system,
+            metadata=request.metadata,
+            declared_artifact_size=request.declared_artifact_size,
+            verified_sha256_hex=request.verified_sha256_hex,
+        )
+    with pytest.raises(RunnerProtocolError, match="unknown frame"):
+        frame_limit(99)  # type: ignore[arg-type]
+    with pytest.raises(RunnerProtocolError, match="payload must"):
+        encode_frame(FrameKind.CONTROL, bytearray(b"x"))  # type: ignore[arg-type]
+    with pytest.raises(RunnerProtocolError, match="metadata"):
+        parse_request_control(
+            b'{"message_type":"request","protocol_version":1,"operation":"parse","metadata":[]}'
+        )
+    with pytest.raises(RunnerProtocolError, match="control message"):
+        parse_request_control(b'{"message_type":"other","protocol_version":1}')
+    with pytest.raises(RunnerProtocolError, match="unsupported protocol"):
+        parse_request_control(b'{"message_type":"request","protocol_version":99}')
+    with pytest.raises(RunnerProtocolError, match="invalid"):
+        parse_request_control(b'{"message_type":"request","protocol_version":1,"operation":"bad"}')
+    with pytest.raises(RunnerProtocolError, match="must be a JSON object"):
+        parse_request_control(b"[]")
+    with pytest.raises(RunnerProtocolError, match="valid UTF"):
+        parse_request_control(b"\xff")
+
+
+@pytest.mark.asyncio
+async def test_async_frame_reader_rejects_invalid_frames() -> None:
+    from ledgerbridge.runner_protocol import read_async_frame
+
+    class Reader:
+        def __init__(self, data: bytes) -> None:
+            self.data = BytesIO(data)
+
+        async def readexactly(self, size: int) -> bytes:
+            value = self.data.read(size)
+            if len(value) != size:
+                raise EOFError
+            return value
+
+    with pytest.raises(RunnerProtocolError, match="empty frame"):
+        await read_async_frame(Reader(struct.pack("!I", 0)))
+    with pytest.raises(RunnerProtocolError, match="unknown frame"):
+        await read_async_frame(Reader(struct.pack("!I", 1) + b"\xff"))
+    with pytest.raises(RunnerProtocolError, match="type-specific"):
+        await read_async_frame(Reader(struct.pack("!I", MAX_CONTROL_FRAME_BYTES + 1) + b"\x01"))
+
+
+def test_record_and_terminal_parsers_reject_invalid_json_shapes() -> None:
+    request = _request()
+    with pytest.raises(RunnerProtocolError, match="record fields"):
+        parse_record_payload(
+            json.dumps(
+                {"request_id": request.request_id, "raw_fields": [], "normalized_fields": {}}
+            ).encode(),
+            request,
+        )
+    with pytest.raises(RunnerProtocolError, match="invalid terminal"):
+        parse_terminal_payload(b'{"message_type":"other"}')
+    with pytest.raises(RunnerProtocolError, match="unsupported protocol"):
+        parse_terminal_payload(b'{"message_type":"terminal","protocol_version":99}')
+    with pytest.raises(RunnerProtocolError, match="status"):
+        parse_terminal_payload(b'{"message_type":"terminal","protocol_version":1,"status":"bad"}')

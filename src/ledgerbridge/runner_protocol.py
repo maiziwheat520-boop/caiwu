@@ -394,8 +394,10 @@ def parse_terminal_payload(payload: bytes) -> RunnerTerminal:
     sha256_hex = cast(str | None, value.get("sha256_hex"))
     if sha256_hex is not None:
         _require_sha256(sha256_hex)
+    request_id_value = value.get("request_id")
+    request_id = "" if request_id_value == "" else _text_value(value, "request_id", 100)
     return RunnerTerminal(
-        request_id=_text_value(value, "request_id", 100),
+        request_id=request_id,
         status=status,
         operation=operation,
         error_code=error_code,
