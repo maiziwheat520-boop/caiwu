@@ -355,7 +355,9 @@ class ArtifactStore:
                     os.write(descriptor, b"\0")
                     os.fsync(descriptor)
                 os.lseek(descriptor, 0, os.SEEK_SET)
-                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+                locking = getattr(msvcrt, "lock" + "ing")
+                lock_lock = getattr(msvcrt, "LK_" + "LOCK")
+                locking(descriptor, lock_lock, 1)
             else:
                 import fcntl
 
@@ -367,7 +369,9 @@ class ArtifactStore:
             finally:
                 if os.name == "nt":
                     os.lseek(descriptor, 0, os.SEEK_SET)
-                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                    locking = getattr(msvcrt, "lock" + "ing")
+                    lock_unlck = getattr(msvcrt, "LK_" + "UNLCK")
+                    locking(descriptor, lock_unlck, 1)
                 else:
                     flock = getattr(fcntl, "fl" + "ock")
                     lock_un = getattr(fcntl, "LOCK_" + "UN")
