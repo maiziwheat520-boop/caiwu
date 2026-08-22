@@ -167,6 +167,24 @@ SELECT json_build_object(
         FROM information_schema.role_table_grants
         WHERE table_schema = 'public' AND grantee = 'ledgerbridge_app'
     ), '[]'::json),
+    'column_grants', COALESCE((
+        SELECT json_agg(
+            json_build_object(
+                'table', table_name,
+                'column', column_name,
+                'privilege', privilege_type,
+                'grantable', is_grantable
+            ) ORDER BY table_name, column_name, privilege_type
+        )
+        FROM information_schema.role_column_grants
+        WHERE table_schema = 'public'
+          AND grantee = 'ledgerbridge_app'
+          AND NOT has_table_privilege(
+              grantee,
+              format('%I.%I', table_schema, table_name),
+              privilege_type
+          )
+    ), '[]'::json),
     'sequence_grants', COALESCE((
         SELECT json_agg(
             json_build_object(
@@ -318,9 +336,22 @@ PHASE_2_TABLE_PRIVILEGES = frozenset(
         ("source_record", "INSERT"),
         ("import_job", "SELECT"),
         ("import_job", "INSERT"),
-        ("import_job", "UPDATE"),
     }
 )
+PHASE_2_COLUMN_PRIVILEGES = frozenset(
+    ("import_job", column, "UPDATE")
+    for column in (
+        "status",
+        "started_at",
+        "completed_at",
+        "parsed_count",
+        "created_count",
+        "duplicate_count",
+        "error_code",
+        "diagnostic_summary",
+    )
+)
+PHASE_3_COLUMN_PRIVILEGES = frozenset({("import_job", "terminal_audit_event_id", "UPDATE")})
 PHASE_3_TABLE_PRIVILEGES = frozenset({("ingest_channel", "SELECT"), ("source_system", "SELECT")})
 RUNTIME_IDENTITY_PROGRAM = (
     "import os; "
@@ -1454,6 +1485,33 @@ def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
         actual_table_grants.add((table, privilege))
     if actual_table_grants != expected_table_grants:
         raise BackupError("restored runtime table grants differ from the required baseline")
+
+    column_grants = metadata.get("column_grants")
+    if not isinstance(column_grants, list):
+        raise BackupError("restored grant metadata is invalid: column_grants")
+    expected_column_grants: set[tuple[str, str, str]] = set()
+    if revision >= "20260821_0003":
+        expected_column_grants.update(PHASE_2_COLUMN_PRIVILEGES)
+    if revision >= "20260822_0004":
+        expected_column_grants.update(PHASE_3_COLUMN_PRIVILEGES)
+    actual_column_grants: set[tuple[str, str, str]] = set()
+    for value in column_grants:
+        if not isinstance(value, dict):
+            raise BackupError("restored column grant metadata is invalid")
+        table = value.get("table")
+        column = value.get("column")
+        privilege = value.get("privilege")
+        if (
+            not isinstance(table, str)
+            or not isinstance(column, str)
+            or not isinstance(privilege, str)
+        ):
+            raise BackupError("restored column grant metadata is invalid")
+        if value.get("grantable") != "NO":
+            raise BackupError("restored runtime column grant is grantable")
+        actual_column_grants.add((table, column, privilege))
+    if actual_column_grants != expected_column_grants:
+        raise BackupError("restored runtime column grants differ from the required baseline")
 
     if sequence_grants:
         raise BackupError("restored runtime role has unexpected sequence grants")

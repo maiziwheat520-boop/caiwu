@@ -15,9 +15,11 @@ from scripts.backup_restore import (
     PHASE_1_FUNCTIONS,
     PHASE_1_TABLE_PRIVILEGES,
     PHASE_1_TRIGGERS,
+    PHASE_2_COLUMN_PRIVILEGES,
     PHASE_2_FUNCTIONS,
     PHASE_2_TABLE_PRIVILEGES,
     PHASE_2_TRIGGERS,
+    PHASE_3_COLUMN_PRIVILEGES,
     PHASE_3_FUNCTIONS,
     PHASE_3_TABLE_PRIVILEGES,
     PHASE_3_TRIGGERS,
@@ -208,6 +210,17 @@ def test_v2_database_metadata_requires_trigger_and_grant_baseline() -> None:
                 PHASE_1_TABLE_PRIVILEGES | PHASE_2_TABLE_PRIVILEGES | PHASE_3_TABLE_PRIVILEGES
             )
         ],
+        "column_grants": [
+            {
+                "table": table,
+                "column": column,
+                "privilege": privilege,
+                "grantable": "NO",
+            }
+            for table, column, privilege in sorted(
+                PHASE_2_COLUMN_PRIVILEGES | PHASE_3_COLUMN_PRIVILEGES
+            )
+        ],
         "sequence_grants": [],
         "function_grants": [
             {
@@ -234,6 +247,20 @@ def test_v2_database_metadata_requires_trigger_and_grant_baseline() -> None:
     }
     with pytest.raises(BackupError, match="table grants"):
         _validate_restored_database(excess_grant, excess_grant.copy())
+
+    excess_column_grant = expected | {
+        "column_grants": [
+            *cast(list[dict[str, object]], expected["column_grants"]),
+            {
+                "table": "import_job",
+                "column": "source_system",
+                "privilege": "UPDATE",
+                "grantable": "NO",
+            },
+        ]
+    }
+    with pytest.raises(BackupError, match="column grants"):
+        _validate_restored_database(excess_column_grant, excess_column_grant.copy())
 
 
 def test_artifact_archive_metadata_counts_published_and_staging_bytes(
