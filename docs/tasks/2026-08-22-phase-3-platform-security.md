@@ -1,6 +1,6 @@
 # Task: Phase 3 Platform Security Foundation
 
-- Status: Slice A implemented, remediated, merged into protected main; production unchanged
+- Status: Slice A implemented, remediated, merged into protected main, and deployed to Hermes
 - Preflight date: 2026-08-22
 - Implementation owner: Codex
 - Review owner: Codex fixed-SHA self-audit; preserve a narrow Claude recheck entry point
@@ -30,12 +30,12 @@ automatic classification, or ledger posting.
 | Gate | Result |
 | --- | --- |
 | Git source of truth | Public `maiziwheat520-boop/caiwu`; protected `main` at `1afb70e04aa33b4508de075d2838d9b2a6ff2977` |
-| Production revision | Hermes runs `c56b6ffdde9f723efe1792ae1312ec8795bba165` / `ledgerbridge-app:c56b6ff` |
-| Production schema | Alembic `20260821_0003`; TEMP denied to `ledgerbridge_app` |
-| Production state | API, worker, and PostgreSQL healthy; all eight business/evidence tables and artifact files are empty |
-| Recovery anchor | Post-Phase-2 backup `20260822T074234Z-c56b6ffdde9f` passed isolated restore |
+| Production revision | Hermes runs `e426b488b2abb02f10ef02a61aae7ebe24c3283f` / `ledgerbridge-app:e426b48` |
+| Production schema | Alembic `20260822_0004`; TEMP denied to `ledgerbridge_app` |
+| Production state | API, worker, and PostgreSQL healthy; all business/evidence rows and artifact files remain empty |
+| Recovery anchor | Post-hotfix backup `20260822T112755Z-e426b488b2ab` passed isolated restore |
 | Branch protection | PR required; strict `secrets`, `quality`, and `compose`; admins enforced; conversations required; force-push/delete disabled |
-| Write ownership | Codex owns only `LedgerBridge-Codex` on `ai/chatgpt/phase-3-platform-prep`; Claude remains review-only |
+| Write ownership | Codex owns only `LedgerBridge-Codex`; Claude remains review-only |
 | Aggregate storage control | Missing: only the 50 MiB per-artifact limit exists |
 | Canonical source identities | Missing: both source columns are non-blank free strings |
 | Untrusted Connector isolation | Missing: Phase 2 exposes a trusted in-process SDK only |
@@ -382,8 +382,30 @@ evaluation order. Protected PR #14 and its push/pull-request workflows passed
 all six `secrets`, `quality`, and `compose` jobs (`32568176284`,
 `32568174194`), then merged into main as
 `06725c3561d92630c4d15631076ba81f68371779`; the merged-main push run
-`32568522459` also passed all three jobs. Production remains on `c56b6ff` /
-`20260821_0003` and has not received a deployment.
+`32568522459` also passed all three jobs.
+
+## Authorized Hermes deployment addendum
+
+The user separately authorized production deployment after the Slice A merge.
+The pre-deploy `c56b6ff` backup and isolated rehearsal passed. Hermes was then
+upgraded to `e73e718`/`20260822_0004`; a post-deploy rehearsal correctly exposed
+that the v2 verifier did not model column-level runtime grants. Protected PR #16
+(`055b6f66c5c19c99f4d9f97cc594cb014b1d5397`, merged as
+`e426b488b2abb02f10ef02a61aae7ebe24c3283f`) added the exact column-grant
+baseline and narrowed `import_job` UPDATE authority. The first hotfix rehearsal
+also rejected a six-character image tag, so the services were rebuilt and
+restarted using the valid seven-character tag `e426b48`.
+
+Final Hermes evidence is recorded in
+`docs/reviews/2026-08-22-phase-3-hermes-deployment-codex.md`: the API, worker,
+and PostgreSQL are healthy; the 35-file manifest, live/ready probes, OpenAPI
+404, migration head, runtime TEMP/schema denial, trigger/function/grant
+baseline, artifact permissions, empty business/evidence rows, and rollback
+anchors all passed. The final encrypted backup
+`/srv/ai-center/backups/ledgerbridge/20260822T112755Z-e426b488b2ab` passed the
+isolated restore rehearsal `restore-rehearsal-20260822T112825Z.json`. No real
+financial evidence was imported. Slice B and every real data entry point remain
+separately gated.
 
 ## Review findings
 
