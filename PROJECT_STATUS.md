@@ -113,10 +113,14 @@ shared text predicate, upload metadata validation, worker-call assertion, and
 full-size chunk regression. Hosted CI run `32595863205` for the resulting head
 is green across `secrets`, `quality`, and `compose`; Claude's approval applies to
 the earlier fixed code/test SHA, while this follow-up is Codex-verified.
+Protected PR #18 is open at
+`https://github.com/maiziwheat520-boop/caiwu/pull/18`; pull-request CI run
+`32596466071` passed `secrets`, `quality`, and `compose`. The PR is review-only;
+it has not been merged or deployed.
 
 ## Next task
 
-Decide separately whether to publish a protected PR for the APPROVED
+Review protected PR #18 for the APPROVED
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e` remediation. Merge and any production runner
 deployment require distinct authorization. Do not register a real Connector,
 ingest evidence, or enable the mail collector without the corresponding later
