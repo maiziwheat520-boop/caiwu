@@ -415,3 +415,34 @@ inode identity issue is explicitly deferred to Slice B. The final scan of the
 base-to-remediation range is complete with no unclosed Slice A finding. Claude
 capacity is preserved; a later narrow audit can focus on the five closure claims
 and the eventual runner isolation/IPC framing.
+
+## Slice B implementation evidence (Codex, 2026-08-22)
+
+Slice B is implemented on `ai/chatgpt/phase-3-connector-runner` in commits
+`23412d2`, `3f468ec`, and `cb8f6d2`. The implementation adds the versioned framed
+Unix-socket protocol, bounded supervisor/client, importer error mapping, explicit
+`execution_mode=runner` validation, and a distinct no-network `connector-runner`
+Compose service. The protocol rejects duplicate JSON keys, binds every response
+to a request ID and verified digest, and never exposes partial records after a
+terminal failure. Production manifests still contain no real Connector.
+
+Local gates pass Ruff, formatting, strict mypy, Bandit, offline lock validation,
+and full pytest (`84 passed, 82 skipped`). A disposable Hermes image built from
+`cb8f6d2` passed the synthetic IPC smoke and hostile network/filesystem probe;
+its container was not attached to the production Compose project. Slice B has
+not been deployed and no real evidence was imported.
+
+An earlier temporary cleanup accidentally used the production Compose project
+name with `down --volumes`, stopping production and removing its named volumes.
+Services and schema were immediately recreated from the unchanged deployed tree.
+Post-recovery health, migration, manifest, grants, trigger/function, empty-data,
+and artifact-root checks passed. A new encrypted backup
+`/srv/ai-center/backups/ledgerbridge/20260822T121526Z-e426b488b2ab` and isolated
+rehearsal `restore-rehearsal-20260822T121556Z.json` also passed. This incident is
+kept as explicit operational evidence; future temporary Compose projects must
+use a unique `-p` name and never target the production tree.
+
+The full implementation report is
+`docs/reviews/2026-08-22-phase-3-runner-codex.md`. The remaining gates are a
+narrow independent audit, protected PR/CI, and separate authorization for merge
+or production deployment.

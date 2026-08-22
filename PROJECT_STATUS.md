@@ -19,7 +19,10 @@ socket Connector runner. The restore hotfix records column-level runtime grants
 that are not covered by table grants and keeps `import_job` updates limited to
 the state-machine columns. Same-UID open-inode identity separation remains an
 explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
-evidence, and ledger automation remain out of scope.
+evidence, and ledger automation remain out of scope. Slice B is now implemented
+but remains on the unpushed Codex branch `ai/chatgpt/phase-3-connector-runner`;
+the isolated runner image was tested only as a disposable Hermes image and is
+not deployed.
 
 The deployment report is
 `docs/reviews/2026-08-22-phase-3-hermes-deployment-codex.md`. Rollback trees and
@@ -78,7 +81,7 @@ and narrow-audit entry point are preserved.
 - Recorded: 2026-08-22
 - Deployment revision: `e426b488b2abb02f10ef02a61aae7ebe24c3283f`
 - Codex implementation clone: `G:\我的云端硬盘\AI\LedgerBridge-Codex`
-- Codex branch: `ai/chatgpt/phase-3-deployment-record`
+- Codex implementation branch: `ai/chatgpt/phase-3-connector-runner`
 - Codex identity: `Codex <codex@ledgerbridge.local>`
 - Claude review-only clone: `G:\我的云端硬盘\AI\LedgerBridge-Claude`
 - Claude identity when explicitly authorized to commit:
@@ -87,9 +90,9 @@ and narrow-audit entry point are preserved.
 
 ## Active implementation owner
 
-No active implementation branch. Phase 3 Slice A is deployed; Codex remains the
-single writer for any explicitly authorized follow-up. Claude remains read-only
-and is reserved for a later narrow audit.
+Codex is the single writer on `ai/chatgpt/phase-3-connector-runner` for Slice B.
+Claude remains read-only and is reserved for a later narrow audit. No production
+runner or real Connector is enabled.
 
 ## Review owner
 
@@ -101,9 +104,10 @@ runner boundary.
 
 ## Next task
 
-Publish this deployment/status record through protected CI, then await separate
-authorization before starting Slice B. Do not register a real Connector, ingest
-evidence, or enable the mail collector without the corresponding later
+Review the Slice B implementation report, then decide separately whether to run a
+narrow Claude audit and publish a protected PR. Merge and any production runner
+deployment require distinct authorization. Do not register a real Connector,
+ingest evidence, or enable the mail collector without the corresponding later
 authorization.
 
 ## Blocking decisions
