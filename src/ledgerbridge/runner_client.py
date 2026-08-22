@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import socket
 import threading
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from io import BytesIO
@@ -40,9 +42,13 @@ class RunnerClientError(RuntimeError):
     """A bounded runner failure safe to map to an ImportJob error code."""
 
     def __init__(self, error_code: str, summary: str) -> None:
-        super().__init__(summary)
-        self.error_code = error_code
-        self.summary = summary
+        normalized_code = (
+            error_code if re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", error_code) else "RUNNER_ERROR"
+        )
+        normalized_summary = summary.strip()[:500] or "connector runner failed"
+        super().__init__(normalized_summary)
+        self.error_code = normalized_code
+        self.summary = normalized_summary
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,10 +66,11 @@ class ConnectorRunnerClient:
 
     def health_check(self) -> bool:
         request_id = str(uuid4())
+        deadline = time.monotonic() + self.timeout_seconds
         try:
             with self._connect() as connection:
                 connection.sendall(encode_frame(FrameKind.CONTROL, health_control(request_id)))
-                terminal = self._read_terminal(connection, request_id)
+                terminal = self._read_terminal(connection, request_id, deadline=deadline)
         except (OSError, RunnerProtocolError, RunnerClientError):
             return False
         return terminal.status is RunnerStatus.OK and terminal.summary == "runner ready"
@@ -82,11 +89,12 @@ class ConnectorRunnerClient:
         return self._request(request, stream).records
 
     def _request(self, request: RunnerRequest, stream: BinaryIO) -> RunnerResult:
+        deadline = time.monotonic() + self.timeout_seconds
         try:
             with self._connect() as connection:
                 for frame in chunk_frames(request, stream):
                     connection.sendall(frame)
-                return self._read_result(connection, request)
+                return self._read_result(connection, request, deadline=deadline)
         except RunnerClientError:
             raise
         except RunnerProtocolError as exc:
@@ -106,11 +114,20 @@ class ConnectorRunnerClient:
             raise
         return connection
 
-    def _read_result(self, connection: socket.socket, request: RunnerRequest) -> RunnerResult:
+    def _read_result(
+        self,
+        connection: socket.socket,
+        request: RunnerRequest,
+        *,
+        deadline: float | None = None,
+    ) -> RunnerResult:
         records: list[ParsedSourceRecord] = []
         response_bytes = 0
+        if deadline is None:
+            deadline = time.monotonic() + self.timeout_seconds
+        reader = _SocketReader(connection, deadline=deadline)
         while True:
-            kind, payload = read_frame(_SocketReader(connection))
+            kind, payload = read_frame(reader)
             response_bytes += 4 + 1 + len(payload)
             if response_bytes > MAX_RESPONSE_BYTES:
                 raise RunnerClientError("RESPONSE_LIMIT", "connector response exceeded the limit")
@@ -140,8 +157,16 @@ class ConnectorRunnerClient:
                 )
             return RunnerResult(terminal=terminal, records=tuple(records))
 
-    def _read_terminal(self, connection: socket.socket, request_id: str) -> RunnerTerminal:
-        kind, payload = read_frame(_SocketReader(connection))
+    def _read_terminal(
+        self,
+        connection: socket.socket,
+        request_id: str,
+        *,
+        deadline: float | None = None,
+    ) -> RunnerTerminal:
+        if deadline is None:
+            deadline = time.monotonic() + self.timeout_seconds
+        kind, payload = read_frame(_SocketReader(connection, deadline=deadline))
         if kind is not FrameKind.TERMINAL:
             raise RunnerClientError("RUNNER_PROTOCOL", "health response was not terminal")
         terminal = parse_terminal_payload(payload)
@@ -168,12 +193,18 @@ class ConnectorRunnerClient:
 
 
 class _SocketReader:
-    def __init__(self, connection: socket.socket) -> None:
+    def __init__(self, connection: socket.socket, *, deadline: float | None = None) -> None:
         self._connection = connection
+        self._deadline = deadline
 
     def read(self, size: int = -1) -> bytes:
         if size < 0:
             size = 64 * 1024
+        if self._deadline is not None:
+            remaining = self._deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("runner response deadline exceeded")
+            self._connection.settimeout(remaining)
         return self._connection.recv(size)
 
 

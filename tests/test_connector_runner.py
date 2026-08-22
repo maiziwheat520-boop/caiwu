@@ -4,6 +4,8 @@ import asyncio
 import hashlib
 import os
 import socket
+import stat
+import time
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -166,6 +168,22 @@ class FailingSupervisor(ConnectorSupervisor):
         raise self.failure
 
 
+class SlowResponseServer:
+    def __init__(self, delay: float) -> None:
+        self.delay = delay
+
+    async def __call__(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        await read_async_frame(reader)
+        writer.write(b"\x00")
+        await writer.drain()
+        await asyncio.sleep(self.delay)
+        writer.close()
+
+
 class _MemoryWriter:
     def __init__(self) -> None:
         self.frames: list[bytes] = []
@@ -264,6 +282,50 @@ async def test_runner_health_detect_and_parse_round_trip() -> None:
         finally:
             server.close()
             await server.wait_closed()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+
+@pytest.mark.asyncio
+async def test_runner_client_enforces_overall_response_deadline() -> None:
+    with TemporaryDirectory() as directory:
+        socket_path = str(Path(directory) / "runner.sock")
+        start_unix_server = getattr(asyncio, "start_unix_server", None)
+        if start_unix_server is None:
+            raise RuntimeError("Unix socket tests require a POSIX socket implementation")
+        server = await start_unix_server(SlowResponseServer(1.0), path=socket_path)
+        try:
+            client = ConnectorRunnerClient(socket_path, timeout_seconds=0.1)
+            started = time.monotonic()
+            with pytest.raises(RunnerClientError, match="unavailable") as error:
+                await asyncio.to_thread(
+                    client.parse,
+                    _request(b"ok", RunnerOperation.PARSE),
+                    _bytes(b"ok"),
+                )
+            assert error.value.error_code == "RUNNER_UNAVAILABLE"
+            assert time.monotonic() - started < 0.5
+        finally:
+            server.close()
+            await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_public_serve_sets_private_socket_mode() -> None:
+    with TemporaryDirectory() as directory:
+        socket_path = str(Path(directory) / "nested" / "runner.sock")
+        task = asyncio.create_task(runner_module.serve(socket_path))
+        try:
+            for _ in range(100):
+                if Path(socket_path).exists():
+                    break
+                await asyncio.sleep(0.01)
+            socket_file = Path(socket_path)
+            assert socket_file.exists()
+            assert stat.S_IMODE(socket_file.stat().st_mode) == 0o600
+            assert stat.S_IMODE(socket_file.parent.stat().st_mode) & 0o022 == 0
+        finally:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
@@ -607,6 +669,25 @@ def test_runner_client_rejects_invalid_calls_and_unavailable_socket() -> None:
         client.parse(detect_request, BytesIO(b"ok"))
 
 
+@pytest.mark.parametrize(
+    ("error_code", "summary"),
+    [
+        ("lower case; DROP--", "runner supplied an invalid code"),
+        ("A" * 100, "   "),
+    ],
+)
+def test_runner_client_normalizes_untrusted_error_details(
+    error_code: str,
+    summary: str,
+) -> None:
+    error = RunnerClientError(error_code, summary)
+    assert error.error_code == "RUNNER_ERROR"
+    assert error.summary == (
+        "runner supplied an invalid code" if summary.strip() else "connector runner failed"
+    )
+    assert len(error.summary) <= 500
+
+
 def test_runner_client_response_validation_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     client = ConnectorRunnerClient("unused")
     request = _request(b"ok")
@@ -654,6 +735,27 @@ def test_runner_client_response_validation_errors(monkeypatch: pytest.MonkeyPatc
             )
         ],
         "BOUNDED",
+    )
+    assert_error(
+        [
+            encode_frame(
+                FrameKind.TERMINAL,
+                terminal_payload(
+                    RunnerTerminal(
+                        request_id=request.request_id,
+                        status=RunnerStatus.ERROR,
+                        operation=RunnerOperation.PARSE,
+                        error_code="lower case; DROP--",
+                        summary="runner rejected the artifact",
+                        detection=None,
+                        parsed_count=0,
+                        byte_count=0,
+                        sha256_hex=None,
+                    )
+                ),
+            )
+        ],
+        "RUNNER_ERROR",
     )
     assert_error(
         [

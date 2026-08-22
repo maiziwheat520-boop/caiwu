@@ -121,6 +121,7 @@ class EvidenceImporter:
         *,
         detection_prefix_bytes: int = 64 * 1024,
         max_records: int = 100_000,
+        production: bool = False,
     ) -> None:
         if detection_prefix_bytes <= 0 or max_records <= 0:
             raise ValueError("import limits must be positive")
@@ -128,6 +129,7 @@ class EvidenceImporter:
         self._store = artifact_store
         self._detection_prefix_bytes = detection_prefix_bytes
         self._max_records = max_records
+        self._production = production
 
     def ingest_and_import(
         self,
@@ -231,7 +233,10 @@ class EvidenceImporter:
                 connector_version=PROVENANCE_VERSION,
             )
         try:
-            connector_bindings = self._validate_connector_set(connectors)
+            connector_bindings = self._validate_connector_set(
+                connectors,
+                production=self._production,
+            )
             prefix = self._store.read_prefix(artifact.published, self._detection_prefix_bytes)
             artifact_metadata = ArtifactMetadata(
                 source=artifact.source,
@@ -469,11 +474,21 @@ class EvidenceImporter:
                 ambiguous = True
         return matches, ambiguous
 
-    def _validate_connector_set(self, connectors: Sequence[Connector]) -> list[_ConnectorBinding]:
+    def _validate_connector_set(
+        self,
+        connectors: Sequence[Connector],
+        *,
+        production: bool | None = None,
+    ) -> list[_ConnectorBinding]:
         identities: set[tuple[str, str]] = set()
         bindings: list[_ConnectorBinding] = []
+        if production is None:
+            production = self._production
         for connector in connectors:
-            name, version, source_system = validate_connector(connector)
+            name, version, source_system = validate_connector(
+                connector,
+                production=production,
+            )
             identity = (name, version)
             if identity in identities:
                 raise ConnectorContractError("connector identity must be unique")

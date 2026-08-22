@@ -24,6 +24,7 @@ from ledgerbridge.artifacts import ArtifactStore
 from ledgerbridge.audit import append_audit_event
 from ledgerbridge.connectors import (
     ArtifactMetadata,
+    ConnectorContractError,
     DetectionResult,
     ParsedSourceRecord,
     ReadableBinary,
@@ -48,6 +49,7 @@ from ledgerbridge.models import (
     Posting,
     SourceRecord,
 )
+from ledgerbridge.runner_client import RunnerClientError, RunnerConnector
 
 
 def _run_alembic(database_url: str, revision: str, *, downgrade: bool = False) -> None:
@@ -321,6 +323,16 @@ def test_importer_and_connector_batch_guardrails(
         assert connection.execute(text("SELECT count(*) FROM journal_entry")).scalar_one() == 0
 
 
+def test_production_importer_rejects_in_process_connectors(tmp_path: Path) -> None:
+    subject = EvidenceImporter(
+        sessionmaker(),
+        ArtifactStore(tmp_path / "production-mode", max_bytes=1_000),
+        production=True,
+    )
+    with pytest.raises(ConnectorContractError, match="production"):
+        subject._validate_connector_set([SyntheticConnector()])
+
+
 def test_canonical_source_registries_are_append_only_and_runtime_read_only(
     runtime_engine: Engine,
     admin_engine: Engine,
@@ -550,6 +562,59 @@ def test_detection_exception_is_sanitized(
         assert summary == "connector detection failed"
         assert "987654" not in summary
         assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
+
+
+def test_untrusted_runner_error_code_is_terminalized_and_audited(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+) -> None:
+    class MaliciousRunnerClient:
+        def detect(self, request: object, stream: ReadableBinary) -> DetectionResult:
+            del request, stream
+            raise RunnerClientError("lower case; DROP--", "runner rejected the artifact")
+
+        def parse(self, request: object, stream: ReadableBinary) -> tuple[ParsedSourceRecord, ...]:
+            del request, stream
+            return ()
+
+    connector = RunnerConnector(
+        "synthetic",
+        "1",
+        "synthetic",
+        MaliciousRunnerClient(),  # type: ignore[arg-type]
+    )
+    outcome = importer.ingest_and_import(
+        io.BytesIO(b"malicious runner error"),
+        IngestMetadata(
+            source="synthetic_upload",
+            original_filename="runner.txt",
+            media_type="text/plain",
+        ),
+        [connector],  # type: ignore[list-item]
+        actor="pytest",
+        reason="runner error normalization",
+    )
+
+    assert outcome.status is ImportJobStatus.FAILED
+    assert outcome.error_code == "RUNNER_ERROR"
+    with admin_engine.connect() as connection:
+        job = connection.execute(
+            text(
+                "SELECT status, error_code, diagnostic_summary, terminal_audit_event_id "
+                "FROM import_job"
+            )
+        ).one()
+        assert job.status == "FAILED"
+        assert job.error_code == "RUNNER_ERROR"
+        assert job.diagnostic_summary == "runner rejected the artifact"
+        assert job.terminal_audit_event_id is not None
+        assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM audit_event WHERE action = 'import.complete'")
+            ).scalar_one()
+            == 1
+        )
 
 
 def test_mutated_float_output_is_revalidated_before_publication(

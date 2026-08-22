@@ -85,8 +85,12 @@ class Connector(Protocol):
     def parse(self, stream: ReadableBinary) -> Iterable[ParsedSourceRecord]: ...
 
 
-def validate_connector(connector: Connector) -> tuple[str, str, str]:
-    validate_connector_execution_mode(connector)
+def validate_connector(
+    connector: Connector,
+    *,
+    production: bool = False,
+) -> tuple[str, str, str]:
+    validate_connector_execution_mode(connector, production=production)
     name = connector.name
     version = connector.version
     _require_text("connector.name", name, 100)
