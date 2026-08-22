@@ -362,9 +362,10 @@ was migrated to `20260822_0004`; all 16 revision-owned triggers are enabled,
 runtime TEMP is denied, runtime grants match the baseline, and direct probes
 reject the pg_temp shadow attempt plus POSTED ledger mutations. The Hermes
 test container could not install pytest because its isolated DNS was unavailable
-and the image cache lacked the dev wheels, so no remote full-suite result is
-claimed for the remediation commit. Production remained on `c56b6ff` /
-`20260821_0003` and received no evidence.
+and the image cache lacked the dev wheels; that probe therefore makes no remote
+full-suite claim. The later protected PR CI ran the complete PostgreSQL-backed
+suite successfully. Production remained on `c56b6ff` / `20260821_0003` and
+received no evidence.
 
 The deterministic remediation report is
 `docs/reviews/2026-08-22-phase-3-security-remediation-codex.md`. The final

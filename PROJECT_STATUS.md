@@ -82,9 +82,9 @@ scope. Slice A and its authorized security remediation are implemented on
 `20260822_0004`, all 16 revision-owned triggers are enabled, runtime TEMP is
 denied, and direct POSTED-mutation probes fail closed. The initial scan's five
 Slice A findings are remediated; same-UID open-inode identity separation is
-deferred to Slice B. A final fixed-SHA scan is pending before any protected PR.
-The final fixed-SHA scan is complete with zero unclosed Slice A findings; its
-only low-severity result is the explicitly deferred same-UID inode boundary.
+deferred to Slice B. The final fixed-SHA scan is complete with zero unclosed
+Slice A findings; its only low-severity result is the explicitly deferred
+same-UID inode boundary.
 Slice B remains unstarted and independently gated. The follow-up CI fixes are
 on `cdcac19de3f28c6c42db4629995b79764b48db7c` and protected PR #14 is open at
 `https://github.com/maiziwheat520-boop/caiwu/pull/14`. Both the push and
