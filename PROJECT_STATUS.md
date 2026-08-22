@@ -69,6 +69,14 @@ database TEMP is denied to `ledgerbridge_app`, all 14 security functions pin
 business/evidence tables plus the artifact volume remain empty. A new encrypted
 backup also passed isolated restore. No real evidence ingestion occurred.
 
+Phase 3 Platform Security Foundation preflight is now active from deployment-
+record merge `1afb70e04aa33b4508de075d2838d9b2a6ff2977`. The user selected a
+platform-only scope: fail-closed aggregate artifact/staging quotas, separate
+canonical ingest-channel and source-system registries, backward-compatible v2
+restore evidence, and a no-network Unix-socket Connector runner. Real parsers,
+OAuth, mailbox collection, real evidence, and ledger automation remain out of
+scope. The umbrella task will use two independently reviewed implementation PRs.
+
 ## Completed
 
 - Phase 0 scaffold and Claude blocker/high remediation.
@@ -117,10 +125,10 @@ backup also passed isolated restore. No real evidence ingestion occurred.
 
 ## Ownership checkpoint
 
-- Recorded: 2026-08-21
+- Recorded: 2026-08-22
 - Deployment revision: `c56b6ffdde9f723efe1792ae1312ec8795bba165`
 - Codex implementation clone: `G:\我的云端硬盘\AI\LedgerBridge-Codex`
-- Codex branch: `ai/chatgpt/phase-2-deployment-record`
+- Codex branch: `ai/chatgpt/phase-3-platform-prep`
 - Codex identity: `Codex <codex@ledgerbridge.local>`
 - Claude review-only clone: `G:\我的云端硬盘\AI\LedgerBridge-Claude`
 - Claude identity when explicitly authorized to commit:
@@ -129,8 +137,8 @@ backup also passed isolated restore. No real evidence ingestion occurred.
 
 ## Active implementation owner
 
-Codex, in the Codex clone and only on `ai/chatgpt/phase-2-deployment-record` for
-the deployment evidence record. Claude remains read-only.
+Codex, in the Codex clone and only on `ai/chatgpt/phase-3-platform-prep` for the
+Phase 3 documentation-only preflight. Claude remains read-only.
 
 ## Review owner
 
@@ -141,12 +149,13 @@ can be limited to the BLOCKER/HIGH closures and report addendum.
 
 ## Next task
 
-Publish and merge the deployment evidence record. Phase 3 planning may then
-address aggregate artifact quotas, canonical source identities, out-of-process
-untrusted connectors, and stronger durable restore-report coverage. Do not ingest
-real evidence or enable the mail collector without a separate approved task.
+Complete the Phase 3 platform task card and protected preflight PR. Only after
+that merge and a separate implementation authorization may Codex start slice A
+(`phase-3-platform-controls`). Do not start a real Connector, ingest evidence, or
+enable the mail collector.
 
 ## Blocking decisions
 
-None for Phase 2 remediation or deployment. F-4 and F-6 are closed. Real-data
-ingestion and Phase 3 connector/OAuth work still require explicit authorization.
+None for the documentation preflight. Phase 3 implementation, each merge, each
+production deployment, real Connector registration, OAuth, and real-data
+ingestion require their later explicit gates.
