@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import socket
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,8 +21,12 @@ from ledgerbridge.runner_protocol import (
     RunnerRequest,
     RunnerStatus,
     RunnerTerminal,
+    artifact_end_payload,
     encode_frame,
+    parse_terminal_payload,
     read_async_frame,
+    read_frame,
+    request_control,
     terminal_payload,
 )
 
@@ -101,13 +106,21 @@ async def test_runner_health_detect_and_parse_round_trip() -> None:
         server, task = await _serve(socket_path, SyntheticRunnerConnector())
         try:
             client = ConnectorRunnerClient(socket_path)
-            assert client.health_check()
+            assert await asyncio.to_thread(client.health_check)
             content = b"ok,1\n"
             assert (
-                client.detect(_request(content, RunnerOperation.DETECT), _bytes(content))
+                await asyncio.to_thread(
+                    client.detect,
+                    _request(content, RunnerOperation.DETECT),
+                    _bytes(content),
+                )
                 is DetectionResult.MATCH
             )
-            records = client.parse(_request(content, RunnerOperation.PARSE), _bytes(content))
+            records = await asyncio.to_thread(
+                client.parse,
+                _request(content, RunnerOperation.PARSE),
+                _bytes(content),
+            )
             assert len(records) == 1
             assert records[0].record_locator == "row:5"
         finally:
@@ -126,7 +139,11 @@ async def test_runner_maps_timeout_to_bounded_error() -> None:
         try:
             client = ConnectorRunnerClient(socket_path, timeout_seconds=1)
             with pytest.raises(RunnerClientError, match="timed out") as error:
-                client.parse(_request(b"ok", RunnerOperation.PARSE), _bytes(b"ok"))
+                await asyncio.to_thread(
+                    client.parse,
+                    _request(b"ok", RunnerOperation.PARSE),
+                    _bytes(b"ok"),
+                )
             assert error.value.error_code == "TIMEOUT"
         finally:
             server.close()
@@ -169,12 +186,64 @@ async def test_stale_response_id_is_rejected() -> None:
         try:
             client = ConnectorRunnerClient(socket_path)
             with pytest.raises(RunnerClientError, match="request_id") as error:
-                client.parse(_request(b"ok", RunnerOperation.PARSE), _bytes(b"ok"))
+                await asyncio.to_thread(
+                    client.parse,
+                    _request(b"ok", RunnerOperation.PARSE),
+                    _bytes(b"ok"),
+                )
             assert error.value.error_code == "STALE_RESPONSE"
         finally:
             server.close()
             await server.wait_closed()
 
 
+@pytest.mark.asyncio
+async def test_runner_rejects_digest_mismatch_without_records() -> None:
+    with TemporaryDirectory() as directory:
+        socket_path = str(Path(directory) / "runner.sock")
+        server, task = await _serve(socket_path, SyntheticRunnerConnector())
+        request = _request(b"expected", RunnerOperation.PARSE)
+
+        def send_mismatch() -> str:
+            connection = socket.socket(
+                socket.AF_UNIX,  # type: ignore[attr-defined]
+                socket.SOCK_STREAM,
+            )
+            try:
+                connection.connect(socket_path)
+                connection.sendall(encode_frame(FrameKind.CONTROL, request_control(request)))
+                connection.sendall(encode_frame(FrameKind.ARTIFACT_CHUNK, b"tampered"))
+                connection.sendall(
+                    encode_frame(
+                        FrameKind.ARTIFACT_END,
+                        artifact_end_payload(8, hashlib.sha256(b"tampered").hexdigest()),
+                    )
+                )
+                kind, payload = read_frame(_SocketReader(connection))
+                assert kind is FrameKind.TERMINAL
+                terminal = parse_terminal_payload(payload)
+                assert terminal.error_code == "ARTIFACT_DIGEST_MISMATCH"
+                return terminal.error_code or ""
+            finally:
+                connection.close()
+
+        try:
+            assert await asyncio.to_thread(send_mismatch) == "ARTIFACT_DIGEST_MISMATCH"
+        finally:
+            server.close()
+            await server.wait_closed()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+
 def _bytes(content: bytes) -> BinaryIO:
     return BytesIO(content)
+
+
+class _SocketReader:
+    def __init__(self, connection: socket.socket) -> None:
+        self.connection = connection
+
+    def read(self, size: int = -1) -> bytes:
+        return self.connection.recv(size if size >= 0 else 65536)

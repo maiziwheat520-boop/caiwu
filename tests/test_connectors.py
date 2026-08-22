@@ -7,8 +7,10 @@ from hypothesis import strategies as st
 from ledgerbridge.connectors import (
     MAX_JSON_BYTES,
     ConnectorContractError,
+    ConnectorExecutionMode,
     ParsedSourceRecord,
     validate_connector,
+    validate_connector_execution_mode,
 )
 
 
@@ -69,6 +71,13 @@ def test_connector_metadata_and_json_edge_cases_are_rejected() -> None:
         validate_connector(InvalidConnector())  # type: ignore[arg-type]
     with pytest.raises(ConnectorContractError, match="reserved internal namespace"):
         validate_connector(InternalNamespaceConnector())  # type: ignore[arg-type]
+    assert (
+        validate_connector_execution_mode(InvalidConnector()) is ConnectorExecutionMode.IN_PROCESS
+    )
+    with pytest.raises(ConnectorContractError, match="execution_mode"):
+        validate_connector_execution_mode(type("BadMode", (), {"execution_mode": "fork"})())
+    with pytest.raises(ConnectorContractError, match="production"):
+        validate_connector_execution_mode(InvalidConnector(), production=True)
     with pytest.raises(ConnectorContractError, match="external_transaction_id"):
         ParsedSourceRecord(
             record_locator="row:1",

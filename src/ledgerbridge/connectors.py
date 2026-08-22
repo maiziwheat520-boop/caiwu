@@ -26,6 +26,13 @@ class DetectionResult(StrEnum):
     AMBIGUOUS = "AMBIGUOUS"
 
 
+class ConnectorExecutionMode(StrEnum):
+    """The only execution modes understood by the Connector registry."""
+
+    IN_PROCESS = "in_process"
+    RUNNER = "runner"
+
+
 @dataclass(frozen=True, slots=True)
 class ArtifactMetadata:
     source: str
@@ -79,6 +86,7 @@ class Connector(Protocol):
 
 
 def validate_connector(connector: Connector) -> tuple[str, str, str]:
+    validate_connector_execution_mode(connector)
     name = connector.name
     version = connector.version
     _require_text("connector.name", name, 100)
@@ -90,6 +98,28 @@ def validate_connector(connector: Connector) -> tuple[str, str, str]:
     source_system = connector.source_system
     _require_canonical_source("connector.source_system", source_system)
     return name, version, source_system
+
+
+def validate_connector_execution_mode(
+    connector: object,
+    *,
+    production: bool = False,
+) -> ConnectorExecutionMode:
+    """Reject unknown modes and forbid in-process production manifests.
+
+    Existing synthetic Phase 2 fixtures omit ``execution_mode`` and therefore
+    remain explicitly in-process.  A production manifest must opt into the
+    isolated runner; registering one is intentionally a later reviewed change.
+    """
+
+    value = getattr(connector, "execution_mode", ConnectorExecutionMode.IN_PROCESS.value)
+    try:
+        mode = ConnectorExecutionMode(value)
+    except (TypeError, ValueError) as exc:
+        raise ConnectorContractError("connector.execution_mode is invalid") from exc
+    if production and mode is not ConnectorExecutionMode.RUNNER:
+        raise ConnectorContractError("production connectors must use execution_mode=runner")
+    return mode
 
 
 def _require_text(field: str, value: str, maximum: int) -> None:

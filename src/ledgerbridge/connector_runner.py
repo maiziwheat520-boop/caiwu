@@ -355,7 +355,7 @@ async def serve(socket_path: str = DEFAULT_SOCKET_PATH) -> None:
         supervisor.handle,
         path=str(path),
     )
-    os.chmod(path, 0o660)
+    os.chmod(path, 0o600)
     logger.info("connector runner listening", extra={"socket": str(path)})
     async with server:
         await server.serve_forever()

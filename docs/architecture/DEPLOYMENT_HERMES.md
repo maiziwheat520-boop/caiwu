@@ -19,6 +19,39 @@ API binding: `127.0.0.1:8650` only
   never copied back, and never committed.
 - No public/LAN port is opened. Hermes integrations call the local API endpoint.
 
+## Isolated Connector runner
+
+The `connector-runner` service is an opt-in `connector-runner` Compose profile;
+it is not started by the default production profile and it does not register a
+real Connector. Its distinct image is built from
+`docker/connector-runner.Dockerfile`. The service uses `network_mode: none`, a
+read-only root filesystem, UID/GID 10001, `no-new-privileges`, all capabilities
+dropped, 128 MiB/64-PID/0.50-CPU limits, and only the named
+`connector-socket` volume. It receives no database, artifact, OAuth, mail, or
+provider environment values or mounts. The worker alone mounts the socket
+volume; API and PostgreSQL do not.
+
+The socket protocol is versioned and length-delimited. Control metadata,
+streamed artifact chunks, parsed-record frames, and terminal responses have
+independent hard limits. A request carries an explicit request ID, operation,
+Connector identity, registered source system, declared byte count, and verified
+SHA-256. The runner recomputes the streamed digest and reconstructs typed
+`ParsedSourceRecord` values before returning them. Errors, timeouts, malformed
+frames, stale request IDs, response overflow, or runner restarts are bounded
+failures; the worker maps them to a terminal ImportJob result without partial
+SourceRecords.
+
+Start only the foundation runner for a disposable acceptance probe:
+
+```bash
+docker compose --profile connector-runner up -d connector-runner
+docker compose --profile connector-runner ps
+```
+
+Do not enable `mail-collector`, register a real Connector, or pass production
+evidence through the runner without a separate reviewed change and deployment
+authorization.
+
 ## Database identities
 
 Use distinct generated passwords in the protected `.env`. For new volumes:
