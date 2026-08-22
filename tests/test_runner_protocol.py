@@ -115,6 +115,10 @@ def test_default_chunk_size_accounts_for_frame_kind_byte() -> None:
 
 
 def test_chunk_count_covers_the_full_artifact_limit() -> None:
+    required_chunks = (
+        MAX_ARTIFACT_BYTES + MAX_ARTIFACT_CHUNK_PAYLOAD_BYTES - 1
+    ) // MAX_ARTIFACT_CHUNK_PAYLOAD_BYTES
+    assert required_chunks + 1 == MAX_CHUNK_COUNT
     assert MAX_CHUNK_COUNT * MAX_ARTIFACT_CHUNK_PAYLOAD_BYTES >= MAX_ARTIFACT_BYTES
 
 
@@ -127,7 +131,7 @@ def test_default_chunk_size_streams_the_full_artifact_limit() -> None:
         for frame in frames
         if decode_frame(frame)[0] is FrameKind.ARTIFACT_CHUNK
     ]
-    assert len(chunks) == MAX_CHUNK_COUNT
+    assert len(chunks) == MAX_CHUNK_COUNT - 1
     assert sum(map(len, chunks)) == MAX_ARTIFACT_BYTES
 
 

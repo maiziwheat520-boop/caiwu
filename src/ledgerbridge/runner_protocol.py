@@ -41,9 +41,12 @@ MAX_RECORD_FRAME_BYTES = 4 * 1024 * 1024
 MAX_TERMINAL_FRAME_BYTES = 64 * 1024
 MAX_METADATA_BYTES = 64 * 1024
 MAX_ARTIFACT_PREFIX_BYTES = 64 * 1024
+# Keep one frame of headroom above the exact maximum-artifact requirement so a
+# future framing-constant adjustment fails closed before the advertised limit
+# becomes unreachable.
 MAX_CHUNK_COUNT = (
-    MAX_ARTIFACT_BYTES + MAX_ARTIFACT_CHUNK_PAYLOAD_BYTES - 1
-) // MAX_ARTIFACT_CHUNK_PAYLOAD_BYTES
+    (MAX_ARTIFACT_BYTES + MAX_ARTIFACT_CHUNK_PAYLOAD_BYTES - 1) // MAX_ARTIFACT_CHUNK_PAYLOAD_BYTES
+) + 1
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
