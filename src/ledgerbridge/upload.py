@@ -158,7 +158,7 @@ def parse_multipart(
                     break
 
                 data = bytes(buffer[:marker])
-                del buffer[:marker]
+                del buffer[: marker + len(delimiter)]
                 if state == "file":
                     file_bytes = _emit_file_chunk(data, file_bytes, max_file_bytes)
                     if data:
@@ -174,13 +174,6 @@ def parse_multipart(
                 continue
 
             if state == "boundary":
-                if len(buffer) < len(delimiter):
-                    if not delimiter.startswith(bytes(buffer)):
-                        raise MultipartError("multipart boundary is invalid")
-                    break
-                if bytes(buffer[: len(delimiter)]) != delimiter:
-                    raise MultipartError("multipart boundary is invalid")
-                del buffer[: len(delimiter)]
                 if len(buffer) < 2:
                     break
                 if bytes(buffer[:2]) == b"--":
