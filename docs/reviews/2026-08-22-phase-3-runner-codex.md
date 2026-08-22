@@ -96,6 +96,25 @@ runner supervisor and client. A hostile probe passed with:
 The production Compose project was not used for this test; no `down --volumes`
 or production volume operation is part of the acceptance procedure.
 
+## Claude narrow audit and remediation
+
+Claude's independent review is preserved outside this implementation clone at
+`G:\\我的云端硬盘\\AI\\LedgerBridge-Claude\\review-worktree-phase3-runner\\docs\\reviews\\2026-08-22-phase-3-connector-runner-claude.md`,
+review commit `feecfc991cba0a20b59e7388aed6e6a5825f37ca`. It found one HIGH,
+four MEDIUM, and five LOW findings. The required HIGH was P3-H1: an untrusted
+runner could supply an invalid or overlong error code that reached the bounded
+database column and left an import job `PENDING` without a terminal audit event.
+
+Codex remediated P3-H1 and the four MEDIUM findings in `5dab33e`: runner error
+codes and summaries are normalized at the client boundary; response reads have
+one monotonic deadline; the real `serve()` entrypoint is covered for `0600`
+socket permissions; production importer validation now passes
+`production=True` to reject in-process connectors; and the new tests widen
+coverage to 95.85%. The end-to-end regression proves invalid runner details
+produce `FAILED` + `RUNNER_ERROR`, zero `SourceRecord` rows, and one
+`import.complete` audit event. The detailed response is
+`docs/reviews/2026-08-23-phase-3-connector-runner-claude-remediation-codex.md`.
+
 ## Production recovery and fresh restore evidence
 
 During an earlier temporary-image cleanup, a test command accidentally used the
@@ -127,7 +146,7 @@ must use a unique project name and must never target `/srv/ai-center/ledgerbridg
 
 ## Remaining gates
 
-Slice B is ready for a narrow independent audit, not for production release.
-The narrow Claude audit, protected PR review, merge authorization, and any
-future production deployment remain separate gates. The production runner is
-not enabled, and real Connector registration remains out of scope.
+Slice B is ready for a fresh narrow independent Claude recheck, not for
+production release. Protected PR review, merge authorization, and any future
+production deployment remain separate gates. The production runner is not
+enabled, and real Connector registration remains out of scope.
