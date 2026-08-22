@@ -351,7 +351,10 @@ async def serve(socket_path: str = DEFAULT_SOCKET_PATH) -> None:
     with contextlib.suppress(FileNotFoundError):
         path.unlink()
     supervisor = ConnectorSupervisor()
-    server = await asyncio.start_unix_server(  # type: ignore[attr-defined]
+    start_unix_server = getattr(asyncio, "start_unix_server", None)
+    if start_unix_server is None:
+        raise RuntimeError("Unix socket runner requires a POSIX asyncio implementation")
+    server = await start_unix_server(
         supervisor.handle,
         path=str(path),
     )

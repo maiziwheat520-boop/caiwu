@@ -91,7 +91,10 @@ async def _serve(
         {("synthetic.csv", "1"): connector},  # type: ignore[dict-item]
         request_timeout_seconds=timeout,
     )
-    server = await asyncio.start_unix_server(  # type: ignore[attr-defined]
+    start_unix_server = getattr(asyncio, "start_unix_server", None)
+    if start_unix_server is None:
+        raise RuntimeError("Unix socket tests require a POSIX asyncio implementation")
+    server = await start_unix_server(
         supervisor.handle,
         path=socket_path,
     )
@@ -179,7 +182,10 @@ async def test_stale_response_id_is_rejected() -> None:
             await writer.drain()
             writer.close()
 
-        server = await asyncio.start_unix_server(  # type: ignore[attr-defined]
+        start_unix_server = getattr(asyncio, "start_unix_server", None)
+        if start_unix_server is None:
+            raise RuntimeError("Unix socket tests require a POSIX asyncio implementation")
+        server = await start_unix_server(
             stale_handler,
             path=socket_path,
         )
@@ -205,8 +211,11 @@ async def test_runner_rejects_digest_mismatch_without_records() -> None:
         request = _request(b"expected", RunnerOperation.PARSE)
 
         def send_mismatch() -> str:
+            unix_family = getattr(socket, "AF_UNIX", None)
+            if unix_family is None:
+                raise RuntimeError("Unix socket tests require a POSIX socket implementation")
             connection = socket.socket(
-                socket.AF_UNIX,  # type: ignore[attr-defined]
+                unix_family,
                 socket.SOCK_STREAM,
             )
             try:
