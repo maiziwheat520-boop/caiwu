@@ -20,7 +20,8 @@ that are not covered by table grants and keeps `import_job` updates limited to
 the state-machine columns. Same-UID open-inode identity separation remains an
 explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is now implemented
-but remains on the unpushed Codex branch `ai/chatgpt/phase-3-connector-runner`;
+and pushed on the Codex branch `ai/chatgpt/phase-3-connector-runner` at head
+`991e617faf24db210668df9b38298dfb4722197c`;
 the isolated runner image was tested only as a disposable Hermes image and is
 not deployed.
 
@@ -104,9 +105,9 @@ runner boundary.
 
 ## Next task
 
-Review the Slice B implementation report, then decide separately whether to run a
-narrow Claude audit and publish a protected PR. Merge and any production runner
-deployment require distinct authorization. Do not register a real Connector,
+Finish hosted CI for the pushed Slice B head, then decide separately whether to
+run a narrow Claude audit and publish a protected PR. Merge and any production
+runner deployment require distinct authorization. Do not register a real Connector,
 ingest evidence, or enable the mail collector without the corresponding later
 authorization.
 

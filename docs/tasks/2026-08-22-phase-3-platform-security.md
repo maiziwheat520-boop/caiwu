@@ -418,8 +418,9 @@ and the eventual runner isolation/IPC framing.
 
 ## Slice B implementation evidence (Codex, 2026-08-22)
 
-Slice B is implemented on `ai/chatgpt/phase-3-connector-runner` in commits
-`23412d2`, `3f468ec`, and `cb8f6d2`. The implementation adds the versioned framed
+Slice B is implemented on the pushed branch `ai/chatgpt/phase-3-connector-runner`
+in commits `23412d2`, `3f468ec`, `cb8f6d2`, `ebf5a42`, `6c1b6c4`, `ebc2974`, and
+`991e617`. The implementation adds the versioned framed
 Unix-socket protocol, bounded supervisor/client, importer error mapping, explicit
 `execution_mode=runner` validation, and a distinct no-network `connector-runner`
 Compose service. The protocol rejects duplicate JSON keys, binds every response
@@ -427,8 +428,9 @@ to a request ID and verified digest, and never exposes partial records after a
 terminal failure. Production manifests still contain no real Connector.
 
 Local gates pass Ruff, formatting, strict mypy, Bandit, offline lock validation,
-and full pytest (`84 passed, 82 skipped`). A disposable Hermes image built from
-`cb8f6d2` passed the synthetic IPC smoke and hostile network/filesystem probe;
+and full pytest (`99 passed, 103 skipped`). The exact Linux/PostgreSQL replay
+passes **204 tests** with **95.01%** coverage at the unchanged 95% threshold. A
+disposable Hermes image built from `cb8f6d2` passed the synthetic IPC smoke and hostile network/filesystem probe;
 its container was not attached to the production Compose project. Slice B has
 not been deployed and no real evidence was imported.
 
@@ -443,6 +445,6 @@ kept as explicit operational evidence; future temporary Compose projects must
 use a unique `-p` name and never target the production tree.
 
 The full implementation report is
-`docs/reviews/2026-08-22-phase-3-runner-codex.md`. The remaining gates are a
-narrow independent audit, protected PR/CI, and separate authorization for merge
-or production deployment.
+`docs/reviews/2026-08-22-phase-3-runner-codex.md`. The remaining gates are the
+hosted CI run for the pushed head, a narrow independent audit, protected PR
+review, and separate authorization for merge or production deployment.

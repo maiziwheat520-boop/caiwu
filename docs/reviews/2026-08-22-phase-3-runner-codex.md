@@ -6,9 +6,9 @@ Date: 2026-08-22
 
 This report records the independent Slice B implementation requested after the
 Phase 3 Slice A deployment. It is an implementation and acceptance report only:
-the branch was not pushed, no protected PR was created, Slice B was not deployed
-to production, and no real Connector, OAuth flow, mailbox collector, or financial
-evidence was enabled. The production revision remains the Slice A merge
+the branch has been pushed for review, no protected PR was created, Slice B was
+not deployed to production, and no real Connector, OAuth flow, mailbox collector,
+or financial evidence was enabled. The production revision remains the Slice A merge
 `e426b488b2abb02f10ef02a61aae7ebe24c3283f`.
 
 Implementation branch: `ai/chatgpt/phase-3-connector-runner`.
@@ -18,6 +18,10 @@ Implementation commits:
 - `23412d2` — isolate Connector execution over a Unix socket;
 - `3f468ec` — harden runner protocol boundaries and failure tests;
 - `cb8f6d2` — reject duplicate JSON control keys and add regression coverage.
+- `ebf5a42` — make the runner socket typing cross-platform for Linux CI;
+- `6c1b6c4` — cover Linux runner failure boundaries;
+- `ebc2974` — close protocol/client coverage gaps and normalize empty pre-request IDs;
+- `991e617` — close the remaining Linux runner coverage threshold and response cases.
 
 ## Implemented boundary
 
@@ -50,12 +54,28 @@ The final local run on Windows completed:
 - Ruff format/check;
 - strict mypy for `src`, `alembic`, `tests`, and `scripts`;
 - Bandit (warnings only for existing intentional `nosec` sites);
-- full pytest: **84 passed, 82 skipped, 1 warning**. Skips are explicit
+- full pytest: **99 passed, 103 skipped, 1 warning**. Skips are explicit
   Windows/POSIX or missing local PostgreSQL integration conditions.
 
 The protocol/runner/compose and importer-focused subset also passed. The new
 duplicate-key test proves a control message cannot smuggle two values for one
 field and rely on parser last-write-wins behavior.
+
+## Linux full-suite closure
+
+The disposable Hermes PostgreSQL 15 replay of the exact CI pytest command passed
+after the final runner test additions:
+
+- **204 passed, 1 warning**;
+- coverage **95.01%** with `--cov-fail-under=95`;
+- the run covered POSIX Unix-socket IPC, runner error mapping, protocol limits,
+  response validation, and PostgreSQL-backed integration tests.
+
+The earlier Linux replay exposed a test fixture that made both byte count and
+digest invalid, so the client correctly reported the first applicable
+`ARTIFACT_SIZE_MISMATCH`. The fixture was corrected to isolate the digest case;
+the final replay is green. The repository GitHub Actions run for head
+`991e617faf24db210668df9b38298dfb4722197c` is the remaining hosted CI gate.
 
 ## Hermes disposable runner acceptance
 
@@ -107,6 +127,6 @@ must use a unique project name and must never target `/srv/ai-center/ledgerbridg
 ## Remaining gates
 
 Slice B is ready for a narrow independent audit, not for production release.
-Linux full-suite/CI evidence, protected PR review, merge authorization, and any
-future production deployment remain separate gates. The production runner is
-not enabled, and real Connector registration remains out of scope.
+Hosted CI completion, protected PR review, merge authorization, and any future
+production deployment remain separate gates. The production runner is not
+enabled, and real Connector registration remains out of scope.
