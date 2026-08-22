@@ -21,7 +21,7 @@ the state-machine columns. Same-UID open-inode identity separation remains an
 explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is now implemented
 and pushed on the Codex branch `ai/chatgpt/phase-3-connector-runner` at head
-`337edb8`; the fixed code/test head for final audit is
+`65b15df54cfc6063b1f04f5dea53c24789e2b57e`; the fixed code/test head for final audit is
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e`;
 the isolated runner image was tested only as a disposable Hermes image and is
 not deployed.
@@ -105,7 +105,8 @@ narrow audit found one HIGH and four MEDIUM follow-up issues; Codex fixed them a
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e` and independently replayed the full
 Hermes Linux/PostgreSQL suite, including outbound-send deadline and hostile
 record terminalization tests. A final narrow Claude recheck remains the next
-review gate.
+review gate. Hosted CI run `32593102155` for the current branch head is green
+across `secrets`, `quality`, and `compose`.
 
 ## Next task
 
