@@ -623,6 +623,77 @@ def test_untrusted_runner_error_code_is_terminalized_and_audited(
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "bad_text"),
+    [
+        ("record_locator", "\x00"),
+        ("record_locator", "\ud800"),
+        ("raw_fields", "\x00"),
+        ("raw_fields", "\ud800"),
+    ],
+)
+def test_untrusted_runner_record_text_is_terminalized_and_audited(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+    field: str,
+    bad_text: str,
+) -> None:
+    record = object.__new__(ParsedSourceRecord)
+    object.__setattr__(record, "record_locator", "row:1")
+    object.__setattr__(record, "source", "synthetic")
+    object.__setattr__(record, "parser_version", "1")
+    object.__setattr__(record, "raw_fields", {"memo": "safe"})
+    object.__setattr__(record, "normalized_fields", {})
+    object.__setattr__(record, "external_transaction_id", None)
+    if field == "record_locator":
+        object.__setattr__(record, field, bad_text)
+    else:
+        object.__setattr__(record, field, {"memo": bad_text})
+
+    class MaliciousRunnerClient:
+        def detect(self, request: object, stream: ReadableBinary) -> DetectionResult:
+            del request, stream
+            return DetectionResult.MATCH
+
+        def parse(self, request: object, stream: ReadableBinary) -> tuple[ParsedSourceRecord, ...]:
+            del request, stream
+            return (record,)
+
+    connector = RunnerConnector(
+        "synthetic",
+        "1",
+        "synthetic",
+        MaliciousRunnerClient(),  # type: ignore[arg-type]
+    )
+    outcome = importer.ingest_and_import(
+        io.BytesIO(b"malicious runner record"),
+        IngestMetadata(
+            source="synthetic_upload",
+            original_filename="runner-record.txt",
+            media_type="text/plain",
+        ),
+        [connector],  # type: ignore[list-item]
+        actor="pytest",
+        reason="runner record normalization",
+    )
+
+    assert outcome.status is ImportJobStatus.FAILED
+    assert outcome.error_code == "CONNECTOR_CONTRACT"
+    with admin_engine.connect() as connection:
+        job = connection.execute(
+            text("SELECT status, terminal_audit_event_id FROM import_job")
+        ).one()
+        assert job.status == "FAILED"
+        assert job.terminal_audit_event_id is not None
+        assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM audit_event WHERE action = 'import.complete'")
+            ).scalar_one()
+            == 1
+        )
+
+
 def test_mutated_float_output_is_revalidated_before_publication(
     importer: EvidenceImporter,
     admin_engine: Engine,
