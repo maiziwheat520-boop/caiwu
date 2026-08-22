@@ -22,6 +22,8 @@ Implementation commits:
 - `6c1b6c4` — cover Linux runner failure boundaries;
 - `ebc2974` — close protocol/client coverage gaps and normalize empty pre-request IDs;
 - `991e617` — close the remaining Linux runner coverage threshold and response cases.
+- follow-up remediation (current working head) — close unsafe text, full-size
+  artifact framing, production composition, and defect-sensitive runner tests.
 
 ## Implemented boundary
 
@@ -66,8 +68,8 @@ field and rely on parser last-write-wins behavior.
 The disposable Hermes PostgreSQL 15 replay of the exact CI pytest command passed
 after the final runner test additions:
 
-- **204 passed, 1 warning**;
-- coverage **95.01%** with `--cov-fail-under=95`;
+- **217 passed, 1 warning**;
+- coverage **95.49%** with `--cov-fail-under=95`;
 - the run covered POSIX Unix-socket IPC, runner error mapping, protocol limits,
   response validation, and PostgreSQL-backed integration tests.
 
@@ -105,7 +107,7 @@ four MEDIUM, and five LOW findings. The required HIGH was P3-H1: an untrusted
 runner could supply an invalid or overlong error code that reached the bounded
 database column and left an import job `PENDING` without a terminal audit event.
 
-Codex remediated P3-H1 and the four MEDIUM findings in `5dab33e`: runner error
+Codex remediated P3-H1 and the four initial MEDIUM findings in `5dab33e`: runner error
 codes and summaries are normalized at the client boundary; response reads have
 one monotonic deadline; the real `serve()` entrypoint is covered for `0600`
 socket permissions; production importer validation now passes
@@ -114,6 +116,14 @@ coverage to 95.85%. The end-to-end regression proves invalid runner details
 produce `FAILED` + `RUNNER_ERROR`, zero `SourceRecord` rows, and one
 `import.complete` audit event. The detailed response is
 `docs/reviews/2026-08-23-phase-3-connector-runner-claude-remediation-codex.md`.
+
+The follow-up review identified P3-H2, P3-M1R, P3-M3R, P3-M5, and P3-M6. The
+current working changes reject NUL/lone-surrogate text at both protocol and
+Connector JSON boundaries, sanitize unsafe client summaries, wire the worker
+composition root to `production=settings.env == "production"`, account for the
+frame kind byte in payload/chunk-count limits, and make the slow/stale response
+fixtures exercise the intended deadlines and stream lifecycle. Detection-time
+contract failures now terminalize as `CONNECTOR_CONTRACT`.
 
 ## Production recovery and fresh restore evidence
 

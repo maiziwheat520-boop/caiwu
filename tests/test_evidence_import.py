@@ -24,7 +24,6 @@ from ledgerbridge.artifacts import ArtifactStore
 from ledgerbridge.audit import append_audit_event
 from ledgerbridge.connectors import (
     ArtifactMetadata,
-    ConnectorContractError,
     DetectionResult,
     ParsedSourceRecord,
     ReadableBinary,
@@ -323,14 +322,21 @@ def test_importer_and_connector_batch_guardrails(
         assert connection.execute(text("SELECT count(*) FROM journal_entry")).scalar_one() == 0
 
 
-def test_production_importer_rejects_in_process_connectors(tmp_path: Path) -> None:
+def test_production_importer_rejects_in_process_connectors(
+    runtime_engine: Engine,
+    admin_engine: Engine,
+    tmp_path: Path,
+) -> None:
     subject = EvidenceImporter(
-        sessionmaker(),
+        sessionmaker(bind=runtime_engine, expire_on_commit=False),
         ArtifactStore(tmp_path / "production-mode", max_bytes=1_000),
         production=True,
     )
-    with pytest.raises(ConnectorContractError, match="production"):
-        subject._validate_connector_set([SyntheticConnector()])
+    outcome = _ingest(subject, b"production mode", [SyntheticConnector()])
+    assert outcome.status is ImportJobStatus.FAILED
+    assert outcome.error_code == "CONNECTOR_CONTRACT"
+    with admin_engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
 
 
 def test_canonical_source_registries_are_append_only_and_runtime_read_only(
@@ -571,7 +577,7 @@ def test_untrusted_runner_error_code_is_terminalized_and_audited(
     class MaliciousRunnerClient:
         def detect(self, request: object, stream: ReadableBinary) -> DetectionResult:
             del request, stream
-            raise RunnerClientError("lower case; DROP--", "runner rejected the artifact")
+            raise RunnerClientError("RUNNER_ERROR", "\x00")
 
         def parse(self, request: object, stream: ReadableBinary) -> tuple[ParsedSourceRecord, ...]:
             del request, stream
@@ -606,7 +612,7 @@ def test_untrusted_runner_error_code_is_terminalized_and_audited(
         ).one()
         assert job.status == "FAILED"
         assert job.error_code == "RUNNER_ERROR"
-        assert job.diagnostic_summary == "runner rejected the artifact"
+        assert job.diagnostic_summary == "connector runner failed"
         assert job.terminal_audit_event_id is not None
         assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
         assert (

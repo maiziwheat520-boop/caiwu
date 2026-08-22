@@ -5,6 +5,11 @@ from pathlib import Path
 from tempfile import gettempdir
 from types import FrameType
 
+from ledgerbridge.artifacts import ArtifactStore
+from ledgerbridge.config import get_settings
+from ledgerbridge.db import get_session_factory
+from ledgerbridge.imports import EvidenceImporter
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 _running = True
@@ -46,11 +51,27 @@ def heartbeat_is_fresh(
     return 0 <= age <= max_age_seconds
 
 
+def build_evidence_importer() -> EvidenceImporter:
+    settings = get_settings()
+    return EvidenceImporter(
+        get_session_factory(settings.database_url),
+        ArtifactStore(
+            settings.artifact_root,
+            max_bytes=settings.artifact_max_bytes,
+            total_max_bytes=settings.artifact_total_max_bytes,
+            staging_max_bytes=settings.artifact_staging_max_bytes,
+            staging_ttl_seconds=settings.artifact_staging_ttl_seconds,
+        ),
+        production=settings.env == "production",
+    )
+
+
 def main() -> None:
     global _running
     _running = True
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
+    build_evidence_importer()
     logger.info("LedgerBridge worker started")
     while _running:
         write_heartbeat()

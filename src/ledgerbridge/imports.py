@@ -269,6 +269,15 @@ class EvidenceImporter:
                 actor=actor,
                 reason=reason,
             )
+        except ConnectorContractError:
+            return self._route_terminal(
+                artifact,
+                ImportJobStatus.FAILED,
+                "CONNECTOR_CONTRACT",
+                "connector contract validation failed",
+                actor=actor,
+                reason=reason,
+            )
         except RunnerClientError as exc:
             return self._route_terminal(
                 artifact,

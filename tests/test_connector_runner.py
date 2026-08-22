@@ -5,6 +5,7 @@ import hashlib
 import os
 import socket
 import stat
+import struct
 import time
 from io import BytesIO
 from pathlib import Path
@@ -178,9 +179,16 @@ class SlowResponseServer:
         writer: asyncio.StreamWriter,
     ) -> None:
         await read_async_frame(reader)
-        writer.write(b"\x00")
+        for value in struct.pack("!I", 1025):
+            writer.write(bytes([value]))
+            await writer.drain()
+            await asyncio.sleep(self.delay)
+        writer.write(bytes([int(FrameKind.TERMINAL)]))
         await writer.drain()
-        await asyncio.sleep(self.delay)
+        for _ in range(100):
+            writer.write(b"\x00")
+            await writer.drain()
+            await asyncio.sleep(self.delay)
         writer.close()
 
 
@@ -294,9 +302,9 @@ async def test_runner_client_enforces_overall_response_deadline() -> None:
         start_unix_server = getattr(asyncio, "start_unix_server", None)
         if start_unix_server is None:
             raise RuntimeError("Unix socket tests require a POSIX socket implementation")
-        server = await start_unix_server(SlowResponseServer(1.0), path=socket_path)
+        server = await start_unix_server(SlowResponseServer(0.02), path=socket_path)
         try:
-            client = ConnectorRunnerClient(socket_path, timeout_seconds=0.1)
+            client = ConnectorRunnerClient(socket_path, timeout_seconds=0.2)
             started = time.monotonic()
             with pytest.raises(RunnerClientError, match="unavailable") as error:
                 await asyncio.to_thread(
@@ -305,7 +313,7 @@ async def test_runner_client_enforces_overall_response_deadline() -> None:
                     _bytes(b"ok"),
                 )
             assert error.value.error_code == "RUNNER_UNAVAILABLE"
-            assert time.monotonic() - started < 0.5
+            assert time.monotonic() - started < 0.8
         finally:
             server.close()
             await server.wait_closed()
@@ -362,7 +370,10 @@ async def test_stale_response_id_is_rejected() -> None:
             reader: asyncio.StreamReader,
             writer: asyncio.StreamWriter,
         ) -> None:
-            await read_async_frame(reader)
+            while True:
+                kind, _payload = await read_async_frame(reader)
+                if kind is FrameKind.ARTIFACT_END:
+                    break
             request = _request(b"ok", RunnerOperation.PARSE)
             terminal = RunnerTerminal(
                 request_id=str(uuid4()),
@@ -670,21 +681,26 @@ def test_runner_client_rejects_invalid_calls_and_unavailable_socket() -> None:
 
 
 @pytest.mark.parametrize(
-    ("error_code", "summary"),
+    ("error_code", "summary", "expected_summary"),
     [
-        ("lower case; DROP--", "runner supplied an invalid code"),
-        ("A" * 100, "   "),
+        (
+            "lower case; DROP--",
+            "runner supplied an invalid code",
+            "runner supplied an invalid code",
+        ),
+        ("A" * 100, "   ", "connector runner failed"),
+        ("RUNNER_ERROR", "\x00", "connector runner failed"),
+        ("RUNNER_ERROR", "\ud800", "connector runner failed"),
     ],
 )
 def test_runner_client_normalizes_untrusted_error_details(
     error_code: str,
     summary: str,
+    expected_summary: str,
 ) -> None:
     error = RunnerClientError(error_code, summary)
     assert error.error_code == "RUNNER_ERROR"
-    assert error.summary == (
-        "runner supplied an invalid code" if summary.strip() else "connector runner failed"
-    )
+    assert error.summary == expected_summary
     assert len(error.summary) <= 500
 
 

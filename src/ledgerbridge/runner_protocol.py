@@ -33,11 +33,16 @@ MAX_RECORDS = 10_000
 MAX_ARTIFACT_BYTES = 50 * 1024 * 1024
 MAX_CONTROL_FRAME_BYTES = 64 * 1024
 MAX_ARTIFACT_CHUNK_BYTES = 256 * 1024
+# Frame limits include the one-byte kind prefix, so this is the largest
+# artifact payload that can fit in a single ARTIFACT_CHUNK frame.
+MAX_ARTIFACT_CHUNK_PAYLOAD_BYTES = MAX_ARTIFACT_CHUNK_BYTES - 1
 MAX_RECORD_FRAME_BYTES = 4 * 1024 * 1024
 MAX_TERMINAL_FRAME_BYTES = 64 * 1024
 MAX_METADATA_BYTES = 64 * 1024
 MAX_ARTIFACT_PREFIX_BYTES = 64 * 1024
-MAX_CHUNK_COUNT = (MAX_ARTIFACT_BYTES + MAX_ARTIFACT_CHUNK_BYTES - 1) // MAX_ARTIFACT_CHUNK_BYTES
+MAX_CHUNK_COUNT = (
+    MAX_ARTIFACT_BYTES + MAX_ARTIFACT_CHUNK_PAYLOAD_BYTES - 1
+) // MAX_ARTIFACT_CHUNK_PAYLOAD_BYTES
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
@@ -410,9 +415,11 @@ def parse_terminal_payload(payload: bytes) -> RunnerTerminal:
 
 
 def chunk_frames(
-    request: RunnerRequest, stream: BinaryReader, chunk_size: int = MAX_ARTIFACT_CHUNK_BYTES
+    request: RunnerRequest,
+    stream: BinaryReader,
+    chunk_size: int = MAX_ARTIFACT_CHUNK_PAYLOAD_BYTES,
 ) -> Iterable[bytes]:
-    if not 0 < chunk_size <= MAX_ARTIFACT_CHUNK_BYTES:
+    if not 0 < chunk_size < MAX_ARTIFACT_CHUNK_BYTES:
         raise RunnerProtocolError("invalid artifact chunk size")
     yield encode_frame(FrameKind.CONTROL, request_control(request))
     observed = 0
@@ -497,13 +504,22 @@ def _text_value(value: Mapping[str, object], field: str, maximum: int) -> str:
 
 
 def _require_text(field: str, value: object, maximum: int) -> None:
-    if not isinstance(value, str) or not value.strip() or len(value) > maximum:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > maximum
+        or _contains_unstorable_text(value)
+    ):
         raise RunnerProtocolError(f"{field} is invalid")
 
 
 def _require_source(field: str, value: object) -> None:
     if not isinstance(value, str) or CANONICAL_SOURCE_PATTERN.fullmatch(value) is None:
         raise RunnerProtocolError(f"{field} is not canonical")
+
+
+def _contains_unstorable_text(value: str) -> bool:
+    return any(codepoint == 0 or 0xD800 <= codepoint <= 0xDFFF for codepoint in map(ord, value))
 
 
 def _int_value(value: Mapping[str, object], field: str, minimum: int, maximum: int) -> int:

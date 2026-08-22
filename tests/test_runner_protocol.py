@@ -12,6 +12,9 @@ import pytest
 from ledgerbridge.connectors import ArtifactMetadata, DetectionResult, ParsedSourceRecord
 from ledgerbridge.runner_protocol import (
     MAX_ARTIFACT_BYTES,
+    MAX_ARTIFACT_CHUNK_BYTES,
+    MAX_ARTIFACT_CHUNK_PAYLOAD_BYTES,
+    MAX_CHUNK_COUNT,
     MAX_CONTROL_FRAME_BYTES,
     MAX_RECORDS,
     FrameKind,
@@ -97,6 +100,59 @@ def test_chunk_stream_rejects_size_or_digest_mismatch_before_end_frame() -> None
     request = _request(b"expected")
     with pytest.raises(RunnerProtocolError, match="verified digest"):
         list(chunk_frames(request, BytesIO(b"tampered")))
+
+
+def test_default_chunk_size_accounts_for_frame_kind_byte() -> None:
+    content = b"x" * (MAX_ARTIFACT_CHUNK_BYTES + 1)
+    request = _request(content)
+    frames = list(chunk_frames(request, BytesIO(content)))
+    chunks = [
+        decode_frame(frame)[1]
+        for frame in frames
+        if decode_frame(frame)[0] is FrameKind.ARTIFACT_CHUNK
+    ]
+    assert [len(chunk) for chunk in chunks] == [MAX_ARTIFACT_CHUNK_PAYLOAD_BYTES, 2]
+
+
+def test_chunk_count_covers_the_full_artifact_limit() -> None:
+    assert MAX_CHUNK_COUNT * MAX_ARTIFACT_CHUNK_PAYLOAD_BYTES >= MAX_ARTIFACT_BYTES
+
+
+@pytest.mark.parametrize("bad_text", ["\x00", "\ud800"])
+def test_protocol_rejects_unstorable_terminal_and_record_text(bad_text: str) -> None:
+    request = _request()
+    terminal = RunnerTerminal(
+        request_id=request.request_id,
+        status=RunnerStatus.ERROR,
+        operation=RunnerOperation.PARSE,
+        error_code="RUNNER_ERROR",
+        summary="safe",
+        detection=None,
+        parsed_count=0,
+        byte_count=0,
+        sha256_hex=None,
+    )
+    terminal_value = json.loads(terminal_payload(terminal))
+    terminal_value["summary"] = bad_text
+    with pytest.raises(RunnerProtocolError, match="summary"):
+        parse_terminal_payload(json.dumps(terminal_value).encode())
+
+    record = ParsedSourceRecord(
+        record_locator="row:1",
+        source="synthetic",
+        parser_version="1",
+        raw_fields={"memo": "safe"},
+        normalized_fields={},
+    )
+    record_value = json.loads(record_payload(request.request_id, record))
+    record_value["record_locator"] = bad_text
+    with pytest.raises(RunnerProtocolError, match="record failed"):
+        parse_record_payload(json.dumps(record_value).encode(), request)
+
+    record_value["record_locator"] = "row:1"
+    record_value["raw_fields"] = {"memo": bad_text}
+    with pytest.raises(RunnerProtocolError, match="record failed"):
+        parse_record_payload(json.dumps(record_value).encode(), request)
 
 
 def test_artifact_end_payload_rejects_wrong_length() -> None:

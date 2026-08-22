@@ -127,7 +127,12 @@ def validate_connector_execution_mode(
 
 
 def _require_text(field: str, value: str, maximum: int) -> None:
-    if not isinstance(value, str) or not value.strip() or len(value) > maximum:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > maximum
+        or _contains_unstorable_text(value)
+    ):
         raise ConnectorContractError(f"{field} must be non-blank and at most {maximum} characters")
 
 
@@ -166,7 +171,11 @@ def _walk_json(value: object, *, field: str, reject_floats: bool) -> None:
         current, depth = stack.pop()
         if depth > MAX_JSON_DEPTH:
             raise ConnectorContractError(f"{field} must not exceed {MAX_JSON_DEPTH} nested levels")
-        if current is None or isinstance(current, (str, bool, int)):
+        if current is None or isinstance(current, (bool, int)):
+            continue
+        if isinstance(current, str):
+            if _contains_unstorable_text(current):
+                raise ConnectorContractError(f"{field} contains non-storable text")
             continue
         if isinstance(current, float):
             if reject_floats:
@@ -176,12 +185,18 @@ def _walk_json(value: object, *, field: str, reject_floats: bool) -> None:
             for key, child in current.items():
                 if not isinstance(key, str):
                     raise ConnectorContractError(f"{field} object keys must be strings")
+                if _contains_unstorable_text(key):
+                    raise ConnectorContractError(f"{field} contains non-storable text")
                 stack.append((child, depth + 1))
             continue
         if isinstance(current, (list, tuple)):
             stack.extend((child, depth + 1) for child in current)
             continue
         raise ConnectorContractError(f"{field} must contain JSON values only")
+
+
+def _contains_unstorable_text(value: str) -> bool:
+    return any(codepoint == 0 or 0xD800 <= codepoint <= 0xDFFF for codepoint in map(ord, value))
 
 
 def _validate_money(value: object) -> None:

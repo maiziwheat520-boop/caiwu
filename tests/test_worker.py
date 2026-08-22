@@ -32,9 +32,45 @@ def test_worker_main_writes_once_and_stops(monkeypatch: object) -> None:
     calls: list[str] = []
 
     monkeypatch.setattr(worker.signal, "signal", lambda *_args: None)  # type: ignore[attr-defined]
+    monkeypatch.setattr(worker, "build_evidence_importer", lambda: None)  # type: ignore[attr-defined]
     monkeypatch.setattr(worker, "write_heartbeat", lambda: calls.append("write"))  # type: ignore[attr-defined]
     monkeypatch.setattr(worker.time, "sleep", lambda _seconds: worker._stop(0, None))  # type: ignore[attr-defined]
 
     worker.main()
 
     assert calls == ["write"]
+
+
+def test_worker_composition_enables_production_connector_boundary(
+    monkeypatch: object,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class Settings:
+        env = "production"
+        database_url = "postgresql+psycopg://runtime"
+        artifact_root = tmp_path
+        artifact_max_bytes = 100
+        artifact_total_max_bytes = 200
+        artifact_staging_max_bytes = 300
+        artifact_staging_ttl_seconds = 400
+
+    monkeypatch.setattr(worker, "get_settings", lambda: Settings())  # type: ignore[attr-defined]
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        worker,
+        "get_session_factory",
+        lambda database_url: captured.update(database_url=database_url) or "sessions",
+    )
+    monkeypatch.setattr(worker, "ArtifactStore", lambda *args, **kwargs: (args, kwargs))  # type: ignore[attr-defined]
+
+    def fake_importer(*args: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(worker, "EvidenceImporter", fake_importer)  # type: ignore[attr-defined]
+
+    worker.build_evidence_importer()
+
+    assert captured["database_url"] == "postgresql+psycopg://runtime"
+    assert captured["production"] is True
