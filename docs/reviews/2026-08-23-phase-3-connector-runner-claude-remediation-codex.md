@@ -81,8 +81,9 @@ toolchains. Slice B is still not deployed.
 - Hermes disposable Linux/PostgreSQL 16 replay: `217 passed`, one warning,
   `95.49%` coverage with the unchanged `--cov-fail-under=95` gate; migration
   upgrade/downgrade/upgrade, Bandit, and strict pip-audit all passed;
-- hosted GitHub Actions run `32586181832` for `5dab33e` passed `secrets`,
-  `quality`, and `compose`;
+- hosted GitHub Actions run `32590293736` for documentation head `6a57de9`
+  passed `secrets`, `quality`, and `compose`; the code under review is the
+  fixed ancestor `b65581e`;
 - no production tree, image, database, artifact, credential, or real financial
   evidence was changed.
 

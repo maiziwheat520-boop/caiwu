@@ -65,7 +65,7 @@ field and rely on parser last-write-wins behavior.
 
 ## Linux full-suite closure
 
-The disposable Hermes PostgreSQL 15 replay of the exact CI pytest command passed
+The disposable Hermes PostgreSQL 16 replay of the exact CI pytest command passed
 after the final runner test additions:
 
 - **217 passed, 1 warning**;

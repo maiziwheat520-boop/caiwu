@@ -451,6 +451,7 @@ P3-M3R, P3-M5, and P3-M6. Codex remediated the first set in `5dab33e` and the
 follow-up set in `b65581e`, recording both responses in
 `docs/reviews/2026-08-23-phase-3-connector-runner-claude-remediation-codex.md`.
 Hermes disposable PostgreSQL 16 replay now passes 217 tests at 95.49% coverage;
-hosted CI for `b65581e` is the next required check. The remaining gates are a
-fresh narrow Claude recheck, protected PR review, and separate authorization for
-merge or production deployment.
+hosted run `32590293736` for documentation head `6a57de9` passed `secrets`,
+`quality`, and `compose`. The remaining gates are a fresh narrow Claude
+recheck, protected PR review, and separate authorization for merge or production
+deployment.
