@@ -46,6 +46,7 @@ from ledgerbridge.models import (
     SourceRecord,
     SourceSystem,
 )
+from ledgerbridge.runner_client import RunnerClientError
 
 ROUTER_NAME = "ledgerbridge.router"
 ROUTER_VERSION = "1"
@@ -239,7 +240,12 @@ class EvidenceImporter:
                 byte_size=artifact.published.byte_size,
                 sha256_hex=artifact.published.sha256_hex,
             )
-            matches, ambiguous = self._detect(connector_bindings, artifact_metadata, prefix)
+            matches, ambiguous = self._detect(
+                connector_bindings,
+                artifact_metadata,
+                prefix,
+                verified_artifact=artifact.published,
+            )
         except ArtifactIntegrityError:
             return self._route_terminal(
                 artifact,
@@ -255,6 +261,15 @@ class EvidenceImporter:
                 ImportJobStatus.FAILED,
                 "EVIDENCE_IO",
                 "evidence could not be read",
+                actor=actor,
+                reason=reason,
+            )
+        except RunnerClientError as exc:
+            return self._route_terminal(
+                artifact,
+                ImportJobStatus.FAILED,
+                exc.error_code,
+                exc.summary,
                 actor=actor,
                 reason=reason,
             )
@@ -432,11 +447,20 @@ class EvidenceImporter:
         connectors: Iterable[_ConnectorBinding],
         metadata: ArtifactMetadata,
         prefix: bytes,
+        *,
+        verified_artifact: PublishedArtifact | None = None,
     ) -> tuple[list[_ConnectorBinding], bool]:
         matches: list[_ConnectorBinding] = []
         ambiguous = False
         for binding in connectors:
-            result = binding.connector.detect(metadata, prefix)
+            detect_verified = getattr(binding.connector, "detect_verified", None)
+            if callable(detect_verified):
+                if verified_artifact is None:
+                    raise ConnectorContractError("runner detection requires a verified artifact")
+                with self._store.open_verified(verified_artifact) as verified_stream:
+                    result = detect_verified(metadata, verified_stream)
+            else:
+                result = binding.connector.detect(metadata, prefix)
             if not isinstance(result, DetectionResult):
                 raise ConnectorContractError("detect() must return DetectionResult")
             if result is DetectionResult.MATCH:
@@ -570,6 +594,19 @@ class EvidenceImporter:
                 ImportJobStatus.FAILED,
                 error_code="CONNECTOR_CONTRACT",
                 summary="connector parse failed validation",
+                parsed_count=0,
+                created_count=0,
+                duplicate_count=0,
+                actor=actor,
+                reason=reason,
+            )
+        except RunnerClientError as exc:
+            return self._terminalize(
+                artifact,
+                job_id,
+                ImportJobStatus.FAILED,
+                error_code=exc.error_code,
+                summary=exc.summary,
                 parsed_count=0,
                 created_count=0,
                 duplicate_count=0,

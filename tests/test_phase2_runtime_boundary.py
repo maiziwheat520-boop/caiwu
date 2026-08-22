@@ -19,7 +19,38 @@ def test_only_worker_has_a_writable_artifact_volume() -> None:
         assert "egress" not in service["networks"]
 
     assert api["volumes"] == ["artifacts:/var/lib/ledgerbridge/artifacts:ro"]
-    assert worker["volumes"] == ["artifacts:/var/lib/ledgerbridge/artifacts"]
+    assert worker["volumes"] == [
+        "artifacts:/var/lib/ledgerbridge/artifacts",
+        "connector-socket:/run/ledgerbridge-connector",
+    ]
+
+
+def test_connector_runner_is_networkless_and_has_no_application_secrets() -> None:
+    compose = yaml.safe_load(Path("docker-compose.yml").read_text(encoding="utf-8"))
+    runner = compose["services"]["connector-runner"]
+    assert runner["profiles"] == ["connector-runner"]
+    assert runner["network_mode"] == "none"
+    assert runner["read_only"] is True
+    assert runner["security_opt"] == ["no-new-privileges:true"]
+    assert runner["cap_drop"] == ["ALL"]
+    assert runner["pids_limit"] == 64
+    assert runner["mem_limit"] == "128m"
+    assert runner["cpus"] == "0.50"
+    assert runner["volumes"] == ["connector-socket:/run/ledgerbridge-connector"]
+    assert "environment" not in runner
+    assert "networks" not in runner
+    assert "depends_on" not in runner
+    assert "connector-runner.Dockerfile" in runner["build"]["dockerfile"]
+
+
+def test_only_worker_mounts_the_runner_socket() -> None:
+    compose = yaml.safe_load(Path("docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    assert all(
+        "connector-socket:/run/ledgerbridge-connector" not in services[name].get("volumes", [])
+        for name in ("api", "postgres", "mail-collector")
+    )
+    assert "connector-socket:/run/ledgerbridge-connector" in services["worker"]["volumes"]
 
 
 def test_artifact_directory_and_database_temp_privilege_are_hardened() -> None:

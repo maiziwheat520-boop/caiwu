@@ -55,6 +55,7 @@ services:
     command: ["python", "-m", "ledgerbridge.worker"]
     volumes:
       - artifacts:/var/lib/ledgerbridge/artifacts
+      - connector-socket:/run/ledgerbridge-connector
     healthcheck:
       test: ["CMD", "python", "-c", "from ledgerbridge.worker import heartbeat_is_fresh; raise SystemExit(0 if heartbeat_is_fresh() else 1)"]
       interval: 30s
@@ -88,6 +89,37 @@ services:
       - backend
       - egress
 
+  connector-runner:
+    image: ledgerbridge-connector-runner:${LEDGERBRIDGE_REVISION:-dev}
+    build:
+      context: .
+      dockerfile: docker/connector-runner.Dockerfile
+      args:
+        LEDGERBRIDGE_REVISION: ${DEPLOYED_REVISION:-dev}
+    profiles: ["connector-runner"]
+    command: ["python", "-m", "ledgerbridge.connector_runner", "--socket", "/run/ledgerbridge-connector/runner.sock"]
+    network_mode: none
+    volumes:
+      - connector-socket:/run/ledgerbridge-connector
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: "0.50"
+    user: "10001:10001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "from ledgerbridge.runner_client import ConnectorRunnerClient; raise SystemExit(0 if ConnectorRunnerClient('/run/ledgerbridge-connector/runner.sock').health_check() else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   postgres:
     image: postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
     environment:
@@ -119,3 +151,4 @@ networks:
 volumes:
   artifacts:
   postgres-data:
+  connector-socket:
