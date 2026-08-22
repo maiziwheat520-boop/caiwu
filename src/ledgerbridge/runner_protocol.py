@@ -464,11 +464,20 @@ def _json_object(payload: bytes, limit: int) -> dict[str, object]:
     if len(payload) > limit:
         raise RunnerProtocolError("JSON frame exceeds its limit")
     try:
-        value = json.loads(payload.decode("utf-8"))
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RunnerProtocolError("message is not valid UTF-8 JSON") from exc
     if not isinstance(value, dict):
         raise RunnerProtocolError("message must be a JSON object")
+    return value
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise RunnerProtocolError("JSON object contains duplicate keys")
+        value[key] = item
     return value
 
 

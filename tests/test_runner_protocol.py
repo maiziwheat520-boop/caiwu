@@ -88,3 +88,22 @@ def test_chunk_stream_rejects_size_or_digest_mismatch_before_end_frame() -> None
 def test_artifact_end_payload_rejects_wrong_length() -> None:
     with pytest.raises(RunnerProtocolError, match="invalid length"):
         parse_artifact_end_payload(artifact_end_payload(0, "0" * 64)[:-1])
+
+
+def test_control_rejects_duplicate_json_keys() -> None:
+    request = _request()
+    payload = (
+        b'{"message_type":"request","message_type":"request",'
+        b'"protocol_version":1,"request_id":"'
+        + request.request_id.encode()
+        + b'","operation":"parse","connector_name":"synthetic.csv",'
+        b'"connector_version":"1","source_system":"synthetic",'
+        b'"metadata":{"source":"manual_upload","original_filename":"fixture.csv",'
+        b'"media_type":"text/csv","byte_size":3,"sha256_hex":"'
+        + request.verified_sha256_hex.encode()
+        + b'"},"declared_artifact_size":3,"verified_sha256_hex":"'
+        + request.verified_sha256_hex.encode()
+        + b'"}'
+    )
+    with pytest.raises(RunnerProtocolError, match="duplicate keys"):
+        parse_request_control(payload)
