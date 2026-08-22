@@ -1,6 +1,6 @@
 # Project status
 
-Updated: 2026-08-21
+Updated: 2026-08-22
 
 ## Current phase
 
@@ -33,17 +33,19 @@ deployment tree remains available for rollback. The GitHub repository is now
 public after a full-history secret and source-boundary audit found no credential
 or key exposure.
 
-Phase 2 Evidence and Import is implemented locally on
+Phase 2 Evidence and Import is implemented and fixed-SHA self-audited on
 `ai/chatgpt/phase-2-evidence-import` from preflight merge
-`232378ef70f3cfa24324dc6add61ce6089d107b4`. Migration `20260821_0003`, the
-immutable evidence models, atomic content-addressed store, narrow Connector SDK,
+`232378ef70f3cfa24324dc6add61ce6089d107b4`. The final reviewed executable SHA is
+`b092eb88772d30964524c7475ee96b0ccc86c395`. Migration `20260821_0003`, the
+immutable evidence models, durable content-addressed store, narrow Connector SDK,
 idempotent import orchestration, SourceRecord FK, and M8 DRAFT-to-POSTED audit
-binding are complete. Isolated PostgreSQL 15 acceptance passed 105 tests at
-96.92% coverage plus migration round trip, static/security/dependency checks,
-Compose build, and zero Phase 2 Alembic drift. A pre-existing Phase 1 metadata
-drift remains documented for follow-up. Real parsers, OAuth, production evidence, migration, and
-deployment remain out of scope; fixed-SHA self-audit and protected GitHub PR are
-next.
+binding are complete. Security review closed a PostgreSQL temporary-schema
+shadowing path and importer provenance/mutability defects. Isolated PostgreSQL 15
+acceptance passed 109 tests at 96.88% coverage on the hardened database/import
+commit; the final durability-only patch passed local gates and a Linux production-
+image artifact smoke. Protected GitHub PR CI will rerun the complete 110-test suite.
+A pre-existing Phase 1 metadata drift remains documented for follow-up. Real
+parsers, OAuth, production evidence, migration, and deployment remain out of scope.
 
 ## Completed
 
@@ -107,15 +109,17 @@ the Phase 2 implementation and self-audit. Claude remains read-only.
 
 ## Review owner
 
-Codex prepares the Phase 2 task card and will implement independently to conserve
-Claude quota. Claude remains review-only in the separate clone. Any later Claude
-audit must review a clean, fixed full SHA and write only a new review report.
+Codex completed the Phase 2 implementation and fixed-SHA self-audit independently
+to conserve Claude quota. Claude remains review-only in the separate clone. Any
+later Claude audit must review executable SHA
+`b092eb88772d30964524c7475ee96b0ccc86c395` and write only a new review report.
 
 ## Next task
 
-Create a fixed implementation commit, finish the Codex self-audit report, then
-push a protected Phase 2 implementation PR and require `secrets`, `quality`, and
-`compose` to pass. Production migration/deployment remains separately authorized.
+Push the fixed implementation and self-audit report in a protected Phase 2 PR,
+then require `secrets`, `quality`, and `compose` to pass before requesting an
+explicit merge decision. Production migration/deployment remains separately
+authorized.
 
 ## Blocking decisions
 

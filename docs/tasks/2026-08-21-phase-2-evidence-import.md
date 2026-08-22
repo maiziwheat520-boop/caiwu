@@ -1,6 +1,6 @@
 # Task: Phase 2 Evidence and Import
 
-- Status: implementation complete locally; fixed-SHA self-audit and protected PR pending
+- Status: implementation and fixed-SHA self-audit complete; protected PR pending
 - Preflight date: 2026-08-21
 - Implementation owner: Codex
 - Review owner: Codex self-audit; Claude fixed-SHA audit hook preserved
@@ -308,10 +308,14 @@ with no partial batch.
 - The Connector SDK receives no path or write API. Core routing, output
   revalidation, record limits, transaction ownership, idempotency, bounded
   errors, and audit events are behavior-tested with synthetic values only.
-- PostgreSQL 15 isolated acceptance completed with 105 tests and 96.92%
-  coverage. Existing Phase 1 behavior, migration failure on orphan placeholders
-  and pre-existing POSTED entries, permissions, state transitions, audit
-  reconstruction, and atomic rollback all passed.
+- PostgreSQL 15 isolated acceptance completed with 109 tests and 96.88%
+  coverage at hardened commit `7ab9e52aa09ea4465db6061002c2859ff579788f`.
+  Existing Phase 1 behavior, migration failure on orphan placeholders and
+  pre-existing POSTED entries, permissions, state transitions, audit
+  reconstruction, and atomic rollback all passed. The final executable commit
+  `b092eb88772d30964524c7475ee96b0ccc86c395` adds only parent-directory fsync and
+  Compose limit wiring; its new regression test and Linux production-image smoke
+  passed, and protected CI will run all 110 collected tests.
 - Ruff, format, strict mypy, sensitive-path scan, Bandit, strict dependency
   audit (zero known vulnerabilities), Compose config/build, image revision label,
   and worker-writable/API-read-only artifact mount tests passed. The 95% coverage
@@ -320,7 +324,7 @@ with no partial batch.
   production migration, or Hermes deployment was added. Hermes remains on
   `0c5616f648d720da88dd37deac94610486e7e611`.
 - Full-history Gitleaks and protected push/PR CI remain pending until the fixed
-  implementation commit is pushed.
+  implementation and review commits are pushed.
 - Alembic autogenerate comparison reports no Phase 2 object drift. It still
   reports inherited Phase 1 check-constraint naming and audit-index metadata
   drift; Phase 2 does not rewrite that deployed historical schema.
@@ -338,6 +342,7 @@ with no partial batch.
 
 ## Implementation verdict
 
-LOCALLY VERIFIED; READY FOR FIXED-SHA SELF-AUDIT. Implementation is complete on
-the dedicated branch and all non-GitHub gates pass. Push, protected PR, GitHub
-Gitleaks/CI, merge, migration, and production deployment remain separate steps.
+FIXED-SHA SELF-AUDIT COMPLETE; APPROVED FOR PROTECTED PR. The final reviewed
+executable SHA is `b092eb88772d30964524c7475ee96b0ccc86c395`, with no open
+validated security finding. Push, protected PR, GitHub Gitleaks/CI, merge,
+migration, and production deployment remain separate steps.
