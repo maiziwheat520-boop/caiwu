@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from ledgerbridge.text import contains_unstorable_text
+
 MAX_JSON_BYTES = 1_000_000
 MAX_JSON_DEPTH = 64
 MIN_MINOR_UNITS = -(2**63)
@@ -131,7 +133,7 @@ def _require_text(field: str, value: str, maximum: int) -> None:
         not isinstance(value, str)
         or not value.strip()
         or len(value) > maximum
-        or _contains_unstorable_text(value)
+        or contains_unstorable_text(value)
     ):
         raise ConnectorContractError(f"{field} must be non-blank and at most {maximum} characters")
 
@@ -174,7 +176,7 @@ def _walk_json(value: object, *, field: str, reject_floats: bool) -> None:
         if current is None or isinstance(current, (bool, int)):
             continue
         if isinstance(current, str):
-            if _contains_unstorable_text(current):
+            if contains_unstorable_text(current):
                 raise ConnectorContractError(f"{field} contains non-storable text")
             continue
         if isinstance(current, float):
@@ -185,7 +187,7 @@ def _walk_json(value: object, *, field: str, reject_floats: bool) -> None:
             for key, child in current.items():
                 if not isinstance(key, str):
                     raise ConnectorContractError(f"{field} object keys must be strings")
-                if _contains_unstorable_text(key):
+                if contains_unstorable_text(key):
                     raise ConnectorContractError(f"{field} contains non-storable text")
                 stack.append((child, depth + 1))
             continue
@@ -193,10 +195,6 @@ def _walk_json(value: object, *, field: str, reject_floats: bool) -> None:
             stack.extend((child, depth + 1) for child in current)
             continue
         raise ConnectorContractError(f"{field} must contain JSON values only")
-
-
-def _contains_unstorable_text(value: str) -> bool:
-    return any(codepoint == 0 or 0xD800 <= codepoint <= 0xDFFF for codepoint in map(ord, value))
 
 
 def _validate_money(value: object) -> None:

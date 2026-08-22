@@ -118,6 +118,19 @@ def test_chunk_count_covers_the_full_artifact_limit() -> None:
     assert MAX_CHUNK_COUNT * MAX_ARTIFACT_CHUNK_PAYLOAD_BYTES >= MAX_ARTIFACT_BYTES
 
 
+def test_default_chunk_size_streams_the_full_artifact_limit() -> None:
+    content = b"x" * MAX_ARTIFACT_BYTES
+    request = _request(content)
+    frames = list(chunk_frames(request, BytesIO(content)))
+    chunks = [
+        decode_frame(frame)[1]
+        for frame in frames
+        if decode_frame(frame)[0] is FrameKind.ARTIFACT_CHUNK
+    ]
+    assert len(chunks) == MAX_CHUNK_COUNT
+    assert sum(map(len, chunks)) == MAX_ARTIFACT_BYTES
+
+
 @pytest.mark.parametrize("bad_text", ["\x00", "\ud800"])
 def test_protocol_rejects_unstorable_terminal_and_record_text(bad_text: str) -> None:
     request = _request()

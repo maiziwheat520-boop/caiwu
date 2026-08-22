@@ -25,6 +25,7 @@ from ledgerbridge.connectors import (
     ParsedSourceRecord,
     _validate_json_object,
 )
+from ledgerbridge.text import contains_unstorable_text
 
 PROTOCOL_VERSION = 1
 MAX_REQUEST_SECONDS = 90
@@ -508,7 +509,7 @@ def _require_text(field: str, value: object, maximum: int) -> None:
         not isinstance(value, str)
         or not value.strip()
         or len(value) > maximum
-        or _contains_unstorable_text(value)
+        or contains_unstorable_text(value)
     ):
         raise RunnerProtocolError(f"{field} is invalid")
 
@@ -516,10 +517,6 @@ def _require_text(field: str, value: object, maximum: int) -> None:
 def _require_source(field: str, value: object) -> None:
     if not isinstance(value, str) or CANONICAL_SOURCE_PATTERN.fullmatch(value) is None:
         raise RunnerProtocolError(f"{field} is not canonical")
-
-
-def _contains_unstorable_text(value: str) -> bool:
-    return any(codepoint == 0 or 0xD800 <= codepoint <= 0xDFFF for codepoint in map(ord, value))
 
 
 def _int_value(value: Mapping[str, object], field: str, minimum: int, maximum: int) -> int:

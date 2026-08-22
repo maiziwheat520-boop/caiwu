@@ -30,15 +30,24 @@ def test_worker_heartbeat_rejects_missing_stale_future_and_malformed(tmp_path: P
 
 def test_worker_main_writes_once_and_stops(monkeypatch: object) -> None:
     calls: list[str] = []
+    importer_builds: list[str] = []
+
+    def build_importer() -> None:
+        importer_builds.append("build")
 
     monkeypatch.setattr(worker.signal, "signal", lambda *_args: None)  # type: ignore[attr-defined]
-    monkeypatch.setattr(worker, "build_evidence_importer", lambda: None)  # type: ignore[attr-defined]
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        worker,
+        "build_evidence_importer",
+        build_importer,
+    )
     monkeypatch.setattr(worker, "write_heartbeat", lambda: calls.append("write"))  # type: ignore[attr-defined]
     monkeypatch.setattr(worker.time, "sleep", lambda _seconds: worker._stop(0, None))  # type: ignore[attr-defined]
 
     worker.main()
 
     assert calls == ["write"]
+    assert importer_builds == ["build"]
 
 
 def test_worker_composition_enables_production_connector_boundary(

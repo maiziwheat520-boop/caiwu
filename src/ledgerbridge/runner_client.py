@@ -36,6 +36,7 @@ from ledgerbridge.runner_protocol import (
     parse_terminal_payload,
     read_frame,
 )
+from ledgerbridge.text import contains_unstorable_text
 
 
 class RunnerClientError(RuntimeError):
@@ -46,7 +47,7 @@ class RunnerClientError(RuntimeError):
             error_code if re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", error_code) else "RUNNER_ERROR"
         )
         normalized_summary = summary.strip()[:500]
-        if not normalized_summary or _contains_unstorable_text(normalized_summary):
+        if not normalized_summary or contains_unstorable_text(normalized_summary):
             normalized_summary = "connector runner failed"
         super().__init__(normalized_summary)
         self.error_code = normalized_code
@@ -57,10 +58,6 @@ class RunnerClientError(RuntimeError):
 class RunnerResult:
     terminal: RunnerTerminal
     records: tuple[ParsedSourceRecord, ...]
-
-
-def _contains_unstorable_text(value: str) -> bool:
-    return any(codepoint == 0 or 0xD800 <= codepoint <= 0xDFFF for codepoint in map(ord, value))
 
 
 class ConnectorRunnerClient:

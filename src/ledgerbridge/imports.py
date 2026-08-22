@@ -47,6 +47,7 @@ from ledgerbridge.models import (
     SourceSystem,
 )
 from ledgerbridge.runner_client import RunnerClientError
+from ledgerbridge.text import contains_unstorable_text
 
 ROUTER_NAME = "ledgerbridge.router"
 ROUTER_VERSION = "1"
@@ -937,7 +938,12 @@ class EvidenceImporter:
 
 
 def _validate_text(field: str, value: str, maximum: int) -> None:
-    if not isinstance(value, str) or not value.strip() or len(value) > maximum:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > maximum
+        or contains_unstorable_text(value)
+    ):
         raise ValueError(f"{field} must be non-blank and at most {maximum} characters")
 
 
