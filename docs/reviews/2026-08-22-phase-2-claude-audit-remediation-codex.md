@@ -8,6 +8,7 @@
 | Vulnerable merged base | `23bfbd3bcc79068c3744dab05a961d497590ec8e` |
 | Claude report commit | `cc07e08aa264c5a2aa42d9b422a049cf5c926ee9` |
 | Remediation executable SHA | `40fcd022ae6d3127aa7bdc17afecb6b1a159cda0` |
+| Pull request | [#11](https://github.com/maiziwheat520-boop/caiwu/pull/11) |
 | Production deployment | Not authorized; not performed |
 
 ## Outcome
@@ -77,6 +78,17 @@ still runs image `ledgerbridge-app:0c5616f` at Alembic `20260821_0002`; therefor
 the P2-B1 path remains live there until a later explicitly authorized migration
 and deployment.
 
+### Protected GitHub gate
+
+- Branch push run
+  [32559469055](https://github.com/maiziwheat520-boop/caiwu/actions/runs/32559469055):
+  `secrets`, `quality`, and `compose` passed.
+- Pull-request run
+  [32559511616](https://github.com/maiziwheat520-boop/caiwu/actions/runs/32559511616):
+  `secrets`, `quality`, and `compose` passed.
+- The two runs completed 6/6 jobs successfully against PR head
+  `0cc3b39c4393324b46608bd12ec26f2e00b371ed`.
+
 ## Audit metadata corrections
 
 Two report-header statements do not affect the technical findings but should be
@@ -96,6 +108,6 @@ either metadata point.
 
 ## Verdict
 
-**REMEDIATION IMPLEMENTED, COMMITTED, AND LOCALLY/HERMES VALIDATED; PROTECTED CI
-AND MERGE DECISIONS PENDING.** Production deployment and real-data ingestion remain
-explicitly out of scope.
+**REMEDIATION IMPLEMENTED, COMMITTED, LOCALLY/HERMES VALIDATED, AND PROTECTED CI
+PASSED; MERGE DECISION PENDING.** Production deployment and real-data ingestion
+remain explicitly out of scope.

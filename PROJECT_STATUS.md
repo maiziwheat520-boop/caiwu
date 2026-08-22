@@ -58,8 +58,10 @@ Disposable Hermes PostgreSQL 15 validation passed an empty migration
 `head -> base -> head` round trip followed by 128/128 tests at 95.79% coverage;
 Ruff, formatting, full strict mypy, Bandit, Compose parsing, and a production
 image build/import smoke pass. The immutable remediation executable is
-`40fcd022ae6d3127aa7bdc17afecb6b1a159cda0`. No remediation PR, production
-migration, deployment, or real evidence ingestion has occurred yet.
+`40fcd022ae6d3127aa7bdc17afecb6b1a159cda0`. PR #11 push run `32559469055`
+and pull-request run `32559511616` passed `secrets`, `quality`, and `compose`
+(6/6 jobs). No merge, production migration, deployment, or real evidence
+ingestion has occurred yet.
 
 ## Completed
 
@@ -131,8 +133,7 @@ closures and report addendum.
 
 ## Next task
 
-Publish the remediation branch and report, run protected PR CI, and request a
-merge decision. Because production remains on migration
+Request the PR #11 merge decision. Because production remains on migration
 `20260821_0002`, the P2-B1 temporary-schema path remains a production risk until
 a separately authorized migration/deployment; do not apply that change implicitly.
 

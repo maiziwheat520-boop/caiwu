@@ -2,7 +2,7 @@
 
 - Status: PR #10 merged; independent Claude audit returned CHANGES REQUIRED;
   remediation executable `40fcd022ae6d3127aa7bdc17afecb6b1a159cda0` is locally
-  and Hermes validated, with PR/CI pending
+  and Hermes validated; PR #11 protected CI passed, with merge pending
 - Preflight date: 2026-08-21
 - Implementation owner: Codex
 - Review owner: Claude fixed-SHA audit at `cc07e08aa264c5a2aa42d9b422a049cf5c926ee9`;
@@ -366,6 +366,9 @@ with no partial batch.
   `40fcd022ae6d3127aa7bdc17afecb6b1a159cda0`. Compose configuration and the
   production image build/import smoke passed; the disposable validation
   containers, network, image, and `/tmp` worktree were removed afterward.
+- PR #11 push run `32559469055` and pull-request run `32559511616` completed
+  `secrets`, `quality`, and `compose` successfully (6/6 jobs) against evidence
+  head `0cc3b39c4393324b46608bd12ec26f2e00b371ed`.
 ## Review and handoff gate
 
 - Preflight/task-card work may merge before implementation only after its own CI.
@@ -382,6 +385,5 @@ with no partial batch.
 
 PR #10 IS MERGED BUT CLAUDE'S CHANGES-REQUIRED VERDICT SUPERSEDES THE PRIOR
 SELF-AUDIT VERDICT. The remediation executable is locally and Hermes validated,
-but it is not approved for production until protected PR/CI and
-final audit-response evidence are complete. Production migration/deployment and
-real-data ingestion remain separately authorized.
+and PR #11 protected CI passed. Merge remains a user decision; production
+migration/deployment and real-data ingestion remain separately authorized.
