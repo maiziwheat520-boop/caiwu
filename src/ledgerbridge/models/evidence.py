@@ -140,16 +140,19 @@ class ImportJob(Base):
         ),
         CheckConstraint(
             "(status = 'PENDING' AND started_at IS NULL AND completed_at IS NULL "
-            "AND error_code IS NULL AND parsed_count = 0 AND created_count = 0 "
+            "AND terminal_audit_event_id IS NULL AND error_code IS NULL "
+            "AND parsed_count = 0 AND created_count = 0 "
             "AND duplicate_count = 0) OR "
             "(status = 'RUNNING' AND started_at IS NOT NULL AND completed_at IS NULL "
-            "AND error_code IS NULL AND parsed_count = 0 AND created_count = 0 "
+            "AND terminal_audit_event_id IS NULL AND error_code IS NULL "
+            "AND parsed_count = 0 AND created_count = 0 "
             "AND duplicate_count = 0) OR "
             "(status = 'SUCCEEDED' AND started_at IS NOT NULL AND completed_at IS NOT NULL "
-            "AND error_code IS NULL) OR "
-            "(status = 'FAILED' AND completed_at IS NOT NULL AND error_code IS NOT NULL) OR "
+            "AND terminal_audit_event_id IS NOT NULL AND error_code IS NULL) OR "
+            "(status = 'FAILED' AND completed_at IS NOT NULL "
+            "AND terminal_audit_event_id IS NOT NULL AND error_code IS NOT NULL) OR "
             "(status = 'NEEDS_REVIEW' AND completed_at IS NOT NULL "
-            "AND error_code IS NOT NULL)",
+            "AND terminal_audit_event_id IS NOT NULL AND error_code IS NOT NULL)",
             name="import_job_state_timestamps",
         ),
         UniqueConstraint(
@@ -159,6 +162,17 @@ class ImportJob(Base):
             name="uq_import_job_artifact_connector_version",
         ),
         UniqueConstraint("id", "artifact_id", name="uq_import_job_id_artifact"),
+        UniqueConstraint(
+            "id",
+            "artifact_id",
+            "source_system",
+            "connector_version",
+            name="uq_import_job_provenance_identity",
+        ),
+        CheckConstraint(
+            "connector_name LIKE 'ledgerbridge.%' OR source_system IS NOT NULL",
+            name="import_job_source_system_required",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -171,6 +185,14 @@ class ImportJob(Base):
     )
     connector_name: Mapped[str] = mapped_column(String(100), nullable=False)
     connector_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_system: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("source_system.id", ondelete="RESTRICT")
+    )
+    terminal_audit_event_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("audit_event.id", ondelete="RESTRICT"),
+        unique=True,
+    )
     status: Mapped[ImportJobStatus] = mapped_column(
         Enum(ImportJobStatus, name="import_job_status"), nullable=False
     )
@@ -208,9 +230,14 @@ class SourceRecord(Base):
             name="source_record_external_id_not_blank",
         ),
         ForeignKeyConstraint(
-            ["import_job_id", "artifact_id"],
-            ["import_job.id", "import_job.artifact_id"],
-            name="fk_source_record_job_artifact",
+            ["import_job_id", "artifact_id", "source", "parser_version"],
+            [
+                "import_job.id",
+                "import_job.artifact_id",
+                "import_job.source_system",
+                "import_job.connector_version",
+            ],
+            name="fk_source_record_job_provenance",
             ondelete="RESTRICT",
         ),
         UniqueConstraint("artifact_id", "record_locator", name="uq_source_record_artifact_locator"),

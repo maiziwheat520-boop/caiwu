@@ -157,6 +157,170 @@ def upgrade() -> None:
         """
     )
 
+    op.add_column(
+        "import_job",
+        sa.Column("source_system", sa.String(length=64), nullable=True),
+    )
+    op.add_column(
+        "import_job",
+        sa.Column(
+            "terminal_audit_event_id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=True
+        ),
+    )
+    op.execute(
+        """
+        DO $ledgerbridge$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM public.source_record
+                GROUP BY import_job_id, artifact_id
+                HAVING count(DISTINCT source) > 1
+                    OR count(DISTINCT parser_version) > 1
+            ) THEN
+                RAISE EXCEPTION
+                    'Phase 3 cannot bind a job with mixed source or parser provenance';
+            END IF;
+        END
+        $ledgerbridge$;
+
+        UPDATE public.import_job AS job
+        SET source_system = records.source_system
+        FROM (
+            SELECT import_job_id, artifact_id, min(source) AS source_system
+            FROM public.source_record
+            GROUP BY import_job_id, artifact_id
+        ) AS records
+        WHERE job.id = records.import_job_id
+          AND job.artifact_id = records.artifact_id
+          AND job.connector_name NOT LIKE 'ledgerbridge.%'
+          AND job.source_system IS NULL;
+
+        UPDATE public.import_job
+        SET source_system = 'synthetic'
+        WHERE connector_name NOT LIKE 'ledgerbridge.%'
+          AND source_system IS NULL;
+
+        DO $ledgerbridge$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM public.source_record AS record
+                JOIN public.import_job AS job
+                  ON job.id = record.import_job_id
+                 AND job.artifact_id = record.artifact_id
+                WHERE record.source <> job.source_system
+                   OR record.parser_version <> job.connector_version
+            ) THEN
+                RAISE EXCEPTION
+                    'Phase 3 found import rows with mismatched job provenance';
+            END IF;
+        END
+        $ledgerbridge$;
+
+        ALTER TABLE public.import_job
+            ADD CONSTRAINT fk_import_job_source_system
+                FOREIGN KEY (source_system)
+                REFERENCES public.source_system (id)
+                ON DELETE RESTRICT,
+            ADD CONSTRAINT fk_import_job_terminal_audit_event
+                FOREIGN KEY (terminal_audit_event_id)
+                REFERENCES public.audit_event (id)
+                ON DELETE RESTRICT,
+            ADD CONSTRAINT uq_import_job_terminal_audit_event_id
+                UNIQUE (terminal_audit_event_id),
+            ADD CONSTRAINT uq_import_job_provenance_identity
+                UNIQUE (id, artifact_id, source_system, connector_version),
+            ADD CONSTRAINT ck_import_job_source_system_required
+                CHECK (connector_name LIKE 'ledgerbridge.%' OR source_system IS NOT NULL);
+
+        ALTER TABLE public.source_record
+            DROP CONSTRAINT IF EXISTS fk_source_record_job_artifact,
+            ADD CONSTRAINT fk_source_record_job_provenance
+                FOREIGN KEY (import_job_id, artifact_id, source, parser_version)
+                REFERENCES public.import_job (
+                    id, artifact_id, source_system, connector_version
+                )
+                ON DELETE RESTRICT;
+
+        ALTER TABLE public.import_job
+            DROP CONSTRAINT IF EXISTS ck_import_job_import_job_state_timestamps,
+            ADD CONSTRAINT ck_import_job_import_job_state_timestamps
+            CHECK (
+                (status = 'PENDING' AND started_at IS NULL AND completed_at IS NULL
+                 AND terminal_audit_event_id IS NULL AND error_code IS NULL
+                 AND parsed_count = 0 AND created_count = 0 AND duplicate_count = 0)
+                OR
+                (status = 'RUNNING' AND started_at IS NOT NULL AND completed_at IS NULL
+                 AND terminal_audit_event_id IS NULL AND error_code IS NULL
+                 AND parsed_count = 0 AND created_count = 0 AND duplicate_count = 0)
+                OR
+                (status = 'SUCCEEDED' AND started_at IS NOT NULL AND completed_at IS NOT NULL
+                 AND terminal_audit_event_id IS NOT NULL AND error_code IS NULL)
+                OR
+                (status = 'FAILED' AND completed_at IS NOT NULL
+                 AND terminal_audit_event_id IS NOT NULL AND error_code IS NOT NULL)
+                OR
+                (status = 'NEEDS_REVIEW' AND completed_at IS NOT NULL
+                 AND terminal_audit_event_id IS NOT NULL AND error_code IS NOT NULL)
+            );
+
+        CREATE FUNCTION public.import_job_validate_terminal_audit()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SET search_path = pg_catalog
+        AS $function$
+        DECLARE
+            v_action text;
+            v_job_id text;
+            v_artifact_id text;
+            v_status text;
+        BEGIN
+            IF NEW.status::text IN ('SUCCEEDED', 'FAILED', 'NEEDS_REVIEW') THEN
+                SELECT event.action,
+                       event.payload ->> 'job_id',
+                       event.payload ->> 'artifact_id',
+                       event.payload ->> 'status'
+                INTO v_action, v_job_id, v_artifact_id, v_status
+                FROM public.audit_event AS event
+                WHERE event.id = NEW.terminal_audit_event_id;
+                IF NOT FOUND
+                   OR v_action <> 'import.complete'
+                   OR v_job_id <> NEW.id::text
+                   OR v_artifact_id <> NEW.artifact_id::text
+                   OR v_status <> NEW.status::text THEN
+                    RAISE EXCEPTION
+                        'terminal import job requires a matching import.complete audit event'
+                        USING ERRCODE = 'integrity_constraint_violation';
+                END IF;
+            END IF;
+            RETURN NEW;
+        END
+        $function$;
+
+        CREATE CONSTRAINT TRIGGER import_job_terminal_audit_binding
+        AFTER INSERT OR UPDATE OF status, terminal_audit_event_id, artifact_id
+        ON public.import_job
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW EXECUTE FUNCTION public.import_job_validate_terminal_audit();
+        """
+    )
+    op.execute(
+        """
+        GRANT UPDATE (
+            status,
+            started_at,
+            completed_at,
+            terminal_audit_event_id,
+            parsed_count,
+            created_count,
+            duplicate_count,
+            error_code,
+            diagnostic_summary
+        ) ON TABLE public.import_job TO ledgerbridge_app;
+        """
+    )
+
 
 def downgrade() -> None:
     op.execute(
@@ -189,6 +353,47 @@ def downgrade() -> None:
         $ledgerbridge$;
         """
     )
+
+    op.execute(
+        """
+        DROP TRIGGER IF EXISTS import_job_terminal_audit_binding ON public.import_job;
+        DROP FUNCTION IF EXISTS public.import_job_validate_terminal_audit();
+        ALTER TABLE public.source_record
+            DROP CONSTRAINT IF EXISTS fk_source_record_job_provenance,
+            ADD CONSTRAINT fk_source_record_job_artifact
+                FOREIGN KEY (import_job_id, artifact_id)
+                REFERENCES public.import_job (id, artifact_id)
+                ON DELETE RESTRICT;
+        ALTER TABLE public.import_job
+            DROP CONSTRAINT IF EXISTS ck_import_job_import_job_state_timestamps,
+            ADD CONSTRAINT ck_import_job_import_job_state_timestamps
+            CHECK (
+                (status = 'PENDING' AND started_at IS NULL AND completed_at IS NULL
+                 AND error_code IS NULL AND parsed_count = 0 AND created_count = 0
+                 AND duplicate_count = 0)
+                OR
+                (status = 'RUNNING' AND started_at IS NOT NULL AND completed_at IS NULL
+                 AND error_code IS NULL AND parsed_count = 0 AND created_count = 0
+                 AND duplicate_count = 0)
+                OR
+                (status = 'SUCCEEDED' AND started_at IS NOT NULL AND completed_at IS NOT NULL
+                 AND error_code IS NULL)
+                OR
+                (status = 'FAILED' AND completed_at IS NOT NULL AND error_code IS NOT NULL)
+                OR
+                (status = 'NEEDS_REVIEW' AND completed_at IS NOT NULL
+                 AND error_code IS NOT NULL)
+            );
+        ALTER TABLE public.import_job
+            DROP CONSTRAINT IF EXISTS ck_import_job_source_system_required,
+            DROP CONSTRAINT IF EXISTS uq_import_job_terminal_audit_event_id,
+            DROP CONSTRAINT IF EXISTS uq_import_job_provenance_identity,
+            DROP CONSTRAINT IF EXISTS fk_import_job_terminal_audit_event,
+            DROP CONSTRAINT IF EXISTS fk_import_job_source_system;
+        """
+    )
+    op.drop_column("import_job", "terminal_audit_event_id")
+    op.drop_column("import_job", "source_system")
 
     op.drop_constraint(
         "fk_source_record_source_source_system",

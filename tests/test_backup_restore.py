@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import tarfile
 from dataclasses import replace
@@ -11,6 +12,15 @@ import pytest
 from scripts.backup_restore import (
     BACKUP_FORMAT_V1,
     BACKUP_FORMAT_V2,
+    PHASE_1_FUNCTIONS,
+    PHASE_1_TABLE_PRIVILEGES,
+    PHASE_1_TRIGGERS,
+    PHASE_2_FUNCTIONS,
+    PHASE_2_TABLE_PRIVILEGES,
+    PHASE_2_TRIGGERS,
+    PHASE_3_FUNCTIONS,
+    PHASE_3_TABLE_PRIVILEGES,
+    PHASE_3_TRIGGERS,
     BackupError,
     CommonConfig,
     RestoreResources,
@@ -179,18 +189,66 @@ def test_v2_database_metadata_requires_exact_rich_comparison() -> None:
         _validate_restored_database(expected, actual)
 
 
+def test_v2_database_metadata_requires_trigger_and_grant_baseline() -> None:
+    expected = _database_metadata() | {
+        "metadata_version": 2,
+        "alembic_version": "20260822_0004",
+        "database_temp_denied": True,
+        "security_functions": [
+            {"name": name, "proconfig": ["search_path=pg_catalog"]}
+            for name in sorted(PHASE_1_FUNCTIONS | PHASE_2_FUNCTIONS | PHASE_3_FUNCTIONS)
+        ],
+        "public_triggers": [
+            {"name": name, "enabled": "O"}
+            for name in sorted(PHASE_1_TRIGGERS | PHASE_2_TRIGGERS | PHASE_3_TRIGGERS)
+        ],
+        "table_grants": [
+            {"table": table, "privilege": privilege, "grantable": "NO"}
+            for table, privilege in sorted(
+                PHASE_1_TABLE_PRIVILEGES | PHASE_2_TABLE_PRIVILEGES | PHASE_3_TABLE_PRIVILEGES
+            )
+        ],
+        "sequence_grants": [],
+        "function_grants": [
+            {
+                "function": "append_audit_event",
+                "grantee": "ledgerbridge_app",
+                "privilege": "EXECUTE",
+                "grantable": "NO",
+            }
+        ],
+    }
+    _validate_restored_database(expected, expected.copy())
+
+    missing_trigger = expected | {
+        "public_triggers": expected["public_triggers"][:-1],
+    }
+    with pytest.raises(BackupError, match="required triggers"):
+        _validate_restored_database(missing_trigger, missing_trigger.copy())
+
+    excess_grant = expected | {
+        "table_grants": [
+            *cast(list[dict[str, object]], expected["table_grants"]),
+            {"table": "audit_event", "privilege": "UPDATE", "grantable": "NO"},
+        ]
+    }
+    with pytest.raises(BackupError, match="table grants"):
+        _validate_restored_database(excess_grant, excess_grant.copy())
+
+
 def test_artifact_archive_metadata_counts_published_and_staging_bytes(
     tmp_path: Path,
 ) -> None:
     archive = tmp_path / "artifacts.tar"
-    digest = "aabb" + "0" * 60
+    published = b"published"
+    digest = hashlib.sha256(published).hexdigest()
     with tarfile.open(archive, "w:") as bundle:
         for directory in (".", "./.staging", "./sha256", "./sha256/aa", "./sha256/aa/bb"):
             member = tarfile.TarInfo(directory)
             member.type = tarfile.DIRTYPE
             bundle.addfile(member)
         for name, contents in (
-            (f"./sha256/aa/bb/{digest}", b"published"),
+            (f"./sha256/{digest[:2]}/{digest[2:4]}/{digest}", published),
             ("./.staging/artifact-partial", b"stage"),
         ):
             member = tarfile.TarInfo(name)
@@ -210,7 +268,31 @@ def test_artifact_archive_metadata_counts_published_and_staging_bytes(
         "staging_bytes": 5,
         "unsafe_entries": 0,
         "quota": quota,
+        "artifact_count": 1,
+        "artifact_manifest_sha256": hashlib.sha256(
+            f"{digest}:9:sha256/{digest[:2]}/{digest[2:4]}/{digest}".encode()
+        ).hexdigest(),
     }
+
+
+def test_artifact_archive_metadata_rejects_digest_content_mismatch(tmp_path: Path) -> None:
+    archive = tmp_path / "artifacts.tar"
+    digest = "aabb" + "0" * 60
+    with tarfile.open(archive, "w:") as bundle:
+        member = tarfile.TarInfo(f"sha256/aa/bb/{digest}")
+        member.size = len(b"wrong")
+        bundle.addfile(member, io.BytesIO(b"wrong"))
+
+    with pytest.raises(BackupError, match="digest"):
+        _artifact_archive_metadata(
+            archive,
+            {
+                "per_artifact_max_bytes": 100,
+                "published_max_bytes": 100,
+                "staging_max_bytes": 100,
+                "staging_ttl_seconds": 60,
+            },
+        )
 
 
 @pytest.mark.parametrize("field", ["function_count", "trigger_count"])

@@ -83,6 +83,10 @@ def validate_connector(connector: Connector) -> tuple[str, str, str]:
     version = connector.version
     _require_text("connector.name", name, 100)
     _require_text("connector.version", version, 100)
+    if name.startswith("ledgerbridge."):
+        raise ConnectorContractError(
+            "connector.name uses the reserved internal namespace ledgerbridge.*"
+        )
     source_system = connector.source_system
     _require_canonical_source("connector.source_system", source_system)
     return name, version, source_system

@@ -987,6 +987,7 @@ def test_import_job_state_machine_and_column_grants(
             artifact_id=outcome.artifact_id,
             connector_name="manual-state-test",
             connector_version="1",
+            source_system="synthetic",
             status=ImportJobStatus.PENDING,
         )
         session.add(manual)
@@ -1011,10 +1012,33 @@ def test_import_job_state_machine_and_column_grants(
             .values(status=ImportJobStatus.RUNNING, started_at=datetime.now(UTC))
         )
         session.commit()
+        with pytest.raises(DBAPIError, match="terminal import job requires"):
+            session.execute(
+                update(ImportJob)
+                .where(ImportJob.id == manual.id)
+                .values(status=ImportJobStatus.SUCCEEDED, completed_at=datetime.now(UTC))
+            )
+            session.commit()
+        session.rollback()
+        audit_event_id = append_audit_event(
+            session,
+            actor="pytest",
+            action="import.complete",
+            reason="manual state transition",
+            payload={
+                "job_id": str(manual.id),
+                "artifact_id": str(outcome.artifact_id),
+                "status": "SUCCEEDED",
+            },
+        )
         session.execute(
             update(ImportJob)
             .where(ImportJob.id == manual.id)
-            .values(status=ImportJobStatus.SUCCEEDED, completed_at=datetime.now(UTC))
+            .values(
+                status=ImportJobStatus.SUCCEEDED,
+                completed_at=datetime.now(UTC),
+                terminal_audit_event_id=audit_event_id,
+            )
         )
         session.commit()
 

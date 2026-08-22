@@ -195,6 +195,24 @@ SELECT json_build_object(
     ), '[]'::json)
 )::text;
 """.strip()
+ARTIFACT_MANIFEST_SQL = """
+SELECT json_build_object(
+    'artifact_count', (SELECT count(*) FROM public.raw_artifact),
+    'artifact_manifest_sha256', encode(
+        digest(
+            COALESCE((
+                SELECT string_agg(
+                    encode(sha256, 'hex') || ':' || byte_size::text || ':' || storage_key,
+                    E'\\n' ORDER BY encode(sha256, 'hex')
+                )
+                FROM public.raw_artifact
+            ), ''),
+            'sha256'
+        ),
+        'hex'
+    )
+)::text;
+""".strip()
 
 PHASE_1_TABLES = ("entity", "account", "journal_entry", "posting", "audit_event")
 PHASE_2_TABLES = ("raw_artifact", "import_job", "source_record")
@@ -259,6 +277,51 @@ PHASE_2_FUNCTIONS = frozenset(
     }
 )
 PHASE_3_FUNCTIONS = frozenset({"registry_block_mutation"})
+PHASE_1_TRIGGERS = frozenset(
+    {
+        "account_protected_dimensions_immutable",
+        "audit_event_no_update_delete",
+        "journal_entry_validate_correction",
+        "journal_entry_posted_immutable",
+        "posting_entity_boundary",
+        "posting_posted_immutable",
+        "posting_balanced_per_currency",
+        "journal_entry_posted_complete",
+    }
+)
+PHASE_2_TRIGGERS = frozenset(
+    {
+        "raw_artifact_no_update_delete",
+        "raw_artifact_audit_binding",
+        "source_record_no_update_delete",
+        "import_job_state_machine",
+        "journal_entry_post_audit_binding",
+    }
+)
+PHASE_3_TRIGGERS = frozenset(
+    {
+        "ingest_channel_no_update_delete",
+        "source_system_no_update_delete",
+        "import_job_terminal_audit_binding",
+    }
+)
+PHASE_1_TABLE_PRIVILEGES = frozenset(
+    (table, privilege)
+    for table in ("entity", "account", "journal_entry", "posting")
+    for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE")
+) | {("audit_event", "SELECT")}
+PHASE_2_TABLE_PRIVILEGES = frozenset(
+    {
+        ("raw_artifact", "SELECT"),
+        ("raw_artifact", "INSERT"),
+        ("source_record", "SELECT"),
+        ("source_record", "INSERT"),
+        ("import_job", "SELECT"),
+        ("import_job", "INSERT"),
+        ("import_job", "UPDATE"),
+    }
+)
+PHASE_3_TABLE_PRIVILEGES = frozenset({("ingest_channel", "SELECT"), ("source_system", "SELECT")})
 RUNTIME_IDENTITY_PROGRAM = (
     "import os; "
     "from sqlalchemy import create_engine, text; "
@@ -547,6 +610,11 @@ def _database_metadata(
     metadata["metadata_version"] = 2
     metadata["row_counts"] = row_counts
     metadata.update(cast(dict[str, Any], security))
+    if revision >= "20260821_0003":
+        artifact_manifest = query(ARTIFACT_MANIFEST_SQL)
+        if not isinstance(artifact_manifest, dict):
+            raise BackupError("artifact manifest query returned an invalid object")
+        metadata.update(cast(dict[str, Any], artifact_manifest))
     return metadata
 
 
@@ -571,14 +639,19 @@ def _verify_gpg_key(runner: Runner, home: Path, fingerprint: str) -> None:
         raise BackupError("the requested GPG secret key is not present")
 
 
-def _verify_deployment_manifest(runner: Runner, project_dir: Path, revision: str) -> None:
+def _verify_deployment_manifest(
+    runner: Runner,
+    verifier_project_dir: Path,
+    target_root: Path,
+    revision: str,
+) -> None:
     runner.run(
         [
             sys.executable,
-            str(project_dir / "scripts" / "deployment_manifest.py"),
+            str(verifier_project_dir / "scripts" / "deployment_manifest.py"),
             "verify",
             "--root",
-            str(project_dir),
+            str(target_root),
             "--manifest",
             "MANIFEST.sha256",
             "--expected-revision",
@@ -593,7 +666,7 @@ def _collect_source_state(config: CommonConfig, runner: Runner) -> SourceState:
     if REVISION_PATTERN.fullmatch(revision) is None:
         raise BackupError("DEPLOYED_REVISION is not a full lowercase Git SHA")
     _validate_private_file(project_dir / ".env", "deployment .env")
-    _verify_deployment_manifest(runner, project_dir, revision)
+    _verify_deployment_manifest(runner, project_dir, project_dir, revision)
     postgres = _container_for(runner, project_dir, "postgres")
     api = _container_for(runner, project_dir, "api")
     worker = _container_for(runner, project_dir, "worker")
@@ -736,6 +809,7 @@ def _artifact_quota_config(project_dir: Path) -> dict[str, int]:
 def _artifact_archive_metadata(archive: Path, quota: dict[str, int]) -> dict[str, object]:
     published_bytes = 0
     staging_bytes = 0
+    artifact_entries: list[str] = []
     with tarfile.open(archive, mode="r:") as bundle:
         names: set[str] = set()
         for member in bundle.getmembers():
@@ -762,10 +836,33 @@ def _artifact_archive_metadata(archive: Path, quota: dict[str, int]) -> dict[str
             if parts == (".quota.lock",):
                 continue
             if len(parts) == 2 and parts[0] == ".staging" and parts[1].startswith("artifact-"):
+                if member.size > quota["per_artifact_max_bytes"]:
+                    raise BackupError("artifact archive member exceeds per-artifact quota")
                 staging_bytes += member.size
                 continue
             if _valid_artifact_blob_parts(parts):
-                published_bytes += member.size
+                if member.size > quota["per_artifact_max_bytes"]:
+                    raise BackupError("artifact archive member exceeds per-artifact quota")
+                stream = bundle.extractfile(member)
+                if stream is None:
+                    raise BackupError("artifact archive member could not be read")
+                digest = hashlib.sha256()
+                observed_size = 0
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    observed_size += len(chunk)
+                if observed_size != member.size:
+                    raise BackupError("artifact archive member size differs from tar metadata")
+                first, second, expected_digest = parts[1:]
+                actual_digest = digest.hexdigest()
+                if not hmac.compare_digest(actual_digest, expected_digest):
+                    raise BackupError("artifact archive member digest differs from its storage key")
+                storage_key = f"sha256/{first}/{second}/{expected_digest}"
+                artifact_entries.append(f"{expected_digest}:{member.size}:{storage_key}")
+                published_bytes += observed_size
                 continue
             raise BackupError("artifact archive contains an unexpected file")
     if published_bytes > quota["published_max_bytes"]:
@@ -777,6 +874,10 @@ def _artifact_archive_metadata(archive: Path, quota: dict[str, int]) -> dict[str
         "staging_bytes": staging_bytes,
         "unsafe_entries": 0,
         "quota": quota,
+        "artifact_count": len(artifact_entries),
+        "artifact_manifest_sha256": hashlib.sha256(
+            "\n".join(sorted(artifact_entries)).encode("utf-8")
+        ).hexdigest(),
     }
 
 
@@ -856,6 +957,12 @@ def _create_plain_payload(
         work_dir / "artifacts.tar",
         _artifact_quota_config(config.project_dir),
     )
+    if (
+        state.database.get("artifact_count") != artifact_control["artifact_count"]
+        or state.database.get("artifact_manifest_sha256")
+        != artifact_control["artifact_manifest_sha256"]
+    ):
+        raise BackupError("database artifact manifest differs from the artifact archive")
     metadata = {
         "format": BACKUP_FORMAT,
         "created_at": _now().isoformat(),
@@ -1303,12 +1410,77 @@ def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
     ]
     if disabled:
         raise BackupError(f"restored database has disabled triggers: {', '.join(disabled)}")
-    for field in ("table_grants", "sequence_grants", "function_grants"):
-        if not isinstance(metadata.get(field), list):
-            raise BackupError(f"restored grant metadata is invalid: {field}")
+    required_triggers = set(PHASE_1_TRIGGERS)
+    if revision >= "20260821_0003":
+        required_triggers.update(PHASE_2_TRIGGERS)
+    if revision >= "20260822_0004":
+        required_triggers.update(PHASE_3_TRIGGERS)
+    trigger_names = {
+        value.get("name")
+        for value in triggers
+        if isinstance(value, dict) and isinstance(value.get("name"), str)
+    }
+    missing_triggers = sorted(required_triggers - trigger_names)
+    if missing_triggers:
+        raise BackupError(
+            "restored database lacks required triggers: " + ", ".join(missing_triggers)
+        )
+
+    table_grants = metadata.get("table_grants")
+    sequence_grants = metadata.get("sequence_grants")
+    function_grants = metadata.get("function_grants")
+    if not isinstance(table_grants, list):
+        raise BackupError("restored grant metadata is invalid: table_grants")
+    if not isinstance(sequence_grants, list):
+        raise BackupError("restored grant metadata is invalid: sequence_grants")
+    if not isinstance(function_grants, list):
+        raise BackupError("restored grant metadata is invalid: function_grants")
+
+    expected_table_grants = set(PHASE_1_TABLE_PRIVILEGES)
+    if revision >= "20260821_0003":
+        expected_table_grants.update(PHASE_2_TABLE_PRIVILEGES)
+    if revision >= "20260822_0004":
+        expected_table_grants.update(PHASE_3_TABLE_PRIVILEGES)
+    actual_table_grants: set[tuple[str, str]] = set()
+    for value in table_grants:
+        if not isinstance(value, dict):
+            raise BackupError("restored table grant metadata is invalid")
+        table = value.get("table")
+        privilege = value.get("privilege")
+        if not isinstance(table, str) or not isinstance(privilege, str):
+            raise BackupError("restored table grant metadata is invalid")
+        if value.get("grantable") != "NO":
+            raise BackupError("restored runtime table grant is grantable")
+        actual_table_grants.add((table, privilege))
+    if actual_table_grants != expected_table_grants:
+        raise BackupError("restored runtime table grants differ from the required baseline")
+
+    if sequence_grants:
+        raise BackupError("restored runtime role has unexpected sequence grants")
+    runtime_function_grants: set[tuple[str, str]] = set()
+    for value in function_grants:
+        if not isinstance(value, dict):
+            raise BackupError("restored function grant metadata is invalid")
+        if value.get("grantee") != "ledgerbridge_app":
+            continue
+        function = value.get("function")
+        privilege = value.get("privilege")
+        if not isinstance(function, str) or not isinstance(privilege, str):
+            raise BackupError("restored function grant metadata is invalid")
+        if value.get("grantable") != "NO":
+            raise BackupError("restored runtime function grant is grantable")
+        runtime_function_grants.add((function, privilege))
+    if runtime_function_grants != {("append_audit_event", "EXECUTE")}:
+        raise BackupError("restored runtime function grants differ from the required baseline")
 
 
-def _deployment_root(runner: Runner, archive: Path, destination: Path, revision: str) -> Path:
+def _deployment_root(
+    runner: Runner,
+    verifier_project_dir: Path,
+    archive: Path,
+    destination: Path,
+    revision: str,
+) -> Path:
     _safe_extract_tar(archive, destination)
     children = list(destination.iterdir())
     if len(children) != 1 or not children[0].is_dir() or children[0].is_symlink():
@@ -1318,7 +1490,7 @@ def _deployment_root(runner: Runner, archive: Path, destination: Path, revision:
     if not hmac.compare_digest(archived_revision, revision):
         raise BackupError("restored deployment revision differs from backup metadata")
     _validate_private_file(root / ".env", "restored deployment .env")
-    _verify_deployment_manifest(runner, root, revision)
+    _verify_deployment_manifest(runner, verifier_project_dir, root, revision)
     return root
 
 
@@ -1490,6 +1662,7 @@ def rehearse_restore(config: CommonConfig, backup: Path, runner: Runner | None =
         )
         deployment = _deployment_root(
             runner,
+            config.project_dir,
             extracted / "deployment-tree.tar",
             work_dir / "deployment",
             revision,
@@ -1590,6 +1763,14 @@ def rehearse_restore(config: CommonConfig, backup: Path, runner: Runner | None =
                 artifact_digest, expected_artifact_digest
             ):
                 raise BackupError("restored artifact volume digest differs from backup")
+            if source_format == BACKUP_FORMAT_V2 and (
+                actual_database.get("artifact_count") != artifact_observation.get("artifact_count")
+                or actual_database.get("artifact_manifest_sha256")
+                != artifact_observation.get("artifact_manifest_sha256")
+            ):
+                raise BackupError(
+                    "restored database artifact manifest differs from the artifact archive"
+                )
 
             environment = _parse_env(deployment / ".env")
             source_url = environment.get("LEDGERBRIDGE_DATABASE_URL")

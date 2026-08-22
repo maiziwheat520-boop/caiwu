@@ -502,7 +502,12 @@ class EvidenceImporter:
         actor: str,
         reason: str,
     ) -> ImportOutcome:
-        job_id = self._find_or_create_job(artifact.id, binding.name, binding.version)
+        job_id = self._find_or_create_job(
+            artifact.id,
+            binding.name,
+            binding.version,
+            source_system=binding.source_system,
+        )
         existing = self._job_outcome(artifact, job_id)
         if existing.status in {
             ImportJobStatus.SUCCEEDED,
@@ -645,7 +650,14 @@ class EvidenceImporter:
         with self._sessions() as session:
             return session.get(IngestChannel, ingest_channel) is not None
 
-    def _find_or_create_job(self, artifact_id: UUID, name: str, version: str) -> UUID:
+    def _find_or_create_job(
+        self,
+        artifact_id: UUID,
+        name: str,
+        version: str,
+        *,
+        source_system: str | None = None,
+    ) -> UUID:
         with self._sessions() as session, session.begin():
             job_id = session.execute(
                 postgresql_insert(ImportJob)
@@ -653,6 +665,7 @@ class EvidenceImporter:
                     artifact_id=artifact_id,
                     connector_name=name,
                     connector_version=version,
+                    source_system=source_system,
                     status=ImportJobStatus.PENDING,
                 )
                 .on_conflict_do_nothing(
@@ -754,13 +767,14 @@ class EvidenceImporter:
             job.duplicate_count = duplicate_count
             job.error_code = None
             job.diagnostic_summary = None
-            append_audit_event(
+            audit_event_id = append_audit_event(
                 session,
                 actor=actor,
                 action="import.complete",
                 reason=reason,
                 payload=self._audit_payload(artifact, job),
             )
+            job.terminal_audit_event_id = audit_event_id
             session.flush()
             return self._outcome(artifact, job)
 
@@ -795,13 +809,14 @@ class EvidenceImporter:
             job.duplicate_count = duplicate_count
             job.error_code = error_code
             job.diagnostic_summary = summary
-            append_audit_event(
+            audit_event_id = append_audit_event(
                 session,
                 actor=actor,
                 action="import.complete",
                 reason=reason,
                 payload=self._audit_payload(artifact, job),
             )
+            job.terminal_audit_event_id = audit_event_id
             session.flush()
             return self._outcome(artifact, job)
 
@@ -837,6 +852,7 @@ class EvidenceImporter:
             "job_id": str(job.id),
             "connector_name": job.connector_name,
             "connector_version": job.connector_version,
+            "source_system": job.source_system,
             "status": job.status.value,
             "parsed_count": job.parsed_count,
             "created_count": job.created_count,
