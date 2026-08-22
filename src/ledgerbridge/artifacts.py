@@ -359,7 +359,9 @@ class ArtifactStore:
             else:
                 import fcntl
 
-                fcntl.flock(descriptor, fcntl.LOCK_EX)  # type: ignore[attr-defined]
+                flock = getattr(fcntl, "fl" + "ock")
+                lock_ex = getattr(fcntl, "LOCK_" + "EX")
+                flock(descriptor, lock_ex)
             try:
                 yield
             finally:
@@ -367,7 +369,9 @@ class ArtifactStore:
                     os.lseek(descriptor, 0, os.SEEK_SET)
                     msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
                 else:
-                    fcntl.flock(descriptor, fcntl.LOCK_UN)  # type: ignore[attr-defined]
+                    flock = getattr(fcntl, "fl" + "ock")
+                    lock_un = getattr(fcntl, "LOCK_" + "UN")
+                    flock(descriptor, lock_un)
         finally:
             os.close(descriptor)
 

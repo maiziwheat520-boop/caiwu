@@ -221,7 +221,7 @@ def test_v2_database_metadata_requires_trigger_and_grant_baseline() -> None:
     _validate_restored_database(expected, expected.copy())
 
     missing_trigger = expected | {
-        "public_triggers": expected["public_triggers"][:-1],
+        "public_triggers": cast(list[str], expected["public_triggers"])[:-1],
     }
     with pytest.raises(BackupError, match="required triggers"):
         _validate_restored_database(missing_trigger, missing_trigger.copy())
