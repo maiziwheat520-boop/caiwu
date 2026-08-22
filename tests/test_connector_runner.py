@@ -192,6 +192,29 @@ class SlowResponseServer:
         writer.close()
 
 
+class SlowSendSocket:
+    def __init__(self, delay: float) -> None:
+        self.delay = delay
+        self.timeout: float | None = None
+
+    def __enter__(self) -> SlowSendSocket:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def settimeout(self, timeout: float) -> None:
+        self.timeout = timeout
+
+    def send(self, payload: memoryview[bytes]) -> int:
+        del payload
+        time.sleep(self.delay)
+        return 1
+
+    def recv(self, _size: int) -> bytes:
+        return b""
+
+
 class _MemoryWriter:
     def __init__(self) -> None:
         self.frames: list[bytes] = []
@@ -317,6 +340,20 @@ async def test_runner_client_enforces_overall_response_deadline() -> None:
         finally:
             server.close()
             await server.wait_closed()
+
+
+def test_runner_client_enforces_overall_send_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _request(b"send deadline")
+    connection = SlowSendSocket(0.06)
+    client = ConnectorRunnerClient("unused", timeout_seconds=0.1)
+    monkeypatch.setattr(client, "_connect", lambda: connection)
+
+    started = time.monotonic()
+    with pytest.raises(RunnerClientError, match="unavailable") as error:
+        client.parse(request, _bytes(b"send deadline"))
+
+    assert error.value.error_code == "RUNNER_UNAVAILABLE"
+    assert time.monotonic() - started < 0.3
 
 
 @pytest.mark.asyncio

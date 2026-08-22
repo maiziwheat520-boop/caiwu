@@ -75,7 +75,11 @@ class ConnectorRunnerClient:
         deadline = time.monotonic() + self.timeout_seconds
         try:
             with self._connect() as connection:
-                connection.sendall(encode_frame(FrameKind.CONTROL, health_control(request_id)))
+                self._send_bytes(
+                    connection,
+                    encode_frame(FrameKind.CONTROL, health_control(request_id)),
+                    deadline,
+                )
                 terminal = self._read_terminal(connection, request_id, deadline=deadline)
         except (OSError, RunnerProtocolError, RunnerClientError):
             return False
@@ -99,7 +103,7 @@ class ConnectorRunnerClient:
         try:
             with self._connect() as connection:
                 for frame in chunk_frames(request, stream):
-                    connection.sendall(frame)
+                    self._send_bytes(connection, frame, deadline)
                 return self._read_result(connection, request, deadline=deadline)
         except RunnerClientError:
             raise
@@ -119,6 +123,19 @@ class ConnectorRunnerClient:
             connection.close()
             raise
         return connection
+
+    @staticmethod
+    def _send_bytes(connection: socket.socket, payload: bytes, deadline: float) -> None:
+        pending = memoryview(payload)
+        while pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("runner request deadline exceeded")
+            connection.settimeout(remaining)
+            sent = connection.send(pending)
+            if sent <= 0:
+                raise OSError("runner socket closed while sending")
+            pending = pending[sent:]
 
     def _read_result(
         self,
