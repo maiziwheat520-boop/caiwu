@@ -1,7 +1,7 @@
 # Phase 3 Slice C: upload endpoint prerequisite design
 
-Status: **APPROVED INTERNAL DESIGN — no HTTP upload route or production data
-path is implemented.**
+Status: **APPROVED INTERNAL DESIGN — bounded adapter implemented; no HTTP
+upload route or production data path is implemented.**
 
 This document prepares the first-party upload boundary that may be implemented
 after the current Slice B review. It does not register a real Connector, enable
@@ -49,8 +49,11 @@ Required boundary controls:
    but never rely on it for enforcement. The streaming reader remains the
    authority and aborts at `MAX_ARTIFACT_BYTES + 1`.
 4. Do not use Starlette's unbounded default upload spool as the artifact
-   authority. Adapt bounded request chunks directly to `ArtifactStore.publish()`
-   so staging quota, cleanup, fsync, and digest checks remain one control path.
+   authority. The bounded adapter must reach a valid final boundary before the
+   route hands bytes to `ArtifactStore.publish()`; a bounded temporary handoff
+   (or equivalent two-phase staging) is required so a malformed trailing
+   boundary cannot publish a verified orphan. `ArtifactStore` remains the only
+   durable publication authority.
 5. Validate canonical `ingest_channel`, filename/media type length, NUL/lone
    surrogate rejection, and supported multipart shape before creating import
    state. No request value selects a Connector or `source_system`.
@@ -146,6 +149,21 @@ decision; the storage and audit error codes are not negotiable.
 5. Run the full local/Linux/PostgreSQL/CI gates and a security-diff review.
 6. Only after a separate decision may a future PR add authentication provider
    integration, a real Connector manifest, or a production deployment.
+
+## Adapter implementation evidence
+
+`src/ledgerbridge/upload.py` now provides a pure event parser with no FastAPI,
+database, filesystem, or Connector dependencies. It enforces a bounded ASCII
+boundary, 16 KiB per-part headers, 512-byte `ingest_channel`, configurable file
+and body limits, UTF-8/control-text rejection, exactly one channel before one
+file part, filename/path safety, duplicate/unknown field rejection, fragmented
+boundary handling, and a successful closing boundary before completion.
+
+`tests/test_upload.py` covers arbitrary chunk fragmentation, binary content
+containing boundary-like bytes, unknown fields, file-before-channel ordering,
+file overflow, declared body overflow, and invalid content types. The adapter
+has not been wired to FastAPI or `ArtifactStore`; publication handoff remains a
+separate implementation step with its own cleanup and quota tests.
 
 ## Explicit non-goals
 
