@@ -1,18 +1,30 @@
 from pathlib import Path
 
+import yaml
+
 
 def test_only_worker_has_a_writable_artifact_volume() -> None:
-    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
-    shared, services = compose.split("services:\n", maxsplit=1)
-    api, after_api = services.split("  worker:\n", maxsplit=1)
-    worker, _after_worker = after_api.split("  migrate:\n", maxsplit=1)
+    compose = yaml.safe_load(Path("docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    api = services["api"]
+    worker = services["worker"]
 
-    assert "read_only: true" in shared
-    assert "- no-new-privileges:true" in shared
-    assert "- ALL" in shared
-    assert "LEDGERBRIDGE_ARTIFACT_MAX_BYTES: ${LEDGERBRIDGE_ARTIFACT_MAX_BYTES:-52428800}" in shared
-    assert "artifacts:/var/lib/ledgerbridge/artifacts:ro" in api
-    assert "artifacts:/var/lib/ledgerbridge/artifacts\n" in worker
-    assert "artifacts:/var/lib/ledgerbridge/artifacts:ro" not in worker
-    assert "egress" not in api
-    assert "egress" not in worker
+    for service in (api, worker):
+        assert service["read_only"] is True
+        assert service["security_opt"] == ["no-new-privileges:true"]
+        assert service["cap_drop"] == ["ALL"]
+        assert service["environment"]["LEDGERBRIDGE_ARTIFACT_MAX_BYTES"] == (
+            "${LEDGERBRIDGE_ARTIFACT_MAX_BYTES:-52428800}"
+        )
+        assert "egress" not in service["networks"]
+
+    assert api["volumes"] == ["artifacts:/var/lib/ledgerbridge/artifacts:ro"]
+    assert worker["volumes"] == ["artifacts:/var/lib/ledgerbridge/artifacts"]
+
+
+def test_artifact_directory_and_database_temp_privilege_are_hardened() -> None:
+    dockerfile = Path("docker/app.Dockerfile").read_text(encoding="utf-8")
+    init_script = Path("docker/postgres-init-runtime-role.sh").read_text(encoding="utf-8")
+
+    assert "install -d -m 0700" in dockerfile
+    assert "REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC" in init_script

@@ -48,6 +48,21 @@ and `compose` (6/6 jobs), including the complete 110-test suite. A pre-existing
 Phase 1 metadata drift remains documented for follow-up. Real
 parsers, OAuth, production evidence, migration, and deployment remain out of scope.
 
+PR #10 was subsequently merged as
+`23bfbd3bcc79068c3744dab05a961d497590ec8e`. Claude's independent report commit
+`cc07e08aa264c5a2aa42d9b422a049cf5c926ee9` returned CHANGES REQUIRED with
+1 BLOCKER, 1 HIGH, 8 MEDIUM, and 8 LOW findings. Codex is remediating on
+`ai/chatgpt/phase-2-audit-fixes`. The current tree closes the `pg_temp` ledger
+invariant bypass, artifact verification TOCTOU, and applicable medium/low items.
+Disposable Hermes PostgreSQL 15 validation passed an empty migration
+`head -> base -> head` round trip followed by 128/128 tests at 95.79% coverage;
+Ruff, formatting, full strict mypy, Bandit, Compose parsing, and a production
+image build/import smoke pass. The immutable remediation executable is
+`40fcd022ae6d3127aa7bdc17afecb6b1a159cda0`. PR #11 push run `32559469055`
+and pull-request run `32559511616` passed `secrets`, `quality`, and `compose`
+(6/6 jobs). No merge, production migration, deployment, or real evidence
+ingestion has occurred yet.
+
 ## Completed
 
 - Phase 0 scaffold and Claude blocker/high remediation.
@@ -96,7 +111,7 @@ parsers, OAuth, production evidence, migration, and deployment remain out of sco
 - Recorded: 2026-08-21
 - Deployment revision: `0c5616f648d720da88dd37deac94610486e7e611`
 - Codex implementation clone: `G:\我的云端硬盘\AI\LedgerBridge-Codex`
-- Codex branch: `ai/chatgpt/phase-2-evidence-import`
+- Codex branch: `ai/chatgpt/phase-2-audit-fixes`
 - Codex identity: `Codex <codex@ledgerbridge.local>`
 - Claude review-only clone: `G:\我的云端硬盘\AI\LedgerBridge-Claude`
 - Claude identity when explicitly authorized to commit:
@@ -105,24 +120,25 @@ parsers, OAuth, production evidence, migration, and deployment remain out of sco
 
 ## Active implementation owner
 
-Codex, in the Codex clone and only on `ai/chatgpt/phase-2-evidence-import` for
-the Phase 2 implementation and self-audit. Claude remains read-only.
+Codex, in the Codex clone and only on `ai/chatgpt/phase-2-audit-fixes` for the
+Claude-audit remediation. Claude remains read-only.
 
 ## Review owner
 
-Codex completed the Phase 2 implementation and fixed-SHA self-audit independently
-to conserve Claude quota. Claude remains review-only in the separate clone. Any
-later Claude audit must review executable SHA
-`b092eb88772d30964524c7475ee96b0ccc86c395` and write only a new review report.
+Claude completed the independent fixed-SHA audit in the separate clone and wrote
+only its report. Codex owns remediation and will publish a finding-by-finding
+response against a new immutable executable SHA. Claude's remaining quota is not
+required for implementation; a later recheck can be limited to the BLOCKER/HIGH
+closures and report addendum.
 
 ## Next task
 
-Request an explicit user decision on merging protected PR #10. The reviewed
-executable SHA is fixed, the self-audit is complete, and `secrets`, `quality`, and
-`compose` passed. Production migration/deployment remains separately authorized.
+Request the PR #11 merge decision. Because production remains on migration
+`20260821_0002`, the P2-B1 temporary-schema path remains a production risk until
+a separately authorized migration/deployment; do not apply that change implicitly.
 
 ## Blocking decisions
 
-None for implementation or self-audit. F-4 and F-6 are closed, and the user
-authorized Phase 2 implementation without deployment. Real-data ingestion and
-production migration/deployment still require later explicit authorization.
+None for remediation implementation. F-4 and F-6 are closed. Real-data ingestion
+and production migration/deployment still require explicit authorization after
+the remediation PR is reviewed and merged.

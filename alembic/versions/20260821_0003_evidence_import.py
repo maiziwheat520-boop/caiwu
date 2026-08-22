@@ -273,7 +273,7 @@ def upgrade() -> None:
         """
         DO $ledgerbridge$
         BEGIN
-            IF EXISTS (SELECT 1 FROM journal_entry WHERE status = 'POSTED') THEN
+            IF EXISTS (SELECT 1 FROM public.journal_entry WHERE status = 'POSTED') THEN
                 RAISE EXCEPTION
                     'Phase 2 requires explicit audit binding for every existing POSTED entry';
             END IF;
@@ -289,9 +289,247 @@ def upgrade() -> None:
 
     op.execute(
         """
+        DO $ledgerbridge$
+        BEGIN
+            EXECUTE format(
+                'REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC',
+                current_database()
+            );
+        END
+        $ledgerbridge$;
+
+        ALTER FUNCTION public.append_audit_event(text, text, text, text, jsonb)
+            SET search_path = pg_catalog;
+        ALTER FUNCTION public.audit_event_block_mutation()
+            SET search_path = pg_catalog;
+        ALTER FUNCTION public.journal_entry_block_posted_mutation()
+            SET search_path = pg_catalog;
+
+        CREATE OR REPLACE FUNCTION public.account_block_protected_dimension_change()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SET search_path = pg_catalog
+        AS $function$
+        BEGIN
+            IF NEW.entity_id IS DISTINCT FROM OLD.entity_id THEN
+                RAISE EXCEPTION 'account entity_id is immutable'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+
+            IF NEW.account_class IS DISTINCT FROM OLD.account_class
+               AND EXISTS (
+                   SELECT 1
+                   FROM public.posting AS p
+                   JOIN public.journal_entry AS j ON j.id = p.entry_id
+                   WHERE p.account_id = OLD.id
+                     AND j.status = 'POSTED'
+               ) THEN
+                RAISE EXCEPTION
+                    'account_class is immutable after POSTED use'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+            RETURN NEW;
+        END
+        $function$;
+
+        CREATE OR REPLACE FUNCTION public.journal_entry_validate_relationships()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SET search_path = pg_catalog
+        AS $function$
+        DECLARE
+            v_target_entity uuid;
+            v_target_status public.journal_status;
+            v_target_id uuid;
+        BEGIN
+            IF NEW.adjusts_entry_id IS NOT NULL THEN
+                v_target_id := NEW.adjusts_entry_id;
+            ELSE
+                v_target_id := NEW.reverses_entry_id;
+            END IF;
+
+            IF v_target_id IS NOT NULL THEN
+                SELECT entity_id, status
+                INTO v_target_entity, v_target_status
+                FROM public.journal_entry
+                WHERE id = v_target_id;
+
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION 'correction target % does not exist', v_target_id
+                        USING ERRCODE = 'foreign_key_violation';
+                END IF;
+                IF v_target_entity <> NEW.entity_id THEN
+                    RAISE EXCEPTION 'correction target must belong to the same entity'
+                        USING ERRCODE = 'integrity_constraint_violation';
+                END IF;
+                IF v_target_status <> 'POSTED' THEN
+                    RAISE EXCEPTION 'correction target must be POSTED'
+                        USING ERRCODE = 'integrity_constraint_violation';
+                END IF;
+            END IF;
+            RETURN NEW;
+        END
+        $function$;
+
+        CREATE OR REPLACE FUNCTION public.posting_enforce_entity()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SET search_path = pg_catalog
+        AS $function$
+        DECLARE
+            v_entry_entity uuid;
+            v_account_entity uuid;
+        BEGIN
+            SELECT entity_id
+            INTO v_entry_entity
+            FROM public.journal_entry
+            WHERE id = NEW.entry_id;
+
+            SELECT entity_id
+            INTO v_account_entity
+            FROM public.account
+            WHERE id = NEW.account_id;
+
+            IF v_entry_entity IS NULL OR v_account_entity IS NULL THEN
+                RAISE EXCEPTION 'posting references a missing entry or account'
+                    USING ERRCODE = 'foreign_key_violation';
+            END IF;
+            IF v_entry_entity <> v_account_entity THEN
+                RAISE EXCEPTION 'posting entry and account must belong to the same entity'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+            RETURN NEW;
+        END
+        $function$;
+
+        CREATE OR REPLACE FUNCTION public.posting_block_posted_mutation()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SET search_path = pg_catalog
+        AS $function$
+        DECLARE
+            v_entry_id uuid;
+            v_status public.journal_status;
+        BEGIN
+            IF TG_OP IN ('UPDATE', 'DELETE') THEN
+                v_entry_id := OLD.entry_id;
+                SELECT status
+                INTO v_status
+                FROM public.journal_entry
+                WHERE id = v_entry_id;
+                IF v_status = 'POSTED' THEN
+                    RAISE EXCEPTION 'postings on POSTED entries are immutable'
+                        USING ERRCODE = 'integrity_constraint_violation';
+                END IF;
+            END IF;
+
+            IF TG_OP IN ('INSERT', 'UPDATE') THEN
+                v_entry_id := NEW.entry_id;
+                SELECT status
+                INTO v_status
+                FROM public.journal_entry
+                WHERE id = v_entry_id;
+                IF v_status = 'POSTED' THEN
+                    RAISE EXCEPTION 'postings on POSTED entries are immutable'
+                        USING ERRCODE = 'integrity_constraint_violation';
+                END IF;
+                RETURN NEW;
+            END IF;
+            RETURN OLD;
+        END
+        $function$;
+
+        CREATE OR REPLACE FUNCTION public.posting_assert_balanced()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SET search_path = pg_catalog
+        AS $function$
+        DECLARE
+            v_entry_ids uuid[] := ARRAY[]::uuid[];
+            v_entry_id uuid;
+            v_currency text;
+            v_total bigint;
+        BEGIN
+            IF TG_OP IN ('UPDATE', 'DELETE') THEN
+                v_entry_ids := array_append(v_entry_ids, OLD.entry_id);
+            END IF;
+            IF TG_OP IN ('INSERT', 'UPDATE') THEN
+                v_entry_ids := array_append(v_entry_ids, NEW.entry_id);
+            END IF;
+
+            FOREACH v_entry_id IN ARRAY v_entry_ids LOOP
+                SELECT p.currency, SUM(p.amount_minor)
+                INTO v_currency, v_total
+                FROM public.posting AS p
+                WHERE p.entry_id = v_entry_id
+                GROUP BY p.currency
+                HAVING SUM(p.amount_minor) <> 0
+                LIMIT 1;
+
+                IF FOUND THEN
+                    RAISE EXCEPTION
+                        'journal entry % is unbalanced for currency %: % minor units',
+                        v_entry_id,
+                        v_currency,
+                        v_total
+                        USING ERRCODE = 'integrity_constraint_violation';
+                END IF;
+            END LOOP;
+
+            IF TG_OP = 'DELETE' THEN
+                RETURN OLD;
+            END IF;
+            RETURN NEW;
+        END
+        $function$;
+
+        CREATE OR REPLACE FUNCTION public.journal_entry_assert_posted_complete()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SET search_path = pg_catalog
+        AS $function$
+        DECLARE
+            v_posting_count bigint;
+            v_mismatched_account uuid;
+        BEGIN
+            IF NEW.status = 'POSTED' THEN
+                SELECT COUNT(*)
+                INTO v_posting_count
+                FROM public.posting
+                WHERE entry_id = NEW.id;
+                IF v_posting_count < 2 THEN
+                    RAISE EXCEPTION 'POSTED journal entries require at least two postings'
+                        USING ERRCODE = 'integrity_constraint_violation';
+                END IF;
+
+                SELECT p.account_id
+                INTO v_mismatched_account
+                FROM public.posting AS p
+                JOIN public.account AS a ON a.id = p.account_id
+                WHERE p.entry_id = NEW.id
+                  AND a.entity_id <> NEW.entity_id
+                ORDER BY p.account_id
+                LIMIT 1
+                FOR SHARE OF a;
+                IF FOUND THEN
+                    RAISE EXCEPTION
+                        'POSTED journal entry has an account from another entity: %',
+                        v_mismatched_account
+                        USING ERRCODE = 'integrity_constraint_violation';
+                END IF;
+            END IF;
+            RETURN NEW;
+        END
+        $function$;
+        """
+    )
+
+    op.execute(
+        """
         CREATE FUNCTION raw_artifact_block_mutation()
         RETURNS trigger
         LANGUAGE plpgsql
+        SET search_path = pg_catalog
         AS $function$
         BEGIN
             RAISE EXCEPTION 'raw_artifact metadata is immutable'
@@ -333,6 +571,14 @@ def upgrade() -> None:
                OR v_payload ->> 'byte_size' IS DISTINCT FROM NEW.byte_size::text
                OR v_payload ->> 'storage_key' IS DISTINCT FROM NEW.storage_key
                OR v_payload ->> 'source' IS DISTINCT FROM NEW.source
+               OR v_payload ->> 'original_filename_sha256' IS DISTINCT FROM
+                    encode(
+                        public.digest(
+                            convert_to(NEW.original_filename, 'UTF8'),
+                            'sha256'
+                        ),
+                        'hex'
+                    )
                OR v_payload ->> 'media_type' IS DISTINCT FROM NEW.media_type THEN
                 RAISE EXCEPTION 'artifact audit payload does not match artifact metadata'
                     USING ERRCODE = 'integrity_constraint_violation';
@@ -348,6 +594,7 @@ def upgrade() -> None:
         CREATE FUNCTION source_record_block_mutation()
         RETURNS trigger
         LANGUAGE plpgsql
+        SET search_path = pg_catalog
         AS $function$
         BEGIN
             RAISE EXCEPTION 'source_record is permanent and immutable'
@@ -366,6 +613,7 @@ def upgrade() -> None:
         CREATE FUNCTION import_job_enforce_transition()
         RETURNS trigger
         LANGUAGE plpgsql
+        SET search_path = pg_catalog
         AS $function$
         BEGIN
             IF TG_OP = 'INSERT' THEN
@@ -423,6 +671,29 @@ def upgrade() -> None:
             IF TG_OP = 'INSERT' THEN
                 IF NEW.status = 'POSTED' OR NEW.posted_audit_event_id IS NOT NULL THEN
                     RAISE EXCEPTION 'journal entries must be created before they are POSTED'
+                        USING ERRCODE = 'integrity_constraint_violation';
+                END IF;
+
+                SELECT action, payload, xmin
+                INTO v_action, v_payload, v_xmin
+                FROM public.audit_event
+                WHERE id = NEW.audit_event_id;
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION 'journal creation audit evidence does not exist'
+                        USING ERRCODE = 'foreign_key_violation';
+                END IF;
+                IF v_xmin <> pg_current_xact_id()::text::xid THEN
+                    RAISE EXCEPTION
+                        'journal creation audit evidence must be appended in this transaction'
+                        USING ERRCODE = 'integrity_constraint_violation';
+                END IF;
+                IF v_action <> 'journal.create' THEN
+                    RAISE EXCEPTION 'journal creation audit action must be journal.create'
+                        USING ERRCODE = 'integrity_constraint_violation';
+                END IF;
+                IF v_payload ->> 'journal_entry_id' IS DISTINCT FROM NEW.id::text THEN
+                    RAISE EXCEPTION
+                        'journal creation audit target does not match journal entry'
                         USING ERRCODE = 'integrity_constraint_violation';
                 END IF;
                 RETURN NEW;
@@ -510,6 +781,21 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(
+        """
+        DO $ledgerbridge$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM public.raw_artifact)
+               OR EXISTS (SELECT 1 FROM public.import_job)
+               OR EXISTS (SELECT 1 FROM public.source_record) THEN
+                RAISE EXCEPTION
+                    'Phase 2 evidence data prevents destructive downgrade';
+            END IF;
+        END
+        $ledgerbridge$;
+        """
+    )
+
     op.execute(
         """
         DO $ledgerbridge$

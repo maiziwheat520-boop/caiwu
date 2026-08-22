@@ -1,13 +1,16 @@
 # Task: Phase 2 Evidence and Import
 
-- Status: implementation, fixed-SHA self-audit, and protected CI complete; merge decision pending
+- Status: PR #10 merged; independent Claude audit returned CHANGES REQUIRED;
+  remediation executable `40fcd022ae6d3127aa7bdc17afecb6b1a159cda0` is locally
+  and Hermes validated; PR #11 protected CI passed, with merge pending
 - Preflight date: 2026-08-21
 - Implementation owner: Codex
-- Review owner: Codex self-audit; Claude fixed-SHA audit hook preserved
+- Review owner: Claude fixed-SHA audit at `cc07e08aa264c5a2aa42d9b422a049cf5c926ee9`;
+  Codex owns remediation and evidence
 - Base commit: `f892f8a2e62759bbb44f85a561d386cb22ad79fa`
 - Implementation base: preflight merge `232378ef70f3cfa24324dc6add61ce6089d107b4`
 - Preflight branch: `ai/chatgpt/phase-2-prep`
-- Implementation branch: `ai/chatgpt/phase-2-evidence-import`
+- Implementation branch: `ai/chatgpt/phase-2-audit-fixes`
 - Planned migration: `20260821_0003`
 
 ## Goal
@@ -158,7 +161,7 @@ by which actor, at what time, and for what reason.
   never receives an arbitrary host path.
 - Bytes stream into a randomly named private staging file below the configured
   artifact root while SHA-256 and size are calculated.
-- Publication uses fsync plus same-filesystem atomic rename into the
+- Publication uses fsync plus same-filesystem create-if-absent hard linking into the
   content-addressed destination. Published blobs are non-executable and
   read-only to normal application code.
 - An existing destination is accepted only after digest and size verification.
@@ -180,8 +183,11 @@ Define typed, side-effect-free interfaces equivalent to:
 The core owns streaming, hashing, storage publication, transaction boundaries,
 idempotency, database writes, job state, audit events, and log redaction.
 Connectors return typed values only. Normalized monetary values, when present,
-use signed integer minor units and `CNY`; floats are rejected. Connector and
-parser version identifiers are mandatory and enter provenance.
+use signed 64-bit integer minor units and `CNY`; floats are rejected. Connector
+and parser version identifiers are mandatory and enter provenance. The SDK
+surface exposes no path, `fileno()`, or write method, but in-process connectors
+are trusted installed code rather than a Python sandbox; untrusted third-party
+connectors require a separate process boundary before Phase 3 production use.
 
 Exactly one deterministic `MATCH` may proceed. Zero, multiple, or explicit
 ambiguous matches produce `NEEDS_REVIEW` and zero SourceRecords. Detection and
@@ -232,13 +238,16 @@ with no partial batch.
 ### Migration and permissions
 
 - Upgrade creates all three tables, enums, indexes, FKs, immutability/state
-  triggers, SourceRecord FK, and M8 binding; downgrade removes only Phase 2
-  objects/bindings; upgrade after downgrade recreates them.
+  triggers, SourceRecord FK, and M8 binding. An empty downgrade removes Phase 2
+  objects/bindings and can be upgraded again; any RawArtifact, ImportJob, or
+  SourceRecord makes downgrade fail closed rather than destroy evidence.
 - Object absence/presence is asserted in an isolated database, not inferred from
   Alembic version alone.
 - `ledgerbridge_app` can perform the intended insert/select/job-transition path
   but cannot delete evidence/source rows, mutate raw evidence, alter triggers,
-  or directly insert/update/delete AuditEvent.
+  create temporary tables, or directly insert/update/delete AuditEvent. Every
+  security function pins `search_path=pg_catalog` and business relations use
+  `public.*`, so accidental restoration of TEMP still cannot shadow them.
 - RawArtifact delete with dependent SourceRecords is rejected and SourceRecords
   remain byte-for-byte unchanged.
 
@@ -268,8 +277,8 @@ with no partial batch.
 
 - Synthetic connectors prove exactly-one-match routing and no-match/multi-match/
   ambiguous `NEEDS_REVIEW` behavior.
-- A malicious synthetic connector cannot receive a host path, write the artifact
-  store/database, or smuggle float money into normalized output.
+- A synthetic connector cannot receive a host path or write API through the SDK,
+  and cannot smuggle float or out-of-int64 money into normalized output.
 - Parse exceptions produce a sanitized bounded error and no raw financial value in logs.
 - Hypothesis covers content chunking, record locators, filenames, and idempotent
   batch retry with synthetic data only.
@@ -330,6 +339,36 @@ with no partial batch.
 - Alembic autogenerate comparison reports no Phase 2 object drift. It still
   reports inherited Phase 1 check-constraint naming and audit-index metadata
   drift; Phase 2 does not rewrite that deployed historical schema.
+
+## Independent audit remediation evidence
+
+- Claude's independent fixed-SHA report found 1 BLOCKER, 1 HIGH, 8 MEDIUM, and
+  8 LOW findings against merged SHA `23bfbd3bcc79068c3744dab05a961d497590ec8e`.
+- The BLOCKER is closed in the remediation tree by revoking database TEMP from
+  PUBLIC and hardening every Phase 1/2 security function. Behavior tests restore
+  TEMP only inside a `try/finally` and replay the five reported ledger attacks,
+  plus correction-target shadowing; all are rejected and TEMP is revoked again.
+- The HIGH is closed by opening an artifact once, verifying size/type/digest via
+  `fstat()` and that descriptor, rewinding it, and parsing through the same open
+  descriptor. Linux tests replace the pathname after verification and prove the
+  connector still receives the verified inode.
+- Medium/low remediation distinguishes evidence-integrity errors, returns typed
+  pre-artifact ingestion failures, binds all RawArtifact metadata (filename by
+  hash), protects downgrade, validates fresh `journal.create`, routes provenance
+  conflicts, snapshots connector identity once, caps JSON and money, tightens
+  POSIX modes, and parses Compose YAML structurally.
+- Hermes isolated PostgreSQL 15 validation passed migration
+  `head -> base -> head`, then all 128 tests with 95.79% coverage. Ruff, format,
+  full strict mypy, and Bandit passed. This validation used disposable containers,
+  an internal test network, synthetic credentials/data, and did not touch the
+  production deployment, volumes, database, or `.env`.
+- The immutable remediation executable is
+  `40fcd022ae6d3127aa7bdc17afecb6b1a159cda0`. Compose configuration and the
+  production image build/import smoke passed; the disposable validation
+  containers, network, image, and `/tmp` worktree were removed afterward.
+- PR #11 push run `32559469055` and pull-request run `32559511616` completed
+  `secrets`, `quality`, and `compose` successfully (6/6 jobs) against evidence
+  head `0cc3b39c4393324b46608bd12ec26f2e00b371ed`.
 ## Review and handoff gate
 
 - Preflight/task-card work may merge before implementation only after its own CI.
@@ -344,7 +383,7 @@ with no partial batch.
 
 ## Implementation verdict
 
-FIXED-SHA SELF-AUDIT AND PROTECTED CI COMPLETE; APPROVED FOR MERGE. The final
-reviewed executable SHA is `b092eb88772d30964524c7475ee96b0ccc86c395`, with
-no open validated security finding. Merge requires an explicit user decision;
-migration and production deployment remain separately authorized.
+PR #10 IS MERGED BUT CLAUDE'S CHANGES-REQUIRED VERDICT SUPERSEDES THE PRIOR
+SELF-AUDIT VERDICT. The remediation executable is locally and Hermes validated,
+and PR #11 protected CI passed. Merge remains a user decision; production
+migration/deployment and real-data ingestion remain separately authorized.
