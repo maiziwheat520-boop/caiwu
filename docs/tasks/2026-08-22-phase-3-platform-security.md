@@ -453,6 +453,9 @@ follow-up set in `b65581e`, recording both responses in
 Hermes disposable PostgreSQL 16 replay now passes 222 tests at 95.47% coverage;
 hosted run `32593102155` for branch head `65b15df` passed `secrets`,
 `quality`, and `compose`. A final hardening pass also bounds outbound runner
-frame sends by the same deadline and adds public-path unsafe-record tests. The
-remaining gates are a fresh narrow Claude recheck, protected PR review, and
-separate authorization for merge or production deployment.
+frame sends by the same deadline and adds public-path unsafe-record tests.
+Claude's final narrow recheck is APPROVED in report commit
+`a19fa640247a98adacdb31741f6172b722f14f03` with no BLOCKER/HIGH/MEDIUM findings;
+the ten LOW notes are tracked for the upload endpoint/Slice C and deployment
+hardening. The remaining gates are protected PR review and separate
+authorization for merge or production deployment.

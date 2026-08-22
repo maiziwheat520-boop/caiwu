@@ -104,14 +104,15 @@ remediation report, while preserving Claude's remaining quota. Claude's second
 narrow audit found one HIGH and four MEDIUM follow-up issues; Codex fixed them at
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e` and independently replayed the full
 Hermes Linux/PostgreSQL suite, including outbound-send deadline and hostile
-record terminalization tests. A final narrow Claude recheck remains the next
-review gate. Hosted CI run `32593102155` for the current branch head is green
+record terminalization tests. Claude's final narrow recheck is APPROVED at
+`a19fa640247a98adacdb31741f6172b722f14f03` with 0 BLOCKER/HIGH/MEDIUM and 10
+LOW notes. Hosted CI run `32593102155` for the current branch head is green
 across `secrets`, `quality`, and `compose`.
 
 ## Next task
 
-Run a fresh narrow Claude recheck of the `bd2ba4a2513597e83764a56215c72b61c99a8c1e` remediation, then decide
-separately whether to publish a protected PR. Merge and any production runner
+Decide separately whether to publish a protected PR for the APPROVED
+`bd2ba4a2513597e83764a56215c72b61c99a8c1e` remediation. Merge and any production runner
 deployment require distinct authorization. Do not register a real Connector,
 ingest evidence, or enable the mail collector without the corresponding later
 authorization.

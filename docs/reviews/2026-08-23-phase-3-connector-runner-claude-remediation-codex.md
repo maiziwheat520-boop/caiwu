@@ -92,10 +92,26 @@ Before the final audit handoff, Codex added a bounded outbound-send deadline in
 `bd2ba4a` for hostile `record_locator`/`raw_fields` text. These are additional
 hardening changes, not a change to the production deployment scope.
 
+## Final Claude recheck
+
+Claude's final narrow report is preserved at
+`G:\\我的云端硬盘\\AI\\LedgerBridge-Claude\\review-worktree-phase3-runner\\docs\\reviews\\2026-08-22-phase-3-connector-runner-claude.md`,
+commit `a19fa640247a98adacdb31741f6172b722f14f03`, with parent exactly
+`bd2ba4a2513597e83764a56215c72b61c99a8c1e`.
+
+**Verdict: APPROVED — 0 BLOCKER / 0 HIGH / 0 MEDIUM / 10 LOW.** Claude
+replayed 222 tests with 95.47% coverage, confirmed all five follow-up findings
+closed, verified bidirectional send/receive deadlines, full 50 MiB chunking,
+stable stale-response rejection, and eight of nine defect injections sensitive.
+The remaining LOWs are tracked design/deployment notes: harden the currently
+unused upload-side `IngestMetadata` text validator before an upload endpoint,
+deduplicate the text helper, add a worker composition-root call assertion,
+leave one chunk-count headroom, correct two documentation phrasings, and retain
+the previously declared container/peer-loss/concurrency notes.
+
 ## Gate status
 
 P3-H1, P3-H2, P3-M1R, P3-M3R, P3-M5, and P3-M6 are remediated and independently
-tested; outbound request deadlines and unsafe-record terminalization received an
-additional hardening pass. The branch is ready for another fresh narrow Claude recheck, not for
-merge or production deployment. Merge, Slice B deployment, and real Connector
-registration remain separate user-authorized gates.
+tested. Claude's final recheck is **APPROVED** with only non-blocking LOW notes.
+The branch is not merged and Slice B is not deployed. Merge, Slice B deployment,
+and real Connector registration remain separate user-authorized gates.
