@@ -12,6 +12,7 @@ x-app: &app
     LEDGERBRIDGE_LOG_LEVEL: ${LEDGERBRIDGE_LOG_LEVEL:-INFO}
     LEDGERBRIDGE_DATABASE_URL: ${LEDGERBRIDGE_DATABASE_URL:?runtime database URL is required}
     LEDGERBRIDGE_ARTIFACT_ROOT: ${LEDGERBRIDGE_ARTIFACT_ROOT:-/var/lib/ledgerbridge/artifacts}
+    LEDGERBRIDGE_ARTIFACT_MAX_BYTES: ${LEDGERBRIDGE_ARTIFACT_MAX_BYTES:-52428800}
   depends_on:
     postgres:
       condition: service_healthy
@@ -50,7 +51,7 @@ services:
     <<: *app
     command: ["python", "-m", "ledgerbridge.worker"]
     volumes:
-      - artifacts:/var/lib/ledgerbridge/artifacts:ro
+      - artifacts:/var/lib/ledgerbridge/artifacts
     healthcheck:
       test: ["CMD", "python", "-c", "from ledgerbridge.worker import heartbeat_is_fresh; raise SystemExit(0 if heartbeat_is_fresh() else 1)"]
       interval: 30s

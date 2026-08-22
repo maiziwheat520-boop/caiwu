@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from alembic import command
 from ledgerbridge.db import build_engine
-from ledgerbridge.ledger import actual_account_balances, actual_totals_by_class
+from ledgerbridge.ledger import actual_account_balances, actual_totals_by_class, post_journal_entry
 from ledgerbridge.models import (
     Account,
     AccountClass,
@@ -172,7 +172,12 @@ def _create_entry(
     )
     session.flush()
     if status == JournalStatus.POSTED:
-        entry.status = JournalStatus.POSTED
+        post_journal_entry(
+            session,
+            entry.id,
+            actor="pytest",
+            reason="synthetic acceptance fixture",
+        )
     session.commit()
     return entry.id
 
@@ -620,10 +625,11 @@ def test_posted_transition_rejects_preexisting_cross_entity_drift(
         )
 
     with Session(runtime_engine) as session:
-        session.execute(
-            update(JournalEntry)
-            .where(JournalEntry.id == entry_id)
-            .values(status=JournalStatus.POSTED)
+        post_journal_entry(
+            session,
+            entry_id,
+            actor="pytest",
+            reason="cross-entity drift test",
         )
         with pytest.raises(DBAPIError, match="account from another entity"):
             session.commit()
@@ -687,7 +693,12 @@ def test_posted_entry_requires_at_least_two_postings(runtime_engine: Engine) -> 
         session.flush()
         session.add(Posting(entry_id=entry.id, account_id=accounts["bank"], amount_minor=0))
         session.flush()
-        entry.status = JournalStatus.POSTED
+        post_journal_entry(
+            session,
+            entry.id,
+            actor="pytest",
+            reason="completeness test",
+        )
         with pytest.raises(DBAPIError, match="at least two postings"):
             session.commit()
 
@@ -705,7 +716,7 @@ def test_direct_posted_insert_fails_without_draft_lifecycle(runtime_engine: Engi
                 audit_event_id=_append_audit(session),
             )
         )
-        with pytest.raises(DBAPIError, match="at least two postings"):
+        with pytest.raises(DBAPIError, match="created before"):
             session.commit()
 
 

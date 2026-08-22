@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
+from ledgerbridge.audit import append_audit_event
 from ledgerbridge.models.ledger import Account, AccountClass, JournalEntry, JournalStatus, Posting
 
 
@@ -42,3 +43,34 @@ def actual_totals_by_class(session: Session, entity_id: UUID) -> dict[AccountCla
     totals = {account_class: 0 for account_class in AccountClass}
     totals.update({account_class: int(total) for account_class, total in rows})
     return totals
+
+
+def post_journal_entry(
+    session: Session,
+    entry_id: UUID,
+    *,
+    actor: str,
+    reason: str,
+    rule_version: str | None = None,
+) -> UUID:
+    """Bind a fresh journal.post event and transition one DRAFT in the caller's transaction."""
+
+    entry = session.scalar(
+        select(JournalEntry).where(JournalEntry.id == entry_id).with_for_update()
+    )
+    if entry is None:
+        raise LookupError("journal entry does not exist")
+    if entry.status is not JournalStatus.DRAFT:
+        raise ValueError("only DRAFT journal entries can be posted")
+    audit_event_id = append_audit_event(
+        session,
+        actor=actor,
+        action="journal.post",
+        reason=reason,
+        rule_version=rule_version,
+        payload={"journal_entry_id": str(entry.id)},
+    )
+    entry.posted_audit_event_id = audit_event_id
+    entry.status = JournalStatus.POSTED
+    session.flush()
+    return audit_event_id

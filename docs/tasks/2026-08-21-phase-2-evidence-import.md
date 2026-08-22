@@ -1,12 +1,13 @@
 # Task: Phase 2 Evidence and Import
 
-- Status: preflight complete; task card ready; implementation not started
+- Status: implementation, fixed-SHA self-audit, and protected CI complete; merge decision pending
 - Preflight date: 2026-08-21
 - Implementation owner: Codex
 - Review owner: Codex self-audit; Claude fixed-SHA audit hook preserved
 - Base commit: `f892f8a2e62759bbb44f85a561d386cb22ad79fa`
+- Implementation base: preflight merge `232378ef70f3cfa24324dc6add61ce6089d107b4`
 - Preflight branch: `ai/chatgpt/phase-2-prep`
-- Planned implementation branch: `ai/chatgpt/phase-2-evidence-import`
+- Implementation branch: `ai/chatgpt/phase-2-evidence-import`
 - Planned migration: `20260821_0003`
 
 ## Goal
@@ -296,6 +297,39 @@ with no partial batch.
   PostgreSQL health, worker write/API read-only mounts, manifest/image revision,
   row counts, and a new encrypted backup plus isolated restore.
 
+## Implementation evidence
+
+- Migration `20260821_0003` creates RawArtifact, ImportJob, and SourceRecord,
+  binds the deferred SourceRecord FK, adds POSTED AuditEvent evidence, and has a
+  real `head -> 0002 -> head` object-presence round trip.
+- The content-addressed store streams and verifies SHA-256, publishes without
+  overwrite, rejects intermediate/final symlinks, and retains verified orphan
+  blobs when the database transaction fails.
+- The Connector SDK receives no path or write API. Core routing, output
+  revalidation, record limits, transaction ownership, idempotency, bounded
+  errors, and audit events are behavior-tested with synthetic values only.
+- PostgreSQL 15 isolated acceptance completed with 109 tests and 96.88%
+  coverage at hardened commit `7ab9e52aa09ea4465db6061002c2859ff579788f`.
+  Existing Phase 1 behavior, migration failure on orphan placeholders and
+  pre-existing POSTED entries, permissions, state transitions, audit
+  reconstruction, and atomic rollback all passed. The final executable commit
+  `b092eb88772d30964524c7475ee96b0ccc86c395` adds only parent-directory fsync and
+  Compose limit wiring; its new regression test and Linux production-image smoke
+  passed, and protected CI will run all 110 collected tests.
+- Ruff, format, strict mypy, sensitive-path scan, Bandit, strict dependency
+  audit (zero known vulnerabilities), Compose config/build, image revision label,
+  and worker-writable/API-read-only artifact mount tests passed. The 95% coverage
+  threshold and existing omit list were not changed.
+- No real parser, binary financial fixture, OAuth material, JournalEntry import,
+  production migration, or Hermes deployment was added. Hermes remains on
+  `0c5616f648d720da88dd37deac94610486e7e611`.
+- Full-history Gitleaks and protected CI passed at review head
+  `c3497b868d8564be33688aa9ac5d0b4764480843`: push run `32551808678` and
+  pull-request run `32551835286` completed `secrets`, `quality`, and `compose`
+  successfully (6/6 jobs total).
+- Alembic autogenerate comparison reports no Phase 2 object drift. It still
+  reports inherited Phase 1 check-constraint naming and audit-index metadata
+  drift; Phase 2 does not rewrite that deployed historical schema.
 ## Review and handoff gate
 
 - Preflight/task-card work may merge before implementation only after its own CI.
@@ -308,8 +342,9 @@ with no partial batch.
   boundary, POSTED audit binding, or real-data scope requires a new user-approved
   append-only decision rather than a silent task-card edit.
 
-## Preflight verdict
+## Implementation verdict
 
-READY FOR TASK-CARD REVIEW. Implementation and production changes have not
-started. F-4 and F-6 prerequisites are closed; M8 is explicitly accepted into
-scope. No unresolved architecture decision remains in this preflight.
+FIXED-SHA SELF-AUDIT AND PROTECTED CI COMPLETE; APPROVED FOR MERGE. The final
+reviewed executable SHA is `b092eb88772d30964524c7475ee96b0ccc86c395`, with
+no open validated security finding. Merge requires an explicit user decision;
+migration and production deployment remain separately authorized.
