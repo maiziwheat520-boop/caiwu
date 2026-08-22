@@ -22,7 +22,7 @@ explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is implemented and
 the pure Slice C bounded multipart adapter is pushed on the Codex branch
 `ai/chatgpt/phase-3-connector-runner` at head
-`99e408582853c4cf8c5e0455ce68e25c97609745`; the fixed code/test head for final
+`649d6c2c49f4916f0e09eed1691bf5bcfba582ad`; the fixed code/test head for final
 audit is `bd2ba4a2513597e83764a56215c72b61c99a8c1e`;
 the isolated runner image was tested only as a disposable Hermes image and is
 not deployed.
@@ -117,10 +117,10 @@ is green across `secrets`, `quality`, and `compose`; Claude's approval applies t
 the earlier fixed code/test SHA, while this follow-up is Codex-verified.
 Protected PR #18 is open at
 `https://github.com/maiziwheat520-boop/caiwu/pull/18`; its current head is
-`99e408582853c4cf8c5e0455ce68e25c97609745`. Push run `32601095055` and
-pull-request run `32601097122` passed `secrets`, `quality`, and `compose`, with
-quality coverage at 95.92%. The PR is review-only; it has not been merged or
-deployed.
+`649d6c2c49f4916f0e09eed1691bf5bcfba582ad`. The final documentation-close
+push run `32601287909` and pull-request run `32601289667` passed `secrets`,
+`quality`, and `compose`; the preceding code head also passed with 95.92%
+quality coverage. The PR is review-only; it has not been merged or deployed.
 The approved Slice C upload-boundary design is recorded in
 `docs/tasks/2026-08-23-phase-3-slice-c-upload-endpoint-design.md`; no route is
 implemented or exposed. The pure bounded multipart adapter is implemented and
