@@ -35,6 +35,46 @@ class ImportJobStatus(StrEnum):
     NEEDS_REVIEW = "NEEDS_REVIEW"
 
 
+class IngestChannel(Base):
+    __tablename__ = "ingest_channel"
+    __table_args__ = (
+        CheckConstraint(
+            "id ~ '^[a-z][a-z0-9_]{0,63}$'",
+            name="ingest_channel_id_canonical",
+        ),
+        CheckConstraint(
+            "btrim(description) <> ''",
+            name="ingest_channel_description_not_blank",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    description: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class SourceSystem(Base):
+    __tablename__ = "source_system"
+    __table_args__ = (
+        CheckConstraint(
+            "id ~ '^[a-z][a-z0-9_]{0,63}$'",
+            name="source_system_id_canonical",
+        ),
+        CheckConstraint(
+            "btrim(description) <> ''",
+            name="source_system_description_not_blank",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    description: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
 class RawArtifact(Base):
     __tablename__ = "raw_artifact"
     __table_args__ = (
@@ -61,7 +101,9 @@ class RawArtifact(Base):
         PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     sha256: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False, unique=True)
-    source: Mapped[str] = mapped_column(String(200), nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(64), ForeignKey("ingest_channel.id", ondelete="RESTRICT"), nullable=False
+    )
     original_filename: Mapped[str] = mapped_column(String(512), nullable=False)
     media_type: Mapped[str] = mapped_column(String(200), nullable=False)
     byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -98,16 +140,19 @@ class ImportJob(Base):
         ),
         CheckConstraint(
             "(status = 'PENDING' AND started_at IS NULL AND completed_at IS NULL "
-            "AND error_code IS NULL AND parsed_count = 0 AND created_count = 0 "
+            "AND terminal_audit_event_id IS NULL AND error_code IS NULL "
+            "AND parsed_count = 0 AND created_count = 0 "
             "AND duplicate_count = 0) OR "
             "(status = 'RUNNING' AND started_at IS NOT NULL AND completed_at IS NULL "
-            "AND error_code IS NULL AND parsed_count = 0 AND created_count = 0 "
+            "AND terminal_audit_event_id IS NULL AND error_code IS NULL "
+            "AND parsed_count = 0 AND created_count = 0 "
             "AND duplicate_count = 0) OR "
             "(status = 'SUCCEEDED' AND started_at IS NOT NULL AND completed_at IS NOT NULL "
-            "AND error_code IS NULL) OR "
-            "(status = 'FAILED' AND completed_at IS NOT NULL AND error_code IS NOT NULL) OR "
+            "AND terminal_audit_event_id IS NOT NULL AND error_code IS NULL) OR "
+            "(status = 'FAILED' AND completed_at IS NOT NULL "
+            "AND terminal_audit_event_id IS NOT NULL AND error_code IS NOT NULL) OR "
             "(status = 'NEEDS_REVIEW' AND completed_at IS NOT NULL "
-            "AND error_code IS NOT NULL)",
+            "AND terminal_audit_event_id IS NOT NULL AND error_code IS NOT NULL)",
             name="import_job_state_timestamps",
         ),
         UniqueConstraint(
@@ -117,6 +162,17 @@ class ImportJob(Base):
             name="uq_import_job_artifact_connector_version",
         ),
         UniqueConstraint("id", "artifact_id", name="uq_import_job_id_artifact"),
+        UniqueConstraint(
+            "id",
+            "artifact_id",
+            "source_system",
+            "connector_version",
+            name="uq_import_job_provenance_identity",
+        ),
+        CheckConstraint(
+            "connector_name LIKE 'ledgerbridge.%' OR source_system IS NOT NULL",
+            name="import_job_source_system_required",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -129,6 +185,14 @@ class ImportJob(Base):
     )
     connector_name: Mapped[str] = mapped_column(String(100), nullable=False)
     connector_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_system: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("source_system.id", ondelete="RESTRICT")
+    )
+    terminal_audit_event_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("audit_event.id", ondelete="RESTRICT"),
+        unique=True,
+    )
     status: Mapped[ImportJobStatus] = mapped_column(
         Enum(ImportJobStatus, name="import_job_status"), nullable=False
     )
@@ -166,9 +230,14 @@ class SourceRecord(Base):
             name="source_record_external_id_not_blank",
         ),
         ForeignKeyConstraint(
-            ["import_job_id", "artifact_id"],
-            ["import_job.id", "import_job.artifact_id"],
-            name="fk_source_record_job_artifact",
+            ["import_job_id", "artifact_id", "source", "parser_version"],
+            [
+                "import_job.id",
+                "import_job.artifact_id",
+                "import_job.source_system",
+                "import_job.connector_version",
+            ],
+            name="fk_source_record_job_provenance",
             ondelete="RESTRICT",
         ),
         UniqueConstraint("artifact_id", "record_locator", name="uq_source_record_artifact_locator"),
@@ -192,7 +261,9 @@ class SourceRecord(Base):
     )
     import_job_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
     record_locator: Mapped[str] = mapped_column(String(500), nullable=False)
-    source: Mapped[str] = mapped_column(String(200), nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(64), ForeignKey("source_system.id", ondelete="RESTRICT"), nullable=False
+    )
     parser_version: Mapped[str] = mapped_column(String(100), nullable=False)
     raw_fields: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     normalized_fields: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

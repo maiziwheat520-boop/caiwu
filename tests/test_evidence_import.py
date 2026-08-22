@@ -16,7 +16,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, inspect, text, update
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
@@ -114,6 +114,7 @@ def importer(runtime_engine: Engine, tmp_path: Path) -> EvidenceImporter:
 class SyntheticConnector:
     name: str = "synthetic"
     version: str = "1"
+    source_system: str = "synthetic"
     detection: DetectionResult = DetectionResult.MATCH
     records: list[ParsedSourceRecord] = field(default_factory=list)
     parse_error: bool = False
@@ -171,6 +172,7 @@ class PropertyDriftConnector:
     def __init__(self) -> None:
         self.name_reads = 0
         self.version_reads = 0
+        self.source_system_reads = 0
 
     @property
     def name(self) -> str:
@@ -181,6 +183,11 @@ class PropertyDriftConnector:
     def version(self) -> str:
         self.version_reads += 1
         return "1" if self.version_reads == 1 else "y" * 150
+
+    @property
+    def source_system(self) -> str:
+        self.source_system_reads += 1
+        return "synthetic" if self.source_system_reads == 1 else "invalid-source"
 
     def detect(
         self,
@@ -257,7 +264,7 @@ def _ingest(
     return importer.ingest_and_import(
         io.BytesIO(content),
         IngestMetadata(
-            source="synthetic-upload",
+            source="synthetic_upload",
             original_filename=filename,
             media_type="text/plain",
         ),
@@ -312,6 +319,90 @@ def test_importer_and_connector_batch_guardrails(
     with admin_engine.connect() as connection:
         assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
         assert connection.execute(text("SELECT count(*) FROM journal_entry")).scalar_one() == 0
+
+
+def test_canonical_source_registries_are_append_only_and_runtime_read_only(
+    runtime_engine: Engine,
+    admin_engine: Engine,
+) -> None:
+    with runtime_engine.connect() as connection:
+        channels = (
+            connection.execute(text("SELECT id FROM ingest_channel ORDER BY id")).scalars().all()
+        )
+        systems = (
+            connection.execute(text("SELECT id FROM source_system ORDER BY id")).scalars().all()
+        )
+        assert channels == ["manual_upload", "synthetic_upload"]
+        assert systems == ["synthetic"]
+        with pytest.raises(DBAPIError):
+            connection.execute(
+                text(
+                    "INSERT INTO ingest_channel (id, description) "
+                    "VALUES ('runtime_added', 'not allowed')"
+                )
+            )
+        connection.rollback()
+
+    with admin_engine.connect() as connection:
+        for statement in (
+            "UPDATE ingest_channel SET description = 'changed' WHERE id = 'manual_upload'",
+            "DELETE FROM source_system WHERE id = 'synthetic'",
+        ):
+            with pytest.raises(DBAPIError, match="append-only"):
+                connection.execute(text(statement))
+            connection.rollback()
+        function_config = connection.execute(
+            text(
+                "SELECT proconfig FROM pg_proc JOIN pg_namespace "
+                "ON pg_namespace.oid = pg_proc.pronamespace "
+                "WHERE nspname = 'public' AND proname = 'registry_block_mutation'"
+            )
+        ).scalar_one()
+        assert function_config == ["search_path=pg_catalog"]
+
+
+def test_unknown_ingest_channel_fails_before_artifact_publication(
+    runtime_engine: Engine,
+    tmp_path: Path,
+) -> None:
+    root = (tmp_path / "unknown-channel").resolve()
+    subject = EvidenceImporter(
+        sessionmaker(bind=runtime_engine, expire_on_commit=False),
+        ArtifactStore(root, max_bytes=1_000),
+    )
+
+    with pytest.raises(EvidenceIngestionError) as captured:
+        subject.ingest_and_import(
+            io.BytesIO(b"must not publish"),
+            IngestMetadata(
+                source="unknown_channel",
+                original_filename="synthetic.txt",
+                media_type="text/plain",
+            ),
+            [],
+            actor="pytest",
+            reason="unknown channel acceptance",
+        )
+
+    assert captured.value.error_code == "INGEST_CHANNEL_UNKNOWN"
+    assert not root.exists()
+
+
+def test_unknown_connector_source_system_publishes_no_records(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+) -> None:
+    connector = SyntheticConnector(
+        source_system="unknown_system",
+        records=[_record("row:must-not-publish")],
+    )
+
+    outcome = _ingest(importer, b"unknown source system", [connector])
+
+    assert outcome.status is ImportJobStatus.FAILED
+    assert outcome.error_code == "CONNECTOR_CONTRACT"
+    with admin_engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
 
 
 def test_successful_import_is_idempotent_and_never_creates_ledger_rows(
@@ -520,7 +611,7 @@ def test_connector_identity_properties_are_read_exactly_once(
     outcome = importer.ingest_and_import(
         io.BytesIO(b"property drift"),
         IngestMetadata(
-            source="synthetic-upload",
+            source="synthetic_upload",
             original_filename="drift.txt",
             media_type="text/plain",
         ),
@@ -532,6 +623,7 @@ def test_connector_identity_properties_are_read_exactly_once(
     assert outcome.status is ImportJobStatus.SUCCEEDED
     assert connector.name_reads == 1
     assert connector.version_reads == 1
+    assert connector.source_system_reads == 1
     with admin_engine.connect() as connection:
         identity = connection.execute(
             text("SELECT connector_name, connector_version FROM import_job")
@@ -617,7 +709,7 @@ def test_conflicting_source_or_media_type_routes_to_provenance_review(
     second = importer.ingest_and_import(
         io.BytesIO(content),
         IngestMetadata(
-            source="other-source",
+            source="manual_upload",
             original_filename="different-display-name.bin",
             media_type="application/x-other",
         ),
@@ -634,7 +726,7 @@ def test_conflicting_source_or_media_type_routes_to_provenance_review(
         artifact = connection.execute(
             text("SELECT source, original_filename, media_type FROM raw_artifact")
         ).one()
-        assert artifact == ("synthetic-upload", "synthetic.txt", "text/plain")
+        assert artifact == ("synthetic_upload", "synthetic.txt", "text/plain")
         assert connection.execute(text("SELECT count(*) FROM raw_artifact")).scalar_one() == 1
         assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 1
         assert connection.execute(text("SELECT count(*) FROM import_job")).scalar_one() == 2
@@ -721,7 +813,7 @@ def test_database_failure_leaves_only_an_unreferenced_verified_blob(
         subject.ingest_and_import(
             io.BytesIO(content),
             IngestMetadata(
-                source="synthetic-upload",
+                source="synthetic_upload",
                 original_filename="synthetic.txt",
                 media_type="text/plain",
             ),
@@ -741,6 +833,148 @@ def test_database_failure_leaves_only_an_unreferenced_verified_blob(
     assert not list((root / ".staging").iterdir())
 
 
+def test_quota_rejection_is_audited_without_disclosing_filename(
+    runtime_engine: Engine,
+    admin_engine: Engine,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logged: list[tuple[str, dict[str, object]]] = []
+
+    def capture_log(message: str, *, extra: dict[str, object]) -> None:
+        logged.append((message, extra))
+
+    monkeypatch.setattr("ledgerbridge.imports.logger.error", capture_log)
+    sessions = sessionmaker(bind=runtime_engine, expire_on_commit=False)
+    store = ArtifactStore(
+        (tmp_path / "quota-audit").resolve(),
+        max_bytes=1_000,
+        total_max_bytes=4,
+        staging_max_bytes=1_000,
+    )
+    subject = EvidenceImporter(sessions, store)
+
+    with pytest.raises(EvidenceIngestionError) as captured:
+        subject.ingest_and_import(
+            io.BytesIO(b"12345"),
+            IngestMetadata(
+                source="synthetic_upload",
+                original_filename="private-bank-statement.csv",
+                media_type="text/plain",
+            ),
+            [],
+            actor="pytest",
+            reason="quota acceptance",
+        )
+
+    assert captured.value.error_code == "ARTIFACT_TOTAL_QUOTA"
+    with admin_engine.connect() as connection:
+        event = connection.execute(
+            text(
+                "SELECT action, payload FROM audit_event WHERE action = 'artifact.ingest_rejected'"
+            )
+        ).one()
+    assert event.action == "artifact.ingest_rejected"
+    assert event.payload["quota_kind"] == "published"
+    assert event.payload["limit_bytes"] == 4
+    assert event.payload["observed_bytes"] == 0
+    assert event.payload["requested_bytes"] == 5
+    assert event.payload["ingest_channel"] == "synthetic_upload"
+    assert len(UUID(event.payload["intake_id"]).bytes) == 16
+    assert "private-bank-statement.csv" not in json.dumps(event.payload)
+    assert logged[0][0] == "artifact ingestion rejected by quota control"
+    assert logged[0][1]["audit_recorded"] is True
+    assert "private-bank-statement.csv" not in json.dumps(logged[0][1])
+
+
+def test_quota_rejection_keeps_structured_log_when_audit_database_is_unavailable(
+    runtime_engine: Engine,
+    admin_engine: Engine,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logged: list[tuple[str, dict[str, object]]] = []
+
+    def capture_log(message: str, *, extra: dict[str, object]) -> None:
+        logged.append((message, extra))
+
+    monkeypatch.setattr("ledgerbridge.imports.logger.error", capture_log)
+    sessions = sessionmaker(bind=runtime_engine, expire_on_commit=False)
+    store = ArtifactStore(
+        (tmp_path / "quota-log-fallback").resolve(),
+        max_bytes=1_000,
+        total_max_bytes=1,
+        staging_max_bytes=1_000,
+    )
+    subject = EvidenceImporter(sessions, store)
+
+    def fail_audit(*_args: object, **_kwargs: object) -> UUID:
+        raise SQLAlchemyError("unavailable")
+
+    monkeypatch.setattr("ledgerbridge.imports.append_audit_event", fail_audit)
+    with pytest.raises(EvidenceIngestionError) as captured:
+        _ingest(subject, b"too large", [])
+
+    assert captured.value.error_code == "ARTIFACT_TOTAL_QUOTA"
+    with admin_engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM audit_event")).scalar_one() == 0
+    assert logged[0][0] == "artifact ingestion rejected by quota control"
+    assert logged[0][1]["audit_recorded"] is False
+
+
+def test_staging_and_ambiguous_quota_state_have_distinct_audited_errors(
+    runtime_engine: Engine,
+    admin_engine: Engine,
+    tmp_path: Path,
+) -> None:
+    sessions = sessionmaker(bind=runtime_engine, expire_on_commit=False)
+    staging_root = (tmp_path / "staging-pressure").resolve()
+    (staging_root / ".staging").mkdir(parents=True)
+    (staging_root / ".staging" / "artifact-existing").write_bytes(b"12")
+    staging_subject = EvidenceImporter(
+        sessions,
+        ArtifactStore(
+            staging_root,
+            max_bytes=100,
+            staging_max_bytes=1,
+            staging_ttl_seconds=60,
+        ),
+    )
+    with pytest.raises(EvidenceIngestionError) as staging_error:
+        _ingest(staging_subject, b"x", [])
+    assert staging_error.value.error_code == "ARTIFACT_STAGING_QUOTA"
+
+    ambiguous_root = (tmp_path / "ambiguous-state").resolve()
+    ambiguous_root.mkdir()
+    (ambiguous_root / "unexpected").write_bytes(b"unknown")
+    state_subject = EvidenceImporter(
+        sessions,
+        ArtifactStore(ambiguous_root, max_bytes=100),
+    )
+    with pytest.raises(EvidenceIngestionError) as state_error:
+        _ingest(state_subject, b"x", [])
+    assert state_error.value.error_code == "ARTIFACT_QUOTA_STATE"
+
+    with admin_engine.connect() as connection:
+        payloads = (
+            connection.execute(
+                text(
+                    "SELECT payload FROM audit_event "
+                    "WHERE action = 'artifact.ingest_rejected' ORDER BY sequence"
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert [payload["error_code"] for payload in payloads] == [
+        "ARTIFACT_STAGING_QUOTA",
+        "ARTIFACT_QUOTA_STATE",
+    ]
+    assert payloads[1]["limit_bytes"] is None
+    assert payloads[1]["observed_bytes"] is None
+    assert payloads[1]["requested_bytes"] is None
+
+
 def test_import_job_state_machine_and_column_grants(
     importer: EvidenceImporter,
     runtime_engine: Engine,
@@ -753,6 +987,7 @@ def test_import_job_state_machine_and_column_grants(
             artifact_id=outcome.artifact_id,
             connector_name="manual-state-test",
             connector_version="1",
+            source_system="synthetic",
             status=ImportJobStatus.PENDING,
         )
         session.add(manual)
@@ -777,10 +1012,39 @@ def test_import_job_state_machine_and_column_grants(
             .values(status=ImportJobStatus.RUNNING, started_at=datetime.now(UTC))
         )
         session.commit()
+        # The state check runs before the deferred provenance trigger when the
+        # terminal audit binding is omitted.  PostgreSQL therefore reports
+        # either invariant depending on the constraint evaluation order.
+        with pytest.raises(
+            DBAPIError,
+            match=r"import_job_state_timestamps|terminal import job requires",
+        ):
+            session.execute(
+                update(ImportJob)
+                .where(ImportJob.id == manual.id)
+                .values(status=ImportJobStatus.SUCCEEDED, completed_at=datetime.now(UTC))
+            )
+            session.commit()
+        session.rollback()
+        audit_event_id = append_audit_event(
+            session,
+            actor="pytest",
+            action="import.complete",
+            reason="manual state transition",
+            payload={
+                "job_id": str(manual.id),
+                "artifact_id": str(outcome.artifact_id),
+                "status": "SUCCEEDED",
+            },
+        )
         session.execute(
             update(ImportJob)
             .where(ImportJob.id == manual.id)
-            .values(status=ImportJobStatus.SUCCEEDED, completed_at=datetime.now(UTC))
+            .values(
+                status=ImportJobStatus.SUCCEEDED,
+                completed_at=datetime.now(UTC),
+                terminal_audit_event_id=audit_event_id,
+            )
         )
         session.commit()
 
@@ -845,7 +1109,7 @@ def test_partial_external_identity_and_artifact_locator_uniqueness(
                 artifact_id=first.artifact_id,
                 import_job_id=first.job_id,
                 record_locator="manual:1",
-                source="manual",
+                source="synthetic",
                 parser_version="1",
                 raw_fields={},
                 normalized_fields={},
@@ -860,7 +1124,7 @@ def test_partial_external_identity_and_artifact_locator_uniqueness(
                 artifact_id=second.artifact_id,
                 import_job_id=second.job_id,
                 record_locator="manual:2",
-                source="manual",
+                source="synthetic",
                 parser_version="1",
                 raw_fields={},
                 normalized_fields={},
@@ -878,7 +1142,7 @@ def test_partial_external_identity_and_artifact_locator_uniqueness(
                     artifact_id=second.artifact_id,
                     import_job_id=second.job_id,
                     record_locator=f"null:{index}",
-                    source="manual",
+                    source="synthetic",
                     parser_version="1",
                     raw_fields={},
                     normalized_fields={},
@@ -895,7 +1159,7 @@ def test_partial_external_identity_and_artifact_locator_uniqueness(
                 artifact_id=first.artifact_id,
                 import_job_id=first.job_id,
                 record_locator="manual:1",
-                source="manual",
+                source="synthetic",
                 parser_version="1",
                 raw_fields={},
                 normalized_fields={},
@@ -1280,7 +1544,7 @@ def test_raw_artifact_requires_fresh_semantic_audit_and_digest_key_binding(
         "INSERT INTO raw_artifact "
         "(sha256, source, original_filename, media_type, byte_size, "
         "storage_key, audit_event_id) VALUES "
-        "(:sha256, 'pytest', 'direct.bin', 'application/octet-stream', "
+        "(:sha256, 'manual_upload', 'direct.bin', 'application/octet-stream', "
         ":byte_size, :storage_key, :audit_event_id)"
     )
 
@@ -1289,7 +1553,7 @@ def test_raw_artifact_requires_fresh_semantic_audit_and_digest_key_binding(
             "sha256": digest_hex,
             "byte_size": len(content),
             "storage_key": storage_key,
-            "source": "pytest",
+            "source": "manual_upload",
             "original_filename_sha256": hashlib.sha256(b"direct.bin").hexdigest(),
             "media_type": "application/octet-stream",
         }
@@ -1521,7 +1785,7 @@ def test_phase2_downgrade_refuses_to_delete_evidence(
             "sha256": digest_hex,
             "byte_size": len(content),
             "storage_key": storage_key,
-            "source": "pytest",
+            "source": "manual_upload",
             "original_filename_sha256": hashlib.sha256(b"downgrade.bin").hexdigest(),
             "media_type": "application/octet-stream",
         }
@@ -1539,7 +1803,7 @@ def test_phase2_downgrade_refuses_to_delete_evidence(
                     "INSERT INTO raw_artifact "
                     "(sha256, source, original_filename, media_type, byte_size, "
                     "storage_key, audit_event_id) VALUES "
-                    "(:sha256, 'pytest', 'downgrade.bin', "
+                    "(:sha256, 'manual_upload', 'downgrade.bin', "
                     "'application/octet-stream', :byte_size, :storage_key, :event_id)"
                 ),
                 {
@@ -1559,7 +1823,163 @@ def test_phase2_downgrade_refuses_to_delete_evidence(
         with temporary_engine.connect() as connection:
             assert (
                 connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+                == "20260822_0004"
+            )
+            assert connection.execute(text("SELECT count(*) FROM raw_artifact")).scalar_one() == 1
+            assert connection.execute(text("SELECT count(*) FROM ingest_channel")).scalar_one() == 2
+    finally:
+        if temporary_engine is not None:
+            temporary_engine.dispose()
+        with maintenance_engine.connect() as connection:
+            connection.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :database_name"
+                ),
+                {"database_name": database_name},
+            )
+            connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+        maintenance_engine.dispose()
+
+
+def test_phase3_registry_migration_round_trip_preserves_security_controls(
+    migration_database_url: str,
+) -> None:
+    url = create_engine(migration_database_url).url
+    database_name = f"ledgerbridge_phase3_roundtrip_{uuid4().hex[:10]}"
+    maintenance_engine = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    temporary_url = url.set(database=database_name)
+    temporary_engine: Engine | None = None
+    try:
+        with maintenance_engine.connect() as connection:
+            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+        rendered = temporary_url.render_as_string(hide_password=False)
+        _run_alembic(rendered, "head")
+        temporary_engine = create_engine(temporary_url)
+        with temporary_engine.connect() as connection:
+            assert connection.execute(text("SELECT count(*) FROM ingest_channel")).scalar_one() == 2
+            assert connection.execute(text("SELECT count(*) FROM source_system")).scalar_one() == 1
+        temporary_engine.dispose()
+        temporary_engine = None
+
+        _run_alembic(rendered, "20260821_0003", downgrade=True)
+        temporary_engine = create_engine(temporary_url)
+        with temporary_engine.connect() as connection:
+            assert (
+                connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
                 == "20260821_0003"
+            )
+            assert (
+                connection.execute(text("SELECT to_regclass('public.ingest_channel')")).scalar_one()
+                is None
+            )
+        temporary_engine.dispose()
+        temporary_engine = None
+
+        _run_alembic(rendered, "head")
+        temporary_engine = create_engine(temporary_url)
+        with temporary_engine.connect() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT proconfig FROM pg_proc JOIN pg_namespace "
+                    "ON pg_namespace.oid = pg_proc.pronamespace "
+                    "WHERE nspname = 'public' AND proname = 'registry_block_mutation'"
+                )
+            ).scalar_one() == ["search_path=pg_catalog"]
+            grants = connection.execute(
+                text(
+                    "SELECT table_name, privilege_type "
+                    "FROM information_schema.role_table_grants "
+                    "WHERE grantee = 'ledgerbridge_app' "
+                    "AND table_name IN ('ingest_channel', 'source_system') "
+                    "ORDER BY table_name, privilege_type"
+                )
+            ).all()
+            assert len(grants) == 2
+            assert grants[0][0] == "ingest_channel"
+            assert grants[0][1] == "SELECT"
+            assert grants[1][0] == "source_system"
+            assert grants[1][1] == "SELECT"
+    finally:
+        if temporary_engine is not None:
+            temporary_engine.dispose()
+        with maintenance_engine.connect() as connection:
+            connection.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :database_name"
+                ),
+                {"database_name": database_name},
+            )
+            connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+        maintenance_engine.dispose()
+
+
+def test_phase3_upgrade_rolls_back_on_unregistered_legacy_provenance(
+    migration_database_url: str,
+) -> None:
+    url = create_engine(migration_database_url).url
+    database_name = f"ledgerbridge_phase3_legacy_{uuid4().hex[:10]}"
+    maintenance_engine = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    temporary_url = url.set(database=database_name)
+    temporary_engine: Engine | None = None
+    try:
+        with maintenance_engine.connect() as connection:
+            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+        rendered = temporary_url.render_as_string(hide_password=False)
+        _run_alembic(rendered, "20260821_0003")
+        temporary_engine = create_engine(temporary_url)
+        content = b"legacy provenance"
+        digest = hashlib.sha256(content).digest()
+        digest_hex = digest.hex()
+        storage_key = f"sha256/{digest_hex[:2]}/{digest_hex[2:4]}/{digest_hex}"
+        payload = {
+            "sha256": digest_hex,
+            "byte_size": len(content),
+            "storage_key": storage_key,
+            "source": "legacy-source",
+            "original_filename_sha256": hashlib.sha256(b"legacy.bin").hexdigest(),
+            "media_type": "application/octet-stream",
+        }
+        with temporary_engine.begin() as connection:
+            event_id = connection.execute(
+                text(
+                    "SELECT append_audit_event("
+                    "'pytest', 'artifact.ingest', 'legacy provenance', NULL, "
+                    "CAST(:payload AS jsonb))"
+                ),
+                {"payload": json.dumps(payload, sort_keys=True)},
+            ).scalar_one()
+            connection.execute(
+                text(
+                    "INSERT INTO raw_artifact "
+                    "(sha256, source, original_filename, media_type, byte_size, "
+                    "storage_key, audit_event_id) VALUES "
+                    "(:sha256, 'legacy-source', 'legacy.bin', 'application/octet-stream', "
+                    ":byte_size, :storage_key, :event_id)"
+                ),
+                {
+                    "sha256": digest,
+                    "byte_size": len(content),
+                    "storage_key": storage_key,
+                    "event_id": event_id,
+                },
+            )
+        temporary_engine.dispose()
+        temporary_engine = None
+
+        with pytest.raises(Exception, match="registered channel"):
+            _run_alembic(rendered, "head")
+
+        temporary_engine = create_engine(temporary_url)
+        with temporary_engine.connect() as connection:
+            assert (
+                connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+                == "20260821_0003"
+            )
+            assert (
+                connection.execute(text("SELECT to_regclass('public.ingest_channel')")).scalar_one()
+                is None
             )
             assert connection.execute(text("SELECT count(*) FROM raw_artifact")).scalar_one() == 1
     finally:

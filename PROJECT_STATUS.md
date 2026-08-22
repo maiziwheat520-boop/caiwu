@@ -69,13 +69,28 @@ database TEMP is denied to `ledgerbridge_app`, all 14 security functions pin
 business/evidence tables plus the artifact volume remain empty. A new encrypted
 backup also passed isolated restore. No real evidence ingestion occurred.
 
-Phase 3 Platform Security Foundation preflight is now active from deployment-
-record merge `1afb70e04aa33b4508de075d2838d9b2a6ff2977`. The user selected a
+Phase 3 Platform Security Foundation preflight merged as
+`b1792701fa20a55de6233206fbe29ce6ee427e28`, and the user separately authorized
+Slice A implementation. The user selected a
 platform-only scope: fail-closed aggregate artifact/staging quotas, separate
 canonical ingest-channel and source-system registries, backward-compatible v2
 restore evidence, and a no-network Unix-socket Connector runner. Real parsers,
 OAuth, mailbox collection, real evidence, and ledger automation remain out of
-scope. The umbrella task will use two independently reviewed implementation PRs.
+scope. Slice A and its authorized security remediation are implemented on
+`ai/chatgpt/phase-3-platform-controls`; the remediation commit is
+`b72b229363f60de71c19933c45a7ef8bc45ee346`. Local gates pass, Hermes is at
+`20260822_0004`, all 16 revision-owned triggers are enabled, runtime TEMP is
+denied, and direct POSTED-mutation probes fail closed. The initial scan's five
+Slice A findings are remediated; same-UID open-inode identity separation is
+deferred to Slice B. The final fixed-SHA scan is complete with zero unclosed
+Slice A findings; its only low-severity result is the explicitly deferred
+same-UID inode boundary.
+Slice B remains unstarted and independently gated. The follow-up CI fixes are
+on `cdcac19de3f28c6c42db4629995b79764b48db7c` and protected PR #14 is open at
+`https://github.com/maiziwheat520-boop/caiwu/pull/14`. Both the push and
+pull-request workflows passed all six `secrets`, `quality`, and `compose` jobs
+(runs `32568176284` and `32568174194`). Production is unchanged at `c56b6ff` /
+`20260821_0003`; the PR has not been merged and no deployment has been run.
 
 ## Completed
 
@@ -128,7 +143,7 @@ scope. The umbrella task will use two independently reviewed implementation PRs.
 - Recorded: 2026-08-22
 - Deployment revision: `c56b6ffdde9f723efe1792ae1312ec8795bba165`
 - Codex implementation clone: `G:\我的云端硬盘\AI\LedgerBridge-Codex`
-- Codex branch: `ai/chatgpt/phase-3-platform-prep`
+- Codex branch: `ai/chatgpt/phase-3-platform-controls`
 - Codex identity: `Codex <codex@ledgerbridge.local>`
 - Claude review-only clone: `G:\我的云端硬盘\AI\LedgerBridge-Claude`
 - Claude identity when explicitly authorized to commit:
@@ -137,25 +152,26 @@ scope. The umbrella task will use two independently reviewed implementation PRs.
 
 ## Active implementation owner
 
-Codex, in the Codex clone and only on `ai/chatgpt/phase-3-platform-prep` for the
-Phase 3 documentation-only preflight. Claude remains read-only.
+Codex, in the Codex clone and only on `ai/chatgpt/phase-3-platform-controls` for
+Phase 3 Slice A. Claude remains read-only and is reserved for a later narrow audit.
 
 ## Review owner
 
-Claude completed the independent fixed-SHA audit in the separate clone and wrote
-only its report. Codex published the finding-by-finding response, merged the
-validated remediation, and preserved Claude's remaining quota. A later recheck
-can be limited to the BLOCKER/HIGH closures and report addendum.
+Claude completed the independent Phase 2 audit in the separate clone and wrote
+only its report. Codex published the Phase 3 finding-by-finding response and
+remediation report, while preserving Claude's remaining quota. A later narrow
+Claude recheck can be limited to the five Phase 3 closure claims and the Slice B
+runner boundary.
 
 ## Next task
 
-Complete the Phase 3 platform task card and protected preflight PR. Only after
-that merge and a separate implementation authorization may Codex start slice A
-(`phase-3-platform-controls`). Do not start a real Connector, ingest evidence, or
-enable the mail collector.
+PR #14 is open with all required checks green. Await separate user
+authorization before merging it. Do not deploy, start Slice B, register a real
+Connector, ingest evidence, or enable the mail collector without the
+corresponding later authorization.
 
 ## Blocking decisions
 
-None for the documentation preflight. Phase 3 implementation, each merge, each
-production deployment, real Connector registration, OAuth, and real-data
+None for Slice A implementation and review. Slice A merge, Slice B implementation,
+each production deployment, real Connector registration, OAuth, and real-data
 ingestion require their later explicit gates.

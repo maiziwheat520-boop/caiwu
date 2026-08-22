@@ -1,6 +1,6 @@
 # Task: Phase 3 Platform Security Foundation
 
-- Status: preflight complete; implementation not authorized
+- Status: Slice A implemented, remediated, protected PR #14 green; production unchanged
 - Preflight date: 2026-08-22
 - Implementation owner: Codex
 - Review owner: Codex fixed-SHA self-audit; preserve a narrow Claude recheck entry point
@@ -346,10 +346,48 @@ fixtures. Enabling a real manifest is a separate reviewed change.
 
 ## Implementation evidence
 
-Pending. This preflight changes documentation only.
+Slice A implementation and the authorized remediation batch are complete on
+`ai/chatgpt/phase-3-platform-controls`. The executable remediation commit is
+`b72b229363f60de71c19933c45a7ef8bc45ee346`. It adds migration `20260822_0004`,
+cross-process filesystem quota admission, separate append-only provenance
+registries, structured quota rejection audit/log signals, encrypted backup/
+restore format v2 with v1 read compatibility, and the runtime provenance,
+artifact-manifest, verifier-pinning, connector-namespace, and restore-baseline
+controls required by the fixed-SHA security review.
+
+Local Windows gates pass Ruff, formatting, strict mypy, compileall, and 77
+non-PostgreSQL tests; platform-only cases skip explicitly. The targeted
+connector/backup suite passes 30 tests. Hermes disposable Linux/PostgreSQL 15
+was migrated to `20260822_0004`; all 16 revision-owned triggers are enabled,
+runtime TEMP is denied, runtime grants match the baseline, and direct probes
+reject the pg_temp shadow attempt plus POSTED ledger mutations. The Hermes
+test container could not install pytest because its isolated DNS was unavailable
+and the image cache lacked the dev wheels; that probe therefore makes no remote
+full-suite claim. The later protected PR CI ran the complete PostgreSQL-backed
+suite successfully. Production remained on `c56b6ff` / `20260821_0003` and
+received no evidence.
+
+The deterministic remediation report is
+`docs/reviews/2026-08-22-phase-3-security-remediation-codex.md`. The final
+fixed-SHA security rescan is recorded in
+`docs/reviews/2026-08-22-phase-3-security-scan-final-codex.md`: it has zero
+unclosed Slice A findings and one low-severity same-UID inode finding explicitly
+deferred to Slice B. Slice B and every deployment remain separately gated.
+
+The follow-up CI fixes are committed as
+`cdcac19de3f28c6c42db4629995b79764b48db7c`. They route unknown connector source
+systems through the internal failure job before the provenance foreign key is
+written and make the state-machine assertion accept PostgreSQL's invariant
+evaluation order. Protected PR #14 is open and both its push and
+pull-request workflows passed all six `secrets`, `quality`, and `compose` jobs
+(`32568176284`, `32568174194`). The PR is not merged; production remains on
+`c56b6ff` / `20260821_0003`.
 
 ## Review findings
 
-Pending fixed-SHA implementation review. Claude capacity is preserved; a later
-targeted audit can focus on quota races, filesystem cleanup, IPC framing, runner
-isolation, and backward-compatible restore validation.
+The initial fixed-SHA diff scan found six reportable candidates (three medium,
+three low). Five Slice A findings are remediated in `b72b229`; the same-UID open
+inode identity issue is explicitly deferred to Slice B. The final scan of the
+base-to-remediation range is complete with no unclosed Slice A finding. Claude
+capacity is preserved; a later narrow audit can focus on the five closure claims
+and the eventual runner isolation/IPC framing.

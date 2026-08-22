@@ -58,9 +58,17 @@ class InvalidConnector:
     version = "1"
 
 
+class InternalNamespaceConnector:
+    name = "ledgerbridge.provenance"
+    version = "1"
+    source_system = "synthetic"
+
+
 def test_connector_metadata_and_json_edge_cases_are_rejected() -> None:
     with pytest.raises(ConnectorContractError, match=r"connector.name"):
         validate_connector(InvalidConnector())  # type: ignore[arg-type]
+    with pytest.raises(ConnectorContractError, match="reserved internal namespace"):
+        validate_connector(InternalNamespaceConnector())  # type: ignore[arg-type]
     with pytest.raises(ConnectorContractError, match="external_transaction_id"):
         ParsedSourceRecord(
             record_locator="row:1",

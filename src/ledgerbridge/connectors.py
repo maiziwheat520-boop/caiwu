@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -12,6 +13,7 @@ MAX_JSON_BYTES = 1_000_000
 MAX_JSON_DEPTH = 64
 MIN_MINOR_UNITS = -(2**63)
 MAX_MINOR_UNITS = 2**63 - 1
+CANONICAL_SOURCE_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
 class ConnectorContractError(ValueError):
@@ -48,7 +50,7 @@ class ParsedSourceRecord:
 
     def __post_init__(self) -> None:
         _require_text("record_locator", self.record_locator, 500)
-        _require_text("source", self.source, 200)
+        _require_canonical_source("source", self.source)
         _require_text("parser_version", self.parser_version, 100)
         if self.external_transaction_id is not None:
             _require_text("external_transaction_id", self.external_transaction_id, 300)
@@ -64,6 +66,9 @@ class Connector(Protocol):
     @property
     def version(self) -> str: ...
 
+    @property
+    def source_system(self) -> str: ...
+
     def detect(
         self,
         metadata: ArtifactMetadata,
@@ -73,17 +78,30 @@ class Connector(Protocol):
     def parse(self, stream: ReadableBinary) -> Iterable[ParsedSourceRecord]: ...
 
 
-def validate_connector(connector: Connector) -> tuple[str, str]:
+def validate_connector(connector: Connector) -> tuple[str, str, str]:
     name = connector.name
     version = connector.version
     _require_text("connector.name", name, 100)
     _require_text("connector.version", version, 100)
-    return name, version
+    if name.startswith("ledgerbridge."):
+        raise ConnectorContractError(
+            "connector.name uses the reserved internal namespace ledgerbridge.*"
+        )
+    source_system = connector.source_system
+    _require_canonical_source("connector.source_system", source_system)
+    return name, version, source_system
 
 
 def _require_text(field: str, value: str, maximum: int) -> None:
     if not isinstance(value, str) or not value.strip() or len(value) > maximum:
         raise ConnectorContractError(f"{field} must be non-blank and at most {maximum} characters")
+
+
+def _require_canonical_source(field: str, value: str) -> None:
+    if not isinstance(value, str) or CANONICAL_SOURCE_PATTERN.fullmatch(value) is None:
+        raise ConnectorContractError(
+            f"{field} must be a lowercase canonical identifier of at most 64 characters"
+        )
 
 
 def _validate_json_object(
