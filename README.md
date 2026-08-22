@@ -19,9 +19,10 @@ account. It must not invent financial facts.
 
 Phase 2 Evidence and Import plus the Claude-audit remediation are merged and
 deployed on Hermes at `c56b6ffdde9f723efe1792ae1312ec8795bba165`. Phase 3
-Slice A is open in protected PR #14 (all required CI checks green) and adds
-fail-closed aggregate artifact quotas, canonical ingest/source registries, and
-backward-compatible restore evidence v2. The
+Slice A is merged in protected main at `06725c3561d92630c4d15631076ba81f68371779`
+after PR #14 passed all required CI checks. It adds fail-closed aggregate
+artifact quotas, canonical ingest/source registries, and backward-compatible
+restore evidence v2. The
 deployment includes database-enforced ledger invariants, split runtime/migration
 identities, immutable evidence provenance, deterministic import orchestration,
 and hardened runtime TEMP/search-path boundaries. No real evidence is ingested.
