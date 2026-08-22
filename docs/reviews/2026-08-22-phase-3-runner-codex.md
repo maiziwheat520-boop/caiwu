@@ -74,8 +74,9 @@ after the final runner test additions:
 The earlier Linux replay exposed a test fixture that made both byte count and
 digest invalid, so the client correctly reported the first applicable
 `ARTIFACT_SIZE_MISMATCH`. The fixture was corrected to isolate the digest case;
-the final replay is green. The repository GitHub Actions run for head
-`991e617faf24db210668df9b38298dfb4722197c` is the remaining hosted CI gate.
+the final replay is green. The repository GitHub Actions run for the final
+documentation head `bc833b200c94cefb7d930d1ab3bce22d58901331` (`32575131259`)
+passed all three required jobs: `secrets`, `quality`, and `compose`.
 
 ## Hermes disposable runner acceptance
 
@@ -127,6 +128,6 @@ must use a unique project name and must never target `/srv/ai-center/ledgerbridg
 ## Remaining gates
 
 Slice B is ready for a narrow independent audit, not for production release.
-Hosted CI completion, protected PR review, merge authorization, and any future
-production deployment remain separate gates. The production runner is not
-enabled, and real Connector registration remains out of scope.
+The narrow Claude audit, protected PR review, merge authorization, and any
+future production deployment remain separate gates. The production runner is
+not enabled, and real Connector registration remains out of scope.

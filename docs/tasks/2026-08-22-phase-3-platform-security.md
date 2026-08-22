@@ -445,6 +445,7 @@ kept as explicit operational evidence; future temporary Compose projects must
 use a unique `-p` name and never target the production tree.
 
 The full implementation report is
-`docs/reviews/2026-08-22-phase-3-runner-codex.md`. The remaining gates are the
-hosted CI run for the pushed head, a narrow independent audit, protected PR
-review, and separate authorization for merge or production deployment.
+`docs/reviews/2026-08-22-phase-3-runner-codex.md`. Hosted CI run `32575131259`
+for the pushed documentation head passed `secrets`, `quality`, and `compose`.
+The remaining gates are a narrow independent audit, protected PR review, and
+separate authorization for merge or production deployment.
