@@ -21,7 +21,7 @@ the state-machine columns. Same-UID open-inode identity separation remains an
 explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is now implemented
 and pushed on the Codex branch `ai/chatgpt/phase-3-connector-runner` at head
-`8c43ffae0881c2c4147e30cc8f3e27b7b424eb1e`; the fixed code/test head for final audit is
+`43fa910dedb1f5c91618c6e2af7b9fd030180fb4`; the fixed code/test head for final audit is
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e`;
 the isolated runner image was tested only as a disposable Hermes image and is
 not deployed.
