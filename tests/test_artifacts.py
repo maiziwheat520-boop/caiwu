@@ -223,6 +223,95 @@ def test_invalid_store_configuration_and_verification_paths(tmp_path: Path) -> N
         store._ensure_private_directory(tmp_path.parent)
 
 
+def test_open_verified_keeps_the_verified_inode_when_the_path_is_replaced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if os.name == "nt":
+        pytest.skip("Windows does not allow replacing an open file in this test")
+
+    store = ArtifactStore(tmp_path.resolve(), max_bytes=1_000)
+    original = b"AAAAAAAAAA"
+    replacement = b"BBBBBBBBBB"
+    artifact = store.publish(io.BytesIO(original))
+    destination = tmp_path / artifact.storage_key
+    replacement_path = tmp_path / "replacement"
+    replacement_path.write_bytes(replacement)
+    original_verify = store._verify_descriptor
+
+    def verify_then_replace(descriptor: int, digest: bytes, byte_size: int) -> None:
+        original_verify(descriptor, digest, byte_size)
+        os.replace(replacement_path, destination)
+
+    monkeypatch.setattr(store, "_verify_descriptor", verify_then_replace)
+    with store.open_verified(artifact) as stream:
+        assert stream.read() == original
+    assert destination.read_bytes() == replacement
+
+
+def test_open_verified_rejects_a_symlink_swap_at_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if os.name == "nt":
+        pytest.skip("O_NOFOLLOW is unavailable on Windows")
+
+    store = ArtifactStore(tmp_path.resolve(), max_bytes=1_000)
+    content = b"same bytes behind symlink"
+    artifact = store.publish(io.BytesIO(content))
+    destination = tmp_path / artifact.storage_key
+    outside = tmp_path / "outside-same-bytes"
+    outside.write_bytes(content)
+    real_open = os.open
+    armed = True
+
+    def racing_open(path: os.PathLike[str] | str, flags: int, mode: int = 0o777) -> int:
+        nonlocal armed
+        if armed and Path(path) == destination:
+            armed = False
+            destination.unlink()
+            destination.symlink_to(outside)
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(os, "open", racing_open)
+    with (
+        pytest.raises(ArtifactIntegrityError, match="regular file"),
+        store.open_verified(artifact),
+    ):
+        pass
+    assert outside.read_bytes() == content
+
+
+def test_directory_fsync_uses_the_operating_system_primitive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if os.name == "nt":
+        pytest.skip("directory fsync is a POSIX durability primitive")
+
+    synced: list[int] = []
+    monkeypatch.setattr(os, "fsync", synced.append)
+
+    ArtifactStore._fsync_directory(tmp_path)
+
+    assert len(synced) == 1
+
+
+def test_existing_artifact_directories_are_tightened_to_owner_only(
+    tmp_path: Path,
+) -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX directory modes are unavailable on Windows")
+
+    root = tmp_path / "store"
+    root.mkdir(mode=0o755)
+    store = ArtifactStore(root.resolve(), max_bytes=1_000)
+
+    store.publish(io.BytesIO(b"private directory"))
+
+    assert root.stat().st_mode & 0o777 == 0o700
+
+
 def test_connector_stream_exposes_read_only_bytes_without_a_path(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path.resolve(), max_bytes=1_000)
     artifact = store.publish(io.BytesIO(b"read-only"))
@@ -232,3 +321,4 @@ def test_connector_stream_exposes_read_only_bytes_without_a_path(tmp_path: Path)
         assert not hasattr(stream, "write")
         assert not hasattr(stream, "name")
         assert not hasattr(stream, "fileno")
+        assert not hasattr(stream, "_ReadOnlyArtifactStream__stream")

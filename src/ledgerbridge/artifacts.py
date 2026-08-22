@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Protocol
+from typing import Protocol
 
 
 class BinarySource(Protocol):
@@ -42,15 +42,28 @@ class PublishedArtifact:
 
 
 class ReadOnlyArtifactStream:
-    """Minimal connector-facing stream that does not expose a host path or write API."""
+    """Minimal connector-facing reader over one already-verified descriptor."""
 
-    __slots__ = ("__stream",)
+    __slots__ = ("__closed", "__descriptor")
 
-    def __init__(self, stream: BinaryIO) -> None:
-        self.__stream = stream
+    def __init__(self, descriptor: int) -> None:
+        self.__descriptor = descriptor
+        self.__closed = False
 
     def read(self, size: int = -1) -> bytes:
-        return self.__stream.read(size)
+        if self.__closed:
+            raise ValueError("I/O operation on closed evidence stream")
+        if size >= 0:
+            return os.read(self.__descriptor, size)
+        chunks: list[bytes] = []
+        while chunk := os.read(self.__descriptor, 64 * 1024):
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    def _close(self) -> None:
+        if not self.__closed:
+            os.close(self.__descriptor)
+            self.__closed = True
 
 
 def storage_key_for_digest(digest: bytes) -> str:
@@ -100,18 +113,27 @@ class ArtifactStore:
                 target.flush()
                 os.fsync(target.fileno())
 
+            if os.name != "nt":
+                os.chmod(temporary, stat.S_IRUSR | stat.S_IRGRP)
+                metadata_descriptor = self._open_regular(temporary)
+                try:
+                    os.fsync(metadata_descriptor)
+                finally:
+                    os.close(metadata_descriptor)
+
             digest = hasher.digest()
             storage_key = storage_key_for_digest(digest)
             destination = self._destination(digest)
             self._ensure_private_directory(destination.parent)
             try:
-                os.link(temporary, destination, follow_symlinks=False)
+                os.link(temporary, destination)
             except FileExistsError:
                 self._verify_path(destination, digest, byte_size)
                 created = False
             else:
                 temporary.unlink()
-                os.chmod(destination, stat.S_IRUSR | stat.S_IRGRP)
+                if os.name == "nt":
+                    os.chmod(destination, stat.S_IRUSR | stat.S_IRGRP)
                 self._fsync_directory(destination.parent)
                 created = True
             return PublishedArtifact(
@@ -133,14 +155,17 @@ class ArtifactStore:
     @contextmanager
     def open_verified(self, artifact: PublishedArtifact) -> Iterator[ReadOnlyArtifactStream]:
         destination = self._destination(artifact.sha256)
-        self._verify_path(destination, artifact.sha256, artifact.byte_size)
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(destination, flags)
-        stream = os.fdopen(descriptor, "rb")
+        descriptor = self._open_regular(destination)
         try:
-            yield ReadOnlyArtifactStream(stream)
+            self._verify_descriptor(descriptor, artifact.sha256, artifact.byte_size)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        stream = ReadOnlyArtifactStream(descriptor)
+        try:
+            yield stream
         finally:
-            stream.close()
+            stream._close()
 
     def _destination(self, digest: bytes) -> Path:
         relative = Path(storage_key_for_digest(digest))
@@ -169,32 +194,48 @@ class ArtifactStore:
                 raise ArtifactIntegrityError(
                     "artifact directories must be real directories, not symbolic links"
                 )
+            if os.name != "nt" and stat.S_IMODE(metadata.st_mode) != stat.S_IRWXU:
+                os.chmod(candidate, stat.S_IRWXU)
+                self._fsync_directory(candidate)
             if created:
                 self._fsync_directory(parent)
             current = candidate
 
     def _verify_path(self, path: Path, digest: bytes, byte_size: int) -> None:
+        descriptor = self._open_regular(path)
         try:
-            metadata = path.lstat()
+            self._verify_descriptor(descriptor, digest, byte_size)
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _open_regular(path: Path) -> int:
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            return os.open(path, flags)
         except FileNotFoundError as exc:
             raise ArtifactIntegrityError("published artifact is missing") from exc
-        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        except OSError as exc:
+            raise ArtifactIntegrityError("published artifact must be a regular file") from exc
+
+    def _verify_descriptor(self, descriptor: int, digest: bytes, byte_size: int) -> None:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
             raise ArtifactIntegrityError("published artifact must be a regular file")
         if metadata.st_size != byte_size:
             raise ArtifactIntegrityError("published artifact size mismatch")
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags)
         hasher = hashlib.sha256()
-        try:
-            with os.fdopen(descriptor, "rb") as source:
-                while chunk := source.read(self.chunk_size):
-                    hasher.update(chunk)
-        except BaseException:
-            with suppress(OSError):
-                os.close(descriptor)
-            raise
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        while chunk := os.read(descriptor, self.chunk_size):
+            hasher.update(chunk)
         if hasher.digest() != digest:
             raise ArtifactIntegrityError("published artifact digest mismatch")
+        os.lseek(descriptor, 0, os.SEEK_SET)
 
     @staticmethod
     def _fsync_directory(directory: Path) -> None:

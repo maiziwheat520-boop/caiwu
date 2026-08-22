@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -28,7 +29,12 @@ from ledgerbridge.connectors import (
     ReadableBinary,
 )
 from ledgerbridge.db import build_engine
-from ledgerbridge.imports import EvidenceImporter, ImportOutcome, IngestMetadata
+from ledgerbridge.imports import (
+    EvidenceImporter,
+    EvidenceIngestionError,
+    ImportOutcome,
+    IngestMetadata,
+)
 from ledgerbridge.ledger import post_journal_entry
 from ledgerbridge.models import (
     Account,
@@ -159,6 +165,51 @@ class NestedMutationConnector(SyntheticConnector):
             nested["amount_minor"] = 1.5
 
         return values()
+
+
+class PropertyDriftConnector:
+    def __init__(self) -> None:
+        self.name_reads = 0
+        self.version_reads = 0
+
+    @property
+    def name(self) -> str:
+        self.name_reads += 1
+        return "synthetic" if self.name_reads == 1 else "x" * 150
+
+    @property
+    def version(self) -> str:
+        self.version_reads += 1
+        return "1" if self.version_reads == 1 else "y" * 150
+
+    def detect(
+        self,
+        metadata: ArtifactMetadata,
+        bounded_prefix: bytes,
+    ) -> DetectionResult:
+        del metadata, bounded_prefix
+        return DetectionResult.MATCH
+
+    def parse(self, stream: ReadableBinary) -> Iterable[ParsedSourceRecord]:
+        stream.read()
+        return [_record("row:stable-identity")]
+
+
+class TamperingConnector(SyntheticConnector):
+    def __init__(self, destination: Path, replacement: bytes) -> None:
+        super().__init__(records=[_record("row:tampered")])
+        self.destination = destination
+        self.replacement = replacement
+
+    def detect(
+        self,
+        metadata: ArtifactMetadata,
+        bounded_prefix: bytes,
+    ) -> DetectionResult:
+        del metadata, bounded_prefix
+        self.destination.chmod(0o600)
+        self.destination.write_bytes(self.replacement)
+        return DetectionResult.MATCH
 
 
 class IdentityMutatingConnector(SyntheticConnector):
@@ -461,6 +512,134 @@ def test_connector_identity_is_frozen_before_detection_and_parse(
         assert identity == ("synthetic", "1")
 
 
+def test_connector_identity_properties_are_read_exactly_once(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+) -> None:
+    connector = PropertyDriftConnector()
+    outcome = importer.ingest_and_import(
+        io.BytesIO(b"property drift"),
+        IngestMetadata(
+            source="synthetic-upload",
+            original_filename="drift.txt",
+            media_type="text/plain",
+        ),
+        [connector],
+        actor="pytest",
+        reason="identity snapshot test",
+    )
+
+    assert outcome.status is ImportJobStatus.SUCCEEDED
+    assert connector.name_reads == 1
+    assert connector.version_reads == 1
+    with admin_engine.connect() as connection:
+        identity = connection.execute(
+            text("SELECT connector_name, connector_version FROM import_job")
+        ).one()
+        assert identity == ("synthetic", "1")
+
+
+def test_tampering_after_detection_is_an_evidence_integrity_failure(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+    tmp_path: Path,
+) -> None:
+    content = b"tamper after prefix"
+    digest = hashlib.sha256(content).digest()
+    digest_hex = digest.hex()
+    destination = tmp_path / "sha256" / digest_hex[:2] / digest_hex[2:4] / digest_hex
+    connector = TamperingConnector(destination, b"X" * len(content))
+
+    outcome = _ingest(importer, content, [connector])
+
+    assert outcome.status is ImportJobStatus.FAILED
+    assert outcome.error_code == "EVIDENCE_INTEGRITY"
+    with admin_engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
+        assert (
+            connection.execute(text("SELECT error_code FROM import_job")).scalar_one()
+            == "EVIDENCE_INTEGRITY"
+        )
+
+
+def test_corrupt_duplicate_publication_raises_a_controlled_ingestion_error(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+    tmp_path: Path,
+) -> None:
+    content = b"corrupt duplicate"
+    first = _ingest(importer, content, [SyntheticConnector(records=[_record("row:1")])])
+    digest_hex = hashlib.sha256(content).hexdigest()
+    destination = tmp_path / "sha256" / digest_hex[:2] / digest_hex[2:4] / digest_hex
+    destination.chmod(0o600)
+    destination.write_bytes(b"Z" * len(content))
+
+    with pytest.raises(EvidenceIngestionError) as captured:
+        _ingest(importer, content, [SyntheticConnector(records=[_record("row:1")])])
+
+    assert captured.value.error_code == "EVIDENCE_INTEGRITY"
+    assert "corrupt duplicate" not in str(captured.value)
+    with admin_engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM raw_artifact")).scalar_one() == 1
+        assert connection.execute(text("SELECT count(*) FROM import_job")).scalar_one() == 1
+        assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 1
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM raw_artifact WHERE id = :id"),
+                {"id": first.artifact_id},
+            ).scalar_one()
+            == 1
+        )
+
+
+def test_job_creation_database_failure_is_a_controlled_ingestion_error(
+    importer: EvidenceImporter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_job_creation(*_args: object, **_kwargs: object) -> UUID:
+        raise IntegrityError("synthetic job failure", {}, RuntimeError("database failure"))
+
+    monkeypatch.setattr(importer, "_find_or_create_job", fail_job_creation)
+
+    with pytest.raises(EvidenceIngestionError) as captured:
+        _ingest(importer, b"controlled database failure", [])
+
+    assert captured.value.error_code == "IMPORT_DATABASE"
+    assert str(captured.value) == "evidence import state could not be recorded"
+
+
+def test_conflicting_source_or_media_type_routes_to_provenance_review(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+) -> None:
+    content = b"same bytes conflicting provenance"
+    first = _ingest(importer, content, [SyntheticConnector(records=[_record("row:1")])])
+    second = importer.ingest_and_import(
+        io.BytesIO(content),
+        IngestMetadata(
+            source="other-source",
+            original_filename="different-display-name.bin",
+            media_type="application/x-other",
+        ),
+        [SyntheticConnector(records=[_record("row:1")])],
+        actor="pytest",
+        reason="provenance conflict test",
+    )
+
+    assert first.status is ImportJobStatus.SUCCEEDED
+    assert second.status is ImportJobStatus.NEEDS_REVIEW
+    assert second.error_code == "PROVENANCE_CONFLICT"
+    assert second.artifact_id == first.artifact_id
+    with admin_engine.connect() as connection:
+        artifact = connection.execute(
+            text("SELECT source, original_filename, media_type FROM raw_artifact")
+        ).one()
+        assert artifact == ("synthetic-upload", "synthetic.txt", "text/plain")
+        assert connection.execute(text("SELECT count(*) FROM raw_artifact")).scalar_one() == 1
+        assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 1
+        assert connection.execute(text("SELECT count(*) FROM import_job")).scalar_one() == 2
+
+
 def test_new_parser_version_gets_distinct_job_without_overwriting_provenance(
     importer: EvidenceImporter,
     admin_engine: Engine,
@@ -538,7 +717,7 @@ def test_database_failure_leaves_only_an_unreferenced_verified_blob(
     subject = EvidenceImporter(sessions, store)
     content = b"verified orphan after database rollback"
 
-    with pytest.raises(DBAPIError):
+    with pytest.raises(EvidenceIngestionError) as captured:
         subject.ingest_and_import(
             io.BytesIO(content),
             IngestMetadata(
@@ -550,6 +729,8 @@ def test_database_failure_leaves_only_an_unreferenced_verified_blob(
             actor=" ",
             reason="forced audit failure",
         )
+    assert captured.value.error_code == "IMPORT_DATABASE"
+    assert str(captured.value) == "evidence import state could not be recorded"
 
     with admin_engine.connect() as connection:
         assert connection.execute(text("SELECT count(*) FROM raw_artifact")).scalar_one() == 0
@@ -753,14 +934,16 @@ def _draft_entry(
     *,
     balanced: bool = True,
 ) -> JournalEntry:
+    entry_id = uuid4()
     creation_event = append_audit_event(
         session,
         actor="pytest",
         action="journal.create",
         reason="synthetic draft",
-        payload={},
+        payload={"journal_entry_id": str(entry_id)},
     )
     entry = JournalEntry(
+        id=entry_id,
         entity_id=entity_id,
         occurred_at=datetime.now(UTC),
         origin="pytest",
@@ -782,6 +965,82 @@ def _draft_entry(
     )
     session.flush()
     return entry
+
+
+def test_journal_creation_requires_fresh_semantic_audit(
+    runtime_engine: Engine,
+) -> None:
+    with Session(runtime_engine) as session:
+        entity_id, bank_id, _expense_id = _create_accounts(session)
+        insert_statement = text(
+            "INSERT INTO journal_entry "
+            "(id, entity_id, occurred_at, origin, status, primary_account_id, "
+            "audit_event_id) VALUES "
+            "(:entry_id, :entity_id, now(), 'pytest', 'DRAFT', :account_id, "
+            ":audit_event_id)"
+        )
+
+        wrong_action_id = uuid4()
+        wrong_action = append_audit_event(
+            session,
+            actor="pytest",
+            action="artifact.ingest",
+            reason="wrong creation action",
+            payload={"journal_entry_id": str(wrong_action_id)},
+        )
+        with pytest.raises(DBAPIError, match=r"action must be journal.create"):
+            session.execute(
+                insert_statement,
+                {
+                    "entry_id": wrong_action_id,
+                    "entity_id": entity_id,
+                    "account_id": bank_id,
+                    "audit_event_id": wrong_action,
+                },
+            )
+        session.rollback()
+
+        wrong_target_id = uuid4()
+        wrong_target = append_audit_event(
+            session,
+            actor="pytest",
+            action="journal.create",
+            reason="wrong creation target",
+            payload={"journal_entry_id": str(uuid4())},
+        )
+        with pytest.raises(DBAPIError, match="target does not match"):
+            session.execute(
+                insert_statement,
+                {
+                    "entry_id": wrong_target_id,
+                    "entity_id": entity_id,
+                    "account_id": bank_id,
+                    "audit_event_id": wrong_target,
+                },
+            )
+        session.rollback()
+
+        stale_id = uuid4()
+        stale_event = append_audit_event(
+            session,
+            actor="pytest",
+            action="journal.create",
+            reason="stale creation event",
+            payload={"journal_entry_id": str(stale_id)},
+        )
+        session.commit()
+        with pytest.raises(DBAPIError, match="appended in this transaction"):
+            session.execute(
+                insert_statement,
+                {
+                    "entry_id": stale_id,
+                    "entity_id": entity_id,
+                    "account_id": bank_id,
+                    "audit_event_id": stale_event,
+                },
+            )
+        session.rollback()
+        assert session.execute(text("SELECT count(*) FROM journal_entry")).scalar_one() == 0
 
 
 def test_valid_post_transition_is_bound_and_reconstructable(runtime_engine: Engine) -> None:
@@ -937,34 +1196,70 @@ def test_post_audit_trigger_cannot_be_shadowed_by_temporary_tables(
         session.commit()
         entry_id = entry.id
 
-    with runtime_engine.connect() as connection:
-        transaction = connection.begin()
-        try:
-            assert connection.execute(
-                text("SELECT has_database_privilege(current_user, current_database(), 'TEMP')")
-            ).scalar_one()
-            connection.execute(
-                text("CREATE TEMP TABLE audit_event (id uuid, action text, payload jsonb)")
+    with admin_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                DO $do$
+                BEGIN
+                    EXECUTE format(
+                        'GRANT TEMPORARY ON DATABASE %I TO ledgerbridge_app',
+                        current_database()
+                    );
+                END
+                $do$;
+                """
             )
-            connection.execute(text("CREATE TEMP TABLE journal_entry (audit_event_id uuid)"))
-            connection.execute(
-                text(
-                    "INSERT INTO audit_event (id, action, payload) VALUES "
-                    "(:id, 'journal.post', "
-                    "jsonb_build_object('journal_entry_id', CAST(:target AS text)))"
-                ),
-                {"id": stale_event, "target": str(entry_id)},
-            )
-            with pytest.raises(DBAPIError, match="this transaction"):
+        )
+
+    try:
+        runtime_engine.dispose()
+        with runtime_engine.connect() as connection:
+            transaction = connection.begin()
+            try:
+                assert connection.execute(
+                    text("SELECT has_database_privilege(current_user, current_database(), 'TEMP')")
+                ).scalar_one()
+                connection.execute(
+                    text("CREATE TEMP TABLE audit_event (id uuid, action text, payload jsonb)")
+                )
+                connection.execute(text("CREATE TEMP TABLE journal_entry (audit_event_id uuid)"))
                 connection.execute(
                     text(
-                        "UPDATE public.journal_entry SET status = 'POSTED', "
-                        "posted_audit_event_id = :event_id WHERE id = :entry_id"
+                        "INSERT INTO audit_event (id, action, payload) VALUES "
+                        "(:id, 'journal.post', "
+                        "jsonb_build_object('journal_entry_id', CAST(:target AS text)))"
                     ),
-                    {"event_id": stale_event, "entry_id": entry_id},
+                    {"id": stale_event, "target": str(entry_id)},
                 )
-        finally:
-            transaction.rollback()
+                with pytest.raises(DBAPIError, match="this transaction"):
+                    connection.execute(
+                        text(
+                            "UPDATE public.journal_entry SET status = 'POSTED', "
+                            "posted_audit_event_id = :event_id WHERE id = :entry_id"
+                        ),
+                        {"event_id": stale_event, "entry_id": entry_id},
+                    )
+            finally:
+                transaction.rollback()
+    finally:
+        runtime_engine.dispose()
+        with admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    DO $do$
+                    BEGIN
+                        EXECUTE format(
+                            'REVOKE TEMPORARY ON DATABASE %I '
+                            'FROM ledgerbridge_app',
+                            current_database()
+                        );
+                    END
+                    $do$;
+                    """
+                )
+            )
 
     with admin_engine.connect() as connection:
         status = connection.execute(
@@ -995,6 +1290,7 @@ def test_raw_artifact_requires_fresh_semantic_audit_and_digest_key_binding(
             "byte_size": len(content),
             "storage_key": storage_key,
             "source": "pytest",
+            "original_filename_sha256": hashlib.sha256(b"direct.bin").hexdigest(),
             "media_type": "application/octet-stream",
         }
         wrong_action = append_audit_event(
@@ -1035,6 +1331,31 @@ def test_raw_artifact_requires_fresh_semantic_audit_and_digest_key_binding(
                 },
             )
         session.rollback()
+
+        for field, value in (
+            ("source", "other-source"),
+            ("original_filename_sha256", hashlib.sha256(b"other.bin").hexdigest()),
+            ("media_type", "text/plain"),
+            ("byte_size", len(content) + 1),
+        ):
+            mismatch_event = append_audit_event(
+                session,
+                actor="pytest",
+                action="artifact.ingest",
+                reason=f"mismatched artifact {field}",
+                payload={**payload, field: value},
+            )
+            with pytest.raises(DBAPIError, match="payload does not match"):
+                session.execute(
+                    insert_statement,
+                    {
+                        "sha256": digest,
+                        "byte_size": len(content),
+                        "storage_key": storage_key,
+                        "audit_event_id": mismatch_event,
+                    },
+                )
+            session.rollback()
 
         mismatched_key = f"sha256/00/00/{'0' * 64}"
         mismatch_event = append_audit_event(
@@ -1160,6 +1481,87 @@ def test_phase2_migration_round_trip_and_objects(
         assert {"raw_artifact", "import_job", "source_record"} <= set(
             inspect(temporary_engine).get_table_names()
         )
+    finally:
+        if temporary_engine is not None:
+            temporary_engine.dispose()
+        with maintenance_engine.connect() as connection:
+            connection.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :database_name"
+                ),
+                {"database_name": database_name},
+            )
+            connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+        maintenance_engine.dispose()
+
+
+def test_phase2_downgrade_refuses_to_delete_evidence(
+    migration_database_url: str,
+) -> None:
+    url = create_engine(migration_database_url).url
+    database_name = f"ledgerbridge_phase2_downgrade_{uuid4().hex[:10]}"
+    maintenance_engine = create_engine(
+        url.set(database="postgres"),
+        isolation_level="AUTOCOMMIT",
+    )
+    temporary_url = url.set(database=database_name)
+    temporary_engine: Engine | None = None
+    try:
+        with maintenance_engine.connect() as connection:
+            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+        rendered = temporary_url.render_as_string(hide_password=False)
+        _run_alembic(rendered, "head")
+        temporary_engine = create_engine(temporary_url)
+        content = b"downgrade evidence"
+        digest = hashlib.sha256(content).digest()
+        digest_hex = digest.hex()
+        storage_key = f"sha256/{digest_hex[:2]}/{digest_hex[2:4]}/{digest_hex}"
+        payload = {
+            "sha256": digest_hex,
+            "byte_size": len(content),
+            "storage_key": storage_key,
+            "source": "pytest",
+            "original_filename_sha256": hashlib.sha256(b"downgrade.bin").hexdigest(),
+            "media_type": "application/octet-stream",
+        }
+        with temporary_engine.begin() as connection:
+            event_id = connection.execute(
+                text(
+                    "SELECT append_audit_event("
+                    "'pytest', 'artifact.ingest', 'downgrade guard', NULL, "
+                    "CAST(:payload AS jsonb))"
+                ),
+                {"payload": json.dumps(payload, sort_keys=True)},
+            ).scalar_one()
+            connection.execute(
+                text(
+                    "INSERT INTO raw_artifact "
+                    "(sha256, source, original_filename, media_type, byte_size, "
+                    "storage_key, audit_event_id) VALUES "
+                    "(:sha256, 'pytest', 'downgrade.bin', "
+                    "'application/octet-stream', :byte_size, :storage_key, :event_id)"
+                ),
+                {
+                    "sha256": digest,
+                    "byte_size": len(content),
+                    "storage_key": storage_key,
+                    "event_id": event_id,
+                },
+            )
+
+        temporary_engine.dispose()
+        temporary_engine = None
+        with pytest.raises(Exception, match="prevents destructive downgrade"):
+            _run_alembic(rendered, "20260821_0002", downgrade=True)
+
+        temporary_engine = create_engine(temporary_url)
+        with temporary_engine.connect() as connection:
+            assert (
+                connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+                == "20260821_0003"
+            )
+            assert connection.execute(text("SELECT count(*) FROM raw_artifact")).scalar_one() == 1
     finally:
         if temporary_engine is not None:
             temporary_engine.dispose()

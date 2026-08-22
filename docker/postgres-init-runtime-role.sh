@@ -17,4 +17,9 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_app') \ge
 ALTER ROLE ledgerbridge_app
     LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
     PASSWORD :'app_password';
+
+SELECT format(
+    'REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC',
+    current_database()
+) \gexec
 SQL

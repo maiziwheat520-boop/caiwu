@@ -5,6 +5,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from ledgerbridge.connectors import (
+    MAX_JSON_BYTES,
     ConnectorContractError,
     ParsedSourceRecord,
     validate_connector,
@@ -112,5 +113,38 @@ def test_raw_fields_may_preserve_float_but_must_remain_json() -> None:
             source="synthetic",
             parser_version="1",
             raw_fields={"bad": object()},
+            normalized_fields={},
+        )
+
+
+@pytest.mark.parametrize("amount", [-(2**63) - 1, 2**63])
+def test_minor_units_outside_signed_bigint_are_rejected(amount: int) -> None:
+    with pytest.raises(ConnectorContractError, match="signed 64-bit"):
+        _record({"amount_minor": amount, "currency": "CNY"})
+
+
+def test_json_depth_and_serialized_size_are_bounded() -> None:
+    root: dict[str, object] = {}
+    current = root
+    for _index in range(65):
+        child: dict[str, object] = {}
+        current["nested"] = child
+        current = child
+
+    with pytest.raises(ConnectorContractError, match="nested levels"):
+        ParsedSourceRecord(
+            record_locator="row:deep",
+            source="synthetic",
+            parser_version="1",
+            raw_fields=root,
+            normalized_fields={},
+        )
+
+    with pytest.raises(ConnectorContractError, match="serialize to at most"):
+        ParsedSourceRecord(
+            record_locator="row:large",
+            source="synthetic",
+            parser_version="1",
+            raw_fields={"value": "x" * MAX_JSON_BYTES},
             normalized_fields={},
         )

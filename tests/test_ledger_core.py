@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from alembic.config import Config
-from sqlalchemy import Engine, create_engine, inspect, text, update
+from sqlalchemy import Connection, Engine, create_engine, inspect, text, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
@@ -147,7 +147,9 @@ def _create_entry(
     adjusts_entry_id: UUID | None = None,
     reverses_entry_id: UUID | None = None,
 ) -> UUID:
+    entry_id = uuid4()
     entry = JournalEntry(
+        id=entry_id,
         entity_id=entity_id,
         occurred_at=datetime.now(UTC),
         origin="pytest",
@@ -155,7 +157,10 @@ def _create_entry(
         adjusts_entry_id=adjusts_entry_id,
         reverses_entry_id=reverses_entry_id,
         primary_account_id=postings[0][0],
-        audit_event_id=_append_audit(session),
+        audit_event_id=_append_audit(
+            session,
+            payload={"journal_entry_id": str(entry_id)},
+        ),
     )
     session.add(entry)
     session.flush()
@@ -243,6 +248,456 @@ def test_runtime_login_remains_unprivileged_after_read_only_pool_reuse(
         ).scalar_one()
 
 
+def test_runtime_role_cannot_create_temporary_tables(
+    admin_engine: Engine,
+    runtime_engine: Engine,
+) -> None:
+    with admin_engine.connect() as connection:
+        assert not connection.execute(
+            text("SELECT has_database_privilege('ledgerbridge_app', current_database(), 'TEMP')")
+        ).scalar_one()
+
+    with runtime_engine.connect() as connection:
+        with pytest.raises(DBAPIError, match="permission denied"):
+            connection.execute(text("CREATE TEMP TABLE forbidden_shadow (id uuid)"))
+        connection.rollback()
+
+
+def test_security_functions_pin_their_search_path(admin_engine: Engine) -> None:
+    expected = {
+        "account_block_protected_dimension_change",
+        "append_audit_event",
+        "audit_event_block_mutation",
+        "import_job_enforce_transition",
+        "journal_entry_assert_posted_complete",
+        "journal_entry_block_posted_mutation",
+        "journal_entry_validate_post_audit",
+        "journal_entry_validate_relationships",
+        "posting_assert_balanced",
+        "posting_block_posted_mutation",
+        "posting_enforce_entity",
+        "raw_artifact_block_mutation",
+        "raw_artifact_validate_audit",
+        "source_record_block_mutation",
+    }
+    with admin_engine.connect() as connection:
+        rows = (
+            connection.execute(
+                text(
+                    """
+                    SELECT p.proname, p.proconfig
+                    FROM pg_proc AS p
+                    JOIN pg_namespace AS n ON n.oid = p.pronamespace
+                    WHERE n.nspname = 'public'
+                      AND p.proname = ANY(CAST(:names AS text[]))
+                    """
+                ),
+                {"names": sorted(expected)},
+            )
+            .tuples()
+            .all()
+        )
+        configurations: dict[str, list[str]] = dict(rows)
+
+    assert configurations.keys() == expected
+    assert all(value == ["search_path=pg_catalog"] for value in configurations.values())
+
+
+def test_phase1_invariants_ignore_pg_temp_shadow_tables(
+    admin_engine: Engine,
+    runtime_engine: Engine,
+) -> None:
+    with Session(runtime_engine, expire_on_commit=False) as session:
+        entity_id, accounts = _create_accounts(session)
+        posted_entry_id = _create_entry(
+            session,
+            entity_id,
+            [(accounts["bank"], 500), (accounts["wallet"], -500)],
+        )
+        posting_ids = list(
+            session.execute(
+                text("SELECT id FROM public.posting WHERE entry_id = :entry_id ORDER BY id"),
+                {"entry_id": posted_entry_id},
+            ).scalars()
+        )
+        other_entity = Entity(entity_type=EntityType.COMPANY, name="Other entity")
+        session.add(other_entity)
+        session.flush()
+        other_account = Account(
+            entity_id=other_entity.id,
+            identifier=f"other-{uuid4().hex[:8]}",
+            name="Assets:Other",
+            account_class=AccountClass.ASSET,
+        )
+        session.add(other_account)
+        session.commit()
+        other_entity_id = other_entity.id
+        other_account_id = other_account.id
+
+    with admin_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                DO $do$
+                BEGIN
+                    EXECUTE format(
+                        'GRANT TEMPORARY ON DATABASE %I TO ledgerbridge_app',
+                        current_database()
+                    );
+                END
+                $do$;
+                """
+            )
+        )
+
+    def append_audit(connection: Connection, action: str, entry_id: UUID) -> UUID:
+        event_id = connection.execute(
+            text(
+                """
+                SELECT public.append_audit_event(
+                    'pytest',
+                    :action,
+                    'pg_temp shadow regression',
+                    NULL,
+                    CAST(:payload AS jsonb)
+                )
+                """
+            ),
+            {
+                "action": action,
+                "payload": json.dumps(
+                    {"journal_entry_id": str(entry_id)},
+                    sort_keys=True,
+                ),
+            },
+        ).scalar_one()
+        return cast(UUID, event_id)
+
+    def insert_draft(
+        connection: Connection,
+        entry_id: UUID,
+        primary_account_id: UUID,
+    ) -> None:
+        creation_audit_id = append_audit(connection, "journal.create", entry_id)
+        connection.execute(
+            text(
+                """
+                INSERT INTO public.journal_entry (
+                    id, entity_id, occurred_at, origin, status,
+                    primary_account_id, audit_event_id
+                ) VALUES (
+                    :entry_id, :entity_id, clock_timestamp(),
+                    'pytest', 'DRAFT', :primary_account_id, :audit_event_id
+                )
+                """
+            ),
+            {
+                "entry_id": entry_id,
+                "entity_id": entity_id,
+                "primary_account_id": primary_account_id,
+                "audit_event_id": creation_audit_id,
+            },
+        )
+
+    try:
+        runtime_engine.dispose()
+        with runtime_engine.connect() as connection:
+            for statement in (
+                """
+                CREATE TEMP TABLE journal_entry (
+                    id uuid PRIMARY KEY,
+                    entity_id uuid NOT NULL,
+                    status public.journal_status NOT NULL
+                )
+                """,
+                """
+                CREATE TEMP TABLE account (
+                    id uuid PRIMARY KEY,
+                    entity_id uuid NOT NULL,
+                    account_class public.account_class NOT NULL
+                )
+                """,
+                """
+                CREATE TEMP TABLE posting (
+                    id uuid PRIMARY KEY,
+                    entry_id uuid NOT NULL,
+                    account_id uuid NOT NULL,
+                    amount_minor bigint NOT NULL,
+                    currency text NOT NULL
+                )
+                """,
+            ):
+                connection.execute(text(statement))
+            connection.commit()
+
+            unbalanced_entry_id = uuid4()
+            with pytest.raises(DBAPIError, match="unbalanced"), connection.begin():
+                connection.execute(
+                    text(
+                        """
+                            INSERT INTO pg_temp.journal_entry
+                                (id, entity_id, status)
+                            VALUES (:entry_id, :entity_id, 'DRAFT')
+                            """
+                    ),
+                    {
+                        "entry_id": unbalanced_entry_id,
+                        "entity_id": entity_id,
+                    },
+                )
+                connection.execute(
+                    text(
+                        """
+                            INSERT INTO pg_temp.account
+                                (id, entity_id, account_class)
+                            VALUES
+                                (:bank_id, :entity_id, 'ASSET'),
+                                (:wallet_id, :entity_id, 'ASSET')
+                            """
+                    ),
+                    {
+                        "entity_id": entity_id,
+                        "bank_id": accounts["bank"],
+                        "wallet_id": accounts["wallet"],
+                    },
+                )
+                insert_draft(
+                    connection,
+                    unbalanced_entry_id,
+                    accounts["bank"],
+                )
+                connection.execute(
+                    text(
+                        """
+                            INSERT INTO public.posting (
+                                entry_id, account_id, amount_minor, currency
+                            ) VALUES
+                                (:entry_id, :bank_id, 500, 'CNY'),
+                                (:entry_id, :wallet_id, -599, 'CNY')
+                            """
+                    ),
+                    {
+                        "entry_id": unbalanced_entry_id,
+                        "bank_id": accounts["bank"],
+                        "wallet_id": accounts["wallet"],
+                    },
+                )
+
+            for statement, params in (
+                (
+                    "DELETE FROM public.posting WHERE id = :posting_id",
+                    {"posting_id": posting_ids[0]},
+                ),
+                (
+                    "UPDATE public.posting SET amount_minor = 4242 WHERE id = :posting_id",
+                    {"posting_id": posting_ids[0]},
+                ),
+            ):
+                with pytest.raises(DBAPIError, match="immutable"), connection.begin():
+                    connection.execute(text(statement), params)
+
+            cross_entity_entry_id = uuid4()
+            with pytest.raises(DBAPIError, match="same entity"), connection.begin():
+                connection.execute(
+                    text(
+                        """
+                            INSERT INTO pg_temp.journal_entry
+                                (id, entity_id, status)
+                            VALUES (:entry_id, :entity_id, 'DRAFT')
+                            """
+                    ),
+                    {
+                        "entry_id": cross_entity_entry_id,
+                        "entity_id": entity_id,
+                    },
+                )
+                connection.execute(
+                    text(
+                        """
+                            INSERT INTO pg_temp.account
+                                (id, entity_id, account_class)
+                            VALUES (:account_id, :entity_id, 'ASSET')
+                            """
+                    ),
+                    {
+                        "account_id": other_account_id,
+                        "entity_id": entity_id,
+                    },
+                )
+                insert_draft(
+                    connection,
+                    cross_entity_entry_id,
+                    accounts["bank"],
+                )
+                connection.execute(
+                    text(
+                        """
+                            INSERT INTO public.posting (
+                                entry_id, account_id, amount_minor, currency
+                            ) VALUES (:entry_id, :account_id, 777, 'CNY')
+                            """
+                    ),
+                    {
+                        "entry_id": cross_entity_entry_id,
+                        "account_id": other_account_id,
+                    },
+                )
+
+            one_posting_entry_id = uuid4()
+            with pytest.raises(DBAPIError), connection.begin():
+                connection.execute(
+                    text(
+                        """
+                            INSERT INTO pg_temp.journal_entry
+                                (id, entity_id, status)
+                            VALUES (:entry_id, :entity_id, 'DRAFT')
+                            """
+                    ),
+                    {
+                        "entry_id": one_posting_entry_id,
+                        "entity_id": entity_id,
+                    },
+                )
+                connection.execute(
+                    text(
+                        """
+                            INSERT INTO pg_temp.account
+                                (id, entity_id, account_class)
+                            VALUES (:account_id, :entity_id, 'ASSET')
+                            """
+                    ),
+                    {
+                        "account_id": accounts["bank"],
+                        "entity_id": entity_id,
+                    },
+                )
+                connection.execute(
+                    text(
+                        """
+                            INSERT INTO pg_temp.posting (
+                                id, entry_id, account_id, amount_minor, currency
+                            ) VALUES
+                                (
+                                    gen_random_uuid(), :entry_id, :account_id,
+                                    777, 'CNY'
+                                ),
+                                (
+                                    gen_random_uuid(), :entry_id, :account_id,
+                                    -777, 'CNY'
+                                )
+                            """
+                    ),
+                    {
+                        "entry_id": one_posting_entry_id,
+                        "account_id": accounts["bank"],
+                    },
+                )
+                insert_draft(
+                    connection,
+                    one_posting_entry_id,
+                    accounts["bank"],
+                )
+                connection.execute(
+                    text(
+                        """
+                            INSERT INTO public.posting (
+                                entry_id, account_id, amount_minor, currency
+                            ) VALUES (:entry_id, :account_id, 777, 'CNY')
+                            """
+                    ),
+                    {
+                        "entry_id": one_posting_entry_id,
+                        "account_id": accounts["bank"],
+                    },
+                )
+                post_audit_id = append_audit(
+                    connection,
+                    "journal.post",
+                    one_posting_entry_id,
+                )
+                connection.execute(
+                    text(
+                        """
+                            UPDATE public.journal_entry
+                            SET status = 'POSTED',
+                                posted_audit_event_id = :post_audit_id
+                            WHERE id = :entry_id
+                            """
+                    ),
+                    {
+                        "entry_id": one_posting_entry_id,
+                        "post_audit_id": post_audit_id,
+                    },
+                )
+
+            correction_entry_id = uuid4()
+            with pytest.raises(DBAPIError, match="same entity"), connection.begin():
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO pg_temp.journal_entry (id, entity_id, status)
+                        VALUES (:target_id, :entity_id, 'POSTED')
+                        """
+                    ),
+                    {
+                        "target_id": posted_entry_id,
+                        "entity_id": other_entity_id,
+                    },
+                )
+                creation_audit_id = append_audit(
+                    connection,
+                    "journal.create",
+                    correction_entry_id,
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO public.journal_entry (
+                            id, entity_id, occurred_at, origin, status,
+                            adjusts_entry_id, primary_account_id, audit_event_id
+                        ) VALUES (
+                            :entry_id, :entity_id, clock_timestamp(),
+                            'pytest', 'DRAFT', :target_id, :account_id,
+                            :audit_event_id
+                        )
+                        """
+                    ),
+                    {
+                        "entry_id": correction_entry_id,
+                        "entity_id": other_entity_id,
+                        "target_id": posted_entry_id,
+                        "account_id": other_account_id,
+                        "audit_event_id": creation_audit_id,
+                    },
+                )
+
+            with pytest.raises(DBAPIError, match="immutable after POSTED use"), connection.begin():
+                connection.execute(
+                    text(
+                        "UPDATE public.account SET account_class = 'INCOME' WHERE id = :account_id"
+                    ),
+                    {"account_id": accounts["bank"]},
+                )
+    finally:
+        runtime_engine.dispose()
+        with admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    DO $do$
+                    BEGIN
+                        EXECUTE format(
+                            'REVOKE TEMPORARY ON DATABASE %I '
+                            'FROM ledgerbridge_app',
+                            current_database()
+                        );
+                    END
+                    $do$;
+                    """
+                )
+            )
+
+
 def test_entity_safe_account_identifier_uniqueness(runtime_engine: Engine) -> None:
     with Session(runtime_engine, expire_on_commit=False) as session:
         first = Entity(entity_type=EntityType.PERSON, name="First")
@@ -309,13 +764,18 @@ def test_balanced_entry_commits_and_actual_balance_is_posted_only(
 def test_unbalanced_entry_fails_at_transaction_commit(runtime_engine: Engine) -> None:
     with Session(runtime_engine, expire_on_commit=False) as session:
         entity_id, accounts = _create_accounts(session)
+        entry_id = uuid4()
         entry = JournalEntry(
+            id=entry_id,
             entity_id=entity_id,
             occurred_at=datetime.now(UTC),
             origin="pytest",
             status=JournalStatus.DRAFT,
             primary_account_id=accounts["bank"],
-            audit_event_id=_append_audit(session),
+            audit_event_id=_append_audit(
+                session,
+                payload={"journal_entry_id": str(entry_id)},
+            ),
         )
         session.add(entry)
         session.flush()
@@ -387,29 +847,35 @@ def test_balance_trigger_rejects_cross_currency_net_zero(
     with pytest.raises(DBAPIError, match="unbalanced"), admin_engine.begin() as connection:
         quoted_name = connection.dialect.identifier_preparer.quote(constraint_name)
         connection.execute(text(f"ALTER TABLE posting DROP CONSTRAINT {quoted_name}"))
+        entry_id = uuid4()
         audit_event_id = connection.execute(
             text(
                 "SELECT append_audit_event("
-                "'pytest', 'currency.test', 'cross-currency acceptance', NULL, '{}'::jsonb)"
-            )
+                "'pytest', 'journal.create', 'cross-currency acceptance', NULL, "
+                "CAST(:payload AS jsonb))"
+            ),
+            {"payload": json.dumps({"journal_entry_id": str(entry_id)})},
         ).scalar_one()
-        entry_id = connection.execute(
+        connection.execute(
             text(
                 """
                 INSERT INTO journal_entry (
-                    entity_id, occurred_at, origin, status,
+                    id, entity_id, occurred_at, origin, status,
                     primary_account_id, audit_event_id
                 )
-                VALUES (:entity_id, now(), 'pytest', 'DRAFT', :account_id, :audit_event_id)
-                RETURNING id
+                VALUES (
+                    :entry_id, :entity_id, now(), 'pytest', 'DRAFT',
+                    :account_id, :audit_event_id
+                )
                 """
             ),
             {
+                "entry_id": entry_id,
                 "entity_id": entity_id,
                 "account_id": accounts["bank"],
                 "audit_event_id": audit_event_id,
             },
-        ).scalar_one()
+        )
         connection.execute(
             text(
                 """
@@ -576,13 +1042,18 @@ def test_entity_identity_is_immutable_from_creation(runtime_engine: Engine) -> N
             )
         session.rollback()
 
+        entry_id = uuid4()
         entry = JournalEntry(
+            id=entry_id,
             entity_id=entity_id,
             occurred_at=datetime.now(UTC),
             origin="pytest",
             status=JournalStatus.DRAFT,
             primary_account_id=accounts["bank"],
-            audit_event_id=_append_audit(session),
+            audit_event_id=_append_audit(
+                session,
+                payload={"journal_entry_id": str(entry_id)},
+            ),
         )
         session.add(entry)
         session.commit()
@@ -657,13 +1128,18 @@ def test_posting_cannot_cross_entity_boundary(runtime_engine: Engine) -> None:
     with Session(runtime_engine, expire_on_commit=False) as session:
         first_entity, first_accounts = _create_accounts(session)
         _, second_accounts = _create_accounts(session)
+        entry_id = uuid4()
         entry = JournalEntry(
+            id=entry_id,
             entity_id=first_entity,
             occurred_at=datetime.now(UTC),
             origin="pytest",
             status=JournalStatus.DRAFT,
             primary_account_id=first_accounts["bank"],
-            audit_event_id=_append_audit(session),
+            audit_event_id=_append_audit(
+                session,
+                payload={"journal_entry_id": str(entry_id)},
+            ),
         )
         session.add(entry)
         session.flush()
@@ -681,13 +1157,18 @@ def test_posting_cannot_cross_entity_boundary(runtime_engine: Engine) -> None:
 def test_posted_entry_requires_at_least_two_postings(runtime_engine: Engine) -> None:
     with Session(runtime_engine, expire_on_commit=False) as session:
         entity_id, accounts = _create_accounts(session)
+        entry_id = uuid4()
         entry = JournalEntry(
+            id=entry_id,
             entity_id=entity_id,
             occurred_at=datetime.now(UTC),
             origin="pytest",
             status=JournalStatus.DRAFT,
             primary_account_id=accounts["bank"],
-            audit_event_id=_append_audit(session),
+            audit_event_id=_append_audit(
+                session,
+                payload={"journal_entry_id": str(entry_id)},
+            ),
         )
         session.add(entry)
         session.flush()
@@ -706,14 +1187,19 @@ def test_posted_entry_requires_at_least_two_postings(runtime_engine: Engine) -> 
 def test_direct_posted_insert_fails_without_draft_lifecycle(runtime_engine: Engine) -> None:
     with Session(runtime_engine, expire_on_commit=False) as session:
         entity_id, accounts = _create_accounts(session)
+        entry_id = uuid4()
         session.add(
             JournalEntry(
+                id=entry_id,
                 entity_id=entity_id,
                 occurred_at=datetime.now(UTC),
                 origin="pytest",
                 status=JournalStatus.POSTED,
                 primary_account_id=accounts["bank"],
-                audit_event_id=_append_audit(session),
+                audit_event_id=_append_audit(
+                    session,
+                    payload={"journal_entry_id": str(entry_id)},
+                ),
             )
         )
         with pytest.raises(DBAPIError, match="created before"):

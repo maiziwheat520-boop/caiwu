@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+MAX_JSON_BYTES = 1_000_000
+MAX_JSON_DEPTH = 64
+MIN_MINOR_UNITS = -(2**63)
+MAX_MINOR_UNITS = 2**63 - 1
+
 
 class ConnectorContractError(ValueError):
     """A connector returned a value outside the frozen SDK contract."""
@@ -53,8 +58,11 @@ class ParsedSourceRecord:
 
 
 class Connector(Protocol):
-    name: str
-    version: str
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def version(self) -> str: ...
 
     def detect(
         self,
@@ -65,9 +73,12 @@ class Connector(Protocol):
     def parse(self, stream: ReadableBinary) -> Iterable[ParsedSourceRecord]: ...
 
 
-def validate_connector(connector: Connector) -> None:
-    _require_text("connector.name", connector.name, 100)
-    _require_text("connector.version", connector.version, 100)
+def validate_connector(connector: Connector) -> tuple[str, str]:
+    name = connector.name
+    version = connector.version
+    _require_text("connector.name", name, 100)
+    _require_text("connector.version", version, 100)
+    return name, version
 
 
 def _require_text(field: str, value: str, maximum: int) -> None:
@@ -85,29 +96,40 @@ def _validate_json_object(
         raise ConnectorContractError(f"{field} must be an object")
     _walk_json(value, field=field, reject_floats=reject_floats)
     try:
-        json.dumps(value, allow_nan=False, sort_keys=True, separators=(",", ":"))
-    except (TypeError, ValueError) as exc:
+        encoded = json.dumps(
+            value,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (RecursionError, TypeError, ValueError) as exc:
         raise ConnectorContractError(f"{field} must contain JSON values only") from exc
+    if len(encoded.encode("utf-8")) > MAX_JSON_BYTES:
+        raise ConnectorContractError(f"{field} must serialize to at most {MAX_JSON_BYTES} bytes")
 
 
 def _walk_json(value: object, *, field: str, reject_floats: bool) -> None:
-    if value is None or isinstance(value, (str, bool, int)):
-        return
-    if isinstance(value, float):
-        if reject_floats:
-            raise ConnectorContractError(f"{field} cannot contain floating-point values")
-        return
-    if isinstance(value, Mapping):
-        for key, child in value.items():
-            if not isinstance(key, str):
-                raise ConnectorContractError(f"{field} object keys must be strings")
-            _walk_json(child, field=field, reject_floats=reject_floats)
-        return
-    if isinstance(value, (list, tuple)):
-        for child in value:
-            _walk_json(child, field=field, reject_floats=reject_floats)
-        return
-    raise ConnectorContractError(f"{field} must contain JSON values only")
+    stack: list[tuple[object, int]] = [(value, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > MAX_JSON_DEPTH:
+            raise ConnectorContractError(f"{field} must not exceed {MAX_JSON_DEPTH} nested levels")
+        if current is None or isinstance(current, (str, bool, int)):
+            continue
+        if isinstance(current, float):
+            if reject_floats:
+                raise ConnectorContractError(f"{field} cannot contain floating-point values")
+            continue
+        if isinstance(current, Mapping):
+            for key, child in current.items():
+                if not isinstance(key, str):
+                    raise ConnectorContractError(f"{field} object keys must be strings")
+                stack.append((child, depth + 1))
+            continue
+        if isinstance(current, (list, tuple)):
+            stack.extend((child, depth + 1) for child in current)
+            continue
+        raise ConnectorContractError(f"{field} must contain JSON values only")
 
 
 def _validate_money(value: object) -> None:
@@ -117,6 +139,8 @@ def _validate_money(value: object) -> None:
             amount = value[key]
             if isinstance(amount, bool) or not isinstance(amount, int):
                 raise ConnectorContractError(f"{key} must be a signed integer minor-unit value")
+            if amount < MIN_MINOR_UNITS or amount > MAX_MINOR_UNITS:
+                raise ConnectorContractError(f"{key} must fit a signed 64-bit integer")
         if amount_keys and value.get("currency") != "CNY":
             raise ConnectorContractError("normalized money must use currency CNY")
         for child in value.values():

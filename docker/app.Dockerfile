@@ -12,7 +12,7 @@ LABEL org.opencontainers.image.revision="${LEDGERBRIDGE_REVISION}"
 WORKDIR /app
 
 RUN useradd --create-home --uid 10001 ledgerbridge
-RUN install -d -o 10001 -g 10001 /var/lib/ledgerbridge/artifacts
+RUN install -d -m 0700 -o 10001 -g 10001 /var/lib/ledgerbridge/artifacts
 COPY docker/uv-requirements.txt ./docker/uv-requirements.txt
 RUN python -m pip install --no-cache-dir --timeout 30 --retries 2 \
     --require-hashes --only-binary=:all: -r docker/uv-requirements.txt

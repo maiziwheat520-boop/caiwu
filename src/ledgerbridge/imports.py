@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -11,12 +12,19 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from ledgerbridge.artifacts import ArtifactIntegrityError, ArtifactStore, PublishedArtifact
+from ledgerbridge.artifacts import (
+    ArtifactIntegrityError,
+    ArtifactStore,
+    ArtifactStoreError,
+    ArtifactTooLargeError,
+    PublishedArtifact,
+)
 from ledgerbridge.audit import append_audit_event
 from ledgerbridge.connectors import (
+    MAX_JSON_BYTES,
     ArtifactMetadata,
     Connector,
     ConnectorContractError,
@@ -28,6 +36,14 @@ from ledgerbridge.models import ImportJob, ImportJobStatus, RawArtifact, SourceR
 
 ROUTER_NAME = "ledgerbridge.router"
 ROUTER_VERSION = "1"
+PROVENANCE_NAME = "ledgerbridge.provenance"
+PROVENANCE_VERSION = "1"
+
+
+class EvidenceIngestionError(RuntimeError):
+    def __init__(self, error_code: str, summary: str) -> None:
+        super().__init__(summary)
+        self.error_code = error_code
 
 
 class ImportIdentityConflict(RuntimeError):
@@ -70,6 +86,7 @@ class _StoredArtifact:
     media_type: str
     published: PublishedArtifact
     created: bool
+    provenance_conflict: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,8 +121,66 @@ class EvidenceImporter:
         actor: str,
         reason: str,
     ) -> ImportOutcome:
-        published = self._store.publish(stream)
+        try:
+            return self._ingest_and_import(
+                stream,
+                metadata,
+                connectors,
+                actor=actor,
+                reason=reason,
+            )
+        except EvidenceIngestionError:
+            raise
+        except ArtifactIntegrityError as exc:
+            raise EvidenceIngestionError(
+                "EVIDENCE_INTEGRITY",
+                "evidence integrity validation failed",
+            ) from exc
+        except SQLAlchemyError as exc:
+            raise EvidenceIngestionError(
+                "IMPORT_DATABASE",
+                "evidence import state could not be recorded",
+            ) from exc
+
+    def _ingest_and_import(
+        self,
+        stream: BinaryIO,
+        metadata: IngestMetadata,
+        connectors: Sequence[Connector],
+        *,
+        actor: str,
+        reason: str,
+    ) -> ImportOutcome:
+        try:
+            published = self._store.publish(stream)
+        except ArtifactTooLargeError as exc:
+            raise EvidenceIngestionError(
+                "EVIDENCE_LIMIT",
+                "evidence exceeds the configured ingestion limit",
+            ) from exc
+        except ArtifactIntegrityError as exc:
+            raise EvidenceIngestionError(
+                "EVIDENCE_INTEGRITY",
+                "evidence storage integrity validation failed",
+            ) from exc
+        except (ArtifactStoreError, OSError) as exc:
+            raise EvidenceIngestionError(
+                "EVIDENCE_STORAGE",
+                "evidence could not be durably published",
+            ) from exc
+
         artifact = self._ensure_artifact(published, metadata, actor=actor, reason=reason)
+        if artifact.provenance_conflict:
+            return self._route_terminal(
+                artifact,
+                ImportJobStatus.NEEDS_REVIEW,
+                "PROVENANCE_CONFLICT",
+                "evidence provenance requires review",
+                actor=actor,
+                reason=reason,
+                connector_name=PROVENANCE_NAME,
+                connector_version=PROVENANCE_VERSION,
+            )
         try:
             connector_bindings = self._validate_connector_set(connectors)
             prefix = self._store.read_prefix(artifact.published, self._detection_prefix_bytes)
@@ -117,6 +192,24 @@ class EvidenceImporter:
                 sha256_hex=artifact.published.sha256_hex,
             )
             matches, ambiguous = self._detect(connector_bindings, artifact_metadata, prefix)
+        except ArtifactIntegrityError:
+            return self._route_terminal(
+                artifact,
+                ImportJobStatus.FAILED,
+                "EVIDENCE_INTEGRITY",
+                "evidence integrity validation failed",
+                actor=actor,
+                reason=reason,
+            )
+        except OSError:
+            return self._route_terminal(
+                artifact,
+                ImportJobStatus.FAILED,
+                "EVIDENCE_IO",
+                "evidence could not be read",
+                actor=actor,
+                reason=reason,
+            )
         except Exception:
             return self._route_terminal(
                 artifact,
@@ -165,7 +258,7 @@ class EvidenceImporter:
                 select(RawArtifact).where(RawArtifact.sha256 == published.sha256)
             )
             if artifact is not None:
-                return self._stored_artifact(artifact, published, created=False)
+                return self._stored_artifact(artifact, published, metadata, created=False)
 
         try:
             with self._sessions() as session, session.begin():
@@ -179,6 +272,9 @@ class EvidenceImporter:
                         "byte_size": published.byte_size,
                         "storage_key": published.storage_key,
                         "source": metadata.source,
+                        "original_filename_sha256": hashlib.sha256(
+                            metadata.original_filename.encode("utf-8")
+                        ).hexdigest(),
                         "media_type": metadata.media_type,
                     },
                 )
@@ -201,7 +297,7 @@ class EvidenceImporter:
                 artifact = session.get(RawArtifact, artifact_id)
                 if artifact is None:
                     raise ArtifactIntegrityError("created artifact disappeared")
-                return self._stored_artifact(artifact, published, created=True)
+                return self._stored_artifact(artifact, published, metadata, created=True)
         except _ConcurrentArtifact:
             pass
 
@@ -211,12 +307,13 @@ class EvidenceImporter:
             )
             if artifact is None:
                 raise ArtifactIntegrityError("artifact identity race did not converge")
-            return self._stored_artifact(artifact, published, created=False)
+            return self._stored_artifact(artifact, published, metadata, created=False)
 
     @staticmethod
     def _stored_artifact(
         artifact: RawArtifact,
         published: PublishedArtifact,
+        metadata: IngestMetadata,
         *,
         created: bool,
     ) -> _StoredArtifact:
@@ -238,6 +335,9 @@ class EvidenceImporter:
                 created=published.created,
             ),
             created=created,
+            provenance_conflict=(
+                artifact.source != metadata.source or artifact.media_type != metadata.media_type
+            ),
         )
 
     def _detect(
@@ -262,16 +362,16 @@ class EvidenceImporter:
         identities: set[tuple[str, str]] = set()
         bindings: list[_ConnectorBinding] = []
         for connector in connectors:
-            validate_connector(connector)
-            identity = (connector.name, connector.version)
+            name, version = validate_connector(connector)
+            identity = (name, version)
             if identity in identities:
                 raise ConnectorContractError("connector identity must be unique")
             identities.add(identity)
             bindings.append(
                 _ConnectorBinding(
                     connector=connector,
-                    name=connector.name,
-                    version=connector.version,
+                    name=name,
+                    version=version,
                 )
             )
         return bindings
@@ -285,8 +385,14 @@ class EvidenceImporter:
         *,
         actor: str,
         reason: str,
+        connector_name: str = ROUTER_NAME,
+        connector_version: str = ROUTER_VERSION,
     ) -> ImportOutcome:
-        job_id = self._find_or_create_job(artifact.id, ROUTER_NAME, ROUTER_VERSION)
+        job_id = self._find_or_create_job(
+            artifact.id,
+            connector_name,
+            connector_version,
+        )
         return self._terminalize(
             artifact,
             job_id,
@@ -324,7 +430,33 @@ class EvidenceImporter:
                     binding.version,
                     binding.connector.parse(stream),
                 )
-        except (ConnectorContractError, ArtifactIntegrityError, OSError):
+        except ArtifactIntegrityError:
+            return self._terminalize(
+                artifact,
+                job_id,
+                ImportJobStatus.FAILED,
+                error_code="EVIDENCE_INTEGRITY",
+                summary="evidence integrity validation failed",
+                parsed_count=0,
+                created_count=0,
+                duplicate_count=0,
+                actor=actor,
+                reason=reason,
+            )
+        except OSError:
+            return self._terminalize(
+                artifact,
+                job_id,
+                ImportJobStatus.FAILED,
+                error_code="EVIDENCE_IO",
+                summary="evidence could not be read",
+                parsed_count=0,
+                created_count=0,
+                duplicate_count=0,
+                actor=actor,
+                reason=reason,
+            )
+        except ConnectorContractError:
             return self._terminalize(
                 artifact,
                 job_id,
@@ -634,8 +766,10 @@ def _detached_json_object(
             separators=(",", ":"),
         )
         decoded: object = json.loads(encoded)
-    except (TypeError, ValueError) as exc:
+    except (RecursionError, TypeError, ValueError) as exc:
         raise ConnectorContractError(f"{field} must contain JSON values only") from exc
+    if len(encoded.encode("utf-8")) > MAX_JSON_BYTES:
+        raise ConnectorContractError(f"{field} must serialize to at most {MAX_JSON_BYTES} bytes")
     if not isinstance(decoded, dict):
         raise ConnectorContractError(f"{field} must be an object")
     return cast(dict[str, object], decoded)
