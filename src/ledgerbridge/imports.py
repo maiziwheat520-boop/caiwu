@@ -502,6 +502,20 @@ class EvidenceImporter:
         actor: str,
         reason: str,
     ) -> ImportOutcome:
+        # Do not persist an unregistered source_system: Phase 3 binds the
+        # connector provenance to the immutable source_system registry via a
+        # foreign key.  Route this contract failure through the internal
+        # router job, whose identity intentionally has no external source
+        # system, so the caller still receives a durable terminal outcome.
+        if not self._source_system_is_registered(binding.source_system):
+            return self._route_terminal(
+                artifact,
+                ImportJobStatus.FAILED,
+                error_code="CONNECTOR_CONTRACT",
+                summary="connector source system is not registered",
+                actor=actor,
+                reason=reason,
+            )
         job_id = self._find_or_create_job(
             artifact.id,
             binding.name,
@@ -515,19 +529,6 @@ class EvidenceImporter:
             ImportJobStatus.NEEDS_REVIEW,
         }:
             return existing
-        if not self._source_system_is_registered(binding.source_system):
-            return self._terminalize(
-                artifact,
-                job_id,
-                ImportJobStatus.FAILED,
-                error_code="CONNECTOR_CONTRACT",
-                summary="connector source system is not registered",
-                parsed_count=0,
-                created_count=0,
-                duplicate_count=0,
-                actor=actor,
-                reason=reason,
-            )
         self._mark_running(job_id)
         try:
             with self._store.open_verified(artifact.published) as stream:
