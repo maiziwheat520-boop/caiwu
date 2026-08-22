@@ -102,18 +102,18 @@ commit `a19fa640247a98adacdb31741f6172b722f14f03`, with parent exactly
 replayed 222 tests with 95.47% coverage, confirmed all five follow-up findings
 closed, verified bidirectional send/receive deadlines, full 50 MiB chunking,
 stable stale-response rejection, and eight of nine defect injections sensitive.
-The remaining LOWs are tracked design/deployment notes: harden the currently
-unused upload-side `IngestMetadata` text validator before an upload endpoint,
-deduplicate the text helper, add a worker composition-root call assertion,
-leave one chunk-count headroom, correct two documentation phrasings, and retain
-the previously declared container/peer-loss/concurrency notes.
+The remaining LOWs are tracked design/deployment notes: the currently unused
+upload-side `IngestMetadata` text validator, the previously declared
+container/peer-loss/concurrency notes, and deployment/process checks. Codex
+later closed the duplicated text helper, worker-call assertion, documentation
+wording, and chunk-count headroom in `e296b0d` and `409edc9`.
 
 After that report, Codex independently closed the text-helper, upload-metadata,
 worker-call, and full-size chunk regression gaps in `e296b0d`; the associated
 local suite now passes 109 tests with 118 Windows/POSIX skips. Hosted run
 `32595863205` for head `8c43ffa` passed `secrets`, `quality`, and `compose`.
-The one remaining chunk-count headroom item is a capacity note, not a
-correctness failure; Claude's report does not claim to audit `e296b0d`.
+P3-L10's chunk-count headroom is now explicit and tested in `409edc9`; Claude's
+report does not claim to audit the post-approval commits.
 
 ## Gate status
 
