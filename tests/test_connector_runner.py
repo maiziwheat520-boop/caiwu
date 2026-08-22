@@ -26,6 +26,7 @@ from ledgerbridge.runner_protocol import (
     MAX_RESPONSE_BYTES,
     FrameKind,
     RunnerOperation,
+    RunnerProtocolError,
     RunnerRequest,
     RunnerStatus,
     RunnerTerminal,
@@ -78,6 +79,11 @@ class SlowRunnerConnector(SyntheticRunnerConnector):
 class InvalidDetectionConnector(SyntheticRunnerConnector):
     def detect(self, metadata: ArtifactMetadata, bounded_prefix: bytes) -> DetectionResult:
         return "MATCH"  # type: ignore[return-value]
+
+
+class RaisingDetectionConnector(SyntheticRunnerConnector):
+    def detect(self, metadata: ArtifactMetadata, bounded_prefix: bytes) -> DetectionResult:
+        raise ValueError("secret detector detail")
 
 
 class InvalidRecordConnector(SyntheticRunnerConnector):
@@ -141,6 +147,23 @@ class MismatchedIdentityConnector(SyntheticRunnerConnector):
 
 class MismatchedSourceConnector(SyntheticRunnerConnector):
     source_system = "other"
+
+
+class InvalidMetadataConnector(SyntheticRunnerConnector):
+    name = ""
+
+
+class FailingSupervisor(ConnectorSupervisor):
+    def __init__(self, failure: BaseException) -> None:
+        super().__init__()
+        self.failure = failure
+
+    async def _receive_and_execute_async(
+        self,
+        reader: asyncio.StreamReader,
+        request: RunnerRequest,
+    ) -> runner_module._ExecutionResult:
+        raise self.failure
 
 
 class _MemoryWriter:
@@ -396,6 +419,78 @@ def test_supervisor_bounds_connector_contract_failures(connector: object, code: 
     assert "secret" not in error.value.summary
 
 
+def test_supervisor_bounds_detection_and_record_execution_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    detection = ConnectorSupervisor(
+        {("synthetic.csv", "1"): RaisingDetectionConnector()}  # type: ignore[dict-item]
+    )
+    with pytest.raises(RunnerExecutionError, match="detection failed") as error:
+        detection._execute_with_artifact(_request(b"ok", RunnerOperation.DETECT), BytesIO(b"ok"))
+    assert error.value.error_code == "DETECTION_ERROR"
+
+    metadata = ConnectorSupervisor(
+        {("synthetic.csv", "1"): InvalidMetadataConnector()}  # type: ignore[dict-item]
+    )
+    with pytest.raises(RunnerExecutionError, match="metadata") as error:
+        metadata._execute_with_artifact(_request(b"ok"), BytesIO(b"ok"))
+    assert error.value.error_code == "CONNECTOR_CONTRACT"
+
+    monkeypatch.setattr(runner_module, "MAX_RECORDS", 0)
+    limited = ConnectorSupervisor(
+        {("synthetic.csv", "1"): SyntheticRunnerConnector()}  # type: ignore[dict-item]
+    )
+    with pytest.raises(RunnerExecutionError, match="record limit") as error:
+        limited._execute_with_artifact(_request(b"ok"), BytesIO(b"ok"))
+    assert error.value.error_code == "RECORD_LIMIT"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_bounds_artifact_stream_frames(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _request(b"x")
+
+    async def execute(frames: list[bytes]) -> None:
+        reader = asyncio.StreamReader()
+        for frame in frames:
+            reader.feed_data(frame)
+        reader.feed_eof()
+        await ConnectorSupervisor()._receive_and_execute_async(reader, request)
+
+    monkeypatch.setattr(runner_module, "MAX_CHUNK_COUNT", 0)
+    with pytest.raises(RunnerExecutionError, match="chunk limit"):
+        await execute([encode_frame(FrameKind.ARTIFACT_CHUNK, b"x")])
+
+    monkeypatch.setattr(runner_module, "MAX_CHUNK_COUNT", 1000)
+    monkeypatch.setattr(runner_module, "MAX_ARTIFACT_BYTES", 1)
+    with pytest.raises(RunnerExecutionError, match="exceeds its declaration"):
+        await execute([encode_frame(FrameKind.ARTIFACT_CHUNK, b"xx")])
+
+    monkeypatch.setattr(runner_module, "MAX_ARTIFACT_BYTES", 50 * 1024 * 1024)
+    with pytest.raises(RunnerProtocolError, match="unexpected frame"):
+        await execute([encode_frame(FrameKind.CONTROL, b"x")])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "error_code"),
+    [(ConnectionError("peer closed"), None), (ValueError("unexpected"), "RUNNER_INTERNAL")],
+)
+async def test_supervisor_handles_peer_and_internal_failures(
+    failure: BaseException,
+    error_code: str | None,
+) -> None:
+    request = _request(b"ok")
+    reader = asyncio.StreamReader()
+    reader.feed_data(encode_frame(FrameKind.CONTROL, request_control(request)))
+    reader.feed_eof()
+    writer = _MemoryWriter()
+    await FailingSupervisor(failure).handle(reader, writer)  # type: ignore[arg-type]
+    if error_code is None:
+        assert writer.frames == []
+    else:
+        assert parse_terminal_payload(decode_frame(writer.frames[0])[1]).error_code == error_code
+
+
 @pytest.mark.asyncio
 async def test_supervisor_handles_truncated_and_malformed_requests() -> None:
     async def run(payload: bytes) -> _MemoryWriter:
@@ -602,6 +697,7 @@ def test_runner_client_response_validation_errors(monkeypatch: pytest.MonkeyPatc
         byte_count = request.declared_artifact_size + 1
         sha256_hex = request.verified_sha256_hex
         if field == "sha256_hex":
+            byte_count = request.declared_artifact_size
             sha256_hex = "0" * 64
         bad = RunnerTerminal(
             request_id=request.request_id,
@@ -655,6 +751,42 @@ def test_runner_client_health_response_validation() -> None:
         sender.shutdown(socket.SHUT_WR)
         with pytest.raises(RunnerClientError, match="request_id"):
             client._read_terminal(receiver, request_id)
+    finally:
+        sender.close()
+        receiver.close()
+
+
+def test_runner_client_detect_rejects_missing_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = ConnectorRunnerClient("unused")
+    request = _request(b"ok", RunnerOperation.DETECT)
+    terminal = RunnerTerminal(
+        request_id=request.request_id,
+        status=RunnerStatus.OK,
+        operation=RunnerOperation.DETECT,
+        error_code=None,
+        summary="connector completed",
+        detection=None,
+        parsed_count=0,
+        byte_count=request.declared_artifact_size,
+        sha256_hex=request.verified_sha256_hex,
+    )
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda _request, _stream: client_module.RunnerResult(terminal, ()),
+    )
+    with pytest.raises(RunnerClientError, match="omitted detection") as error:
+        client.detect(request, BytesIO(b"ok"))
+    assert error.value.error_code == "RUNNER_PROTOCOL"
+
+
+def test_runner_client_socket_reader_default_size() -> None:
+    sender, receiver = socket.socketpair()
+    try:
+        sender.sendall(b"x")
+        assert client_module._SocketReader(receiver).read() == b"x"
     finally:
         sender.close()
         receiver.close()
