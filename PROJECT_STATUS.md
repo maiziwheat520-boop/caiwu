@@ -76,12 +76,17 @@ platform-only scope: fail-closed aggregate artifact/staging quotas, separate
 canonical ingest-channel and source-system registries, backward-compatible v2
 restore evidence, and a no-network Unix-socket Connector runner. Real parsers,
 OAuth, mailbox collection, real evidence, and ledger automation remain out of
-scope. Slice A is implemented on `ai/chatgpt/phase-3-platform-controls` and has
-passed disposable Hermes Linux/PostgreSQL validation: 153 tests at 95.24%
-coverage, migration `head -> 0003 -> head`, noncanonical legacy upgrade rollback,
-and live v2 security metadata probes. It is awaiting fixed-SHA self-audit and a
-protected PR. Slice B remains unstarted and independently gated. Production is
-unchanged at `c56b6ff` / `20260821_0003`.
+scope. Slice A and its authorized security remediation are implemented on
+`ai/chatgpt/phase-3-platform-controls`; the remediation commit is
+`b72b229363f60de71c19933c45a7ef8bc45ee346`. Local gates pass, Hermes is at
+`20260822_0004`, all 16 revision-owned triggers are enabled, runtime TEMP is
+denied, and direct POSTED-mutation probes fail closed. The initial scan's five
+Slice A findings are remediated; same-UID open-inode identity separation is
+deferred to Slice B. A final fixed-SHA scan is pending before any protected PR.
+The final fixed-SHA scan is complete with zero unclosed Slice A findings; its
+only low-severity result is the explicitly deferred same-UID inode boundary.
+Slice B remains unstarted and independently gated. Production is unchanged at
+`c56b6ff` / `20260821_0003`.
 
 ## Completed
 
@@ -148,16 +153,18 @@ Phase 3 Slice A. Claude remains read-only and is reserved for a later narrow aud
 
 ## Review owner
 
-Claude completed the independent fixed-SHA audit in the separate clone and wrote
-only its report. Codex published the finding-by-finding response, merged the
-validated remediation, and preserved Claude's remaining quota. A later recheck
-can be limited to the BLOCKER/HIGH closures and report addendum.
+Claude completed the independent Phase 2 audit in the separate clone and wrote
+only its report. Codex published the Phase 3 finding-by-finding response and
+remediation report, while preserving Claude's remaining quota. A later narrow
+Claude recheck can be limited to the five Phase 3 closure claims and the Slice B
+runner boundary.
 
 ## Next task
 
-Freeze and self-audit the Slice A executable SHA, then open its protected PR.
-Do not deploy, start Slice B, register a real Connector, ingest evidence, or
-enable the mail collector without the corresponding later authorization.
+The final fixed-SHA security scan for `b72b229` is complete. Request separate
+authorization before publishing/opening a protected PR. Do not deploy, start
+Slice B, register a real Connector, ingest evidence, or enable the mail
+collector without the corresponding later authorization.
 
 ## Blocking decisions
 

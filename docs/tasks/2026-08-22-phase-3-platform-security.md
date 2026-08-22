@@ -1,6 +1,6 @@
 # Task: Phase 3 Platform Security Foundation
 
-- Status: Slice A implemented and under fixed-SHA review; production unchanged
+- Status: Slice A implemented, remediated, and locally/Hermes-probe validated; production unchanged
 - Preflight date: 2026-08-22
 - Implementation owner: Codex
 - Review owner: Codex fixed-SHA self-audit; preserve a narrow Claude recheck entry point
@@ -346,27 +346,38 @@ fixtures. Enabling a real manifest is a separate reviewed change.
 
 ## Implementation evidence
 
-Slice A candidate implementation is complete on
-`ai/chatgpt/phase-3-platform-controls`. It adds migration `20260822_0004`,
+Slice A implementation and the authorized remediation batch are complete on
+`ai/chatgpt/phase-3-platform-controls`. The executable remediation commit is
+`b72b229363f60de71c19933c45a7ef8bc45ee346`. It adds migration `20260822_0004`,
 cross-process filesystem quota admission, separate append-only provenance
-registries, structured quota rejection audit/log signals, and encrypted backup/
-restore format v2 with v1 read compatibility.
+registries, structured quota rejection audit/log signals, encrypted backup/
+restore format v2 with v1 read compatibility, and the runtime provenance,
+artifact-manifest, verifier-pinning, connector-namespace, and restore-baseline
+controls required by the fixed-SHA security review.
 
-Local Windows gates pass Ruff, formatting, strict mypy, and 75 non-PostgreSQL
-tests; platform-only cases skip explicitly. Hermes disposable Linux/PostgreSQL
-15 validation passes 153 tests at 95.24% coverage, including a two-process quota
-race, migration round trip, legacy-provenance rollback, registry grants and
-immutability, and every existing ledger/evidence invariant. A direct v2 metadata
-probe at migration head observed ten revision-owned tables, fifteen pinned
-security functions, fifteen enabled triggers, and denied runtime TEMP. All
-disposable containers, volumes, and networks were removed. Production remained
-on `c56b6ff` / `20260821_0003` and received no evidence.
+Local Windows gates pass Ruff, formatting, strict mypy, compileall, and 77
+non-PostgreSQL tests; platform-only cases skip explicitly. The targeted
+connector/backup suite passes 30 tests. Hermes disposable Linux/PostgreSQL 15
+was migrated to `20260822_0004`; all 16 revision-owned triggers are enabled,
+runtime TEMP is denied, runtime grants match the baseline, and direct probes
+reject the pg_temp shadow attempt plus POSTED ledger mutations. The Hermes
+test container could not install pytest because its isolated DNS was unavailable
+and the image cache lacked the dev wheels, so no remote full-suite result is
+claimed for the remediation commit. Production remained on `c56b6ff` /
+`20260821_0003` and received no evidence.
 
-The executable SHA and deterministic self-audit report are recorded after the
-candidate commit is frozen. Slice B and every deployment remain separately gated.
+The deterministic remediation report is
+`docs/reviews/2026-08-22-phase-3-security-remediation-codex.md`. The final
+fixed-SHA security rescan is recorded in
+`docs/reviews/2026-08-22-phase-3-security-scan-final-codex.md`: it has zero
+unclosed Slice A findings and one low-severity same-UID inode finding explicitly
+deferred to Slice B. Slice B and every deployment remain separately gated.
 
 ## Review findings
 
-Pending fixed-SHA implementation review. Claude capacity is preserved; a later
-targeted audit can focus on quota races, filesystem cleanup, IPC framing, runner
-isolation, and backward-compatible restore validation.
+The initial fixed-SHA diff scan found six reportable candidates (three medium,
+three low). Five Slice A findings are remediated in `b72b229`; the same-UID open
+inode identity issue is explicitly deferred to Slice B. The final scan of the
+base-to-remediation range is complete with no unclosed Slice A finding. Claude
+capacity is preserved; a later narrow audit can focus on the five closure claims
+and the eventual runner isolation/IPC framing.
