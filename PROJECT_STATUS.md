@@ -108,6 +108,9 @@ record terminalization tests. Claude's final narrow recheck is APPROVED at
 `a19fa640247a98adacdb31741f6172b722f14f03` with 0 BLOCKER/HIGH/MEDIUM and 10
 LOW notes. Hosted CI run `32593102155` for the current branch head is green
 across `secrets`, `quality`, and `compose`.
+Codex then applied independent post-approval hardening in `e296b0d` for the
+shared text predicate, upload metadata validation, worker-call assertion, and
+full-size chunk regression; this follow-up is local pending the next push.
 
 ## Next task
 

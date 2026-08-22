@@ -459,3 +459,7 @@ Claude's final narrow recheck is APPROVED in report commit
 the ten LOW notes are tracked for the upload endpoint/Slice C and deployment
 hardening. The remaining gates are protected PR review and separate
 authorization for merge or production deployment.
+After approval, Codex independently applied `e296b0d` to share the text safety
+predicate, reject unsafe upload metadata, assert the worker composition-root
+call, and stream-test the full 50 MiB artifact limit; local verification is
+`109 passed / 118 skipped` with strict mypy and Ruff green.

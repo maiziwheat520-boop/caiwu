@@ -47,8 +47,8 @@ three regression tests were not defect-sensitive enough:
 
 - P3-H2: NUL and lone-surrogate text could still enter terminal summaries or
   parsed-record fields, leaving jobs non-terminal or raising an encoding error;
-- P3-M1R: the slow-response fixture sent an invalid frame kind before exercising
-  the overall deadline;
+- P3-M1R: the slow-response fixture wrote only one `0x00` byte, so the per-receive
+  timeout fired before a complete frame could exercise the overall deadline;
 - P3-M3R: the production flag had no `src/` composition-root call site;
 - P3-M5: the frame kind byte made the default artifact payload one byte too
   large, and the chunk-count ceiling did not cover a full 50 MiB artifact;
@@ -64,14 +64,13 @@ fixtures now send a valid slow terminal frame and consume `ARTIFACT_END` before
 returning a stale response. Detection-time contract violations are terminalized
 as `CONNECTOR_CONTRACT` with no partial records.
 
-The six reported LOW findings remain non-blocking design notes: the empty
+The six reported LOW findings were non-blocking design notes: the empty
 pre-request terminal ID is client-rejected, direct prefix detection is a
 synthetic helper while production uses `detect_verified`, the runner facade's
 pending request is fail-closed on concurrent misuse, and socket peer loss is
-bounded by the server request timeout. The remaining notes also cover a
-prefix-detection helper that is intentionally synthetic, the production cgroup
-effectiveness check, and coverage-number differences between Windows and Linux
-toolchains. Slice B is still not deployed.
+bounded by the server request timeout. The production cgroup effectiveness
+check and Windows/Linux coverage wording remain deployment/process notes. Slice
+B is still not deployed.
 
 ## Verification
 
@@ -108,6 +107,11 @@ unused upload-side `IngestMetadata` text validator before an upload endpoint,
 deduplicate the text helper, add a worker composition-root call assertion,
 leave one chunk-count headroom, correct two documentation phrasings, and retain
 the previously declared container/peer-loss/concurrency notes.
+
+After that report, Codex independently closed the text-helper, upload-metadata,
+worker-call, and full-size chunk regression gaps in `e296b0d`; the associated
+local suite now passes 109 tests with 118 Windows/POSIX skips. The one remaining
+chunk-count headroom item is a capacity note, not a correctness failure.
 
 ## Gate status
 
