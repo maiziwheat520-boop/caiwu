@@ -21,7 +21,7 @@ the state-machine columns. Same-UID open-inode identity separation remains an
 explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is now implemented
 and pushed on the Codex branch `ai/chatgpt/phase-3-connector-runner` at head
-`eb7967ab0015836928ebf79da862cbbb6941962a`; the fixed code/test head for final audit is
+`8c4c61edbdf77828b74c21bf53bc0ec09ccd7016`; the fixed code/test head for final audit is
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e`;
 the isolated runner image was tested only as a disposable Hermes image and is
 not deployed.
@@ -115,7 +115,7 @@ is green across `secrets`, `quality`, and `compose`; Claude's approval applies t
 the earlier fixed code/test SHA, while this follow-up is Codex-verified.
 Protected PR #18 is open at
 `https://github.com/maiziwheat520-boop/caiwu/pull/18`; pull-request CI run
-`32596620390` (and push run `32596618102`) passed `secrets`, `quality`, and
+`32597297494` (and push run `32597294949`) passed `secrets`, `quality`, and
 `compose`. The PR is review-only;
 it has not been merged or deployed.
 
