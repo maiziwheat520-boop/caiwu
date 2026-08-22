@@ -467,3 +467,21 @@ call, and stream-test the full 50 MiB artifact limit; local verification is
 Protected PR #18 is open; pull-request run `32598723413` and push run
 `32598721520` passed all three jobs. The approved Slice C upload-boundary
 design is documented separately; no upload route is enabled.
+
+## Slice C bounded multipart prerequisite (2026-08-23)
+
+The pure bounded multipart adapter is now implemented in
+`src/ledgerbridge/upload.py` and covered by 46 focused tests in
+`tests/test_upload.py`. It has no FastAPI, database, filesystem, Connector, or
+production-data dependency. The parser enforces bounded body/file/header/
+field sizes, a single `ingest_channel` before a single file, safe filename and
+media-type metadata, UTF-8/control-text checks, fragmented boundary handling,
+and a complete closing boundary before success. It is not yet connected to
+`ArtifactStore` or an HTTP route; the future route must use bounded temporary
+handoff and only publish after parser success.
+
+The adapter and coverage/security-lint fixes are commits `1765356`, `15b0b80`,
+and `99e4085` on PR #18. Hosted push run `32601095055` and pull-request run
+`32601097122` passed `secrets`, `quality`, and `compose`; quality coverage was
+95.92%. Merge, route enablement, authentication integration, Connector
+registration, and production deployment remain separately gated.

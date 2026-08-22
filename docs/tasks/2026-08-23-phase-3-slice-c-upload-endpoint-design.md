@@ -159,11 +159,16 @@ and body limits, UTF-8/control-text rejection, exactly one channel before one
 file part, filename/path safety, duplicate/unknown field rejection, fragmented
 boundary handling, and a successful closing boundary before completion.
 
-`tests/test_upload.py` covers arbitrary chunk fragmentation, binary content
-containing boundary-like bytes, unknown fields, file-before-channel ordering,
+`tests/test_upload.py` contains 46 focused tests covering arbitrary chunk
+fragmentation, binary content containing boundary-like bytes, unknown and
+duplicate fields, file-before-channel ordering, header/field/file/body limits,
+malformed headers and parameters, unsafe filenames, invalid UTF-8/control text,
 file overflow, declared body overflow, and invalid content types. The adapter
 has not been wired to FastAPI or `ArtifactStore`; publication handoff remains a
-separate implementation step with its own cleanup and quota tests.
+separate implementation step with its own cleanup and quota tests. Commits
+`1765356`, `15b0b80`, and `99e4085` are pushed on PR #18; Hosted push run
+`32601095055` and pull-request run `32601097122` pass all three jobs, with
+quality coverage at 95.92%.
 
 ## Explicit non-goals
 

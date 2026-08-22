@@ -19,10 +19,11 @@ socket Connector runner. The restore hotfix records column-level runtime grants
 that are not covered by table grants and keeps `import_job` updates limited to
 the state-machine columns. Same-UID open-inode identity separation remains an
 explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
-evidence, and ledger automation remain out of scope. Slice B is now implemented
-and pushed on the Codex branch `ai/chatgpt/phase-3-connector-runner` at head
-`09e442c6b82d4d2ec73b47add46e0b0e88d0a0b2`; the fixed code/test head for final audit is
-`bd2ba4a2513597e83764a56215c72b61c99a8c1e`;
+evidence, and ledger automation remain out of scope. Slice B is implemented and
+the pure Slice C bounded multipart adapter is pushed on the Codex branch
+`ai/chatgpt/phase-3-connector-runner` at head
+`99e408582853c4cf8c5e0455ce68e25c97609745`; the fixed code/test head for final
+audit is `bd2ba4a2513597e83764a56215c72b61c99a8c1e`;
 the isolated runner image was tested only as a disposable Hermes image and is
 not deployed.
 
@@ -92,7 +93,8 @@ and narrow-audit entry point are preserved.
 
 ## Active implementation owner
 
-Codex is the single writer on `ai/chatgpt/phase-3-connector-runner` for Slice B.
+Codex is the single writer on `ai/chatgpt/phase-3-connector-runner` for Slice B
+and the Slice C adapter prerequisite.
 Claude remains read-only and is reserved for a later narrow audit. No production
 runner or real Connector is enabled.
 
@@ -114,21 +116,25 @@ full-size chunk regression. Hosted CI run `32595863205` for the resulting head
 is green across `secrets`, `quality`, and `compose`; Claude's approval applies to
 the earlier fixed code/test SHA, while this follow-up is Codex-verified.
 Protected PR #18 is open at
-`https://github.com/maiziwheat520-boop/caiwu/pull/18`; pull-request CI run
-`32598723413` (and push run `32598721520`) passed `secrets`, `quality`, and
-`compose`. The PR is review-only;
-it has not been merged or deployed.
+`https://github.com/maiziwheat520-boop/caiwu/pull/18`; its current head is
+`99e408582853c4cf8c5e0455ce68e25c97609745`. Push run `32601095055` and
+pull-request run `32601097122` passed `secrets`, `quality`, and `compose`, with
+quality coverage at 95.92%. The PR is review-only; it has not been merged or
+deployed.
 The approved Slice C upload-boundary design is recorded in
 `docs/tasks/2026-08-23-phase-3-slice-c-upload-endpoint-design.md`; no route is
-implemented or exposed.
+implemented or exposed. The pure bounded multipart adapter is implemented and
+tested, but remains disconnected from FastAPI, `ArtifactStore`, and production
+data paths.
 
 ## Next task
 
-Review protected PR #18 for the APPROVED
-`bd2ba4a2513597e83764a56215c72b61c99a8c1e` remediation. Merge and any production runner
-deployment require distinct authorization. Do not register a real Connector,
-ingest evidence, or enable the mail collector without the corresponding later
-authorization.
+Review protected PR #18, including the bounded multipart adapter prerequisite.
+Merge and any production runner deployment require distinct authorization. The
+next implementation gate is a bounded temporary handoff into `ArtifactStore`
+followed by an explicitly feature-flagged internal route; do not register a real
+Connector, ingest evidence, or enable the mail collector without corresponding
+later authorization.
 
 ## Blocking decisions
 
