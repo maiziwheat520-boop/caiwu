@@ -156,15 +156,22 @@ class ArtifactStore:
         current = self.root
         components = (None, *relative.parts)
         for component in components:
-            if component is not None:
-                current = current / component
-            with suppress(FileExistsError):
-                current.mkdir(mode=stat.S_IRWXU)
-            metadata = current.lstat()
+            parent = current.parent if component is None else current
+            candidate = current if component is None else current / component
+            created = False
+            try:
+                candidate.mkdir(mode=stat.S_IRWXU)
+                created = True
+            except FileExistsError:
+                pass
+            metadata = candidate.lstat()
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
                 raise ArtifactIntegrityError(
                     "artifact directories must be real directories, not symbolic links"
                 )
+            if created:
+                self._fsync_directory(parent)
+            current = candidate
 
     def _verify_path(self, path: Path, digest: bytes, byte_size: int) -> None:
         try:

@@ -10,6 +10,7 @@ def test_only_worker_has_a_writable_artifact_volume() -> None:
     assert "read_only: true" in shared
     assert "- no-new-privileges:true" in shared
     assert "- ALL" in shared
+    assert "LEDGERBRIDGE_ARTIFACT_MAX_BYTES: ${LEDGERBRIDGE_ARTIFACT_MAX_BYTES:-52428800}" in shared
     assert "artifacts:/var/lib/ledgerbridge/artifacts:ro" in api
     assert "artifacts:/var/lib/ledgerbridge/artifacts\n" in worker
     assert "artifacts:/var/lib/ledgerbridge/artifacts:ro" not in worker

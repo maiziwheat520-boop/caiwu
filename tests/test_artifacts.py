@@ -96,6 +96,28 @@ def test_concurrent_identical_publication_converges(tmp_path: Path) -> None:
     assert sum(created for _digest, created in results) == 1
 
 
+def test_new_directory_entries_are_fsynced_through_the_shard_hierarchy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    synced: list[Path] = []
+    root = (tmp_path / "store").resolve()
+    store = ArtifactStore(root, max_bytes=1_000)
+    monkeypatch.setattr(store, "_fsync_directory", synced.append)
+
+    artifact = store.publish(io.BytesIO(b"durable hierarchy"))
+    digest = artifact.sha256_hex
+
+    assert synced == [
+        tmp_path,
+        root,
+        root,
+        root / "sha256",
+        root / "sha256" / digest[:2],
+        root / "sha256" / digest[:2] / digest[2:4],
+    ]
+
+
 def test_existing_destination_mismatch_fails_without_overwrite(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path.resolve(), max_bytes=1_000)
     content = b"correct evidence"
