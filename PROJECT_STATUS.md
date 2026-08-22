@@ -86,11 +86,13 @@ deferred to Slice B. The final fixed-SHA scan is complete with zero unclosed
 Slice A findings; its only low-severity result is the explicitly deferred
 same-UID inode boundary.
 Slice B remains unstarted and independently gated. The follow-up CI fixes are
-on `cdcac19de3f28c6c42db4629995b79764b48db7c` and protected PR #14 is open at
-`https://github.com/maiziwheat520-boop/caiwu/pull/14`. Both the push and
-pull-request workflows passed all six `secrets`, `quality`, and `compose` jobs
-(runs `32568176284` and `32568174194`). Production is unchanged at `c56b6ff` /
-`20260821_0003`; the PR has not been merged and no deployment has been run.
+on `cdcac19de3f28c6c42db4629995b79764b48db7c`; protected PR #14 passed all
+required checks and was merged into main as
+`06725c3561d92630c4d15631076ba81f68371779`. Its push and pull-request
+workflows passed all six `secrets`, `quality`, and `compose` jobs (runs
+`32568176284` and `32568174194`), and the merged-main push run
+`32568522459` also passed all three jobs. Production is unchanged at
+`c56b6ff` / `20260821_0003`; no deployment has been run.
 
 ## Completed
 
@@ -165,10 +167,10 @@ runner boundary.
 
 ## Next task
 
-PR #14 is open with all required checks green. Await separate user
-authorization before merging it. Do not deploy, start Slice B, register a real
-Connector, ingest evidence, or enable the mail collector without the
-corresponding later authorization.
+Phase 3 Slice A is merged into protected main. Await separate authorization
+before deploying it or starting Slice B. Do not register a real Connector,
+ingest evidence, or enable the mail collector without the corresponding later
+authorization.
 
 ## Blocking decisions
 
