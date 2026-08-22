@@ -119,8 +119,8 @@ report does not claim to audit the post-approval commits.
 
 P3-H1, P3-H2, P3-M1R, P3-M3R, P3-M5, and P3-M6 are remediated and independently
 tested. Claude's final recheck is **APPROVED** with only non-blocking LOW notes.
-Protected PR #18 is open and its pull-request CI run `32597297494` (with push
-run `32597294949`) passed all three required jobs. The branch is not merged and
+Protected PR #18 is open and its pull-request CI run `32598723413` (with push
+run `32598721520`) passed all three required jobs. The branch is not merged and
 Slice B is not deployed.
 Merge, Slice B deployment, and real Connector registration remain separate
 user-authorized gates.

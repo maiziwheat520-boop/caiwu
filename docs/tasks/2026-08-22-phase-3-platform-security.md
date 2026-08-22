@@ -464,5 +464,6 @@ predicate, reject unsafe upload metadata, assert the worker composition-root
 call, and stream-test the full 50 MiB artifact limit; local verification is
 `109 passed / 118 skipped` with strict mypy and Ruff green. Hosted run
 `32595863205` for head `8c43ffa` also passed `secrets`, `quality`, and `compose`.
-Protected PR #18 is open; pull-request run `32597297494` and push run
-`32597294949` passed all three jobs.
+Protected PR #18 is open; pull-request run `32598723413` and push run
+`32598721520` passed all three jobs. The approved Slice C upload-boundary
+design is documented separately; no upload route is enabled.
