@@ -464,4 +464,5 @@ predicate, reject unsafe upload metadata, assert the worker composition-root
 call, and stream-test the full 50 MiB artifact limit; local verification is
 `109 passed / 118 skipped` with strict mypy and Ruff green. Hosted run
 `32595863205` for head `8c43ffa` also passed `secrets`, `quality`, and `compose`.
-Protected PR #18 is open; pull-request run `32596466071` passed all three jobs.
+Protected PR #18 is open; pull-request run `32596620390` and push run
+`32596618102` passed all three jobs.
