@@ -55,8 +55,8 @@ three regression tests were not defect-sensitive enough:
 - P3-M6: the stale-response handler could close before consuming the artifact
   stream, producing flaky `RUNNER_UNAVAILABLE` results.
 
-The second remediation (uncommitted at the time of this report) closes those
-boundaries: protocol and Connector JSON validation reject NUL/U+D800–DFFF,
+The second remediation, committed as `b65581e7e76c79fce7f6c6996a6c68a3201d6483`,
+closes those boundaries: protocol and Connector JSON validation reject NUL/U+D800–DFFF,
 `RunnerClientError` sanitizes unsafe summaries, the worker composition root
 constructs `EvidenceImporter(production=settings.env == "production")`, frame
 payload and chunk-count limits account for the kind byte, and the regression

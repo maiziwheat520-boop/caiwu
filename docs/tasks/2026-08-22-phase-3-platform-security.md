@@ -1,6 +1,6 @@
 # Task: Phase 3 Platform Security Foundation
 
-- Status: Slice A implemented, remediated, merged into protected main, and deployed to Hermes
+- Status: Slice A implemented, remediated, merged into protected main, and deployed to Hermes; Slice B implemented and independently rechecked, not merged or deployed
 - Preflight date: 2026-08-22
 - Implementation owner: Codex
 - Review owner: Codex fixed-SHA self-audit; preserve a narrow Claude recheck entry point
@@ -420,7 +420,7 @@ and the eventual runner isolation/IPC framing.
 
 Slice B is implemented on the pushed branch `ai/chatgpt/phase-3-connector-runner`
 in commits `23412d2`, `3f468ec`, `cb8f6d2`, `ebf5a42`, `6c1b6c4`, `ebc2974`,
-`991e617`, and `5dab33e`. The implementation adds the versioned framed
+`991e617`, `5dab33e`, and `b65581e`. The implementation adds the versioned framed
 Unix-socket protocol, bounded supervisor/client, importer error mapping, explicit
 `execution_mode=runner` validation, and a distinct no-network `connector-runner`
 Compose service. The protocol rejects duplicate JSON keys, binds every response
@@ -446,9 +446,11 @@ use a unique `-p` name and never target the production tree.
 
 The full implementation report is
 `docs/reviews/2026-08-22-phase-3-runner-codex.md`. Claude's first narrow audit
-found P3-H1 plus four medium findings; Codex remediated them in `5dab33e` and
-recorded the response in
+found P3-H1 plus four medium findings; the follow-up found P3-H2, P3-M1R,
+P3-M3R, P3-M5, and P3-M6. Codex remediated the first set in `5dab33e` and the
+follow-up set in `b65581e`, recording both responses in
 `docs/reviews/2026-08-23-phase-3-connector-runner-claude-remediation-codex.md`.
-Hosted CI run `32586181832` passed `secrets`, `quality`, and `compose`. The
-remaining gates are a fresh narrow Claude recheck, protected PR review, and
-separate authorization for merge or production deployment.
+Hermes disposable PostgreSQL 16 replay now passes 217 tests at 95.49% coverage;
+hosted CI for `b65581e` is the next required check. The remaining gates are a
+fresh narrow Claude recheck, protected PR review, and separate authorization for
+merge or production deployment.
