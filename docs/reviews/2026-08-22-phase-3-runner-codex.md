@@ -24,6 +24,8 @@ Implementation commits:
 - `991e617` — close the remaining Linux runner coverage threshold and response cases.
 - follow-up remediation (current working head) — close unsafe text, full-size
   artifact framing, production composition, and defect-sensitive runner tests.
+- `5dfaca8` / `bd2ba4a` — enforce the same overall deadline during outbound
+  frame sends and add end-to-end unsafe-record terminalization coverage.
 
 ## Implemented boundary
 
@@ -68,8 +70,8 @@ field and rely on parser last-write-wins behavior.
 The disposable Hermes PostgreSQL 16 replay of the exact CI pytest command passed
 after the final runner test additions:
 
-- **217 passed, 1 warning**;
-- coverage **95.49%** with `--cov-fail-under=95`;
+- **222 passed, 1 warning**;
+- coverage **95.47%** with `--cov-fail-under=95`;
 - the run covered POSIX Unix-socket IPC, runner error mapping, protocol limits,
   response validation, and PostgreSQL-backed integration tests.
 
@@ -123,7 +125,10 @@ Connector JSON boundaries, sanitize unsafe client summaries, wire the worker
 composition root to `production=settings.env == "production"`, account for the
 frame kind byte in payload/chunk-count limits, and make the slow/stale response
 fixtures exercise the intended deadlines and stream lifecycle. Detection-time
-contract failures now terminalize as `CONNECTOR_CONTRACT`.
+contract failures now terminalize as `CONNECTOR_CONTRACT`. A final hardening pass
+also applies the deadline to outbound frame sends and verifies, through the
+public importer path, that hostile record locator/raw-field text yields one
+terminal audit event and zero partial records.
 
 ## Production recovery and fresh restore evidence
 

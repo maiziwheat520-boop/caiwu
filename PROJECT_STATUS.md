@@ -21,7 +21,7 @@ the state-machine columns. Same-UID open-inode identity separation remains an
 explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is now implemented
 and pushed on the Codex branch `ai/chatgpt/phase-3-connector-runner` at head
-`b65581e7e76c79fce7f6c6996a6c68a3201d6483`;
+`bd2ba4a2513597e83764a56215c72b61c99a8c1e`;
 the isolated runner image was tested only as a disposable Hermes image and is
 not deployed.
 
@@ -101,13 +101,14 @@ Claude completed the independent Phase 2 audit in the separate clone and wrote
 only its report. Codex published the Phase 3 finding-by-finding response and
 remediation report, while preserving Claude's remaining quota. Claude's second
 narrow audit found one HIGH and four MEDIUM follow-up issues; Codex fixed them at
-`b65581e7e76c79fce7f6c6996a6c68a3201d6483` and independently replayed the full
-Hermes Linux/PostgreSQL suite. A final narrow Claude recheck remains the next
+`bd2ba4a2513597e83764a56215c72b61c99a8c1e` and independently replayed the full
+Hermes Linux/PostgreSQL suite, including outbound-send deadline and hostile
+record terminalization tests. A final narrow Claude recheck remains the next
 review gate.
 
 ## Next task
 
-Run a fresh narrow Claude recheck of the `b65581e7e76c79fce7f6c6996a6c68a3201d6483` remediation, then decide
+Run a fresh narrow Claude recheck of the `bd2ba4a2513597e83764a56215c72b61c99a8c1e` remediation, then decide
 separately whether to publish a protected PR. Merge and any production runner
 deployment require distinct authorization. Do not register a real Connector,
 ingest evidence, or enable the mail collector without the corresponding later

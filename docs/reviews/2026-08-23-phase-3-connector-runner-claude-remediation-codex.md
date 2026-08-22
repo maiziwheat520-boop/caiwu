@@ -76,10 +76,10 @@ toolchains. Slice B is still not deployed.
 ## Verification
 
 - local Windows: Ruff, format, strict mypy, Bandit, sensitive-path scan, offline
-  lock resolution, and full pytest passed (`104 passed`, `113 skipped`, one
+  lock resolution, and full pytest passed (`104 passed`, `114 skipped`, one
   known Starlette warning);
-- Hermes disposable Linux/PostgreSQL 16 replay: `217 passed`, one warning,
-  `95.49%` coverage with the unchanged `--cov-fail-under=95` gate; migration
+- Hermes disposable Linux/PostgreSQL 16 replay: `222 passed`, one warning,
+  `95.47%` coverage with the unchanged `--cov-fail-under=95` gate; migration
   upgrade/downgrade/upgrade, Bandit, and strict pip-audit all passed;
 - hosted GitHub Actions run `32590293736` for documentation head `6a57de9`
   passed `secrets`, `quality`, and `compose`; the code under review is the
@@ -87,9 +87,15 @@ toolchains. Slice B is still not deployed.
 - no production tree, image, database, artifact, credential, or real financial
   evidence was changed.
 
+Before the final audit handoff, Codex added a bounded outbound-send deadline in
+`5dfaca8bcc81641a6a4e106997a20cb7db0fc58c` and public-path integration tests in
+`bd2ba4a` for hostile `record_locator`/`raw_fields` text. These are additional
+hardening changes, not a change to the production deployment scope.
+
 ## Gate status
 
 P3-H1, P3-H2, P3-M1R, P3-M3R, P3-M5, and P3-M6 are remediated and independently
-tested. The branch is ready for another fresh narrow Claude recheck, not for
+tested; outbound request deadlines and unsafe-record terminalization received an
+additional hardening pass. The branch is ready for another fresh narrow Claude recheck, not for
 merge or production deployment. Merge, Slice B deployment, and real Connector
 registration remain separate user-authorized gates.
