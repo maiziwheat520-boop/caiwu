@@ -51,17 +51,23 @@ parsers, OAuth, production evidence, migration, and deployment remain out of sco
 PR #10 was subsequently merged as
 `23bfbd3bcc79068c3744dab05a961d497590ec8e`. Claude's independent report commit
 `cc07e08aa264c5a2aa42d9b422a049cf5c926ee9` returned CHANGES REQUIRED with
-1 BLOCKER, 1 HIGH, 8 MEDIUM, and 8 LOW findings. Codex is remediating on
-`ai/chatgpt/phase-2-audit-fixes`. The current tree closes the `pg_temp` ledger
-invariant bypass, artifact verification TOCTOU, and applicable medium/low items.
+1 BLOCKER, 1 HIGH, 8 MEDIUM, and 8 LOW findings. Codex closed the `pg_temp`
+ledger invariant bypass, artifact verification TOCTOU, and applicable medium/low
+items in executable `40fcd022ae6d3127aa7bdc17afecb6b1a159cda0`.
 Disposable Hermes PostgreSQL 15 validation passed an empty migration
 `head -> base -> head` round trip followed by 128/128 tests at 95.79% coverage;
 Ruff, formatting, full strict mypy, Bandit, Compose parsing, and a production
-image build/import smoke pass. The immutable remediation executable is
-`40fcd022ae6d3127aa7bdc17afecb6b1a159cda0`. PR #11 push run `32559469055`
-and pull-request run `32559511616` passed `secrets`, `quality`, and `compose`
-(6/6 jobs). No merge, production migration, deployment, or real evidence
-ingestion has occurred yet.
+image build/import smoke passed. PR #11 merged as
+`c56b6ffdde9f723efe1792ae1312ec8795bba165`; its final push/PR CI and the
+merged-main run passed `secrets`, `quality`, and `compose`.
+
+After separate deployment authorization, Hermes was upgraded to image
+`ledgerbridge-app:c56b6ff` and Alembic `20260821_0003`. A pre-deploy encrypted
+backup passed isolated restore before the change. Post-deploy checks prove
+database TEMP is denied to `ledgerbridge_app`, all 14 security functions pin
+`search_path=pg_catalog`, all 13 public triggers are enabled, and all eight
+business/evidence tables plus the artifact volume remain empty. A new encrypted
+backup also passed isolated restore. No real evidence ingestion occurred.
 
 ## Completed
 
@@ -105,13 +111,16 @@ ingestion has occurred yet.
   `/srv/ai-center/backups/ledgerbridge/20260821T124742Z-0c5616f648d7`
   passed isolated restore. Ciphertext SHA-256 is
   `9d09705ebb482fc7a96f161e7f1b7db6b40f8e0000c6024b2d3e10f479d44e69`.
+- Phase 2 remediation PR #11 merged as `c56b6ff`; the exact merge SHA is deployed
+  at migration `20260821_0003`. The deployment report is
+  `docs/reviews/2026-08-22-phase-2-hermes-deployment-codex.md`.
 
 ## Ownership checkpoint
 
 - Recorded: 2026-08-21
-- Deployment revision: `0c5616f648d720da88dd37deac94610486e7e611`
+- Deployment revision: `c56b6ffdde9f723efe1792ae1312ec8795bba165`
 - Codex implementation clone: `G:\我的云端硬盘\AI\LedgerBridge-Codex`
-- Codex branch: `ai/chatgpt/phase-2-audit-fixes`
+- Codex branch: `ai/chatgpt/phase-2-deployment-record`
 - Codex identity: `Codex <codex@ledgerbridge.local>`
 - Claude review-only clone: `G:\我的云端硬盘\AI\LedgerBridge-Claude`
 - Claude identity when explicitly authorized to commit:
@@ -120,25 +129,24 @@ ingestion has occurred yet.
 
 ## Active implementation owner
 
-Codex, in the Codex clone and only on `ai/chatgpt/phase-2-audit-fixes` for the
-Claude-audit remediation. Claude remains read-only.
+Codex, in the Codex clone and only on `ai/chatgpt/phase-2-deployment-record` for
+the deployment evidence record. Claude remains read-only.
 
 ## Review owner
 
 Claude completed the independent fixed-SHA audit in the separate clone and wrote
-only its report. Codex owns remediation and will publish a finding-by-finding
-response against a new immutable executable SHA. Claude's remaining quota is not
-required for implementation; a later recheck can be limited to the BLOCKER/HIGH
-closures and report addendum.
+only its report. Codex published the finding-by-finding response, merged the
+validated remediation, and preserved Claude's remaining quota. A later recheck
+can be limited to the BLOCKER/HIGH closures and report addendum.
 
 ## Next task
 
-Request the PR #11 merge decision. Because production remains on migration
-`20260821_0002`, the P2-B1 temporary-schema path remains a production risk until
-a separately authorized migration/deployment; do not apply that change implicitly.
+Publish and merge the deployment evidence record. Phase 3 planning may then
+address aggregate artifact quotas, canonical source identities, out-of-process
+untrusted connectors, and stronger durable restore-report coverage. Do not ingest
+real evidence or enable the mail collector without a separate approved task.
 
 ## Blocking decisions
 
-None for remediation implementation. F-4 and F-6 are closed. Real-data ingestion
-and production migration/deployment still require explicit authorization after
-the remediation PR is reviewed and merged.
+None for Phase 2 remediation or deployment. F-4 and F-6 are closed. Real-data
+ingestion and Phase 3 connector/OAuth work still require explicit authorization.
