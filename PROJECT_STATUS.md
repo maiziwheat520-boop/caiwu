@@ -43,8 +43,9 @@ binding are complete. Security review closed a PostgreSQL temporary-schema
 shadowing path and importer provenance/mutability defects. Isolated PostgreSQL 15
 acceptance passed 109 tests at 96.88% coverage on the hardened database/import
 commit; the final durability-only patch passed local gates and a Linux production-
-image artifact smoke. Protected GitHub PR CI will rerun the complete 110-test suite.
-A pre-existing Phase 1 metadata drift remains documented for follow-up. Real
+image artifact smoke. PR #10 push and pull-request CI passed `secrets`, `quality`,
+and `compose` (6/6 jobs), including the complete 110-test suite. A pre-existing
+Phase 1 metadata drift remains documented for follow-up. Real
 parsers, OAuth, production evidence, migration, and deployment remain out of scope.
 
 ## Completed
@@ -116,10 +117,9 @@ later Claude audit must review executable SHA
 
 ## Next task
 
-Push the fixed implementation and self-audit report in a protected Phase 2 PR,
-then require `secrets`, `quality`, and `compose` to pass before requesting an
-explicit merge decision. Production migration/deployment remains separately
-authorized.
+Request an explicit user decision on merging protected PR #10. The reviewed
+executable SHA is fixed, the self-audit is complete, and `secrets`, `quality`, and
+`compose` passed. Production migration/deployment remains separately authorized.
 
 ## Blocking decisions
 

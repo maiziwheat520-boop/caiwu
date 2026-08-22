@@ -1,6 +1,6 @@
 # Task: Phase 2 Evidence and Import
 
-- Status: implementation and fixed-SHA self-audit complete; protected PR pending
+- Status: implementation, fixed-SHA self-audit, and protected CI complete; merge decision pending
 - Preflight date: 2026-08-21
 - Implementation owner: Codex
 - Review owner: Codex self-audit; Claude fixed-SHA audit hook preserved
@@ -323,8 +323,10 @@ with no partial batch.
 - No real parser, binary financial fixture, OAuth material, JournalEntry import,
   production migration, or Hermes deployment was added. Hermes remains on
   `0c5616f648d720da88dd37deac94610486e7e611`.
-- Full-history Gitleaks and protected push/PR CI remain pending until the fixed
-  implementation and review commits are pushed.
+- Full-history Gitleaks and protected CI passed at review head
+  `c3497b868d8564be33688aa9ac5d0b4764480843`: push run `32551808678` and
+  pull-request run `32551835286` completed `secrets`, `quality`, and `compose`
+  successfully (6/6 jobs total).
 - Alembic autogenerate comparison reports no Phase 2 object drift. It still
   reports inherited Phase 1 check-constraint naming and audit-index metadata
   drift; Phase 2 does not rewrite that deployed historical schema.
@@ -342,7 +344,7 @@ with no partial batch.
 
 ## Implementation verdict
 
-FIXED-SHA SELF-AUDIT COMPLETE; APPROVED FOR PROTECTED PR. The final reviewed
-executable SHA is `b092eb88772d30964524c7475ee96b0ccc86c395`, with no open
-validated security finding. Push, protected PR, GitHub Gitleaks/CI, merge,
-migration, and production deployment remain separate steps.
+FIXED-SHA SELF-AUDIT AND PROTECTED CI COMPLETE; APPROVED FOR MERGE. The final
+reviewed executable SHA is `b092eb88772d30964524c7475ee96b0ccc86c395`, with
+no open validated security finding. Merge requires an explicit user decision;
+migration and production deployment remain separately authorized.
