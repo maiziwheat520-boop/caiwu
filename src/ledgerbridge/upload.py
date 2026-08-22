@@ -280,7 +280,6 @@ def _parse_part_headers(header_bytes: bytes) -> tuple[str, str | None, str]:
     media_type = raw_media_type.split(";", 1)[0].strip()
     if part_name == "file" and _MEDIA_TYPE_PATTERN.fullmatch(media_type) is None:
         raise MultipartError("multipart file media type is invalid")
-    assert part_name is not None
     return part_name, filename, media_type
 
 
