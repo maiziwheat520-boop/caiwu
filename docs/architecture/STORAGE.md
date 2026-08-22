@@ -49,6 +49,20 @@ reports. The approved off-host private-key copy lives in the operator's external
   remove the file while retaining its metadata and SourceRecords.
 - Backups: encrypted, restore-tested, and kept outside the source repository.
 
+## Artifact capacity controls
+
+The immutable artifact volume is bounded by independent production defaults:
+
+- one artifact: 52,428,800 bytes;
+- published content-addressed blobs: 10,737,418,240 bytes;
+- aggregate `.staging` files: 536,870,912 bytes;
+- stale staging eligibility: 3,600 seconds.
+
+Measurement and publication share a filesystem lock. Published usage includes
+unreferenced valid blobs, and staging usage includes fresh crash-left partials.
+Quota pressure rejects the new intake and never deletes an older artifact or
+database provenance row. Unknown or unsafe filesystem entries stop ingestion.
+
 ## Encrypted backup layout
 
 Each successfully published backup is one mode-700 direct child of
@@ -61,6 +75,14 @@ Each successfully published backup is one mode-700 direct child of
 ├── SHA256SUMS                    ciphertext integrity sidecar
 └── restore-rehearsal-*.json      non-secret evidence, present only after a passing rehearsal
 ```
+
+New sidecars and encrypted payload metadata use
+`ledgerbridge-encrypted-backup-v2`; restore evidence uses
+`ledgerbridge-restore-rehearsal-v2`. The restore reader retains v1 compatibility
+and labels legacy comparison coverage explicitly. V2 records revision-specific
+row counts, security functions/search paths, triggers, grants, TEMP/schema
+denials, artifact usage, and quota configuration without storing database URLs,
+passwords, evidence filenames, or decrypted content.
 
 Plaintext dumps and extracted files exist only in a randomly named mode-700
 directory under `/dev/shm` and are removed on success or failure. A backup is

@@ -3,7 +3,14 @@
 Phase modules must be imported here so Alembic autogenerate sees every table.
 """
 
-from ledgerbridge.models.evidence import ImportJob, ImportJobStatus, RawArtifact, SourceRecord
+from ledgerbridge.models.evidence import (
+    ImportJob,
+    ImportJobStatus,
+    IngestChannel,
+    RawArtifact,
+    SourceRecord,
+    SourceSystem,
+)
 from ledgerbridge.models.ledger import (
     Account,
     AccountClass,
@@ -23,9 +30,11 @@ __all__ = [
     "EntityType",
     "ImportJob",
     "ImportJobStatus",
+    "IngestChannel",
     "JournalEntry",
     "JournalStatus",
     "Posting",
     "RawArtifact",
     "SourceRecord",
+    "SourceSystem",
 ]

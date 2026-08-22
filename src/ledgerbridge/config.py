@@ -21,7 +21,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     database_url: str = Field(min_length=1)
     artifact_root: Path = Path("/var/lib/ledgerbridge/artifacts")
-    artifact_max_bytes: int = Field(default=50 * 1024 * 1024, gt=0)
+    artifact_max_bytes: int = Field(default=50 * 1024 * 1024, gt=0, le=2**63 - 1)
+    artifact_total_max_bytes: int = Field(default=10 * 1024 * 1024 * 1024, gt=0, le=2**63 - 1)
+    artifact_staging_max_bytes: int = Field(default=512 * 1024 * 1024, gt=0, le=2**63 - 1)
+    artifact_staging_ttl_seconds: int = Field(default=60 * 60, gt=0, le=2**31 - 1)
 
     @field_validator("artifact_root")
     @classmethod

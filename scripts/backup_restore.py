@@ -23,7 +23,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
-BACKUP_FORMAT = "ledgerbridge-encrypted-backup-v1"
+BACKUP_FORMAT_V1 = "ledgerbridge-encrypted-backup-v1"
+BACKUP_FORMAT_V2 = "ledgerbridge-encrypted-backup-v2"
+BACKUP_FORMAT = BACKUP_FORMAT_V2
+SUPPORTED_BACKUP_FORMATS = frozenset({BACKUP_FORMAT_V1, BACKUP_FORMAT_V2})
+RESTORE_REPORT_FORMAT = "ledgerbridge-restore-rehearsal-v2"
 POSTGRES_IMAGE = (
     "postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b"
 )
@@ -115,6 +119,146 @@ SELECT json_build_object(
     )
 )::text;
 """.strip()
+DATABASE_SECURITY_SQL = """
+SELECT json_build_object(
+    'database_temp_denied', NOT has_database_privilege(
+        'ledgerbridge_app', current_database(), 'TEMPORARY'
+    ),
+    'security_functions', COALESCE((
+        SELECT json_agg(
+            json_build_object(
+                'name', p.proname,
+                'identity_arguments', pg_get_function_identity_arguments(p.oid),
+                'proconfig', COALESCE(to_json(p.proconfig), '[]'::json)
+            ) ORDER BY p.proname, pg_get_function_identity_arguments(p.oid)
+        )
+        FROM pg_proc AS p
+        JOIN pg_namespace AS n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM pg_depend AS dependency
+              WHERE dependency.classid = 'pg_proc'::regclass
+                AND dependency.objid = p.oid
+                AND dependency.deptype = 'e'
+          )
+    ), '[]'::json),
+    'public_triggers', COALESCE((
+        SELECT json_agg(
+            json_build_object(
+                'table', table_class.relname,
+                'name', trigger.tgname,
+                'enabled', trigger.tgenabled
+            ) ORDER BY table_class.relname, trigger.tgname
+        )
+        FROM pg_trigger AS trigger
+        JOIN pg_class AS table_class ON table_class.oid = trigger.tgrelid
+        JOIN pg_namespace AS namespace ON namespace.oid = table_class.relnamespace
+        WHERE namespace.nspname = 'public' AND NOT trigger.tgisinternal
+    ), '[]'::json),
+    'table_grants', COALESCE((
+        SELECT json_agg(
+            json_build_object(
+                'table', table_name,
+                'privilege', privilege_type,
+                'grantable', is_grantable
+            ) ORDER BY table_name, privilege_type
+        )
+        FROM information_schema.role_table_grants
+        WHERE table_schema = 'public' AND grantee = 'ledgerbridge_app'
+    ), '[]'::json),
+    'sequence_grants', COALESCE((
+        SELECT json_agg(
+            json_build_object(
+                'sequence', object_name,
+                'privilege', privilege_type,
+                'grantable', is_grantable
+            ) ORDER BY object_name, privilege_type
+        )
+        FROM information_schema.role_usage_grants
+        WHERE object_schema = 'public'
+          AND object_type = 'SEQUENCE'
+          AND grantee = 'ledgerbridge_app'
+    ), '[]'::json),
+    'function_grants', COALESCE((
+        SELECT json_agg(
+            json_build_object(
+                'function', routine_name,
+                'grantee', grantee,
+                'privilege', privilege_type,
+                'grantable', is_grantable
+            ) ORDER BY routine_name, grantee, privilege_type
+        )
+        FROM information_schema.routine_privileges
+        WHERE specific_schema = 'public'
+          AND grantee IN ('ledgerbridge_app', 'PUBLIC')
+    ), '[]'::json)
+)::text;
+""".strip()
+
+PHASE_1_TABLES = ("entity", "account", "journal_entry", "posting", "audit_event")
+PHASE_2_TABLES = ("raw_artifact", "import_job", "source_record")
+PHASE_3_TABLES = ("ingest_channel", "source_system")
+ROW_COUNT_SQL = {
+    PHASE_1_TABLES: """
+        SELECT json_build_object(
+            'entity', (SELECT count(*) FROM public.entity),
+            'account', (SELECT count(*) FROM public.account),
+            'journal_entry', (SELECT count(*) FROM public.journal_entry),
+            'posting', (SELECT count(*) FROM public.posting),
+            'audit_event', (SELECT count(*) FROM public.audit_event)
+        )::text;
+    """.strip(),
+    PHASE_1_TABLES + PHASE_2_TABLES: """
+        SELECT json_build_object(
+            'entity', (SELECT count(*) FROM public.entity),
+            'account', (SELECT count(*) FROM public.account),
+            'journal_entry', (SELECT count(*) FROM public.journal_entry),
+            'posting', (SELECT count(*) FROM public.posting),
+            'audit_event', (SELECT count(*) FROM public.audit_event),
+            'raw_artifact', (SELECT count(*) FROM public.raw_artifact),
+            'import_job', (SELECT count(*) FROM public.import_job),
+            'source_record', (SELECT count(*) FROM public.source_record)
+        )::text;
+    """.strip(),
+    PHASE_1_TABLES + PHASE_2_TABLES + PHASE_3_TABLES: """
+        SELECT json_build_object(
+            'entity', (SELECT count(*) FROM public.entity),
+            'account', (SELECT count(*) FROM public.account),
+            'journal_entry', (SELECT count(*) FROM public.journal_entry),
+            'posting', (SELECT count(*) FROM public.posting),
+            'audit_event', (SELECT count(*) FROM public.audit_event),
+            'raw_artifact', (SELECT count(*) FROM public.raw_artifact),
+            'import_job', (SELECT count(*) FROM public.import_job),
+            'source_record', (SELECT count(*) FROM public.source_record),
+            'ingest_channel', (SELECT count(*) FROM public.ingest_channel),
+            'source_system', (SELECT count(*) FROM public.source_system)
+        )::text;
+    """.strip(),
+}
+PHASE_1_FUNCTIONS = frozenset(
+    {
+        "account_block_protected_dimension_change",
+        "append_audit_event",
+        "audit_event_block_mutation",
+        "journal_entry_assert_posted_complete",
+        "journal_entry_block_posted_mutation",
+        "journal_entry_validate_relationships",
+        "posting_assert_balanced",
+        "posting_block_posted_mutation",
+        "posting_enforce_entity",
+    }
+)
+PHASE_2_FUNCTIONS = frozenset(
+    {
+        "import_job_enforce_transition",
+        "journal_entry_validate_post_audit",
+        "raw_artifact_block_mutation",
+        "raw_artifact_validate_audit",
+        "source_record_block_mutation",
+    }
+)
+PHASE_3_FUNCTIONS = frozenset({"registry_block_mutation"})
 RUNTIME_IDENTITY_PROGRAM = (
     "import os; "
     "from sqlalchemy import create_engine, text; "
@@ -376,13 +520,34 @@ def _database_metadata(
             "exec psql --no-psqlrc --username postgres "
             f'--dbname "{database}" -At -v ON_ERROR_STOP=1 -c "$1"'
         )
-    output = runner.capture(
-        ["docker", "exec", container, "sh", "-c", command, "sh", DATABASE_METADATA_SQL]
-    )
-    value = json.loads(output)
+
+    def query(sql: str) -> object:
+        output = runner.capture(["docker", "exec", container, "sh", "-c", command, "sh", sql])
+        return json.loads(output)
+
+    value = query(DATABASE_METADATA_SQL)
     if not isinstance(value, dict):
         raise BackupError("database metadata query did not return a JSON object")
-    return cast(dict[str, Any], value)
+    metadata = cast(dict[str, Any], value)
+    revision = metadata.get("alembic_version")
+    if not isinstance(revision, str) or re.fullmatch(r"[0-9]{8}_[0-9]{4}", revision) is None:
+        raise BackupError("database metadata has an invalid Alembic revision")
+    tables = list(PHASE_1_TABLES)
+    if revision >= "20260821_0003":
+        tables.extend(PHASE_2_TABLES)
+    if revision >= "20260822_0004":
+        tables.extend(PHASE_3_TABLES)
+    table_key = tuple(tables)
+    row_counts = query(ROW_COUNT_SQL[table_key])
+    if not isinstance(row_counts, dict) or set(row_counts) != set(tables):
+        raise BackupError("database row-count query returned an invalid object")
+    security = query(DATABASE_SECURITY_SQL)
+    if not isinstance(security, dict):
+        raise BackupError("database security query returned an invalid object")
+    metadata["metadata_version"] = 2
+    metadata["row_counts"] = row_counts
+    metadata.update(cast(dict[str, Any], security))
+    return metadata
 
 
 def _verify_gpg_key(runner: Runner, home: Path, fingerprint: str) -> None:
@@ -541,6 +706,100 @@ def _deterministic_artifact_tar(
     )
 
 
+def _artifact_quota_config(project_dir: Path) -> dict[str, int]:
+    environment = _parse_env(project_dir / ".env")
+    defaults = {
+        "per_artifact_max_bytes": 50 * 1024 * 1024,
+        "published_max_bytes": 10 * 1024 * 1024 * 1024,
+        "staging_max_bytes": 512 * 1024 * 1024,
+        "staging_ttl_seconds": 60 * 60,
+    }
+    variables = {
+        "per_artifact_max_bytes": "LEDGERBRIDGE_ARTIFACT_MAX_BYTES",
+        "published_max_bytes": "LEDGERBRIDGE_ARTIFACT_TOTAL_MAX_BYTES",
+        "staging_max_bytes": "LEDGERBRIDGE_ARTIFACT_STAGING_MAX_BYTES",
+        "staging_ttl_seconds": "LEDGERBRIDGE_ARTIFACT_STAGING_TTL_SECONDS",
+    }
+    result: dict[str, int] = {}
+    for field, variable in variables.items():
+        raw = environment.get(variable, str(defaults[field]))
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise BackupError(f"deployment quota setting is not an integer: {variable}") from exc
+        if value <= 0 or value > 2**63 - 1:
+            raise BackupError(f"deployment quota setting is outside its safe range: {variable}")
+        result[field] = value
+    return result
+
+
+def _artifact_archive_metadata(archive: Path, quota: dict[str, int]) -> dict[str, object]:
+    published_bytes = 0
+    staging_bytes = 0
+    with tarfile.open(archive, mode="r:") as bundle:
+        names: set[str] = set()
+        for member in bundle.getmembers():
+            pure = PurePosixPath(member.name)
+            parts = tuple(part for part in pure.parts if part != ".")
+            normalized = pure.as_posix()
+            if (
+                pure.is_absolute()
+                or ".." in pure.parts
+                or member.issym()
+                or member.islnk()
+                or member.isdev()
+                or member.isfifo()
+                or normalized in names
+            ):
+                raise BackupError("artifact archive contains an unsafe entry")
+            names.add(normalized)
+            if member.isdir():
+                if not _valid_artifact_archive_directory(parts):
+                    raise BackupError("artifact archive contains an unexpected directory")
+                continue
+            if not member.isfile():
+                raise BackupError("artifact archive contains an unexpected entry type")
+            if parts == (".quota.lock",):
+                continue
+            if len(parts) == 2 and parts[0] == ".staging" and parts[1].startswith("artifact-"):
+                staging_bytes += member.size
+                continue
+            if _valid_artifact_blob_parts(parts):
+                published_bytes += member.size
+                continue
+            raise BackupError("artifact archive contains an unexpected file")
+    if published_bytes > quota["published_max_bytes"]:
+        raise BackupError("artifact archive exceeds the configured published quota")
+    if staging_bytes > quota["staging_max_bytes"]:
+        raise BackupError("artifact archive exceeds the configured staging quota")
+    return {
+        "published_bytes": published_bytes,
+        "staging_bytes": staging_bytes,
+        "unsafe_entries": 0,
+        "quota": quota,
+    }
+
+
+def _valid_artifact_archive_directory(parts: tuple[str, ...]) -> bool:
+    if not parts or parts in {(".staging",), ("sha256",)}:
+        return True
+    if parts[0] != "sha256" or len(parts) not in {2, 3}:
+        return False
+    return all(re.fullmatch(r"[0-9a-f]{2}", part) is not None for part in parts[1:])
+
+
+def _valid_artifact_blob_parts(parts: tuple[str, ...]) -> bool:
+    if len(parts) != 4 or parts[0] != "sha256":
+        return False
+    first, second, digest = parts[1:]
+    return (
+        re.fullmatch(r"[0-9a-f]{2}", first) is not None
+        and re.fullmatch(r"[0-9a-f]{2}", second) is not None
+        and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
+        and digest.startswith(first + second)
+    )
+
+
 def _create_plain_payload(
     config: CommonConfig, state: SourceState, work_dir: Path, runner: Runner
 ) -> Path:
@@ -593,6 +852,10 @@ def _create_plain_payload(
             config.project_dir.name,
         ]
     )
+    artifact_control = _artifact_archive_metadata(
+        work_dir / "artifacts.tar",
+        _artifact_quota_config(config.project_dir),
+    )
     metadata = {
         "format": BACKUP_FORMAT,
         "created_at": _now().isoformat(),
@@ -600,6 +863,7 @@ def _create_plain_payload(
         "api_image": state.api_image,
         "artifact_volume": state.artifact_volume,
         "database": state.database,
+        "artifact_control": artifact_control,
         "artifact_archive_sha256": _sha256(work_dir / "artifacts.tar"),
         "deployment_tree_sha256": _sha256(work_dir / "deployment-tree.tar"),
     }
@@ -863,7 +1127,7 @@ def _validate_backup_sidecar(config: CommonConfig, backup: Path) -> tuple[dict[s
         "ciphertext_sha256",
         "postgres_image",
     }
-    if set(sidecar) != expected_keys or sidecar.get("format") != BACKUP_FORMAT:
+    if set(sidecar) != expected_keys or sidecar.get("format") not in SUPPORTED_BACKUP_FORMATS:
         raise BackupError("backup sidecar format or field set is invalid")
     revision = sidecar.get("revision")
     if not isinstance(revision, str) or REVISION_PATTERN.fullmatch(revision) is None:
@@ -965,10 +1229,15 @@ def _database_name(metadata: dict[str, Any]) -> str:
     return value
 
 
-def _validate_restored_database(expected: dict[str, Any], actual: dict[str, Any]) -> None:
-    if actual != expected:
+def _validate_restored_database(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
+    is_v2 = expected.get("metadata_version") == 2
+    compared_fields = sorted(expected)
+    comparison_actual = actual if is_v2 else {key: actual.get(key) for key in expected}
+    if comparison_actual != expected:
         differing = sorted(
-            key for key in set(expected) | set(actual) if expected.get(key) != actual.get(key)
+            key
+            for key in set(expected) | set(comparison_actual)
+            if expected.get(key) != comparison_actual.get(key)
         )
         raise BackupError(f"restored database metadata differs: {', '.join(differing)}")
     if not isinstance(actual.get("role_grant_count"), int) or actual["role_grant_count"] <= 0:
@@ -990,6 +1259,53 @@ def _validate_restored_database(expected: dict[str, Any], actual: dict[str, Any]
     ]
     if missing_objects:
         raise BackupError(f"restored database lacks required objects: {', '.join(missing_objects)}")
+    if is_v2:
+        _validate_rich_database_security(actual)
+    return compared_fields
+
+
+def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
+    if metadata.get("metadata_version") != 2:
+        raise BackupError("restored database lacks v2 metadata observations")
+    revision = metadata.get("alembic_version")
+    if not isinstance(revision, str):
+        raise BackupError("restored database revision is invalid")
+    if metadata.get("database_temp_denied") is not True:
+        raise BackupError("restored database TEMP privilege invariant failed")
+    functions = metadata.get("security_functions")
+    if not isinstance(functions, list):
+        raise BackupError("restored function metadata is invalid")
+    function_names: set[str] = set()
+    for value in functions:
+        if not isinstance(value, dict) or not isinstance(value.get("name"), str):
+            raise BackupError("restored function metadata is invalid")
+        function_names.add(value["name"])
+        proconfig = value.get("proconfig")
+        if not isinstance(proconfig, list) or "search_path=pg_catalog" not in proconfig:
+            raise BackupError("restored security function search path is not pinned")
+    required_functions = set(PHASE_1_FUNCTIONS)
+    if revision >= "20260821_0003":
+        required_functions.update(PHASE_2_FUNCTIONS)
+    if revision >= "20260822_0004":
+        required_functions.update(PHASE_3_FUNCTIONS)
+    missing_functions = sorted(required_functions - function_names)
+    if missing_functions:
+        raise BackupError(
+            f"restored database lacks required security functions: {', '.join(missing_functions)}"
+        )
+    triggers = metadata.get("public_triggers")
+    if not isinstance(triggers, list) or not triggers:
+        raise BackupError("restored trigger metadata is invalid")
+    disabled = [
+        value.get("name", "invalid")
+        for value in triggers
+        if not isinstance(value, dict) or value.get("enabled") != "O"
+    ]
+    if disabled:
+        raise BackupError(f"restored database has disabled triggers: {', '.join(disabled)}")
+    for field in ("table_grants", "sequence_grants", "function_grants"):
+        if not isinstance(metadata.get(field), list):
+            raise BackupError(f"restored grant metadata is invalid: {field}")
 
 
 def _deployment_root(runner: Runner, archive: Path, destination: Path, revision: str) -> Path:
@@ -1121,6 +1437,7 @@ def rehearse_restore(config: CommonConfig, backup: Path, runner: Runner | None =
         )
         _verify_payload_hashes(extracted)
         metadata = _load_json(extracted / "metadata.json", "encrypted backup metadata")
+        source_format = cast(str, sidecar["format"])
         expected_metadata_keys = {
             "format",
             "created_at",
@@ -1131,9 +1448,11 @@ def rehearse_restore(config: CommonConfig, backup: Path, runner: Runner | None =
             "artifact_archive_sha256",
             "deployment_tree_sha256",
         }
+        if source_format == BACKUP_FORMAT_V2:
+            expected_metadata_keys.add("artifact_control")
         if (
             set(metadata) != expected_metadata_keys
-            or metadata.get("format") != BACKUP_FORMAT
+            or metadata.get("format") != source_format
             or metadata.get("revision") != revision
         ):
             raise BackupError("encrypted metadata does not match the backup sidecar")
@@ -1175,6 +1494,16 @@ def rehearse_restore(config: CommonConfig, backup: Path, runner: Runner | None =
             work_dir / "deployment",
             revision,
         )
+        deployment_quota = _artifact_quota_config(deployment)
+        artifact_observation = _artifact_archive_metadata(
+            extracted / "artifacts.tar", deployment_quota
+        )
+        source_artifact_control = metadata.get("artifact_control")
+        if source_format == BACKUP_FORMAT_V2:
+            if not isinstance(source_artifact_control, dict):
+                raise BackupError("encrypted artifact-control metadata is invalid")
+            if source_artifact_control != artifact_observation:
+                raise BackupError("restored artifact-control metadata differs from backup")
 
         try:
             runner.run(["docker", "network", "create", "--internal", resources.network])
@@ -1245,7 +1574,9 @@ def rehearse_restore(config: CommonConfig, backup: Path, runner: Runner | None =
                 stdin_path=extracted / "database.dump",
             )
             actual_database = _database_metadata(runner, resources.container, database_name)
-            _validate_restored_database(expected_database, actual_database)
+            compared_database_fields = _validate_restored_database(
+                expected_database, actual_database
+            )
 
             artifact_digest = _restore_artifacts(
                 runner,
@@ -1282,16 +1613,30 @@ def rehearse_restore(config: CommonConfig, backup: Path, runner: Runner | None =
         _write_json(
             report,
             {
-                "format": "ledgerbridge-restore-rehearsal-v1",
+                "format": RESTORE_REPORT_FORMAT,
                 "status": "passed",
                 "started_at": started_at.isoformat(),
                 "completed_at": _now().isoformat(),
                 "backup": backup.name,
                 "revision": revision,
+                "source_format": "v2" if source_format == BACKUP_FORMAT_V2 else "v1",
                 "database": database_name,
-                "database_metadata": expected_database,
+                "database_compared_fields": compared_database_fields,
+                "source_database_metadata": expected_database,
+                "post_restore_database_observations": actual_database,
+                "unpaired_database_observation_fields": (
+                    []
+                    if source_format == BACKUP_FORMAT_V2
+                    else sorted(set(actual_database) - set(expected_database))
+                ),
+                "source_artifact_control": source_artifact_control,
+                "post_restore_artifact_observations": artifact_observation,
                 "artifact_archive_sha256": metadata["artifact_archive_sha256"],
                 "deployment_tree_sha256": metadata["deployment_tree_sha256"],
+                "connector_runner_boundary_present": (
+                    "connector-runner:"
+                    in (deployment / "docker-compose.yml").read_text(encoding="utf-8")
+                ),
                 "production_unchanged": True,
                 "isolated_resources_removed": True,
             },

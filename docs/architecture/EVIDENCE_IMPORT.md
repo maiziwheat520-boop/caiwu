@@ -1,7 +1,7 @@
-# Phase 2 Evidence and Import operations
+# Evidence and Import operations
 
-Status: implementation contract for Phase 2
-Date: 2026-08-21
+Status: implementation contract through Phase 3 platform-controls Slice A
+Date: 2026-08-22
 
 ## Evidence identity and retention
 
@@ -21,6 +21,25 @@ closed. A database failure after publication may leave a verified unreferenced
 blob. That blob is retained for a future explicit orphan scan; it is not deleted
 automatically because a concurrent transaction may be adopting the same digest.
 
+Phase 3 adds three independent capacity limits: 50 MiB per artifact, 10 GiB of
+published bytes, and 512 MiB of aggregate staging bytes. A cross-process
+filesystem lock serializes cleanup, measurement, and final hard-link admission.
+Usage comes from the real filesystem, so verified orphan blobs and crash-left
+staging files cannot be hidden by a database rollback. Exact duplicate bytes are
+still accepted when the published limit is full because the existing destination
+is verified and consumes no new published capacity.
+
+Only regular `artifact-*` staging entries older than one hour are eligible for
+cleanup. Fresh entries remain counted. Symlinks, devices, unknown names,
+unexpected directories, unreadable entries, scan failures, and inode replacement
+during measurement fail closed with `ARTIFACT_QUOTA_STATE`. Published and staging
+pressure use distinct `ARTIFACT_TOTAL_QUOTA` and `ARTIFACT_STAGING_QUOTA` codes.
+Each rejection appends `artifact.ingest_rejected` with a random intake UUID and
+non-secret capacity fields, then emits the same machine fields as a structured
+ERROR log. The log remains the fallback if the audit database is unavailable;
+neither signal includes the original filename, raw content, source transaction
+identity, or exception text.
+
 `RawArtifact` metadata and `SourceRecord` rows are permanent and immutable. The
 v0.1 retention policy keeps bytes forever. A future audited retention policy may
 remove bytes, but it must not delete either database row or rewrite provenance.
@@ -30,6 +49,13 @@ protects the binding without copying a potentially secret-bearing filename into
 the general audit payload.
 
 ## Connector boundary
+
+The Connector manifest declares one lowercase canonical `source_system`. The
+core snapshots that value once, requires it to exist in the append-only registry,
+and rejects every parsed record whose stored source differs. Acquisition identity
+is separate: `RawArtifact.source` refers to an `ingest_channel`, while
+`SourceRecord.source` refers to a financial `source_system`. Connector display
+text never becomes a machine identity.
 
 The supported Connector SDK surface receives immutable metadata, a bounded
 prefix for detection, and a read-only object exposing only `read()`. It exposes
@@ -48,10 +74,10 @@ A connector cannot choose the database transaction, artifact destination, audit
 chain, or ledger posting behavior through the SDK.
 
 This object boundary is capability minimization, not a Python security sandbox.
-Installed connectors execute inside the worker process and therefore must be
-trusted, reviewed application code. An untrusted third-party connector requires
-an out-of-process sandbox with separate OS and database credentials before it may
-be enabled; that remains a Phase 3 deployment gate.
+The in-process Connector implementation remains available only to synthetic
+tests. Every future real first-party or third-party Connector must use the
+out-of-process runner from Phase 3 Slice B before it may be registered. Slice A
+does not add, enable, or execute any real Connector.
 
 Exactly one deterministic match proceeds. Zero matches, multiple matches, or an
 explicit ambiguous result create an observable router job in `NEEDS_REVIEW`.
@@ -96,6 +122,14 @@ identity conflicts roll back the entire batch. Phase 2 never creates a
 JournalEntry from imported evidence.
 
 ## Database permissions
+
+Migration `20260822_0004` creates `ingest_channel` and `source_system` with
+canonical IDs matching `^[a-z][a-z0-9_]{0,63}$`. It seeds only
+`manual_upload`, `synthetic_upload`, and `synthetic`. Runtime receives SELECT
+only. UPDATE and DELETE are blocked even for the owner by a trigger function with
+`search_path=pg_catalog`; new identities require a reviewed migration. Existing
+unregistered provenance makes upgrade roll back, and any dependent data makes
+downgrade refuse rather than erase provenance.
 
 `ledgerbridge_app` receives SELECT/INSERT on `raw_artifact` and `source_record`,
 SELECT/INSERT plus updates to the explicit lifecycle columns on `import_job`, and
@@ -143,11 +177,17 @@ for every POSTED transition.
 
 ## Recovery and deployment gate
 
-The database backup already includes all three Phase 2 tables, audit events, and
-bindings after migration. Artifact backup includes both referenced evidence and
-any retained verified orphan. Restore validation must check migration
-`20260821_0003`, grants, functions, triggers, blob hashes, SourceRecord counts,
-and the worker/API mount split.
+New encrypted backups use `ledgerbridge-encrypted-backup-v2`. They record exact
+revision-derived table counts, every application security function and its
+`proconfig`, every public trigger and enabled state, runtime table/sequence/
+function grants, TEMP and schema-CREATE denial, artifact quota configuration,
+published/staging usage, and archive safety. New restore reports use
+`ledgerbridge-restore-rehearsal-v2` and compare every v2 field exactly.
+
+The reader still accepts v1 encrypted bundles. A v1 rehearsal compares only the
+legacy fields actually present in the source backup and lists the richer restored
+observations separately; it does not invent Phase 2 or Phase 3 source-side
+evidence. Unsupported future formats fail closed.
 
 No production migration is implied by merging Phase 2. Before an authorized
 deployment, create a fresh encrypted backup and pass an isolated restore
@@ -155,7 +195,7 @@ rehearsal. After deployment, create another encrypted backup and repeat the
 restore verification. Real financial evidence and real connectors remain out of
 scope until separately approved.
 
-The Phase 2 downgrade is intentionally non-destructive: if any RawArtifact,
+The Phase 2 and Phase 3 downgrades are intentionally non-destructive: if any RawArtifact,
 ImportJob, or SourceRecord exists, downgrade to `20260821_0002` fails closed.
 Operators must export and explicitly dispose of evidence through a separately
 approved procedure before removing Phase 2 objects. The Phase 1 function

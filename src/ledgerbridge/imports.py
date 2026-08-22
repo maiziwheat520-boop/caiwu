@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import BinaryIO, cast
-from uuid import UUID
+from typing import BinaryIO, NoReturn, cast
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -17,6 +18,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ledgerbridge.artifacts import (
     ArtifactIntegrityError,
+    ArtifactPublishedQuotaError,
+    ArtifactQuotaError,
+    ArtifactQuotaStateError,
+    ArtifactStagingQuotaError,
     ArtifactStore,
     ArtifactStoreError,
     ArtifactTooLargeError,
@@ -24,6 +29,7 @@ from ledgerbridge.artifacts import (
 )
 from ledgerbridge.audit import append_audit_event
 from ledgerbridge.connectors import (
+    CANONICAL_SOURCE_PATTERN,
     MAX_JSON_BYTES,
     ArtifactMetadata,
     Connector,
@@ -32,12 +38,20 @@ from ledgerbridge.connectors import (
     ParsedSourceRecord,
     validate_connector,
 )
-from ledgerbridge.models import ImportJob, ImportJobStatus, RawArtifact, SourceRecord
+from ledgerbridge.models import (
+    ImportJob,
+    ImportJobStatus,
+    IngestChannel,
+    RawArtifact,
+    SourceRecord,
+    SourceSystem,
+)
 
 ROUTER_NAME = "ledgerbridge.router"
 ROUTER_VERSION = "1"
 PROVENANCE_NAME = "ledgerbridge.provenance"
 PROVENANCE_VERSION = "1"
+logger = logging.getLogger(__name__)
 
 
 class EvidenceIngestionError(RuntimeError):
@@ -61,7 +75,8 @@ class IngestMetadata:
     media_type: str
 
     def __post_init__(self) -> None:
-        _validate_text("source", self.source, 200)
+        if CANONICAL_SOURCE_PATTERN.fullmatch(self.source) is None:
+            raise ValueError("source must be a lowercase canonical identifier")
         _validate_text("original_filename", self.original_filename, 512)
         _validate_text("media_type", self.media_type, 200)
 
@@ -94,6 +109,7 @@ class _ConnectorBinding:
     connector: Connector
     name: str
     version: str
+    source_system: str
 
 
 class EvidenceImporter:
@@ -151,8 +167,40 @@ class EvidenceImporter:
         actor: str,
         reason: str,
     ) -> ImportOutcome:
+        if not self._ingest_channel_is_registered(metadata.source):
+            raise EvidenceIngestionError(
+                "INGEST_CHANNEL_UNKNOWN",
+                "evidence ingestion channel is not registered",
+            )
         try:
             published = self._store.publish(stream)
+        except ArtifactPublishedQuotaError as exc:
+            self._raise_quota_rejection(
+                exc,
+                error_code="ARTIFACT_TOTAL_QUOTA",
+                summary="published artifact capacity is exhausted",
+                ingest_channel=metadata.source,
+                actor=actor,
+                reason=reason,
+            )
+        except ArtifactStagingQuotaError as exc:
+            self._raise_quota_rejection(
+                exc,
+                error_code="ARTIFACT_STAGING_QUOTA",
+                summary="artifact staging capacity is exhausted",
+                ingest_channel=metadata.source,
+                actor=actor,
+                reason=reason,
+            )
+        except ArtifactQuotaStateError as exc:
+            self._raise_quota_rejection(
+                exc,
+                error_code="ARTIFACT_QUOTA_STATE",
+                summary="artifact capacity could not be measured safely",
+                ingest_channel=metadata.source,
+                actor=actor,
+                reason=reason,
+            )
         except ArtifactTooLargeError as exc:
             raise EvidenceIngestionError(
                 "EVIDENCE_LIMIT",
@@ -244,6 +292,45 @@ class EvidenceImporter:
             actor=actor,
             reason=reason,
         )
+
+    def _raise_quota_rejection(
+        self,
+        error: ArtifactQuotaError | ArtifactQuotaStateError,
+        *,
+        error_code: str,
+        summary: str,
+        ingest_channel: str,
+        actor: str,
+        reason: str,
+    ) -> NoReturn:
+        intake_id = str(uuid4())
+        payload: dict[str, object] = {
+            "intake_id": intake_id,
+            "error_code": error_code,
+            "quota_kind": error.quota_kind,
+            "ingest_channel": ingest_channel,
+            "limit_bytes": getattr(error, "limit", None),
+            "observed_bytes": getattr(error, "observed", None),
+            "requested_bytes": getattr(error, "requested", None),
+        }
+        audit_recorded = False
+        try:
+            with self._sessions() as session, session.begin():
+                append_audit_event(
+                    session,
+                    actor=actor,
+                    action="artifact.ingest_rejected",
+                    reason=reason,
+                    payload=payload,
+                )
+            audit_recorded = True
+        except SQLAlchemyError:
+            audit_recorded = False
+        logger.error(
+            "artifact ingestion rejected by quota control",
+            extra=payload | {"audit_recorded": audit_recorded},
+        )
+        raise EvidenceIngestionError(error_code, summary) from error
 
     def _ensure_artifact(
         self,
@@ -362,7 +449,7 @@ class EvidenceImporter:
         identities: set[tuple[str, str]] = set()
         bindings: list[_ConnectorBinding] = []
         for connector in connectors:
-            name, version = validate_connector(connector)
+            name, version, source_system = validate_connector(connector)
             identity = (name, version)
             if identity in identities:
                 raise ConnectorContractError("connector identity must be unique")
@@ -372,6 +459,7 @@ class EvidenceImporter:
                     connector=connector,
                     name=name,
                     version=version,
+                    source_system=source_system,
                 )
             )
         return bindings
@@ -422,11 +510,24 @@ class EvidenceImporter:
             ImportJobStatus.NEEDS_REVIEW,
         }:
             return existing
+        if not self._source_system_is_registered(binding.source_system):
+            return self._terminalize(
+                artifact,
+                job_id,
+                ImportJobStatus.FAILED,
+                error_code="CONNECTOR_CONTRACT",
+                summary="connector source system is not registered",
+                parsed_count=0,
+                created_count=0,
+                duplicate_count=0,
+                actor=actor,
+                reason=reason,
+            )
         self._mark_running(job_id)
         try:
             with self._store.open_verified(artifact.published) as stream:
                 parsed = self._validate_batch(
-                    binding.name,
+                    binding.source_system,
                     binding.version,
                     binding.connector.parse(stream),
                 )
@@ -507,7 +608,7 @@ class EvidenceImporter:
 
     def _validate_batch(
         self,
-        connector_name: str,
+        source_system: str,
         connector_version: str,
         values: Iterable[ParsedSourceRecord],
     ) -> list[ParsedSourceRecord]:
@@ -528,13 +629,21 @@ class EvidenceImporter:
                 ),
                 external_transaction_id=value.external_transaction_id,
             )
-            if validated.source != connector_name or validated.parser_version != connector_version:
+            if validated.source != source_system or validated.parser_version != connector_version:
                 raise ConnectorContractError("record provenance must match the connector")
             if validated.record_locator in locators:
                 raise ConnectorContractError("batch record locators must be unique")
             locators.add(validated.record_locator)
             parsed.append(validated)
         return parsed
+
+    def _source_system_is_registered(self, source_system: str) -> bool:
+        with self._sessions() as session:
+            return session.get(SourceSystem, source_system) is not None
+
+    def _ingest_channel_is_registered(self, ingest_channel: str) -> bool:
+        with self._sessions() as session:
+            return session.get(IngestChannel, ingest_channel) is not None
 
     def _find_or_create_job(self, artifact_id: UUID, name: str, version: str) -> UUID:
         with self._sessions() as session, session.begin():

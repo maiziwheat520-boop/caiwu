@@ -18,7 +18,9 @@ account. It must not invent financial facts.
 ## Repository status
 
 Phase 2 Evidence and Import plus the Claude-audit remediation are merged and
-deployed on Hermes at `c56b6ffdde9f723efe1792ae1312ec8795bba165`. The
+deployed on Hermes at `c56b6ffdde9f723efe1792ae1312ec8795bba165`. Phase 3
+Slice A is under review and adds fail-closed aggregate artifact quotas, canonical
+ingest/source registries, and backward-compatible restore evidence v2. The
 deployment includes database-enforced ledger invariants, split runtime/migration
 identities, immutable evidence provenance, deterministic import orchestration,
 and hardened runtime TEMP/search-path boundaries. No real evidence is ingested.
@@ -57,6 +59,8 @@ uv run --frozen --extra dev pip-audit --strict --requirement /tmp/ledgerbridge-a
 - Runtime artifacts and database data: Docker volumes / `var/`, ignored by Git.
 - Credentials and OAuth tokens: external secret store, never this repository.
 - Historical design reviews: the parent workspace's `outputs/` directory.
+- Artifact defaults: 50 MiB per file, 10 GiB published, 512 MiB staging, with
+  no automatic deletion under quota pressure.
 
 See [docs/architecture/STORAGE.md](docs/architecture/STORAGE.md) for the full
 layout and retention rules, [docs/architecture/LEDGER_CORE_OPERATIONS.md](docs/architecture/LEDGER_CORE_OPERATIONS.md)

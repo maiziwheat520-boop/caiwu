@@ -1,6 +1,6 @@
 # Task: Phase 3 Platform Security Foundation
 
-- Status: preflight complete; implementation not authorized
+- Status: Slice A implemented and under fixed-SHA review; production unchanged
 - Preflight date: 2026-08-22
 - Implementation owner: Codex
 - Review owner: Codex fixed-SHA self-audit; preserve a narrow Claude recheck entry point
@@ -346,7 +346,24 @@ fixtures. Enabling a real manifest is a separate reviewed change.
 
 ## Implementation evidence
 
-Pending. This preflight changes documentation only.
+Slice A candidate implementation is complete on
+`ai/chatgpt/phase-3-platform-controls`. It adds migration `20260822_0004`,
+cross-process filesystem quota admission, separate append-only provenance
+registries, structured quota rejection audit/log signals, and encrypted backup/
+restore format v2 with v1 read compatibility.
+
+Local Windows gates pass Ruff, formatting, strict mypy, and 75 non-PostgreSQL
+tests; platform-only cases skip explicitly. Hermes disposable Linux/PostgreSQL
+15 validation passes 153 tests at 95.24% coverage, including a two-process quota
+race, migration round trip, legacy-provenance rollback, registry grants and
+immutability, and every existing ledger/evidence invariant. A direct v2 metadata
+probe at migration head observed ten revision-owned tables, fifteen pinned
+security functions, fifteen enabled triggers, and denied runtime TEMP. All
+disposable containers, volumes, and networks were removed. Production remained
+on `c56b6ff` / `20260821_0003` and received no evidence.
+
+The executable SHA and deterministic self-audit report are recorded after the
+candidate commit is frozen. Slice B and every deployment remain separately gated.
 
 ## Review findings
 

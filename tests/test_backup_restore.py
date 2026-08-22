@@ -9,11 +9,14 @@ from typing import cast
 import pytest
 
 from scripts.backup_restore import (
+    BACKUP_FORMAT_V1,
+    BACKUP_FORMAT_V2,
     BackupError,
     CommonConfig,
     RestoreResources,
     Runner,
     SourceState,
+    _artifact_archive_metadata,
     _assert_source_unchanged,
     _normalize_fingerprint,
     _replace_database_host,
@@ -153,6 +156,61 @@ def test_restored_database_requires_nonempty_runtime_grants() -> None:
     invalid = expected | {"role_grant_count": 0}
     with pytest.raises(BackupError, match="no restored table grants"):
         _validate_restored_database(invalid, invalid.copy())
+
+
+def test_v1_database_metadata_compares_only_legacy_source_fields() -> None:
+    expected = _database_metadata()
+    actual = expected | {
+        "metadata_version": 2,
+        "security_functions": [{"name": "legacy", "proconfig": []}],
+    }
+
+    compared = _validate_restored_database(expected, actual)
+
+    assert compared == sorted(expected)
+    assert BACKUP_FORMAT_V1 != BACKUP_FORMAT_V2
+
+
+def test_v2_database_metadata_requires_exact_rich_comparison() -> None:
+    expected = _database_metadata() | {"metadata_version": 2}
+    actual = expected | {"unexpected": True}
+
+    with pytest.raises(BackupError, match="metadata differs"):
+        _validate_restored_database(expected, actual)
+
+
+def test_artifact_archive_metadata_counts_published_and_staging_bytes(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "artifacts.tar"
+    digest = "aabb" + "0" * 60
+    with tarfile.open(archive, "w:") as bundle:
+        for directory in (".", "./.staging", "./sha256", "./sha256/aa", "./sha256/aa/bb"):
+            member = tarfile.TarInfo(directory)
+            member.type = tarfile.DIRTYPE
+            bundle.addfile(member)
+        for name, contents in (
+            (f"./sha256/aa/bb/{digest}", b"published"),
+            ("./.staging/artifact-partial", b"stage"),
+        ):
+            member = tarfile.TarInfo(name)
+            member.size = len(contents)
+            bundle.addfile(member, io.BytesIO(contents))
+    quota = {
+        "per_artifact_max_bytes": 100,
+        "published_max_bytes": 100,
+        "staging_max_bytes": 100,
+        "staging_ttl_seconds": 60,
+    }
+
+    observed = _artifact_archive_metadata(archive, quota)
+
+    assert observed == {
+        "published_bytes": 9,
+        "staging_bytes": 5,
+        "unsafe_entries": 0,
+        "quota": quota,
+    }
 
 
 @pytest.mark.parametrize("field", ["function_count", "trigger_count"])

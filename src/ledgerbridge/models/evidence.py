@@ -35,6 +35,46 @@ class ImportJobStatus(StrEnum):
     NEEDS_REVIEW = "NEEDS_REVIEW"
 
 
+class IngestChannel(Base):
+    __tablename__ = "ingest_channel"
+    __table_args__ = (
+        CheckConstraint(
+            "id ~ '^[a-z][a-z0-9_]{0,63}$'",
+            name="ingest_channel_id_canonical",
+        ),
+        CheckConstraint(
+            "btrim(description) <> ''",
+            name="ingest_channel_description_not_blank",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    description: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class SourceSystem(Base):
+    __tablename__ = "source_system"
+    __table_args__ = (
+        CheckConstraint(
+            "id ~ '^[a-z][a-z0-9_]{0,63}$'",
+            name="source_system_id_canonical",
+        ),
+        CheckConstraint(
+            "btrim(description) <> ''",
+            name="source_system_description_not_blank",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    description: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
 class RawArtifact(Base):
     __tablename__ = "raw_artifact"
     __table_args__ = (
@@ -61,7 +101,9 @@ class RawArtifact(Base):
         PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     sha256: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False, unique=True)
-    source: Mapped[str] = mapped_column(String(200), nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(64), ForeignKey("ingest_channel.id", ondelete="RESTRICT"), nullable=False
+    )
     original_filename: Mapped[str] = mapped_column(String(512), nullable=False)
     media_type: Mapped[str] = mapped_column(String(200), nullable=False)
     byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -192,7 +234,9 @@ class SourceRecord(Base):
     )
     import_job_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
     record_locator: Mapped[str] = mapped_column(String(500), nullable=False)
-    source: Mapped[str] = mapped_column(String(200), nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(64), ForeignKey("source_system.id", ondelete="RESTRICT"), nullable=False
+    )
     parser_version: Mapped[str] = mapped_column(String(100), nullable=False)
     raw_fields: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     normalized_fields: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
