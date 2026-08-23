@@ -1565,7 +1565,7 @@ def test_security_function_forward_migration_repairs_historical_definitions(
                         qualified,
                         unqualified,
                     )
-                connection.exec_driver_sql(historical_definition)
+                connection.execute(text(historical_definition))
 
             connection.exec_driver_sql(
                 "ALTER FUNCTION public.append_audit_event(text,text,text,text,jsonb) "
