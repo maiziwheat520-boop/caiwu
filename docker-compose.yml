@@ -78,7 +78,8 @@ services:
     profiles: ["tools"]
     command: ["alembic", "upgrade", "head"]
     environment:
-      LEDGERBRIDGE_ENV: ${LEDGERBRIDGE_ENV:-production}
+      # The migration container is an owner-only tool, not an API/worker runtime.
+      LEDGERBRIDGE_ENV: test
       LEDGERBRIDGE_LOG_LEVEL: ${LEDGERBRIDGE_LOG_LEVEL:-INFO}
       LEDGERBRIDGE_DATABASE_URL: ${LEDGERBRIDGE_MIGRATION_DATABASE_URL:?migration database URL is required}
       LEDGERBRIDGE_ARTIFACT_ROOT: ${LEDGERBRIDGE_ARTIFACT_ROOT:-/var/lib/ledgerbridge/artifacts}
