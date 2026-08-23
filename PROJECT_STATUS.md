@@ -23,7 +23,7 @@ evidence, and ledger automation remain out of scope. Slice B is implemented and
 the Slice C bounded multipart adapter, ArtifactStore-owned transactional handoff,
 and default-disabled internal upload route are pushed on the Codex branch
 `ai/chatgpt/phase-3-connector-runner` at code/test head `19f4c30` (route
-implementation `74d81eb`); the prior runner audit baseline remains
+implementation `74d81eb`); the current design head is `d84e096`; the prior runner audit baseline remains
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e`. The isolated runner
 image and the handoff replay were tested only as disposable Hermes workloads and
 are not deployed.
@@ -90,6 +90,13 @@ and narrow-audit entry point are preserved.
   defaults to false and production rejects it even when explicitly enabled.
   The connector manifest is empty by default, so the route fails closed with
   `CONNECTOR_REGISTRY_UNAVAILABLE` until a separately reviewed manifest exists.
+- The authentication and Connector admission design is recorded in
+  `docs/security-hardening/2026-08-23-auth-connector-boundary/`: two proposals,
+  six comparable diagrams, a twelve-file evidence digest, and a structured
+  `hardening.json`. The current recommendation is an internal loopback/mTLS
+  principal boundary for the disabled route, and a signed declarative
+  runner-only manifest for any real Connector. No provider, signing key,
+  Connector, socket mount or production behavior was added.
 
 ## Ownership checkpoint
 
@@ -129,8 +136,9 @@ is green across `secrets`, `quality`, and `compose`; Claude's approval applies t
 the earlier fixed code/test SHA, while this follow-up is Codex-verified.
 Protected PR #18 is open at
 `https://github.com/maiziwheat520-boop/caiwu/pull/18`; its current head is
-`19f4c30`. The push and pull-request runs for this head (`32615944190` and
-`32615946593`) both passed `secrets`, `quality`, and `compose`; the preceding
+`d84e096`. The code/test push and pull-request runs for `19f4c30`
+(`32615944190` and `32615946593`) passed `secrets`, `quality`, and `compose`;
+the design-only head has not yet run its documentation CI; the preceding
 implementation head `6300bf5` was green in runs `32613520982` and `32613522285`.
 The PR is review-only; it has not been merged or deployed.
 The approved Slice C upload-boundary design and implementation evidence are
@@ -145,13 +153,14 @@ in an isolated Hermes project; no evidence was ingested.
 
 ## Next task
 
-Review protected PR #18, including the bounded multipart adapter, handoff, and
-feature-flagged internal upload route. The next gate is a separately reviewed
-authentication provider and Connector manifest; the route stays disabled until
-those are approved. Merge and any production deployment require distinct
-authorization; do not register a real Connector, enable the flag in production,
-ingest evidence, or enable the mail collector without corresponding later
-authorization.
+Review protected PR #18, including the bounded multipart adapter, handoff,
+feature-flagged internal upload route, and the authentication/Connector design
+portfolio. The next gate is user selection of an auth provider boundary and a
+manifest option, followed by an implementation plan and narrow Claude audit;
+the route stays disabled until those are approved. Merge and any production
+deployment require distinct authorization; do not register a real Connector,
+enable the flag in production, ingest evidence, or enable the mail collector
+without corresponding later authorization.
 
 ## Blocking decisions
 
