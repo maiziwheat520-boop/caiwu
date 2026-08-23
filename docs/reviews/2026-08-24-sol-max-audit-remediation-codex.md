@@ -43,7 +43,7 @@ Implemented controls:
 
 ## Verification
 
-- Windows: full pytest `231 passed / 136 skipped / 1 warning`; Ruff format/check,
+- Windows: full pytest `231 passed / 138 skipped / 1 warning`; Ruff format/check,
   strict mypy, and Bandit all pass.
 - Alembic static SQL generation succeeds for both non-production and production
   paths.

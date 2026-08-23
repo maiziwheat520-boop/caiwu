@@ -47,7 +47,7 @@ migration `20260823_0007`, and moves dispatch creation to the security-definer
 function/acceptance-binding trigger in migration `20260823_0008`. The full
 remediation report is
 `docs/reviews/2026-08-24-sol-max-audit-remediation-codex.md`. Windows regression
-is `231 passed / 136 skipped / 1 warning`; Hermes disposable PostgreSQL replay
+is `231 passed / 138 skipped / 1 warning`; Hermes disposable PostgreSQL replay
 through `0008` passed. Production remains unchanged and the branch is still
 review-only.
 
