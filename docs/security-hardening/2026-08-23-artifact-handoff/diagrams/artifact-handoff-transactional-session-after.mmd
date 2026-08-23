@@ -1,0 +1,12 @@
+flowchart LR
+    C[Authenticated upload client]
+    P[Bounded multipart parser]
+    S[ArtifactStore-owned HandoffSession\n`.staging` + per-write quota lock]
+    K[Complete + verify + commit\nonly after closing boundary]
+    D[(Content-addressed artifact)]
+    X[Abort + fsync directory + unlink]
+
+    C --> P --> S
+    P --> K --> D
+    P -. "malformed / disconnect / timeout" .-> X
+    X -. "staging only; no durable artifact" .-> D

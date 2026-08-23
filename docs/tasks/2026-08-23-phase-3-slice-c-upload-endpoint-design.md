@@ -170,6 +170,19 @@ separate implementation step with its own cleanup and quota tests. Commits
 `32601095055` and pull-request run `32601097122` pass all three jobs, with
 quality coverage at 95.92%.
 
+## ArtifactStore handoff design gate
+
+The next boundary is documented in the derived hardening portfolio
+[`docs/security-hardening/2026-08-23-artifact-handoff/hardening.md`](../security-hardening/2026-08-23-artifact-handoff/hardening.md)
+and the detailed proposal
+[`artifact-handoff-publication-boundary.md`](../security-hardening/2026-08-23-artifact-handoff/proposals/artifact-handoff-publication-boundary.md).
+It compares a bounded request spool, an ArtifactStore-owned transactional
+handoff session, and a completion-aware stream. The current recommendation is
+the transactional session because it keeps completion, staging quota, digest
+verification and publication under one authority without holding the global
+quota lock across network pauses. This is a design recommendation only: no
+handoff API, route, production path, or database state change has been added.
+
 ## Explicit non-goals
 
 No OAuth, mailbox polling, provider API, parser, archive extraction, OCR,

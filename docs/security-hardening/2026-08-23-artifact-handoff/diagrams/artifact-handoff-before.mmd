@@ -1,0 +1,11 @@
+flowchart LR
+    C[Authenticated upload client]
+    P[Bounded multipart parser\nfile chunks + FileEnd]
+    W[Future route stream adapter]
+    A[ArtifactStore.publish\nquota lock + private staging]
+    D[(Content-addressed artifact)]
+    T[Trailing boundary / parser completion]
+
+    C --> P --> W --> A --> D
+    P -. "completion is separate from FileEnd" .-> T
+    T -. "must be consumed before success" .-> W

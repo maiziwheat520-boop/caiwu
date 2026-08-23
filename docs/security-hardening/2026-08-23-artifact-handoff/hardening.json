@@ -1,0 +1,201 @@
+{
+  "documentType": "codex-security.hardening-analysis",
+  "schemaVersion": "1.0",
+  "analysisId": "artifact-handoff-2026-08-23",
+  "sourceEvidence": {
+    "kind": "document_collection",
+    "label": "ArtifactStore, bounded multipart, tests, and approved Slice C design",
+    "collectionSha256": "443933d9019784b0927617d985c3b1348bc9ae86f8b32e92ee95c67e246f490b",
+    "artifactCount": 5,
+    "targetRevision": "862056816126428c1694985da7b7b3272bc749bc",
+    "sourceDrift": "none"
+  },
+  "assessment": {
+    "outcome": "opportunities_identified",
+    "summary": "The future upload route needs one explicit completion-to-publication boundary so malformed trailing multipart data cannot become a durable artifact and staging quota ownership remains unambiguous."
+  },
+  "constraints": {
+    "profile": "balanced",
+    "changeHorizons": ["incremental", "medium_term"],
+    "nonNegotiables": [
+      "ArtifactStore remains the only durable artifact publication authority.",
+      "The parser and handoff remain bounded by the 50 MiB file and 512 MiB staging decisions.",
+      "Malformed, cancelled, over-limit, or incomplete uploads create no durable artifact or import state.",
+      "No HTTP route, authentication provider, Connector, or production deployment is added by this design task."
+    ],
+    "assumptions": [
+      "No measured request latency, disk I/O, or memory budget was supplied.",
+      "The first route remains synchronous and internal/test-only as recorded in the Slice C design.",
+      "Request deadlines and disconnect handling will be enforced by the future route before rollout."
+    ]
+  },
+  "opportunities": [
+    {
+      "opportunityId": "artifact-handoff-publication-boundary",
+      "title": "Make multipart completion and artifact publication one explicit boundary",
+      "summary": "Give the future upload route a bounded, failure-clean handoff that cannot publish before the closing multipart boundary has been validated.",
+      "diagnosis": "The current parser's MultipartFileEnd marks the end of file bytes, while ArtifactStore.publish commits when its stream returns EOF. A future adapter that maps FileEnd directly to EOF could publish before the parser consumes the trailing boundary. The store's existing staging and quota lock are strong local controls, but they do not yet express parser completion as a typed commit state.",
+      "evidence": [
+        {
+          "claimType": "observed",
+          "sourceKind": "source",
+          "evidenceId": "H001",
+          "path": "src/ledgerbridge/artifacts.py:139-227",
+          "claim": "ArtifactStore.publish holds the quota lock while consuming a stream, writes private staging, and publishes after the stream reaches EOF; its cleanup is tied to exceptions from that stream."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "source",
+          "evidenceId": "H002",
+          "path": "src/ledgerbridge/upload.py:142-200",
+          "claim": "The parser emits MultipartFileEnd when it finds the file delimiter, then separately validates the boundary suffix and only returns successfully after final state."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "document",
+          "evidenceId": "H005",
+          "path": "docs/tasks/2026-08-23-phase-3-slice-c-upload-endpoint-design.md:51-56",
+          "claim": "The approved Slice C design explicitly requires a bounded temporary handoff or equivalent two-phase staging before ArtifactStore publication."
+        },
+        {
+          "claimType": "inferred",
+          "sourceKind": "source",
+          "evidenceId": "H001",
+          "path": "src/ledgerbridge/artifacts.py:143-225",
+          "claim": "If a future route returns EOF at MultipartFileEnd rather than parser completion, the existing store can durably publish bytes before malformed trailing multipart data is rejected."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "coverage",
+          "evidenceId": "H003",
+          "path": "tests/test_artifacts.py:196-218,356-458",
+          "claim": "The store has failure cleanup and concurrent quota tests, but no route-level test proving a malformed trailing multipart boundary leaves no published artifact."
+        }
+      ],
+      "desiredInvariants": [
+        "Artifact publication cannot commit until the multipart parser has consumed and validated the closing boundary.",
+        "Every byte accepted by the future upload path is charged exactly once to the configured staging and published quotas.",
+        "Malformed, cancelled, disconnected, over-limit, or failed uploads remove only their private handoff state and never remove or overwrite another artifact.",
+        "A crash leaves either a valid content-addressed artifact or recoverable bounded staging residue; it never leaves a database row pointing at an uncommitted blob.",
+        "The route cannot bypass ArtifactStore's digest, path, permission, fsync, deduplication, or quota checks."
+      ],
+      "proposalPath": "proposals/artifact-handoff-publication-boundary.md",
+      "options": [
+        {
+          "optionId": "bounded-request-spool",
+          "title": "Bounded request spool, then existing publish",
+          "kind": "incremental",
+          "summary": "Write parser file chunks to a route-owned bounded temporary file, emit an explicit Complete event, then rewind and call the existing ArtifactStore.publish API.",
+          "diagramPaths": {
+            "before": "diagrams/artifact-handoff-before.mmd",
+            "after": "diagrams/artifact-handoff-bounded-request-spool-after.mmd"
+          },
+          "evidenceCoverage": [
+            {"evidenceId": "H001", "effect": "addresses", "tacticalFixRequired": true, "rationale": "Existing publish remains the durable authority and still performs its own verification and cleanup."},
+            {"evidenceId": "H002", "effect": "addresses", "tacticalFixRequired": true, "rationale": "The route holds the spool until parser completion rather than treating MultipartFileEnd as request success."},
+            {"evidenceId": "H005", "effect": "addresses", "tacticalFixRequired": false, "rationale": "This is the explicit two-phase temporary handoff required by the approved design."}
+          ],
+          "tradeoffs": [
+            {"dimension": "security", "direction": "improves", "confidence": "high", "basis": "source-derived", "assessment": "The durable publish call cannot begin until the parser has accepted the closing boundary; the route can abort and unlink its private spool on any parser error.", "validationPlan": "Inject malformed suffixes, disconnects, and parser exceptions after file bytes and assert no published path or database state."},
+            {"dimension": "performance", "direction": "regresses", "confidence": "medium", "basis": "source-derived", "assessment": "The file is written once to request staging and read again by ArtifactStore, adding disk I/O and a second hash pass.", "validationPlan": "Benchmark one-byte-below, at-limit, and representative uploads with cold and warm filesystem caches; compare wall time and I/O bytes."},
+            {"dimension": "memory", "direction": "neutral", "confidence": "high", "basis": "source-derived", "assessment": "A named file keeps memory bounded, but route staging consumes disk independently from ArtifactStore staging unless quota accounting is integrated.", "validationPlan": "Measure peak RSS and request-staging bytes under concurrent uploads at the configured limits."},
+            {"dimension": "reliability", "direction": "improves", "confidence": "medium", "basis": "source-derived", "assessment": "The parser failure boundary is simple and easy to clean, while a crash may leave a stale request spool that needs bounded TTL cleanup.", "validationPlan": "Kill the worker at each handoff phase and verify startup/reaper behavior never touches published content."},
+            {"dimension": "operability", "direction": "regresses", "confidence": "medium", "basis": "hypothetical", "assessment": "A second staging namespace needs metrics, ownership, permissions, TTL cleanup, and an aggregate quota policy.", "validationPlan": "Define metrics for active bytes, stale files, abort reasons, and cleanup failures before route enablement."},
+            {"dimension": "migration", "direction": "improves", "confidence": "high", "basis": "source-derived", "assessment": "The existing ArtifactStore API is preserved and the route adapter is isolated from the store internals.", "validationPlan": "Keep the adapter behind a feature flag and run the existing ArtifactStore suite unchanged."}
+          ],
+          "residualRisks": [
+            "Two quota authorities can drift unless request staging is counted under the same 512 MiB budget.",
+            "A stale request spool can consume disk until TTL cleanup runs.",
+            "The second read means a future implementation must not let the request spool be modified between parse completion and publish."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": ["future route adapter", "ArtifactStore quota accounting", "cleanup/metrics"],
+            "workPackages": ["Define a private request-staging namespace and ownership contract.", "Add an explicit parser Complete event and spool seal.", "Integrate aggregate staging accounting and stale cleanup.", "Call ArtifactStore.publish only from a sealed, read-only spool."],
+            "acceptanceCriteria": ["No malformed or incomplete request publishes an artifact.", "Concurrent request and ArtifactStore staging never exceed the configured aggregate budget.", "A crash/restart reaps only stale request spools."],
+            "migrationNotes": ["Do not expose the route until quota and cleanup observability are present."],
+            "rollback": "Disable the route feature flag and leave the existing ArtifactStore API unchanged."
+          }
+        },
+        {
+          "optionId": "transactional-handoff-session",
+          "title": "ArtifactStore-owned transactional handoff session",
+          "kind": "structural",
+          "summary": "Add a bounded HandoffSession owned by ArtifactStore that writes one private staged inode, accounts quota per write, and exposes an explicit complete-and-commit transition only after parser success.",
+          "diagramPaths": {
+            "before": "diagrams/artifact-handoff-before.mmd",
+            "after": "diagrams/artifact-handoff-transactional-session-after.mmd"
+          },
+          "evidenceCoverage": [
+            {"evidenceId": "H001", "effect": "addresses", "tacticalFixRequired": true, "rationale": "Publication, path, digest, permissions, fsync and quota ownership remain inside ArtifactStore."},
+            {"evidenceId": "H002", "effect": "addresses", "tacticalFixRequired": true, "rationale": "The session has no commit transition until the parser's explicit completion signal."},
+            {"evidenceId": "H003", "effect": "addresses", "tacticalFixRequired": true, "rationale": "Existing failure and concurrency tests can be extended to the new session state machine."},
+            {"evidenceId": "H005", "effect": "addresses", "tacticalFixRequired": false, "rationale": "This is the equivalent two-phase staging design with one quota authority."}
+          ],
+          "tradeoffs": [
+            {"dimension": "security", "direction": "improves", "confidence": "high", "basis": "source-derived", "assessment": "Parser completion, sealed staging, digest verification and publication become one typed store-owned state transition; the route cannot accidentally publish at FileEnd.", "validationPlan": "Use state-machine tests and fault injection at write, seal, verify, link, fsync and cleanup boundaries; replay the original trailing-boundary threat model."},
+            {"dimension": "performance", "direction": "improves", "confidence": "medium", "basis": "source-derived", "assessment": "One staged inode can be adopted or hard-linked into the content-addressed path, avoiding the request-spool reread and duplicate disk copy; per-write quota locking adds small coordination overhead.", "validationPlan": "Benchmark throughput, p95 latency and lock hold time with one and many concurrent uploads at 1 MiB, 50 MiB and mixed sizes."},
+            {"dimension": "memory", "direction": "neutral", "confidence": "high", "basis": "source-derived", "assessment": "The session remains file-backed and bounded; it adds only small state and digest metadata per active upload.", "validationPlan": "Measure RSS and active staging bytes while saturating the configured concurrent-upload budget."},
+            {"dimension": "reliability", "direction": "improves", "confidence": "medium", "basis": "source-derived", "assessment": "Quota reservations and stale cleanup use the existing store namespace and lock, while explicit abort/complete states make crash recovery reviewable.", "validationPlan": "Terminate workers during each state, restart with stale cleanup, and verify published artifacts are never removed and staged bytes converge."},
+            {"dimension": "operability", "direction": "improves", "confidence": "medium", "basis": "source-derived", "assessment": "One namespace, one quota snapshot and one error taxonomy reduce operational ambiguity, but new state metrics and a reaper are still required.", "validationPlan": "Expose active-session count/bytes, abort reasons, stale age and commit failures without logging body, filename, or tokens."},
+            {"dimension": "migration", "direction": "regresses", "confidence": "medium", "basis": "source-derived", "assessment": "ArtifactStore gains a new public lifecycle API and must preserve the existing publish path and crash semantics during rollout.", "validationPlan": "Keep publish as a compatibility wrapper over the same primitives and run old plus session-based tests in parallel before route enablement."}
+          ],
+          "residualRisks": [
+            "A bug in the new session state machine could affect the central publication authority, so the existing publish path must remain covered and the API should make invalid transitions unrepresentable where practical.",
+            "Per-write quota locking still permits slow clients to occupy staging capacity until their request deadline expires.",
+            "Filesystem crash consistency and Windows/POSIX differences require platform-specific tests."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": ["src/ledgerbridge/artifacts.py", "src/ledgerbridge/upload.py", "tests/test_artifacts.py", "tests/test_upload.py", "future route"],
+            "workPackages": ["Define HandoffSession states and typed errors.", "Implement per-write staging accounting and sealed-file verification under the existing lock.", "Implement complete/abort commit semantics with fsync and deduplication.", "Add parser-to-session adapter that treats Complete, not FileEnd, as EOF.", "Add crash, concurrency, quota, symlink, digest and malformed-boundary tests."],
+            "acceptanceCriteria": ["The original trailing-boundary failure produces no durable artifact.", "Every accepted byte is charged once and concurrent sessions cannot oversubscribe staging or published quotas.", "Commit is idempotent for the same sealed digest and cannot overwrite a mismatched destination.", "Abort and stale cleanup are bounded, private and observable."],
+            "migrationNotes": ["Ship the session API behind an internal/test-only route flag; retain ArtifactStore.publish for existing importer paths until parity evidence is complete."],
+            "rollback": "Disable the route and revert only the session adapter; retain the existing publish implementation and staging cleanup."
+          }
+        },
+        {
+          "optionId": "completion-aware-stream",
+          "title": "Completion-aware stream over existing publish",
+          "kind": "baseline",
+          "summary": "Add an explicit parser-complete sentinel and make a stream wrapper return EOF only after that sentinel, using the existing ArtifactStore.publish call unchanged.",
+          "diagramPaths": {
+            "before": "diagrams/artifact-handoff-before.mmd",
+            "after": "diagrams/artifact-handoff-lock-held-stream-after.mmd"
+          },
+          "evidenceCoverage": [
+            {"evidenceId": "H001", "effect": "addresses", "tacticalFixRequired": true, "rationale": "Existing publish cleanup and durable publication remain the authority."},
+            {"evidenceId": "H002", "effect": "addresses", "tacticalFixRequired": true, "rationale": "The wrapper distinguishes FileEnd from parser completion and withholds EOF until final validation."},
+            {"evidenceId": "H005", "effect": "mitigates", "tacticalFixRequired": true, "rationale": "It is an equivalent two-phase handoff at the stream boundary, but not a separate request spool."}
+          ],
+          "tradeoffs": [
+            {"dimension": "security", "direction": "improves", "confidence": "high", "basis": "source-derived", "assessment": "The early-EOF publication path is closed if the wrapper is correct and parser completion is tested as a hard precondition.", "validationPlan": "Test malformed suffixes and ensure ArtifactStore sees a read error rather than EOF; assert staging cleanup and no destination."},
+            {"dimension": "performance", "direction": "improves", "confidence": "medium", "basis": "source-derived", "assessment": "It avoids a second request-spool read and preserves streaming, but the global quota lock remains held for the entire body delivery.", "validationPlan": "Measure lock hold time and p95 latency with slow and concurrent clients; set a decision threshold for acceptable contention."},
+            {"dimension": "memory", "direction": "neutral", "confidence": "high", "basis": "source-derived", "assessment": "Memory remains bounded by parser suffix state and ArtifactStore chunk size.", "validationPlan": "Stress fragmented boundaries and concurrent 50 MiB uploads while measuring RSS."},
+            {"dimension": "reliability", "direction": "unknown", "confidence": "medium", "basis": "hypothetical", "assessment": "One lifecycle is simple, but a slow or disconnected client holds the central quota lock and can delay unrelated uploads until the deadline.", "validationPlan": "Inject slowloris and disconnect workloads and observe lock wait, staging cleanup and unrelated publish availability."},
+            {"dimension": "operability", "direction": "regresses", "confidence": "medium", "basis": "source-derived", "assessment": "There is little new storage surface, but lock contention becomes a request-level operational signal that must be monitored.", "validationPlan": "Add bounded lock-wait and request-age metrics without logging raw request data."},
+            {"dimension": "migration", "direction": "improves", "confidence": "high", "basis": "source-derived", "assessment": "The existing publish API stays unchanged and only the route adapter/parser contract grows.", "validationPlan": "Run all current ArtifactStore tests and a route-only compatibility suite before enabling the flag."}
+          ],
+          "residualRisks": [
+            "The route can create a capacity denial of service by holding the quota lock during slow body delivery, even with a deadline.",
+            "A future caller can accidentally bypass the completion-aware wrapper and recreate the early-EOF risk.",
+            "The parser completion sentinel becomes a cross-module protocol that must remain stable."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": ["src/ledgerbridge/upload.py", "future route adapter", "tests/test_upload.py", "tests/test_artifacts.py"],
+            "workPackages": ["Add an explicit parser Complete event.", "Implement a completion-aware BinarySource wrapper.", "Prove malformed suffixes surface as stream errors before EOF.", "Add lock-contention and slow-client tests."],
+            "acceptanceCriteria": ["No FileEnd event can cause publish EOF.", "All parser failures clean staging and leave no destination.", "Request deadlines bound lock occupancy and unrelated publication remains available under the agreed threshold."],
+            "migrationNotes": ["Restrict to internal/test-only use until lock contention is measured."],
+            "rollback": "Disable the route flag and remove only the wrapper; existing ArtifactStore.publish remains unchanged."
+          }
+        }
+      ],
+      "recommendedOptionId": "transactional-handoff-session",
+      "recommendation": "I recommend Option 2, the ArtifactStore-owned transactional handoff, under the current 512 MiB staging and 50 MiB file constraints. Option 1 is a reasonable short-lived bridge if schedule dominates, provided request staging is included in one aggregate quota. Option 3 should win only when measured latency and implementation simplicity outweigh the availability cost of holding the global quota lock for a whole request."
+    }
+  ],
+  "openQuestions": [
+    "Should the 512 MiB staging budget include all in-flight request handoffs, or only ArtifactStore-owned staging?",
+    "What request deadline and maximum concurrent internal uploads are acceptable before a held quota lock becomes an availability risk?",
+    "Which platform-specific crash and directory-fsync guarantees are required for the first internal deployment?",
+    "Should parser completion be a public event type, or should the route consume a higher-level sealed handoff API that hides parser state?"
+  ]
+}
