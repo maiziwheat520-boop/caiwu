@@ -558,8 +558,13 @@ async def test_supervisor_bounds_aggregate_spool_and_releases_on_disconnect() ->
         if open_unix_connection is None:
             raise RuntimeError("Unix socket tests require a POSIX asyncio implementation")
         server = await start_unix_server(supervisor.handle, path=socket_path)
+        base_request = _request(b"x")
         request = replace(
-            _request(b"x"),
+            base_request,
+            metadata=replace(
+                base_request.metadata,
+                byte_size=MAX_ARTIFACT_BYTES,
+            ),
             declared_artifact_size=MAX_ARTIFACT_BYTES,
         )
         first_reader, first_writer = await open_unix_connection(socket_path)
