@@ -138,7 +138,8 @@ Protected PR #18 is open at
 `https://github.com/maiziwheat520-boop/caiwu/pull/18`; its current head is
 `d84e096`. The code/test push and pull-request runs for `19f4c30`
 (`32615944190` and `32615946593`) passed `secrets`, `quality`, and `compose`;
-the design-only head has not yet run its documentation CI; the preceding
+the design/status head `85253b2` push and pull-request runs (`32618527733`
+and `32618529442`) also passed all three jobs; the preceding
 implementation head `6300bf5` was green in runs `32613520982` and `32613522285`.
 The PR is review-only; it has not been merged or deployed.
 The approved Slice C upload-boundary design and implementation evidence are
