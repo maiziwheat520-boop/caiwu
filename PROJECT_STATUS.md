@@ -54,8 +54,11 @@ Production remains unchanged and the branch is still review-only.
 The subsequent recheck also identified and fixed service-scoped settings: API,
 worker, and migrate now declare explicit runtime roles and only require their
 own database URL. The enqueue function additionally enforces artifact/channel
-provenance. These changes are included in implementation head `6ae1fc3`; its
-Hosted CI run is pending publication after the transient GitHub DNS failure.
+provenance. A second security recheck also closed the compatibility-role grant
+and production fallback gaps: 0008 grants enqueue only to API in production,
+and production API/worker resolution requires an explicit service role. These
+changes are currently uncommitted; local validation remains green and Hosted CI
+publication is pending the transient GitHub DNS failure.
 
 ## Completed
 

@@ -18,6 +18,11 @@ They are now closed:
 - The security-definer enqueue function now requires the artifact's
   `raw_artifact.source` to equal the requested ingest channel, preventing a
   cross-channel dispatch from being admitted.
+- Production migration output no longer grants the enqueue function to the
+  retired `ledgerbridge_app` role; that compatibility grant is emitted only for
+  non-production test profiles. Production API/worker database resolution now
+  also fails unless the runtime role is explicitly `api` or `worker`, while the
+  owner-only migration requires an explicit `migrate` role and owner URL.
 
 ### HIGH — runtime role credential crossover
 
@@ -63,8 +68,9 @@ Implemented controls:
   paths.
 - Hermes disposable PostgreSQL 15 replay succeeds through migrations `0001` to
   `0008`. Production replay confirms `ledgerbridge_app` is `NOLOGIN`, API and
-  worker remain login roles, the API enqueue function succeeds, cross-channel
-  dispatch is rejected, and direct API dispatch INSERT is denied.
+  worker remain login roles, the retired role has no enqueue EXECUTE privilege,
+  the API enqueue function succeeds, cross-channel dispatch is rejected, and
+  direct API dispatch INSERT is denied.
 - Production Hermes was not modified; current deployed revision remains
   `e426b488b2abb02f10ef02a61aae7ebe24c3283f` with migration `20260822_0004`.
 

@@ -52,14 +52,30 @@ def test_database_role_urls_fallback_outside_production_and_split_in_production(
     migration = Settings(
         env="production",
         runtime_role="migrate",
-        database_url=shared,
+        database_url="postgresql://ledgerbridge_owner@db/app",
         artifact_root=tmp_path.resolve(),
     )
-    assert migration.database_url == shared
+    assert migration.database_url == "postgresql://ledgerbridge_owner@db/app"
+
+    with pytest.raises(ValidationError, match="production runtime_role must be explicit"):
+        Settings(
+            env="production",
+            database_url="postgresql://ledgerbridge_app@db/app",
+            artifact_root=tmp_path.resolve(),
+        )
+
+    with pytest.raises(ValidationError, match="ledgerbridge_owner"):
+        Settings(
+            env="production",
+            runtime_role="migrate",
+            database_url="postgresql://ledgerbridge_app@db/app",
+            artifact_root=tmp_path.resolve(),
+        )
 
     with pytest.raises(ValidationError, match="must differ"):
         Settings(
             env="production",
+            runtime_role="api",
             database_url=shared,
             api_database_url="postgresql://same",
             worker_database_url="postgresql://same",
@@ -83,6 +99,11 @@ def test_database_role_urls_fallback_outside_production_and_split_in_production(
     assert production_worker.resolved_worker_database_url() == (
         "postgresql://ledgerbridge_worker@db/app"
     )
+
+    with pytest.raises(ValueError, match="production API requires runtime_role=api"):
+        migration.resolved_api_database_url()
+    with pytest.raises(ValueError, match="production worker requires runtime_role=worker"):
+        migration.resolved_worker_database_url()
 
     with pytest.raises(
         ValidationError,

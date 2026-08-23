@@ -61,12 +61,15 @@ class Settings(BaseSettings):
             raise ValueError("production API and worker database URLs must differ")
 
         if self.env == "production":
+            if "runtime_role" not in self.model_fields_set:
+                raise ValueError("production runtime_role must be explicit")
             role_urls: list[tuple[str, str | None]] = []
             if self.runtime_role == "api":
                 role_urls.append(("ledgerbridge_api", self.api_database_url))
             elif self.runtime_role == "worker":
                 role_urls.append(("ledgerbridge_worker", self.worker_database_url))
             else:
+                role_urls.append(("ledgerbridge_owner", self.database_url))
                 role_urls.extend(
                     [
                         ("ledgerbridge_api", self.api_database_url),
@@ -88,12 +91,16 @@ class Settings(BaseSettings):
         return self
 
     def resolved_api_database_url(self) -> str:
+        if self.env == "production" and self.runtime_role != "api":
+            raise ValueError("production API requires runtime_role=api")
         value = self.api_database_url or self.database_url
         if value is None:
             raise ValueError("an API database URL is required")
         return value
 
     def resolved_worker_database_url(self) -> str:
+        if self.env == "production" and self.runtime_role != "worker":
+            raise ValueError("production worker requires runtime_role=worker")
         value = self.worker_database_url or self.database_url
         if value is None:
             raise ValueError("a worker database URL is required")

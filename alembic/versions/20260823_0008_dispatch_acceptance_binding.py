@@ -1,5 +1,6 @@
 """Bind dispatch rows to the exact acceptance audit event created with them."""
 
+import os
 from collections.abc import Sequence
 
 from alembic import op
@@ -130,10 +131,18 @@ def upgrade() -> None:
         ) FROM PUBLIC;
         GRANT EXECUTE ON FUNCTION public.evidence_import_dispatch_enqueue(
             uuid, uuid, text, text, bytea, text, text
-        ) TO ledgerbridge_api, ledgerbridge_app;
+        ) TO ledgerbridge_api;
         REVOKE INSERT ON TABLE public.evidence_import_dispatch FROM ledgerbridge_api;
         """
     )
+    if os.environ.get("LEDGERBRIDGE_ENV", "development") != "production":
+        op.execute(
+            """
+            GRANT EXECUTE ON FUNCTION public.evidence_import_dispatch_enqueue(
+                uuid, uuid, text, text, bytea, text, text
+            ) TO ledgerbridge_app;
+            """
+        )
 
 
 def downgrade() -> None:
