@@ -22,12 +22,20 @@ explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is implemented and
 the Slice C bounded multipart adapter, ArtifactStore-owned transactional handoff,
 and default-disabled internal upload route are pushed on the Codex branch
-`ai/chatgpt/phase-3-connector-runner` at implementation head `bc97511` (the
+`ai/chatgpt/phase-3-connector-runner` at implementation head `1d816a2` (the
 runner composition and API/worker role split are included in the current head;
 the current design/plan head is `cdecbdb`; the prior runner audit baseline remains
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e`. The isolated runner
 image and the handoff replay were tested only as disposable Hermes workloads and
 are not deployed.
+
+The current follow-up hardening head is `1d816a2` (dispatch provenance trigger,
+fail-closed migration environment, and bounded runner response materialization).
+The independent security audit report is
+`docs/reviews/2026-08-24-independent-security-audit-codex.md`; its canonical
+contract artifacts are retained in the terminal scan directory. The audit found
+no current reportable blocker/high/medium finding. Four enablement-time
+availability or role-drift items remain explicitly deferred.
 
 The preceding implementation head `b453874` passed push run `32648931938` and
 pull-request run `32648934569` across `secrets`, `quality`, and `compose`.
@@ -57,7 +65,7 @@ own database URL. The enqueue function additionally enforces artifact/channel
 provenance. A second security recheck also closed the compatibility-role grant
 and production fallback gaps: 0008 grants enqueue only to API in production,
 and production API/worker resolution requires an explicit service role. These
-changes are included in head `bc97511`; Hosted CI push run `32653235633` and
+changes are included through head `1d816a2`; Hosted CI push run `32653235633` and
 pull-request run `32653238132` are green across `secrets`, `quality`, and
 `compose`.
 
@@ -153,7 +161,8 @@ pull-request run `32653238132` are green across `secrets`, `quality`, and
   endpoint and worker claim loop are implemented. Runner composition and the
   role-split migration are implemented but remain disabled in production until
   their independent review gates close.
-- Final local validation is green: **217 passed / 136 skipped**, with Ruff,
+- Final local validation before the current audit was green: **232 passed /
+  139 skipped / 1 warning**, with Ruff,
   strict mypy and offline lock resolution passing. The exact hosted CI coverage
   command was replayed in the prior disposable Hermes PostgreSQL project with
   **348 passed** and **95.26%** coverage; the unchanged 95% threshold was not
@@ -202,7 +211,7 @@ is green across `secrets`, `quality`, and `compose`; Claude's approval applies t
 the earlier fixed code/test SHA, while this follow-up is Codex-verified.
 Protected PR #18 is open at
 `https://github.com/maiziwheat520-boop/caiwu/pull/18`; its current head is
-`b1376d9`. The latest documentation-inclusive code/test push run is
+`5d12cf5` before the current audit. The latest documentation-inclusive code/test push run is
 `32640445494` and pull-request run `32640447250`; both passed `secrets`,
 `quality`, and `compose`. The preceding green implementation-plan and code
 runs remain recorded below. The code/test push and pull-request runs for `19f4c30`
