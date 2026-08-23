@@ -379,10 +379,10 @@ def test_bounded_request_spool_times_out_and_releases_admission() -> None:
     with pytest.raises(UploadReadTimeoutError):
         asyncio.run(
             _read_bounded_request(
-                SlowRequest(),
+                cast(Any, SlowRequest()),
                 10,
                 timeout_seconds=0.001,
-                concurrency=1,  # type: ignore[arg-type]
+                concurrency=1,
             )
         )
 
