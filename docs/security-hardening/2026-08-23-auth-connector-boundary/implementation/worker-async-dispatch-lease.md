@@ -15,6 +15,23 @@ register a real Connector, create a signed production manifest, enable the
 route, deploy Hermes, or import evidence. Signing/key custody, authentication
 provider ownership and source-system ownership remain separate gates.
 
+## Implementation status (2026-08-23)
+
+The Codex branch has implemented the bounded schema/service plus the
+feature-flagged operation/status endpoint and worker claim/lease loop described
+below. `POST /v1/evidence/import-requests` performs the verified publish,
+artifact/audit binding and durable dispatch commit before returning `202`; the
+principal-scoped `GET` route exposes only the bounded status projection. The
+worker claims with `SKIP LOCKED`, renews leases during importer execution,
+classifies retryable failures and terminalizes the dispatch without letting the
+API call the importer.
+
+This is still an internal/test composition: the default manifest loader returns
+no generation, the default worker Connector registry is empty, and production
+forces the async flag off. A signed manifest, real Connector, runner wiring,
+separate API/worker database roles, merge and deployment remain independent
+gates. No production evidence or dispatch row was created.
+
 ## Source Revision And Evidence
 
 The plan is based on the reviewed branch content at the design decision head

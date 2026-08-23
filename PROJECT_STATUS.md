@@ -22,8 +22,9 @@ explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is implemented and
 the Slice C bounded multipart adapter, ArtifactStore-owned transactional handoff,
 and default-disabled internal upload route are pushed on the Codex branch
-`ai/chatgpt/phase-3-connector-runner` at code/test head `5fbb5fb` (route
-implementation `74d81eb`; async dispatch schema/service `5fbb5fb`); the current
+`ai/chatgpt/phase-3-connector-runner` at code/test head `9c7d589` (route
+implementation `74d81eb`; async dispatch schema/service and feature-flagged
+operation/worker composition are included in the current head); the current
 design/plan head is `cdecbdb`; the prior runner audit baseline remains
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e`. The isolated runner
 image and the handoff replay were tested only as disposable Hermes workloads and
@@ -110,16 +111,20 @@ and narrow-audit entry point are preserved.
   `202` only after durable enqueue, and worker owns the runner socket. The
   current synchronous route remains an internal/test profile. The accepted
   dispatch schema, grants, service, and PostgreSQL-backed tests are implemented
-  on the Codex branch; the async endpoint, worker claim loop, runner composition,
-  and API/worker role split are not wired.
+  on the Codex branch; the feature-flagged async operation/status endpoint and
+  worker claim/lease loop are now wired. They remain default-disabled and fail
+  closed because the default manifest is empty and the worker Connector
+  registry is empty; runner composition, signed manifest and API/worker role
+  split are still separate production gates.
 - The user accepted the worker-async baseline and authorized the schema/grants
   and dispatch-service implementation. The implementation
   handoff is
   `docs/security-hardening/2026-08-23-auth-connector-boundary/implementation/worker-async-dispatch-lease.md`:
   it proposes a separate `evidence_import_dispatch` table, API enqueue plus
   `202`/status contract, worker-only claim/lease/runner access, and a pre-
-  production API/worker database-role split. The table/service portion is
-  implemented; endpoint, worker loop, and role split remain separate gates.
+  production API/worker database-role split. The table/service, feature-flagged
+  endpoint and worker claim loop are implemented; runner composition, signed
+  manifest, role split and production enablement remain separate gates.
 
 ## Ownership checkpoint
 
@@ -185,15 +190,15 @@ in an isolated Hermes project; no evidence was ingested.
 ## Next task
 
 Review protected PR #18, including the bounded multipart adapter, handoff,
-feature-flagged internal upload route, and the authentication/Connector design
-portfolio. Finish CI and the narrow dispatch audit, then implement the async
-endpoint and worker claim loop only after their separate authorization; resolve
-provider/key custody, gateway/provider ownership and source-system owner
-decisions before implementation reaches a real manifest. The route stays
-disabled until those are approved. Merge and any production
-deployment require distinct authorization; do not register a real Connector,
-enable the flag in production, ingest evidence, or enable the mail collector
-without corresponding later authorization.
+feature-flagged internal upload route, async operation/status contract and
+worker claim loop. Finish CI and the narrow dispatch audit; then resolve
+provider/key custody, gateway/provider ownership, source-system ownership,
+signed manifest and API/worker role-split decisions before implementation
+reaches a real Connector. The routes and worker loop stay disabled until those
+are approved. Merge and any production deployment require distinct
+authorization; do not register a real Connector, enable the flag in production,
+ingest evidence, or enable the mail collector without corresponding later
+authorization.
 
 ## Blocking decisions
 

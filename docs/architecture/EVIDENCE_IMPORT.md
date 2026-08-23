@@ -1,7 +1,8 @@
 # Evidence and Import operations
 
-Status: implementation contract plus worker-async dispatch schema/service through
-Phase 3 platform-controls Slice A; endpoint and worker wiring remain pending
+Status: implementation contract plus feature-flagged worker-async dispatch
+endpoint/worker composition through Phase 3 platform-controls Slice A; real
+manifest, Connector and production enablement remain pending
 Date: 2026-08-23
 
 ## Evidence identity and retention
@@ -122,7 +123,7 @@ a row lock on the job. Unique locator races converge as duplicates; other
 identity conflicts roll back the entire batch. Phase 2 never creates a
 JournalEntry from imported evidence.
 
-## Worker-owned asynchronous dispatch (implemented, not enabled)
+## Worker-owned asynchronous dispatch (implemented, feature-flagged and disabled)
 
 The Codex branch implements the durable dispatch foundation in migration
 `20260823_0005` and `src/ledgerbridge/dispatch.py`. `ImportDispatch` captures the
@@ -143,11 +144,18 @@ database TEMPORARY and PUBLIC privileges and grants only the currently tested
 compatibility-role columns. The future API/worker role split remains a separate
 production gate.
 
-This is a schema/service implementation only. The async HTTP `202`/status
-routes, worker claim loop, runner composition, signed manifest, and real
-Connector remain unwired and disabled. Production Hermes remains on
-`20260822_0004`; no dispatch row, evidence bytes, or real Connector was used
-in production.
+The Codex branch now also contains the separately named async operation
+profile: `POST /v1/evidence/import-requests` returns `202` only after the
+published artifact, audit binding and dispatch row commit, and the principal-
+scoped `GET` status projection exposes only bounded dispatch/result fields.
+`worker.py` contains the claim, lease-renewal, retry and terminalization loop;
+the API never calls the importer in this profile. Both are guarded by the
+internal async flag and by production fail-closed checks. The default manifest
+loader returns no generation and the default worker Connector registry is empty,
+so the endpoint and loop cannot execute real import work until a separately
+reviewed manifest, Connector and role split are supplied. Production Hermes
+remains on `20260822_0004`; no dispatch row, endpoint request, evidence bytes or
+real Connector was used in production.
 
 ## Database permissions
 
@@ -175,8 +183,8 @@ qualification is the defense in depth if that privilege is accidentally restored
 The API keeps the artifact volume read-only. The worker is the only service with
 a read-write artifact mount. Both continue to use a read-only root filesystem,
 dropped capabilities, no-new-privileges, the unprivileged UID, and the
-least-privileged database login. Phase 2 adds no business endpoint and performs
-no production ingestion.
+least-privileged database login. The async operation profile is an internal,
+default-disabled orchestration endpoint; it performs no production ingestion.
 
 ## POSTED audit binding
 

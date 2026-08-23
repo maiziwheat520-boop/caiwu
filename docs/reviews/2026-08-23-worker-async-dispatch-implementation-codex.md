@@ -1,16 +1,16 @@
 # Worker-Async Dispatch Foundation — Codex Implementation Evidence
 
-Date: 2026-08-23  
-Implementation branch: `ai/chatgpt/phase-3-connector-runner`  
-Implementation head: `5fbb5fb`  
+Date: 2026-08-23
+Implementation branch: `ai/chatgpt/phase-3-connector-runner`
+Implementation head: `9c7d589`
 Protected review: PR #18 (review-only; not merged)
 
 ## Scope
 
-This report covers only the user-authorized schema/grants and dispatch-service
-slice of the worker-owned asynchronous import plan. It does not authorize or
-claim an async HTTP endpoint, a production worker loop, a real Connector, a
-signed production manifest, a database-role split, a merge, or a deployment.
+This report covers the user-authorized schema/grants, dispatch service, internal
+async operation/status contract and worker claim-loop composition. It does not
+authorize or claim a real Connector, a signed production manifest, a
+production database-role split, a merge, or a deployment.
 
 ## Delivered
 
@@ -22,6 +22,14 @@ signed production manifest, a database-role split, a merge, or a deployment.
 - `src/ledgerbridge/dispatch.py` with audited idempotent enqueue,
   principal-scoped status, SKIP-LOCKED claim, lease renewal, expiry recovery,
   bounded retry, and terminal success/failure handling.
+- Feature-flagged `POST /v1/evidence/import-requests` and principal-scoped
+  `GET` status route in `src/ledgerbridge/main.py`; the API publishes and binds
+  the artifact before returning `202` and never invokes the importer in this
+  profile.
+- Worker claim/lease/retry/terminalization composition in `src/ledgerbridge/worker.py`.
+  It is guarded by the internal flag, a non-production environment and a
+  verified manifest/Connector registry; both defaults are empty, so no real
+  import can execute until separately reviewed wiring is supplied.
 - PostgreSQL-backed tests for idempotency/digest conflicts, concurrent enqueue
   convergence, claim races, lease renewal and expiry, retry/exhaustion,
   terminal immutability, validation, permissions, and failed outcome mapping.
@@ -43,6 +51,11 @@ written:
 2. `DispatchService.complete(result_status=FAILED)` initially left the dispatch
    in `SUCCEEDED`. The service now persists `FAILED`; `NEEDS_REVIEW` remains a
    successful execution with an explicit review projection.
+3. Runtime replay showed that the artifact audit trigger requires the audit
+   event and `raw_artifact` insert in one top-level transaction. Published
+   enqueue now retries the whole transaction on a content-hash race, while the
+   dispatch claim query locks only `evidence_import_dispatch` and reads the
+   artifact with a plain SELECT under the compatibility role.
 
 Both corrections have regression coverage in the branch history.
 
@@ -52,13 +65,14 @@ Windows local validation:
 
 - `uv lock --offline` passed.
 - Ruff format/check and strict mypy passed for changed source/tests.
-- Full local pytest: **183 passed, 128 skipped**.
+- Full local pytest: **188 passed, 131 skipped, 1 warning**.
 - Sensitive-path scan and `git diff --check` passed.
 
 Disposable Hermes Linux/PostgreSQL validation:
 
-- Full suite: **313 passed**.
-- Coverage: **95.03%**, meeting the unchanged 95% gate.
+- Full suite: **319 passed**.
+- The prior Hermes coverage gate was **95.03%**; this final direct replay ran
+  the complete behavior suite without the coverage plugin.
 - Alembic downgrade-to-base and upgrade-to-head round-trip passed; final head
   was `20260823_0005`.
 - Runtime TEMP creation and public shadow-table creation were rejected.
@@ -66,8 +80,8 @@ Disposable Hermes Linux/PostgreSQL validation:
 - Runtime table/column grants matched the intended compatibility boundary.
 - Five-way dispatch attack/recovery probes, including claim races and
   exhaustion, passed.
-- All temporary Compose projects, volumes, images, and test directories were
-  removed after validation.
+- The test used a unique Compose project and disposable database/volumes; all
+  temporary resources were removed after the final production health/tag check.
 
 Production Hermes was checked after cleanup and remained healthy on
 `e426b488b2abb02f10ef02a61aae7ebe24c3283f` with migration `20260822_0004`.
@@ -78,11 +92,12 @@ bytes were created.
 
 The following are deliberately not part of this implementation slice:
 
-- async `POST`/`GET` operation endpoints and `202` response contract;
-- worker claim loop, runner composition, graceful drain, and readiness;
 - separate API/worker runtime database roles and deploy-time secret injection;
 - signed manifest generation and real Connector registration;
+- production runner composition, readiness/drain rollout and real Connector
+  execution;
 - protected-PR review/merge, production migration, or production enablement.
 
-The next review can audit the schema/service at the fixed head above before any
-endpoint or worker wiring is authorized.
+The next review can audit the schema, endpoint and worker composition at the
+fixed head above before any manifest, role split or production wiring is
+authorized.

@@ -193,6 +193,24 @@ The handoff source and tests are complete. The internal route is implemented but
 the production composition remains closed; no production database state or
 evidence has been changed.
 
+## Worker-owned async operation profile (implemented 2026-08-23)
+
+The accepted worker-owned composition is now implemented on the Codex branch at
+`9c7d589`. The separately named `POST /v1/evidence/import-requests` endpoint
+returns `202` only after the verified handoff, audit-bound `RawArtifact` and
+`evidence_import_dispatch` row commit. Its `GET` operation status is principal-
+scoped and exposes only bounded dispatch/result fields. The API never invokes
+the importer or mounts the runner socket in this profile.
+
+`worker.py` now provides one-claim processing with `FOR UPDATE SKIP LOCKED`,
+lease renewal, expired-lease recovery, bounded retry classification and
+terminal success/failure mapping. The internal flag is disabled by default and
+production-forced off. The default manifest loader and worker Connector
+registry are empty, so endpoint/worker code is testable but cannot execute a
+real Connector until signed-manifest, runner-composition and API/worker-role
+gates are separately approved. Windows target tests and a disposable Hermes
+PostgreSQL replay passed; production Hermes was not modified.
+
 ## Explicit non-goals
 
 No OAuth, mailbox polling, provider API, parser, archive extraction, OCR,
