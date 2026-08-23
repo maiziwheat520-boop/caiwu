@@ -29,8 +29,9 @@ the current design/plan head is `cdecbdb`; the prior runner audit baseline remai
 image and the handoff replay were tested only as disposable Hermes workloads and
 are not deployed.
 
-The current follow-up hardening implementation head is `bb3eee4` and the
-documentation-inclusive branch head is `bb3eee4` (dispatch provenance trigger,
+The current follow-up hardening implementation head is `bb3eee4`; the latest
+branch head is `6760725` (strict-mypy test follow-up), and the
+documentation-inclusive branch head is `b74bd31` (dispatch provenance trigger,
 fail-closed migration environment, bounded runner response materialization,
 bounded runner execution slots, per-context RunnerConnector state, upload
 read/admission limits, and legacy role-drift reassertion). The deferred-boundary
@@ -43,7 +44,8 @@ no current reportable blocker/high/medium finding. The four previously deferred
 availability/role-drift controls are implemented in `bb3eee4`; real Connector
 registration and production enablement remain separately gated.
 Hosted CI for the prior documentation head was green across `secrets`,
-`quality`, and `compose`; `bb3eee4` is awaiting its push and pull-request runs.
+`quality`, and `compose`; push run `32655932217` and pull-request run
+`32655929294` for `6760725` are green across all three jobs.
 
 The preceding implementation head `b453874` passed push run `32648931938` and
 pull-request run `32648934569` across `secrets`, `quality`, and `compose`.
