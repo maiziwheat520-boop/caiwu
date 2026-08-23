@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -303,7 +304,7 @@ def test_security_functions_pin_their_search_path(admin_engine: Engine) -> None:
     assert all(value == ["search_path=pg_catalog"] for value in configurations.values())
 
 
-def test_phase1_invariants_ignore_pg_temp_shadow_tables(
+def _assert_phase1_invariants_ignore_pg_temp_shadow_tables(
     admin_engine: Engine,
     runtime_engine: Engine,
 ) -> None:
@@ -696,6 +697,13 @@ def test_phase1_invariants_ignore_pg_temp_shadow_tables(
                     """
                 )
             )
+
+
+def test_phase1_invariants_ignore_pg_temp_shadow_tables(
+    admin_engine: Engine,
+    runtime_engine: Engine,
+) -> None:
+    _assert_phase1_invariants_ignore_pg_temp_shadow_tables(admin_engine, runtime_engine)
 
 
 def test_entity_safe_account_identifier_uniqueness(runtime_engine: Engine) -> None:
@@ -1474,6 +1482,175 @@ def test_phase1_migration_real_round_trip(migration_database_url: str) -> None:
     finally:
         if temporary_engine is not None:
             temporary_engine.dispose()
+        with maintenance_engine.connect() as connection:
+            connection.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :database_name"
+                ),
+                {"database_name": database_name},
+            )
+            connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+        maintenance_engine.dispose()
+
+
+def test_security_function_forward_migration_repairs_historical_definitions(
+    migration_database_url: str,
+    database_url: str,
+) -> None:
+    owner_source = create_engine(migration_database_url)
+    runtime_source = create_engine(database_url)
+    owner_url = owner_source.url
+    runtime_url = runtime_source.url
+    owner_source.dispose()
+    runtime_source.dispose()
+
+    database_name = f"ledgerbridge_search_path_{uuid4().hex[:10]}"
+    maintenance_engine = create_engine(
+        owner_url.set(database="postgres"),
+        isolation_level="AUTOCOMMIT",
+    )
+    temporary_owner_url = owner_url.set(database=database_name)
+    temporary_runtime_url = runtime_url.set(database=database_name)
+    temporary_admin_engine: Engine | None = None
+    temporary_runtime_engine: Engine | None = None
+
+    table_reading_functions = (
+        "public.account_block_protected_dimension_change()",
+        "public.journal_entry_validate_relationships()",
+        "public.posting_enforce_entity()",
+        "public.posting_block_posted_mutation()",
+        "public.posting_assert_balanced()",
+        "public.journal_entry_assert_posted_complete()",
+    )
+    fixed_search_path_functions = (
+        *table_reading_functions,
+        "public.append_audit_event(text,text,text,text,jsonb)",
+        "public.audit_event_block_mutation()",
+        "public.import_job_enforce_transition()",
+        "public.journal_entry_block_posted_mutation()",
+        "public.journal_entry_validate_post_audit()",
+        "public.raw_artifact_block_mutation()",
+        "public.raw_artifact_validate_audit()",
+        "public.source_record_block_mutation()",
+    )
+
+    try:
+        with maintenance_engine.connect() as connection:
+            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+
+        rendered = temporary_owner_url.render_as_string(hide_password=False)
+        _run_alembic(rendered, "20260823_0008")
+        temporary_admin_engine = create_engine(temporary_owner_url)
+        with temporary_admin_engine.begin() as connection:
+            for signature in table_reading_functions:
+                definition = connection.execute(
+                    text("SELECT pg_get_functiondef(to_regprocedure(:signature))"),
+                    {"signature": signature},
+                ).scalar_one()
+                historical_definition = re.sub(
+                    r"(?m)^\s*SET search_path TO 'pg_catalog'\s*$",
+                    "",
+                    definition,
+                )
+                for qualified, unqualified in (
+                    ("FROM public.posting", "FROM posting"),
+                    ("JOIN public.journal_entry", "JOIN journal_entry"),
+                    ("FROM public.journal_entry", "FROM journal_entry"),
+                    ("FROM public.account", "FROM account"),
+                    ("JOIN public.account", "JOIN account"),
+                    ("public.journal_status", "journal_status"),
+                ):
+                    historical_definition = historical_definition.replace(
+                        qualified,
+                        unqualified,
+                    )
+                connection.exec_driver_sql(historical_definition)
+
+            connection.exec_driver_sql(
+                "ALTER FUNCTION public.append_audit_event(text,text,text,text,jsonb) "
+                "SET search_path = pg_catalog, public"
+            )
+            for signature in (
+                "public.audit_event_block_mutation()",
+                "public.import_job_enforce_transition()",
+                "public.journal_entry_block_posted_mutation()",
+                "public.raw_artifact_block_mutation()",
+                "public.source_record_block_mutation()",
+            ):
+                connection.exec_driver_sql(f"ALTER FUNCTION {signature} RESET search_path")
+
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT proconfig FROM pg_proc "
+                        "WHERE oid = to_regprocedure("
+                        "'public.posting_assert_balanced()')"
+                    )
+                ).scalar_one()
+                is None
+            )
+            assert (
+                "FROM posting"
+                in connection.execute(
+                    text(
+                        "SELECT pg_get_functiondef("
+                        "to_regprocedure('public.posting_assert_balanced()'))"
+                    )
+                ).scalar_one()
+            )
+
+        temporary_admin_engine.dispose()
+        temporary_admin_engine = None
+        _run_alembic(rendered, "head")
+
+        temporary_admin_engine = create_engine(temporary_owner_url)
+        temporary_runtime_engine = create_engine(temporary_runtime_url)
+        with temporary_admin_engine.connect() as connection:
+            configurations = connection.execute(
+                text(
+                    "SELECT to_regprocedure(signature)::text, function_definition.proconfig "
+                    "FROM unnest(CAST(:signatures AS text[])) AS required(signature) "
+                    "JOIN pg_proc AS function_definition "
+                    "ON function_definition.oid = to_regprocedure(signature) "
+                    "ORDER BY signature"
+                ),
+                {"signatures": list(fixed_search_path_functions)},
+            ).all()
+        assert len(configurations) == len(fixed_search_path_functions)
+        assert all(
+            configuration == ["search_path=pg_catalog"] for _, configuration in configurations
+        )
+
+        _assert_phase1_invariants_ignore_pg_temp_shadow_tables(
+            temporary_admin_engine,
+            temporary_runtime_engine,
+        )
+
+        temporary_runtime_engine.dispose()
+        temporary_runtime_engine = None
+        temporary_admin_engine.dispose()
+        temporary_admin_engine = None
+        _run_alembic(rendered, "20260823_0008", downgrade=True)
+
+        temporary_admin_engine = create_engine(temporary_owner_url)
+        with temporary_admin_engine.connect() as connection:
+            assert (
+                connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+                == "20260823_0008"
+            )
+            assert connection.execute(
+                text(
+                    "SELECT proconfig FROM pg_proc "
+                    "WHERE oid = to_regprocedure("
+                    "'public.posting_assert_balanced()')"
+                )
+            ).scalar_one() == ["search_path=pg_catalog"]
+    finally:
+        if temporary_runtime_engine is not None:
+            temporary_runtime_engine.dispose()
+        if temporary_admin_engine is not None:
+            temporary_admin_engine.dispose()
         with maintenance_engine.connect() as connection:
             connection.execute(
                 text(

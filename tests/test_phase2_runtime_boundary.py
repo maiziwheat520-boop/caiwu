@@ -123,3 +123,21 @@ def test_runtime_role_split_reasserts_least_privilege_and_membership_boundary() 
     assert "FROM pg_auth_members" in migration
     assert "FOR v_membership IN" in migration
     assert "REVOKE %I FROM %I" in migration
+
+
+def test_forward_migration_permanently_hardens_security_function_lookup() -> None:
+    migration = Path("alembic/versions/20260824_0009_security_function_search_path.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'down_revision: str | None = "20260823_0008"' in migration
+    assert "required security functions are missing" in migration
+    assert "security functions lack fixed search_path" in migration
+    assert "SET search_path = pg_catalog" in migration
+    assert "SET search_path = pg_catalog, public" not in migration
+    assert "FROM public.posting" in migration
+    assert "FROM public.journal_entry" in migration
+    assert "FROM public.account" in migration
+    assert "JOIN public.account" in migration
+    assert "public.journal_status" in migration
+    assert "restoring vulnerable definitions" in migration
