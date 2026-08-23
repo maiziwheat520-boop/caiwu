@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import gettempdir
 from types import FrameType
+from typing import cast
 from uuid import UUID
 
 from ledgerbridge.artifacts import ArtifactStore, PublishedArtifact
@@ -23,6 +24,10 @@ from ledgerbridge.dispatch import (
 )
 from ledgerbridge.imports import EvidenceImporter, EvidenceIngestionError, IngestMetadata
 from ledgerbridge.models import ImportJobStatus
+from ledgerbridge.runner_composition import (
+    VerifiedRunnerManifest,
+    build_worker_runner_connectors,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -69,7 +74,7 @@ def heartbeat_is_fresh(
 def build_evidence_importer() -> EvidenceImporter:
     settings = get_settings()
     return EvidenceImporter(
-        get_session_factory(settings.database_url),
+        get_session_factory(settings.resolved_worker_database_url()),
         ArtifactStore(
             settings.artifact_root,
             max_bytes=settings.artifact_max_bytes,
@@ -84,20 +89,29 @@ def build_evidence_importer() -> EvidenceImporter:
 def build_dispatch_service(settings: Settings | None = None) -> DispatchService:
     current = settings if settings is not None else get_settings()
     return DispatchService(
-        get_session_factory(current.database_url),
+        get_session_factory(current.resolved_worker_database_url()),
         lease_seconds=current.dispatch_lease_seconds,
         max_attempts=current.dispatch_max_attempts,
     )
 
 
-def build_worker_connectors() -> Sequence[Connector]:
-    """Return the worker-owned verified manifest; empty until one is reviewed."""
+def build_worker_connectors(
+    manifest: VerifiedRunnerManifest | None = None,
+    settings: Settings | None = None,
+) -> Sequence[Connector]:
+    """Build worker-owned runner facades from an injected verified manifest."""
 
-    return ()
+    if manifest is None:
+        return ()
+    current = settings if settings is not None else get_settings()
+    return cast(
+        Sequence[Connector],
+        build_worker_runner_connectors(manifest, socket_path=current.runner_socket_path),
+    )
 
 
-def build_worker_manifest() -> tuple[str, bytes] | None:
-    """Return the verified generation/digest; no manifest is shipped by default."""
+def build_worker_manifest() -> VerifiedRunnerManifest | None:
+    """Return a verified manifest; no manifest is shipped by default."""
 
     return None
 
@@ -298,7 +312,7 @@ def main() -> None:
     importer = build_evidence_importer()
     dispatch = build_dispatch_service(settings)
     manifest = build_worker_manifest()
-    connectors = build_worker_connectors() if manifest is not None else ()
+    connectors = build_worker_connectors(manifest, settings) if manifest is not None else ()
     owner = worker_id()
     logger.info("LedgerBridge worker started")
     while _running:
@@ -313,7 +327,7 @@ def main() -> None:
                 importer,
                 connectors,
                 owner,
-                expected_manifest=manifest,
+                expected_manifest=manifest.identity,
             )
         time.sleep(settings.dispatch_poll_seconds if connectors else HEARTBEAT_INTERVAL_SECONDS)
     logger.info("LedgerBridge worker stopped")

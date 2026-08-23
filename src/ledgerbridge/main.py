@@ -114,7 +114,7 @@ def get_evidence_importer(
     store: Annotated[ArtifactStore, Depends(get_artifact_store)],
 ) -> EvidenceImporter:
     return EvidenceImporter(
-        get_session_factory(settings.database_url),
+        get_session_factory(settings.resolved_api_database_url()),
         store,
         production=settings.env == "production",
     )
@@ -124,7 +124,7 @@ def get_dispatch_service(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> DispatchService:
     return DispatchService(
-        get_session_factory(settings.database_url),
+        get_session_factory(settings.resolved_api_database_url()),
         lease_seconds=settings.dispatch_lease_seconds,
         max_attempts=settings.dispatch_max_attempts,
     )

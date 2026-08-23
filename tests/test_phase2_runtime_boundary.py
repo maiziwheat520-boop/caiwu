@@ -23,6 +23,12 @@ def test_only_worker_has_a_writable_artifact_volume() -> None:
         "artifacts:/var/lib/ledgerbridge/artifacts",
         "connector-socket:/run/ledgerbridge-connector",
     ]
+    assert api["environment"]["LEDGERBRIDGE_API_DATABASE_URL"] == (
+        "${LEDGERBRIDGE_API_DATABASE_URL:-}"
+    )
+    assert worker["environment"]["LEDGERBRIDGE_WORKER_DATABASE_URL"] == (
+        "${LEDGERBRIDGE_WORKER_DATABASE_URL:-}"
+    )
 
 
 def test_connector_runner_is_networkless_and_has_no_application_secrets() -> None:
@@ -59,3 +65,5 @@ def test_artifact_directory_and_database_temp_privilege_are_hardened() -> None:
 
     assert "install -d -m 0700" in dockerfile
     assert "REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC" in init_script
+    assert "ledgerbridge_api" in init_script
+    assert "ledgerbridge_worker" in init_script

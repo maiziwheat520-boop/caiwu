@@ -22,6 +22,7 @@ from ledgerbridge.imports import (
     IngestMetadata,
 )
 from ledgerbridge.models import DispatchState, ImportJobStatus
+from ledgerbridge.runner_composition import VerifiedRunnerManifest
 from ledgerbridge.worker import heartbeat_is_fresh, heartbeat_path, write_heartbeat
 
 
@@ -90,8 +91,9 @@ def test_worker_main_processes_enabled_async_profile(monkeypatch: object) -> Non
     monkeypatch.setattr(worker, "get_settings", lambda: Settings())  # type: ignore[attr-defined]
     monkeypatch.setattr(worker, "build_evidence_importer", lambda: "importer")  # type: ignore[attr-defined]
     monkeypatch.setattr(worker, "build_dispatch_service", lambda _settings: "dispatch")  # type: ignore[attr-defined]
-    monkeypatch.setattr(worker, "build_worker_manifest", lambda: ("generation", b"m" * 32))  # type: ignore[attr-defined]
-    monkeypatch.setattr(worker, "build_worker_connectors", lambda: ("connector",))  # type: ignore[attr-defined]
+    manifest = VerifiedRunnerManifest.from_connectors("generation", ())
+    monkeypatch.setattr(worker, "build_worker_manifest", lambda: manifest)  # type: ignore[attr-defined]
+    monkeypatch.setattr(worker, "build_worker_connectors", lambda *_args: ("connector",))  # type: ignore[attr-defined]
     monkeypatch.setattr(worker, "worker_id", lambda: "worker")  # type: ignore[attr-defined]
     monkeypatch.setattr(worker.signal, "signal", lambda *_args: None)  # type: ignore[attr-defined]
     monkeypatch.setattr(worker, "write_heartbeat", lambda: calls.append("heartbeat"))  # type: ignore[attr-defined]
@@ -108,7 +110,7 @@ def test_worker_main_processes_enabled_async_profile(monkeypatch: object) -> Non
 
     assert calls[0] == "heartbeat"
     assert calls[1][0][0:4] == ("dispatch", "importer", ("connector",), "worker")  # type: ignore[index]
-    assert calls[1][1]["expected_manifest"] == ("generation", b"m" * 32)  # type: ignore[index]
+    assert calls[1][1]["expected_manifest"] == manifest.identity  # type: ignore[index]
 
 
 def test_worker_composition_enables_production_connector_boundary(
@@ -120,11 +122,15 @@ def test_worker_composition_enables_production_connector_boundary(
     class Settings:
         env = "production"
         database_url = "postgresql+psycopg://runtime"
+        worker_database_url = None
         artifact_root = tmp_path
         artifact_max_bytes = 100
         artifact_total_max_bytes = 200
         artifact_staging_max_bytes = 300
         artifact_staging_ttl_seconds = 400
+
+        def resolved_worker_database_url(self) -> str:
+            return self.worker_database_url or self.database_url
 
     monkeypatch.setattr(worker, "get_settings", lambda: Settings())  # type: ignore[attr-defined]
     monkeypatch.setattr(  # type: ignore[attr-defined]
@@ -153,8 +159,12 @@ def test_worker_defaults_are_empty_and_dispatch_service_is_bounded(
 
     class Settings:
         database_url = "postgresql+psycopg://runtime"
+        worker_database_url = None
         dispatch_lease_seconds = 7
         dispatch_max_attempts = 4
+
+        def resolved_worker_database_url(self) -> str:
+            return self.worker_database_url or self.database_url
 
     monkeypatch.setattr(
         worker, "get_session_factory", lambda value: captured.update(url=value) or "sessions"

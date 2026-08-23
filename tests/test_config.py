@@ -40,6 +40,37 @@ def test_artifact_quota_defaults_are_production_safe(tmp_path: Path) -> None:
         )
 
 
+def test_database_role_urls_fallback_outside_production_and_split_in_production(
+    tmp_path: Path,
+) -> None:
+    shared = "sqlite+pysqlite:///:memory:"
+    settings = Settings(database_url=shared, artifact_root=tmp_path.resolve())
+    assert settings.resolved_api_database_url() == shared
+    assert settings.resolved_worker_database_url() == shared
+
+    with pytest.raises(ValidationError, match="explicit api_database_url"):
+        Settings(env="production", database_url=shared, artifact_root=tmp_path.resolve())
+
+    with pytest.raises(ValidationError, match="must differ"):
+        Settings(
+            env="production",
+            database_url=shared,
+            api_database_url="postgresql://same",
+            worker_database_url="postgresql://same",
+            artifact_root=tmp_path.resolve(),
+        )
+
+    production = Settings(
+        env="production",
+        database_url=shared,
+        api_database_url="postgresql://api",
+        worker_database_url="postgresql://worker",
+        artifact_root=tmp_path.resolve(),
+    )
+    assert production.resolved_api_database_url() == "postgresql://api"
+    assert production.resolved_worker_database_url() == "postgresql://worker"
+
+
 def test_alembic_url_escapes_config_interpolation() -> None:
     assert escape_alembic_ini_value("postgresql://user:p%ss@db/name") == (
         "postgresql://user:p%%ss@db/name"
