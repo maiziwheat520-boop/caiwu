@@ -88,20 +88,6 @@ def dispatch_context(
     admin_engine: Engine,
     tmp_path: Path,
 ) -> tuple[DispatchService, UUID, sessionmaker[Session]]:
-    with admin_engine.begin() as connection:
-        connection.execute(
-            text(
-                "INSERT INTO ingest_channel (id, description) VALUES "
-                "('internal', 'Internal test upload') "
-                "ON CONFLICT (id) DO NOTHING"
-            )
-        )
-        connection.execute(
-            text(
-                "INSERT INTO source_system (id, description) VALUES "
-                "('synthetic', 'Synthetic') ON CONFLICT (id) DO NOTHING"
-            )
-        )
     sessions = sessionmaker(bind=runtime_engine, expire_on_commit=False)
     store = ArtifactStore(tmp_path.resolve(), max_bytes=1_000_000, chunk_size=127)
     published = store.publish(io.BytesIO(b"dispatch artifact"))
@@ -115,14 +101,14 @@ def dispatch_context(
                 "sha256": published.sha256_hex,
                 "byte_size": published.byte_size,
                 "storage_key": published.storage_key,
-                "source": "internal",
+                "source": "synthetic_upload",
                 "original_filename_sha256": hashlib.sha256(b"dispatch.csv").hexdigest(),
                 "media_type": "text/csv",
             },
         )
         artifact = RawArtifact(
             sha256=published.sha256,
-            source="internal",
+            source="synthetic_upload",
             original_filename="dispatch.csv",
             media_type="text/csv",
             byte_size=published.byte_size,
@@ -140,7 +126,7 @@ def _request(
 ) -> DispatchRequest:
     return DispatchRequest(
         artifact_id=artifact_id,
-        ingest_channel="internal",
+        ingest_channel="synthetic_upload",
         manifest_generation=generation,
         manifest_digest=digest,
         actor="pytest",
