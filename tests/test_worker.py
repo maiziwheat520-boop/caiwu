@@ -113,6 +113,65 @@ def test_worker_main_processes_enabled_async_profile(monkeypatch: object) -> Non
     assert calls[1][1]["expected_manifest"] == manifest.identity  # type: ignore[index]
 
 
+def test_build_worker_connectors_passes_manifest_and_socket_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = VerifiedRunnerManifest.from_connectors("generation", ())
+    captured: dict[str, object] = {}
+
+    class Settings:
+        runner_socket_path = "/run/ledgerbridge/runner.sock"
+
+    monkeypatch.setattr(
+        worker,
+        "build_worker_runner_connectors",
+        lambda received, *, socket_path: (
+            captured.update(manifest=received, socket_path=socket_path) or ("connector",)
+        ),
+    )
+
+    result = worker.build_worker_connectors(manifest, Settings())  # type: ignore[arg-type]
+
+    assert tuple(cast(Any, result)) == ("connector",)
+    assert captured == {"manifest": manifest, "socket_path": "/run/ledgerbridge/runner.sock"}
+
+
+def test_worker_main_keeps_production_async_dispatch_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class Settings:
+        env = "production"
+        enable_internal_async_dispatch = True
+        dispatch_poll_seconds = 1.0
+        runner_socket_path = "/run/ledgerbridge/runner.sock"
+
+    manifest = VerifiedRunnerManifest.from_connectors("generation", ())
+    monkeypatch.setattr(worker, "get_settings", lambda: Settings())
+    monkeypatch.setattr(worker, "build_evidence_importer", lambda: "importer")
+    monkeypatch.setattr(worker, "build_dispatch_service", lambda _settings: "dispatch")
+    monkeypatch.setattr(worker, "build_worker_manifest", lambda: manifest)
+    monkeypatch.setattr(worker, "build_worker_connectors", lambda *_args: ("connector",))
+    monkeypatch.setattr(worker, "write_heartbeat", lambda: calls.append("heartbeat"))
+    monkeypatch.setattr(worker.signal, "signal", lambda *_args: None)  # type: ignore[attr-defined]
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: worker._stop(0, None))  # type: ignore[attr-defined]
+
+    def process(*_args: object, **_kwargs: object) -> bool:
+        calls.append("processed")
+        return True
+
+    monkeypatch.setattr(
+        worker,
+        "process_dispatch_once",
+        process,
+    )
+
+    worker.main()
+
+    assert calls == ["heartbeat"]
+
+
 def test_worker_composition_enables_production_connector_boundary(
     monkeypatch: object,
     tmp_path: Path,
