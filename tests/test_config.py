@@ -30,6 +30,7 @@ def test_artifact_quota_defaults_are_production_safe(tmp_path: Path) -> None:
     assert settings.artifact_total_max_bytes == 10 * 1024 * 1024 * 1024
     assert settings.artifact_staging_max_bytes == 512 * 1024 * 1024
     assert settings.artifact_staging_ttl_seconds == 60 * 60
+    assert settings.enable_internal_upload is False
 
     with pytest.raises(ValidationError, match="less than or equal"):
         Settings(

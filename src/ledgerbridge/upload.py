@@ -27,6 +27,10 @@ class MultipartError(ValueError):
     """A malformed, duplicated, oversized, or unsupported multipart body."""
 
 
+class MultipartLimitError(MultipartError):
+    """A multipart body, field, header, or file exceeded a configured limit."""
+
+
 @dataclass(frozen=True, slots=True)
 class MultipartField:
     name: str
@@ -77,7 +81,7 @@ def parse_multipart(
     if max_file_bytes <= 0 or max_body_bytes <= 0 or max_body_bytes < max_file_bytes:
         raise ValueError("multipart limits must be positive and ordered")
     if declared_length is not None and (declared_length < 0 or declared_length > max_body_bytes):
-        raise MultipartError("multipart body exceeds its configured limit")
+        raise MultipartLimitError("multipart body exceeds its configured limit")
     boundary = _parse_boundary(content_type)
     initial = b"--" + boundary + b"\r\n"
     delimiter = b"\r\n--" + boundary
@@ -98,7 +102,7 @@ def parse_multipart(
             continue
         total_bytes += len(chunk)
         if total_bytes > max_body_bytes:
-            raise MultipartError("multipart body exceeds its configured limit")
+            raise MultipartLimitError("multipart body exceeds its configured limit")
         buffer.extend(chunk)
 
         while True:
@@ -117,10 +121,10 @@ def parse_multipart(
                 marker = buffer.find(b"\r\n\r\n")
                 if marker < 0:
                     if len(buffer) > MAX_MULTIPART_HEADER_BYTES:
-                        raise MultipartError("multipart headers exceed their limit")
+                        raise MultipartLimitError("multipart headers exceed their limit")
                     break
                 if marker > MAX_MULTIPART_HEADER_BYTES:
-                    raise MultipartError("multipart headers exceed their limit")
+                    raise MultipartLimitError("multipart headers exceed their limit")
                 header_bytes = bytes(buffer[:marker])
                 del buffer[: marker + 4]
                 name, filename, media_type = _parse_part_headers(header_bytes)
@@ -161,7 +165,7 @@ def parse_multipart(
                         del buffer[:safe_length]
                         field_buffer.extend(data)
                         if len(field_buffer) > MAX_MULTIPART_FIELD_BYTES:
-                            raise MultipartError("multipart field exceeds its limit")
+                            raise MultipartLimitError("multipart field exceeds its limit")
                     break
 
                 data = bytes(buffer[:marker])
@@ -174,7 +178,7 @@ def parse_multipart(
                 else:
                     field_buffer.extend(data)
                     if len(field_buffer) > MAX_MULTIPART_FIELD_BYTES:
-                        raise MultipartError("multipart field exceeds its limit")
+                        raise MultipartLimitError("multipart field exceeds its limit")
                     yield MultipartField(current_name, _decode_field(bytes(field_buffer)))
                     field_buffer.clear()
                 state = "boundary"
@@ -211,7 +215,7 @@ def parse_multipart(
 def _emit_file_chunk(data: bytes, current: int, maximum: int) -> int:
     next_size = current + len(data)
     if next_size > maximum:
-        raise MultipartError("multipart file exceeds its configured limit")
+        raise MultipartLimitError("multipart file exceeds its configured limit")
     return next_size
 
 

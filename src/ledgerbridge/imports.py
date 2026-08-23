@@ -162,64 +162,66 @@ class EvidenceImporter:
                 "evidence import state could not be recorded",
             ) from exc
 
-    def _ingest_and_import(
+    def validate_ingest_channel(self, source: str) -> None:
+        if not self._ingest_channel_is_registered(source):
+            raise EvidenceIngestionError(
+                "INGEST_CHANNEL_UNKNOWN",
+                "evidence ingestion channel is not registered",
+            )
+
+    def ingest_published(
         self,
-        stream: BinaryIO,
+        published: PublishedArtifact,
         metadata: IngestMetadata,
         connectors: Sequence[Connector],
         *,
         actor: str,
         reason: str,
     ) -> ImportOutcome:
-        if not self._ingest_channel_is_registered(metadata.source):
-            raise EvidenceIngestionError(
-                "INGEST_CHANNEL_UNKNOWN",
-                "evidence ingestion channel is not registered",
-            )
+        """Continue import from an already committed ArtifactStore result."""
+
         try:
-            published = self._store.publish(stream)
-        except ArtifactPublishedQuotaError as exc:
-            self._raise_quota_rejection(
-                exc,
-                error_code="ARTIFACT_TOTAL_QUOTA",
-                summary="published artifact capacity is exhausted",
-                ingest_channel=metadata.source,
+            return self._ingest_and_import(
+                None,
+                metadata,
+                connectors,
                 actor=actor,
                 reason=reason,
+                published=published,
             )
-        except ArtifactStagingQuotaError as exc:
-            self._raise_quota_rejection(
-                exc,
-                error_code="ARTIFACT_STAGING_QUOTA",
-                summary="artifact staging capacity is exhausted",
-                ingest_channel=metadata.source,
-                actor=actor,
-                reason=reason,
-            )
-        except ArtifactQuotaStateError as exc:
-            self._raise_quota_rejection(
-                exc,
-                error_code="ARTIFACT_QUOTA_STATE",
-                summary="artifact capacity could not be measured safely",
-                ingest_channel=metadata.source,
-                actor=actor,
-                reason=reason,
-            )
-        except ArtifactTooLargeError as exc:
-            raise EvidenceIngestionError(
-                "EVIDENCE_LIMIT",
-                "evidence exceeds the configured ingestion limit",
-            ) from exc
+        except EvidenceIngestionError:
+            raise
         except ArtifactIntegrityError as exc:
             raise EvidenceIngestionError(
                 "EVIDENCE_INTEGRITY",
-                "evidence storage integrity validation failed",
+                "evidence integrity validation failed",
             ) from exc
-        except (ArtifactStoreError, OSError) as exc:
+        except SQLAlchemyError as exc:
             raise EvidenceIngestionError(
-                "EVIDENCE_STORAGE",
-                "evidence could not be durably published",
+                "IMPORT_DATABASE",
+                "evidence import state could not be recorded",
             ) from exc
+
+    def _ingest_and_import(
+        self,
+        stream: BinaryIO | None,
+        metadata: IngestMetadata,
+        connectors: Sequence[Connector],
+        *,
+        actor: str,
+        reason: str,
+        published: PublishedArtifact | None = None,
+    ) -> ImportOutcome:
+        self.validate_ingest_channel(metadata.source)
+        if published is None:
+            if stream is None:
+                raise ValueError("an evidence stream is required before publication")
+            published = self._publish_stream(
+                stream,
+                metadata,
+                actor=actor,
+                reason=reason,
+            )
 
         artifact = self._ensure_artifact(published, metadata, actor=actor, reason=reason)
         if artifact.provenance_conflict:
@@ -322,6 +324,59 @@ class EvidenceImporter:
             actor=actor,
             reason=reason,
         )
+
+    def _publish_stream(
+        self,
+        stream: BinaryIO,
+        metadata: IngestMetadata,
+        *,
+        actor: str,
+        reason: str,
+    ) -> PublishedArtifact:
+        try:
+            return self._store.publish(stream)
+        except ArtifactPublishedQuotaError as exc:
+            self._raise_quota_rejection(
+                exc,
+                error_code="ARTIFACT_TOTAL_QUOTA",
+                summary="published artifact capacity is exhausted",
+                ingest_channel=metadata.source,
+                actor=actor,
+                reason=reason,
+            )
+        except ArtifactStagingQuotaError as exc:
+            self._raise_quota_rejection(
+                exc,
+                error_code="ARTIFACT_STAGING_QUOTA",
+                summary="artifact staging capacity is exhausted",
+                ingest_channel=metadata.source,
+                actor=actor,
+                reason=reason,
+            )
+        except ArtifactQuotaStateError as exc:
+            self._raise_quota_rejection(
+                exc,
+                error_code="ARTIFACT_QUOTA_STATE",
+                summary="artifact capacity could not be measured safely",
+                ingest_channel=metadata.source,
+                actor=actor,
+                reason=reason,
+            )
+        except ArtifactTooLargeError as exc:
+            raise EvidenceIngestionError(
+                "EVIDENCE_LIMIT",
+                "evidence exceeds the configured ingestion limit",
+            ) from exc
+        except ArtifactIntegrityError as exc:
+            raise EvidenceIngestionError(
+                "EVIDENCE_INTEGRITY",
+                "evidence storage integrity validation failed",
+            ) from exc
+        except (ArtifactStoreError, OSError) as exc:
+            raise EvidenceIngestionError(
+                "EVIDENCE_STORAGE",
+                "evidence could not be durably published",
+            ) from exc
 
     def _raise_quota_rejection(
         self,

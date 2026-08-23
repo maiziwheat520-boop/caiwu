@@ -275,6 +275,30 @@ def _ingest(
     )
 
 
+def test_ingest_published_continues_from_an_artifact_store_commit(
+    importer: EvidenceImporter,
+) -> None:
+    content = b"already committed evidence"
+    published = importer._store.publish(io.BytesIO(content))
+    connector = SyntheticConnector(records=[_record("row:published")])
+
+    outcome = importer.ingest_published(
+        published,
+        IngestMetadata(
+            source="synthetic_upload",
+            original_filename="committed.txt",
+            media_type="text/plain",
+        ),
+        [connector],
+        actor="pytest",
+        reason="published handoff test",
+    )
+
+    assert outcome.status is ImportJobStatus.SUCCEEDED
+    assert outcome.parsed_count == 1
+    assert connector.parsed_bytes == content
+
+
 def test_importer_and_connector_batch_guardrails(
     runtime_engine: Engine,
     admin_engine: Engine,
