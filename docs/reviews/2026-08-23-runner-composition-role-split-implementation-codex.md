@@ -60,6 +60,13 @@ fallback for local/test composition.
   tests**, with **95.44%** coverage. The replay also caught and confirmed the
   fix for the pre-existing downgrade-guard assertion, which now expects the
   transaction to remain at migration `20260823_0006` after a blocked downgrade.
+- Bandit initially reported two B608 findings on the migration's controlled
+  role interpolation. The final migration uses fixed deployment-contract role
+  literals, so the full Bandit scan reports **no issues identified**. Ruff,
+  mypy, and Windows pytest remained green after this hardening commit.
+- GitHub PR #18 head `823b7de` passed both push run `32648157898` and pull
+  request run `32648154595`; each run was green for `secrets`, `quality`, and
+  `compose`.
 - Hermes production was read-only checked after cleanup: gateway active,
   `/health` returned `{"status":"ok","platform":"hermes-agent","version":"0.20.0"}`;
   API, worker, and PostgreSQL remained healthy on revision
