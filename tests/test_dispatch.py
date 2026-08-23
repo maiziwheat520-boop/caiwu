@@ -18,6 +18,7 @@ from alembic import command
 from ledgerbridge.artifacts import ArtifactStore
 from ledgerbridge.audit import append_audit_event
 from ledgerbridge.dispatch import (
+    MAX_ATTEMPTS,
     DispatchClaimLost,
     DispatchConflict,
     DispatchError,
@@ -132,6 +133,20 @@ def _request(
         actor="pytest",
         reason="dispatch test",
     )
+
+
+def _create_import_job(sessions: sessionmaker[Session], artifact_id: UUID) -> UUID:
+    with sessions() as session, session.begin():
+        job = ImportJob(
+            artifact_id=artifact_id,
+            connector_name="synthetic",
+            connector_version="1",
+            source_system="synthetic",
+            status=ImportJobStatus.PENDING,
+        )
+        session.add(job)
+        session.flush()
+        return job.id
 
 
 def test_enqueue_is_idempotent_and_binds_acceptance_audit(
@@ -253,6 +268,128 @@ def test_claim_owner_and_status_principal_are_enforced(
         service.get_for_actor(operation.operation_id, "another-principal")
 
 
+def test_status_principal_and_success_terminal_path(
+    dispatch_context: tuple[DispatchService, UUID, sessionmaker[Session]],
+) -> None:
+    service, artifact_id, sessions = dispatch_context
+    operation = service.enqueue(_request(artifact_id, generation="terminal-success"))
+    assert service.acceptance_principal(operation.operation_id).actor == "pytest"
+    assert service.acceptance_principal(operation.operation_id).reason == "dispatch test"
+    with pytest.raises(DispatchNotFound):
+        service.acceptance_principal(uuid4())
+
+    base = datetime.now(UTC) + timedelta(seconds=1)
+    assert service.claim_next("worker-success", now=base) is not None
+    job_id = _create_import_job(sessions, artifact_id)
+    assert (
+        service.complete(
+            operation.operation_id,
+            "worker-success",
+            result_status=ImportJobStatus.SUCCEEDED,
+            import_job_id=job_id,
+            now=base + timedelta(seconds=1),
+        )
+        is DispatchState.SUCCEEDED
+    )
+    status = service.get_for_actor(operation.operation_id, "pytest")
+    assert status.result_status is ImportJobStatus.PENDING
+    assert service.claim_next("worker-empty", now=base + timedelta(seconds=2)) is None
+
+
+def test_failure_terminal_paths_and_argument_guards(
+    dispatch_context: tuple[DispatchService, UUID, sessionmaker[Session]],
+) -> None:
+    service, artifact_id, sessions = dispatch_context
+    base = datetime.now(UTC) + timedelta(seconds=1)
+
+    failed = service.enqueue(_request(artifact_id, generation="terminal-failed"))
+    assert service.claim_next("worker-failed", now=base) is not None
+    job_id = _create_import_job(sessions, artifact_id)
+    assert (
+        service.complete(
+            failed.operation_id,
+            "worker-failed",
+            result_status=ImportJobStatus.FAILED,
+            import_job_id=job_id,
+            error_code="CONNECTOR_CONTRACT",
+            summary="connector contract failed",
+            now=base + timedelta(seconds=1),
+        )
+        is DispatchState.FAILED
+    )
+
+    direct_failed = service.enqueue(_request(artifact_id, generation="direct-failed"))
+    assert service.claim_next("worker-direct", now=base + timedelta(seconds=2)) is not None
+    assert (
+        service.fail(
+            direct_failed.operation_id,
+            "worker-direct",
+            error_code="RUNNER_UNAVAILABLE",
+            summary="runner unavailable",
+            now=base + timedelta(seconds=3),
+        )
+        is DispatchState.FAILED
+    )
+
+    invalid = service.enqueue(_request(artifact_id, generation="invalid-complete"))
+    assert service.claim_next("worker-invalid", now=base + timedelta(seconds=4)) is not None
+    with pytest.raises(ValueError, match="terminal import status"):
+        service.complete(
+            invalid.operation_id,
+            "worker-invalid",
+            result_status=ImportJobStatus.PENDING,
+            import_job_id=job_id,
+            now=base + timedelta(seconds=5),
+        )
+    with pytest.raises(ValueError, match="successful dispatch"):
+        service.complete(
+            invalid.operation_id,
+            "worker-invalid",
+            result_status=ImportJobStatus.SUCCEEDED,
+            import_job_id=job_id,
+            error_code="RUNNER_UNAVAILABLE",
+            summary="unexpected",
+            now=base + timedelta(seconds=5),
+        )
+    with pytest.raises(ValueError, match="failed dispatch"):
+        service.complete(
+            invalid.operation_id,
+            "worker-invalid",
+            result_status=ImportJobStatus.FAILED,
+            import_job_id=job_id,
+            now=base + timedelta(seconds=5),
+        )
+    with pytest.raises(ValueError, match="review dispatch"):
+        service.complete(
+            invalid.operation_id,
+            "worker-invalid",
+            result_status=ImportJobStatus.NEEDS_REVIEW,
+            import_job_id=job_id,
+            error_code="REVIEW",
+            summary="unexpected",
+            now=base + timedelta(seconds=5),
+        )
+    with pytest.raises(ValueError, match="available_at"):
+        service.mark_retry(
+            invalid.operation_id,
+            "worker-invalid",
+            available_at=base,
+            error_code="RUNNER_UNAVAILABLE",
+            summary="runner unavailable",
+            now=base + timedelta(seconds=6),
+        )
+    assert (
+        service.fail(
+            invalid.operation_id,
+            "worker-invalid",
+            error_code="CONNECTOR_CONTRACT",
+            summary="invalid completion arguments",
+            now=base + timedelta(seconds=7),
+        )
+        is DispatchState.FAILED
+    )
+
+
 def test_dispatch_input_bounds_and_missing_artifact(
     dispatch_context: tuple[DispatchService, UUID, sessionmaker[Session]],
 ) -> None:
@@ -272,5 +409,18 @@ def test_dispatch_input_bounds_and_missing_artifact(
         )
     with pytest.raises(DispatchError, match="artifact"):
         service.enqueue(_request(uuid4(), generation="test-5"))
+    with pytest.raises(DispatchError, match="ingest channel"):
+        service.enqueue(
+            DispatchRequest(
+                artifact_id=artifact_id,
+                ingest_channel="missing-channel",
+                manifest_generation="test-6",
+                manifest_digest=b"d" * 32,
+                actor="pytest",
+                reason="test",
+            )
+        )
     with pytest.raises(ValueError):
         DispatchService(cast(sessionmaker[Session], object()), lease_seconds=0)
+    with pytest.raises(ValueError):
+        DispatchService(cast(sessionmaker[Session], object()), max_attempts=MAX_ATTEMPTS + 1)
