@@ -509,3 +509,20 @@ The async HTTP endpoint, worker claim loop, runner composition, signed
 manifest, and API/worker role split remain unimplemented and disabled pending
 separate review gates. The evidence report is
 `docs/reviews/2026-08-23-worker-async-dispatch-implementation-codex.md`.
+
+## Deferred boundary remediation (2026-08-24)
+
+Commit `bb3eee4` closes the four foundation controls from the independent
+security audit: context-local RunnerConnector state, a hard-capped runner
+executor whose slots survive cancelled waits, upload read deadlines with
+loop-independent concurrency admission, and migration-time reassertion of
+least-privilege API/worker role attributes and membership boundaries. Local
+validation is `241 passed, 139 skipped, 1 warning`; Hermes disposable
+PostgreSQL 15 replay completed migrations `0001` through `0008` in production
+mode and confirmed the role/TEMP/enqueue probes. The detailed evidence is in
+`docs/reviews/2026-08-24-deferred-boundary-remediation-codex.md`.
+
+This remains a review-only branch. True killable process isolation for hostile
+Connectors, signed manifest/key custody, trusted authentication, merge,
+production migration, feature enablement, role-password rollout, and real
+evidence import remain separately authorized gates.

@@ -258,3 +258,20 @@ hardening and database-wide `PUBLIC` temporary-privilege revocation remain in
 place after an empty downgrade. Restore validation must also assert that every
 security trigger is present and `tgenabled = 'O'`; a table owner can otherwise
 disable PostgreSQL triggers by design.
+
+## Deferred request and runner availability controls
+
+The internal multipart routes remain disabled by default and fail closed in
+production. When a separately approved test profile enables them, request body
+reads are bounded by `LEDGERBRIDGE_UPLOAD_READ_TIMEOUT_SECONDS` (default 120
+seconds) and `LEDGERBRIDGE_UPLOAD_CONCURRENCY` (default two). Admission is
+independent of the asyncio event loop and is held until the temporary body is
+closed; timeouts return `EVIDENCE_READ_TIMEOUT` (HTTP 408) and saturation
+returns `EVIDENCE_UPLOAD_BUSY` (HTTP 429).
+
+The isolated runner uses a dedicated executor capped at eight synchronous
+Connector calls (default four). A cancelled asyncio wait does not release a
+slot until the underlying call actually returns, and saturated work fails
+closed with `TIMEOUT`. This bounds thread growth; hostile real Connectors still
+require killable process isolation and a reviewed signed manifest before
+enablement.

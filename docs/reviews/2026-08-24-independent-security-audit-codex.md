@@ -42,17 +42,19 @@ inventory, threat model, canonical `scan-manifest.json`, `findings.json`, and
 
 ## Deferred follow-up gates
 
-These are not current production findings because the relevant features remain
-disabled, but they must close before enablement:
+The four foundation controls listed in the original audit were implemented in
+`bb3eee4` and are recorded in
+`docs/reviews/2026-08-24-deferred-boundary-remediation-codex.md`:
 
-1. Killable per-request Connector execution or equivalent hard timeout
-   isolation; cancelling `asyncio.to_thread()` does not stop a hostile parser.
-2. Per-task pending request context in `RunnerConnector` before one facade is
-   shared concurrently.
-3. Upload request deadlines, concurrency admission, and gateway limits before
-   exposing the internal multipart route.
-4. Reassert runtime role attributes and membership during migration for legacy
-   databases with drifted role metadata.
+1. Connector execution now uses a dedicated hard-capped executor and retains
+   occupied slots until cancelled synchronous work actually finishes; saturated
+   requests fail closed. This bounds the prior `asyncio.to_thread()` growth
+   risk, while true killable process isolation remains a requirement for a
+   hostile real Connector.
+2. `RunnerConnector` pending request state is context-local.
+3. Upload request reads have a deadline and loop-independent admission limit.
+4. Migration `20260823_0006` reasserts runtime role attributes and revokes
+   compatibility-role inheritance.
 
 No merge, production migration, password rollout, feature-flag enablement,
 manifest/key registration, or real evidence import was performed.
