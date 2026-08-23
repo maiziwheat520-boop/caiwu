@@ -29,13 +29,16 @@ the current design/plan head is `cdecbdb`; the prior runner audit baseline remai
 image and the handoff replay were tested only as disposable Hermes workloads and
 are not deployed.
 
-The current follow-up hardening head is `1d816a2` (dispatch provenance trigger,
+The current follow-up hardening implementation head is `1d816a2` and the
+documentation-inclusive branch head is `494e7e5` (dispatch provenance trigger,
 fail-closed migration environment, and bounded runner response materialization).
 The independent security audit report is
 `docs/reviews/2026-08-24-independent-security-audit-codex.md`; its canonical
 contract artifacts are retained in the terminal scan directory. The audit found
 no current reportable blocker/high/medium finding. Four enablement-time
 availability or role-drift items remain explicitly deferred.
+Hosted CI push run `32654690455` and pull-request run `32654693157` are green
+across `secrets`, `quality`, and `compose`.
 
 The preceding implementation head `b453874` passed push run `32648931938` and
 pull-request run `32648934569` across `secrets`, `quality`, and `compose`.
