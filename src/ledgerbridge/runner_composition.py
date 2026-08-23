@@ -15,8 +15,9 @@ import re
 from dataclasses import dataclass
 from typing import Final
 
-from ledgerbridge.connectors import ConnectorExecutionMode
+from ledgerbridge.connectors import CANONICAL_SOURCE_PATTERN, ConnectorExecutionMode
 from ledgerbridge.runner_client import ConnectorRunnerClient, RunnerConnector
+from ledgerbridge.text import contains_unstorable_text
 
 RUNNER_FACTORY_ID: Final = "ledgerbridge.runner_connector"
 _GENERATION_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$")
@@ -41,6 +42,12 @@ class RunnerConnectorSpec:
             raise RunnerCompositionError("runner factory is not allowlisted")
         if self.execution_mode is not ConnectorExecutionMode.RUNNER:
             raise RunnerCompositionError("runner composition requires execution_mode=runner")
+        _require_manifest_text("connector.name", self.name, 100)
+        if self.name.startswith("ledgerbridge."):
+            raise RunnerCompositionError("connector.name uses the reserved internal namespace")
+        _require_manifest_text("connector.version", self.version, 100)
+        if CANONICAL_SOURCE_PATTERN.fullmatch(self.source_system) is None:
+            raise RunnerCompositionError("connector.source_system is not canonical")
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,12 +78,18 @@ class VerifiedRunnerManifest:
         return cls(generation, digest, connectors)
 
     def __post_init__(self) -> None:
+        if type(self.digest) is not bytes:
+            raise RunnerCompositionError("manifest digest must be immutable bytes")
+        if type(self.connectors) is not tuple:
+            raise RunnerCompositionError("manifest connectors must be an immutable tuple")
         if _GENERATION_PATTERN.fullmatch(self.generation) is None:
             raise RunnerCompositionError("manifest generation is invalid")
         if len(self.digest) != 32:
             raise RunnerCompositionError("manifest digest must contain 32 bytes")
         identities: set[tuple[str, str]] = set()
         for connector in self.connectors:
+            if not isinstance(connector, RunnerConnectorSpec):
+                raise RunnerCompositionError("manifest contains an invalid connector spec")
             identity = (connector.name, connector.version)
             if identity in identities:
                 raise RunnerCompositionError("manifest contains duplicate connector identity")
@@ -136,3 +149,13 @@ def build_worker_runner_connectors(
         )
         for connector in manifest.connectors
     )
+
+
+def _require_manifest_text(field: str, value: object, maximum: int) -> None:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > maximum
+        or contains_unstorable_text(value)
+    ):
+        raise RunnerCompositionError(f"{field} must be non-blank and at most {maximum} characters")
