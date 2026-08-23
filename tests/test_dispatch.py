@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import io
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier
 from typing import cast
 from uuid import UUID, uuid4
 
@@ -26,7 +28,12 @@ from ledgerbridge.dispatch import (
     DispatchRequest,
     DispatchService,
 )
-from ledgerbridge.models import DispatchState, ImportJob, ImportJobStatus, RawArtifact
+from ledgerbridge.models import (
+    DispatchState,
+    ImportJob,
+    ImportJobStatus,
+    RawArtifact,
+)
 
 
 def _run_alembic(database_url: str, revision: str, *, downgrade: bool = False) -> None:
@@ -175,6 +182,39 @@ def test_enqueue_rejects_manifest_digest_conflict(
         service.enqueue(_request(artifact_id, digest=b"e" * 32))
 
 
+def test_concurrent_enqueue_converges_without_duplicate_acceptance(
+    dispatch_context: tuple[DispatchService, UUID, sessionmaker[Session]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, artifact_id, _sessions = dispatch_context
+    request = _request(artifact_id, generation="concurrent-enqueue")
+    barrier = Barrier(2)
+
+    def gated_append(
+        session: Session,
+        *,
+        actor: str,
+        action: str,
+        reason: str,
+        payload: Mapping[str, object] | None = None,
+        rule_version: str | None = None,
+    ) -> UUID:
+        barrier.wait(timeout=10)
+        return append_audit_event(
+            session,
+            actor=actor,
+            action=action,
+            reason=reason,
+            payload=payload,
+            rule_version=rule_version,
+        )
+
+    monkeypatch.setattr("ledgerbridge.dispatch.append_audit_event", gated_append)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(service.enqueue, (request, request)))
+    assert results[0] == results[1]
+
+
 def test_claim_renew_retry_reclaim_and_complete(
     dispatch_context: tuple[DispatchService, UUID, sessionmaker[Session]],
 ) -> None:
@@ -294,6 +334,111 @@ def test_status_principal_and_success_terminal_path(
     status = service.get_for_actor(operation.operation_id, "pytest")
     assert status.result_status is ImportJobStatus.PENDING
     assert service.claim_next("worker-empty", now=base + timedelta(seconds=2)) is None
+
+
+def test_exhaustion_recovery_and_validation_boundaries(
+    dispatch_context: tuple[DispatchService, UUID, sessionmaker[Session]],
+) -> None:
+    service, artifact_id, sessions = dispatch_context
+    base = datetime.now(UTC) + timedelta(seconds=1)
+    with pytest.raises(ValueError):
+        service.recover_expired_leases(now=base, limit=0)
+    with pytest.raises(ValueError):
+        service.recover_expired_leases(now=base, limit=1001)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        service.recover_expired_leases(now=datetime.now())
+
+    one_attempt = DispatchService(sessions, lease_seconds=5, max_attempts=1)
+    exhausted = one_attempt.enqueue(_request(artifact_id, generation="retry-exhausted"))
+    assert one_attempt.claim_next("worker-exhausted", now=base) is not None
+    assert (
+        one_attempt.mark_retry(
+            exhausted.operation_id,
+            "worker-exhausted",
+            available_at=base + timedelta(seconds=1),
+            error_code="RUNNER_UNAVAILABLE",
+            summary="runner unavailable",
+            now=base + timedelta(seconds=1),
+        )
+        is DispatchState.FAILED
+    )
+
+    two_attempts = DispatchService(sessions, lease_seconds=5, max_attempts=2)
+    claim_exhausted = two_attempts.enqueue(_request(artifact_id, generation="claim-exhausted"))
+    assert two_attempts.claim_next("worker-claim", now=base + timedelta(seconds=2)) is not None
+    assert (
+        two_attempts.mark_retry(
+            claim_exhausted.operation_id,
+            "worker-claim",
+            available_at=base + timedelta(seconds=3),
+            error_code="RUNNER_UNAVAILABLE",
+            summary="runner unavailable",
+            now=base + timedelta(seconds=2),
+        )
+        is DispatchState.RETRY_WAIT
+    )
+    two_attempts._max_attempts = 1
+    assert two_attempts.claim_next("worker-claim-2", now=base + timedelta(seconds=4)) is None
+    assert (
+        two_attempts.get_for_actor(claim_exhausted.operation_id, "pytest").state
+        is DispatchState.FAILED
+    )
+
+    with pytest.raises(ValueError):
+        service.enqueue(
+            DispatchRequest(
+                artifact_id=artifact_id,
+                ingest_channel="",
+                manifest_generation="valid",
+                manifest_digest=b"d" * 32,
+                actor="pytest",
+                reason="valid",
+            )
+        )
+    with pytest.raises(ValueError):
+        service.enqueue(
+            DispatchRequest(
+                artifact_id=artifact_id,
+                ingest_channel="synthetic_upload",
+                manifest_generation="",
+                manifest_digest=b"d" * 32,
+                actor="pytest",
+                reason="valid",
+            )
+        )
+    with pytest.raises(ValueError):
+        service.enqueue(
+            DispatchRequest(
+                artifact_id=artifact_id,
+                ingest_channel="synthetic_upload",
+                manifest_generation="valid",
+                manifest_digest=b"d" * 32,
+                actor="pytest",
+                reason="",
+            )
+        )
+    with pytest.raises(ValueError):
+        service.get_for_actor(exhausted.operation_id, "")
+    with pytest.raises(ValueError):
+        service.claim_next("", now=base)
+    with pytest.raises(ValueError):
+        service.claim_next("worker", now=datetime.now())
+    with pytest.raises(ValueError):
+        service.fail(
+            exhausted.operation_id,
+            "worker",
+            error_code="invalid-code",
+            summary="summary",
+            now=base,
+        )
+    with pytest.raises(ValueError):
+        service.fail(
+            exhausted.operation_id,
+            "worker",
+            error_code="VALID_CODE",
+            summary="bad\x00summary",
+            now=base,
+        )
 
 
 def test_failure_terminal_paths_and_argument_guards(
