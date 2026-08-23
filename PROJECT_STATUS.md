@@ -159,9 +159,10 @@ is green across `secrets`, `quality`, and `compose`; Claude's approval applies t
 the earlier fixed code/test SHA, while this follow-up is Codex-verified.
 Protected PR #18 is open at
 `https://github.com/maiziwheat520-boop/caiwu/pull/18`; its current head is
-`5fbb5fb`. The latest code/test push run is `32640116719` and pull-request run
-`32640114300` (both pending at the time of this update). The preceding green
-implementation-plan and code runs remain recorded below. The code/test push and pull-request runs for `19f4c30`
+`b1376d9`. The latest documentation-inclusive code/test push run is
+`32640445494` and pull-request run `32640447250`; both passed `secrets`,
+`quality`, and `compose`. The preceding green implementation-plan and code
+runs remain recorded below. The code/test push and pull-request runs for `19f4c30`
 (`32615944190` and `32615946593`) passed `secrets`, `quality`, and `compose`;
 the design/status head `85253b2` push and pull-request runs (`32618527733`
 and `32618529442`) also passed all three jobs; the implementation-plan push
