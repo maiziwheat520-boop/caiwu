@@ -1,7 +1,15 @@
+import hashlib
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import gettempdir
+from typing import cast
+from uuid import uuid4
 
 import ledgerbridge.worker as worker
+from ledgerbridge.artifacts import PublishedArtifact, storage_key_for_digest
+from ledgerbridge.dispatch import DispatchClaim, DispatchPrincipal, DispatchService
+from ledgerbridge.imports import EvidenceImporter, ImportOutcome, IngestMetadata
+from ledgerbridge.models import DispatchState, ImportJobStatus
 from ledgerbridge.worker import heartbeat_is_fresh, heartbeat_path, write_heartbeat
 
 
@@ -34,6 +42,15 @@ def test_worker_main_writes_once_and_stops(monkeypatch: object) -> None:
 
     def build_importer() -> None:
         importer_builds.append("build")
+
+    class Settings:
+        env = "test"
+        enable_internal_async_dispatch = False
+        dispatch_poll_seconds = 1.0
+
+    monkeypatch.setattr(worker, "get_settings", lambda: Settings())  # type: ignore[attr-defined]
+    monkeypatch.setattr(worker, "build_dispatch_service", lambda _settings: object())  # type: ignore[attr-defined]
+    monkeypatch.setattr(worker, "build_worker_connectors", lambda: ())  # type: ignore[attr-defined]
 
     monkeypatch.setattr(worker.signal, "signal", lambda *_args: None)  # type: ignore[attr-defined]
     monkeypatch.setattr(  # type: ignore[attr-defined]
@@ -83,3 +100,76 @@ def test_worker_composition_enables_production_connector_boundary(
 
     assert captured["database_url"] == "postgresql+psycopg://runtime"
     assert captured["production"] is True
+
+
+def test_process_dispatch_once_imports_and_terminalizes(monkeypatch: object) -> None:
+    now = datetime(2026, 8, 23, tzinfo=UTC)
+    digest = hashlib.sha256(b"evidence").digest()
+    operation_id = uuid4()
+
+    class Dispatch:
+        def __init__(self) -> None:
+            self.claim = DispatchClaim(
+                operation_id=operation_id,
+                artifact_id=uuid4(),
+                ingest_channel="manual_upload",
+                manifest_generation="synthetic-test",
+                manifest_digest=b"m" * 32,
+                byte_size=8,
+                storage_key=storage_key_for_digest(digest),
+                original_filename="statement.csv",
+                media_type="text/csv",
+                attempt_count=1,
+                lease_owner="worker-1",
+                lease_until=now + timedelta(seconds=30),
+            )
+            self.completed: tuple[object, ...] | None = None
+
+        def recover_expired_leases(self, **_kwargs: object) -> int:
+            return 0
+
+        def claim_next(self, _owner: str, **_kwargs: object) -> DispatchClaim:
+            return self.claim
+
+        def acceptance_principal(self, _operation_id: object) -> DispatchPrincipal:
+            return DispatchPrincipal(actor="actor-1", reason="accepted")
+
+        def renew_lease(self, _operation_id: object, _owner: str) -> datetime:
+            return now + timedelta(seconds=30)
+
+        def complete(self, *args: object, **kwargs: object) -> DispatchState:
+            self.completed = (*args, kwargs)
+            return DispatchState.SUCCEEDED
+
+    class Importer:
+        def ingest_published(
+            self,
+            published: PublishedArtifact,
+            metadata: IngestMetadata,
+            connectors: object,
+            **kwargs: object,
+        ) -> ImportOutcome:
+            assert published.sha256 == digest
+            assert metadata.source == "manual_upload"
+            assert connectors
+            assert kwargs == {"actor": "actor-1", "reason": "accepted"}
+            return ImportOutcome(
+                artifact_id=uuid4(),
+                job_id=uuid4(),
+                status=ImportJobStatus.SUCCEEDED,
+                parsed_count=1,
+                created_count=1,
+                duplicate_count=0,
+                error_code=None,
+                artifact_created=False,
+            )
+
+    dispatch = Dispatch()
+    assert worker.process_dispatch_once(
+        cast(DispatchService, dispatch),
+        cast(EvidenceImporter, Importer()),
+        (object(),),  # type: ignore[arg-type]
+        "worker-1",
+        now=now,
+    )
+    assert dispatch.completed is not None

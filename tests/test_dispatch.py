@@ -168,8 +168,53 @@ def test_enqueue_is_idempotent_and_binds_acceptance_audit(
         assert (
             session.scalar(
                 text("SELECT count(*) FROM audit_event WHERE action = 'import.dispatch.accepted'")
-            )
+        )
             == 1
+        )
+
+
+def test_enqueue_published_binds_artifact_and_dispatch_in_one_transaction(
+    dispatch_context: tuple[DispatchService, UUID, sessionmaker[Session]],
+    tmp_path: Path,
+) -> None:
+    service, _artifact_id, sessions = dispatch_context
+    store = ArtifactStore(tmp_path / "published", max_bytes=1_000_000)
+    published = store.publish(io.BytesIO(b"async dispatch artifact"))
+    first = service.enqueue_published(
+        published,
+        ingest_channel="synthetic_upload",
+        original_filename="async.csv",
+        media_type="text/csv",
+        manifest_generation="async-test",
+        manifest_digest=b"a" * 32,
+        actor="pytest",
+        reason="async dispatch test",
+    )
+    second = service.enqueue_published(
+        published,
+        ingest_channel="synthetic_upload",
+        original_filename="async.csv",
+        media_type="text/csv",
+        manifest_generation="async-test",
+        manifest_digest=b"a" * 32,
+        actor="other-principal",
+        reason="must converge",
+    )
+    assert second == first
+    with sessions() as session:
+        assert session.scalar(text("SELECT count(*) FROM raw_artifact")) == 2
+        assert session.scalar(text("SELECT count(*) FROM evidence_import_dispatch")) == 2
+        assert (
+            session.scalar(
+                text("SELECT count(*) FROM audit_event WHERE action = 'import.dispatch.accepted'")
+            )
+            == 2
+        )
+        assert (
+            session.scalar(
+                text("SELECT count(*) FROM audit_event WHERE action = 'artifact.ingest'")
+            )
+            == 2
         )
 
 

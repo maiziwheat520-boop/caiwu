@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from typing import Annotated, BinaryIO, cast
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -18,12 +18,19 @@ from ledgerbridge.artifacts import (
     ArtifactStore,
     ArtifactStoreError,
     ArtifactTooLargeError,
+    PublishedArtifact,
 )
 from ledgerbridge.config import Settings, get_settings
 from ledgerbridge.connectors import Connector
 from ledgerbridge.db import get_session, get_session_factory
+from ledgerbridge.dispatch import (
+    DispatchConflict,
+    DispatchError,
+    DispatchNotFound,
+    DispatchService,
+)
 from ledgerbridge.imports import EvidenceImporter, EvidenceIngestionError, IngestMetadata
-from ledgerbridge.models import ImportJobStatus
+from ledgerbridge.models import DispatchState, ImportJobStatus
 from ledgerbridge.text import contains_unstorable_text
 from ledgerbridge.upload import (
     MAX_MULTIPART_FIELD_BYTES,
@@ -78,6 +85,20 @@ class InternalUploadResponse(BaseModel):
     error_code: str | None
 
 
+class AsyncDispatchResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: UUID
+    artifact_id: UUID
+    status: DispatchState
+
+
+class AsyncDispatchStatusResponse(AsyncDispatchResponse):
+    job_id: UUID | None
+    result_status: ImportJobStatus | None
+    error_code: str | None
+
+
 def get_artifact_store(settings: Annotated[Settings, Depends(get_settings)]) -> ArtifactStore:
     return ArtifactStore(
         settings.artifact_root,
@@ -99,6 +120,16 @@ def get_evidence_importer(
     )
 
 
+def get_dispatch_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> DispatchService:
+    return DispatchService(
+        get_session_factory(settings.database_url),
+        lease_seconds=settings.dispatch_lease_seconds,
+        max_attempts=settings.dispatch_max_attempts,
+    )
+
+
 def get_internal_connectors() -> Sequence[Connector]:
     """Return the reviewed internal connector manifest, empty until one exists."""
 
@@ -110,6 +141,19 @@ def require_internal_upload(
 ) -> None:
     if settings.env == "production" or not settings.enable_internal_upload:
         raise _route_error("INTERNAL_UPLOAD_DISABLED", status.HTTP_404_NOT_FOUND)
+
+
+def require_internal_async_dispatch(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> None:
+    if settings.env == "production" or not settings.enable_internal_async_dispatch:
+        raise _route_error("ASYNC_DISPATCH_DISABLED", status.HTTP_404_NOT_FOUND)
+
+
+def get_async_dispatch_manifest() -> tuple[str, bytes] | None:
+    """Return the verified manifest identity; empty until a reviewed loader exists."""
+
+    return None
 
 
 def get_authenticated_principal(request: Request) -> str:
@@ -232,6 +276,157 @@ async def upload_evidence(
         duplicate_count=outcome.duplicate_count,
         error_code=outcome.error_code,
     )
+
+
+@app.post(
+    "/v1/evidence/import-requests",
+    response_model=AsyncDispatchResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model_exclude_none=False,
+    tags=["internal-evidence"],
+    dependencies=[Depends(require_internal_async_dispatch)],
+)
+async def enqueue_evidence_import(
+    request: Request,
+    response: Response,
+    settings: Annotated[Settings, Depends(get_settings)],
+    principal: Annotated[str, Depends(get_authenticated_principal)],
+    manifest: Annotated[tuple[str, bytes] | None, Depends(get_async_dispatch_manifest)],
+    store: Annotated[ArtifactStore, Depends(get_artifact_store)],
+    dispatch: Annotated[DispatchService, Depends(get_dispatch_service)],
+) -> AsyncDispatchResponse:
+    if manifest is None or len(manifest[1]) != 32:
+        raise _route_error(
+            "CONNECTOR_MANIFEST_UNAVAILABLE",
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    manifest_generation, manifest_digest = manifest
+    declared_length = _declared_length(request)
+    max_body_bytes = _max_body_bytes(settings.artifact_max_bytes)
+    if declared_length is not None and declared_length > max_body_bytes:
+        raise _route_error("EVIDENCE_LIMIT", status.HTTP_413_CONTENT_TOO_LARGE)
+    try:
+        published, channel, filename, media_type = await _receive_handoff(
+            request,
+            settings=settings,
+            store=store,
+            declared_length=declared_length,
+            max_body_bytes=max_body_bytes,
+            dispatch=dispatch,
+        )
+        snapshot = dispatch.enqueue_published(
+            published,
+            ingest_channel=channel,
+            original_filename=filename,
+            media_type=media_type,
+            manifest_generation=manifest_generation,
+            manifest_digest=manifest_digest,
+            actor=principal,
+            reason="internal async evidence import request",
+        )
+    except MultipartLimitError as exc:
+        raise _route_error("EVIDENCE_LIMIT", status.HTTP_413_CONTENT_TOO_LARGE) from exc
+    except MultipartError as exc:
+        raise _route_error("INVALID_MULTIPART", status.HTTP_400_BAD_REQUEST) from exc
+    except DispatchConflict as exc:
+        raise _route_error("DISPATCH_CONFLICT", status.HTTP_409_CONFLICT) from exc
+    except DispatchError as exc:
+        raise _route_error("DISPATCH_UNAVAILABLE", status.HTTP_503_SERVICE_UNAVAILABLE) from exc
+    except ValueError as exc:
+        raise _route_error("INVALID_METADATA", status.HTTP_422_UNPROCESSABLE_CONTENT) from exc
+    except ArtifactTooLargeError as exc:
+        raise _route_error("EVIDENCE_LIMIT", status.HTTP_413_CONTENT_TOO_LARGE) from exc
+    except ArtifactStagingQuotaError as exc:
+        raise _route_error("ARTIFACT_STAGING_QUOTA", status.HTTP_413_CONTENT_TOO_LARGE) from exc
+    except ArtifactPublishedQuotaError as exc:
+        raise _route_error("ARTIFACT_TOTAL_QUOTA", status.HTTP_507_INSUFFICIENT_STORAGE) from exc
+    except ArtifactQuotaStateError as exc:
+        raise _route_error("ARTIFACT_QUOTA_STATE", status.HTTP_503_SERVICE_UNAVAILABLE) from exc
+    except ArtifactIntegrityError as exc:
+        raise _route_error("EVIDENCE_INTEGRITY", status.HTTP_500_INTERNAL_SERVER_ERROR) from exc
+    except (ArtifactStoreError, OSError) as exc:
+        raise _route_error("EVIDENCE_STORAGE", status.HTTP_500_INTERNAL_SERVER_ERROR) from exc
+    except SQLAlchemyError as exc:
+        raise _route_error("IMPORT_DATABASE", status.HTTP_503_SERVICE_UNAVAILABLE) from exc
+    response.headers["Location"] = f"/v1/evidence/import-requests/{snapshot.operation_id}"
+    return AsyncDispatchResponse(
+        operation_id=snapshot.operation_id,
+        artifact_id=snapshot.artifact_id,
+        status=snapshot.state,
+    )
+
+
+@app.get(
+    "/v1/evidence/import-requests/{operation_id}",
+    response_model=AsyncDispatchStatusResponse,
+    response_model_exclude_none=False,
+    tags=["internal-evidence"],
+    dependencies=[Depends(require_internal_async_dispatch)],
+)
+def get_evidence_import_status(
+    operation_id: UUID,
+    principal: Annotated[str, Depends(get_authenticated_principal)],
+    dispatch: Annotated[DispatchService, Depends(get_dispatch_service)],
+) -> AsyncDispatchStatusResponse:
+    try:
+        snapshot = dispatch.get_for_actor(operation_id, principal)
+    except DispatchNotFound as exc:
+        raise _route_error("OPERATION_NOT_FOUND", status.HTTP_404_NOT_FOUND) from exc
+    return AsyncDispatchStatusResponse(
+        operation_id=snapshot.operation_id,
+        artifact_id=snapshot.artifact_id,
+        status=snapshot.state,
+        job_id=snapshot.job_id,
+        result_status=snapshot.result_status,
+        error_code=snapshot.error_code,
+    )
+
+
+async def _receive_handoff(
+    request: Request,
+    *,
+    settings: Settings,
+    store: ArtifactStore,
+    declared_length: int | None,
+    max_body_bytes: int,
+    dispatch: DispatchService,
+) -> tuple[PublishedArtifact, str, str, str]:
+    request_body = await _read_bounded_request(request, max_body_bytes)
+    channel: str | None = None
+    filename: str | None = None
+    media_type: str | None = None
+    try:
+        handoff = store.begin_handoff()
+        try:
+            parser_complete = False
+            for event in parse_multipart(
+                iter(lambda: request_body.read(64 * 1024), b""),
+                request.headers.get("content-type", ""),
+                max_file_bytes=settings.artifact_max_bytes,
+                max_body_bytes=max_body_bytes,
+                declared_length=declared_length,
+            ):
+                if isinstance(event, MultipartField):
+                    channel = event.value
+                elif isinstance(event, MultipartFileStart):
+                    filename = event.filename
+                    media_type = event.media_type
+                elif isinstance(event, MultipartFileChunk):
+                    handoff.write(event.data)
+                elif isinstance(event, MultipartComplete):
+                    parser_complete = True
+            if channel is None or filename is None or media_type is None or not parser_complete:
+                raise MultipartError("multipart body is incomplete")
+            dispatch.validate_ingest_channel(channel)
+            published = handoff.complete(parser_complete=True)
+        except BaseException:
+            handoff.abort()
+            raise
+    finally:
+        request_body.close()
+    if channel is None or filename is None or media_type is None:
+        raise MultipartError("multipart metadata is incomplete")
+    return published, channel, filename, media_type
 
 
 async def _read_bounded_request(request: Request, maximum: int) -> BinaryIO:

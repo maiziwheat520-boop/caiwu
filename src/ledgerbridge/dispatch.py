@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -10,9 +11,11 @@ from typing import Final
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from ledgerbridge.artifacts import PublishedArtifact
 from ledgerbridge.audit import append_audit_event
 from ledgerbridge.models import (
     AuditEvent,
@@ -76,6 +79,10 @@ class DispatchClaim:
     ingest_channel: str
     manifest_generation: str
     manifest_digest: bytes
+    byte_size: int
+    storage_key: str
+    original_filename: str
+    media_type: str
     attempt_count: int
     lease_owner: str
     lease_until: datetime
@@ -129,6 +136,7 @@ class DispatchService:
                 return self._snapshot(session, existing)
 
             operation_id = uuid4()
+            dispatch: ImportDispatch | None = None
             try:
                 with session.begin_nested():
                     audit_event_id = append_audit_event(
@@ -172,6 +180,151 @@ class DispatchService:
                 return self._snapshot(session, existing)
             return self._snapshot(session, dispatch)
 
+    def enqueue_published(
+        self,
+        published: PublishedArtifact,
+        *,
+        ingest_channel: str,
+        original_filename: str,
+        media_type: str,
+        manifest_generation: str,
+        manifest_digest: bytes,
+        actor: str,
+        reason: str,
+    ) -> DispatchSnapshot:
+        """Bind a verified artifact and enqueue it in one database transaction."""
+
+        _validate_published_metadata(
+            published,
+            ingest_channel=ingest_channel,
+            original_filename=original_filename,
+            media_type=media_type,
+            manifest_generation=manifest_generation,
+            manifest_digest=manifest_digest,
+            actor=actor,
+            reason=reason,
+        )
+        with self._sessions() as session, session.begin():
+            if session.get(IngestChannel, ingest_channel) is None:
+                raise DispatchError("ingest channel is not registered")
+            artifact = session.scalar(
+                select(RawArtifact).where(RawArtifact.sha256 == published.sha256).with_for_update()
+            )
+            if artifact is None:
+                try:
+                    with session.begin_nested():
+                        artifact_audit_id = append_audit_event(
+                            session,
+                            actor=actor,
+                            action="artifact.ingest",
+                            reason=reason,
+                            payload={
+                                "sha256": published.sha256_hex,
+                                "byte_size": published.byte_size,
+                                "storage_key": published.storage_key,
+                                "source": ingest_channel,
+                                "original_filename_sha256": hashlib.sha256(
+                                    original_filename.encode("utf-8")
+                                ).hexdigest(),
+                                "media_type": media_type,
+                            },
+                        )
+                        artifact_id = session.execute(
+                            postgresql_insert(RawArtifact)
+                            .values(
+                                sha256=published.sha256,
+                                source=ingest_channel,
+                                original_filename=original_filename,
+                                media_type=media_type,
+                                byte_size=published.byte_size,
+                                storage_key=published.storage_key,
+                                audit_event_id=artifact_audit_id,
+                            )
+                            .on_conflict_do_nothing(index_elements=[RawArtifact.sha256])
+                            .returning(RawArtifact.id)
+                        ).scalar_one_or_none()
+                        if artifact_id is None:
+                            raise DispatchConflict("artifact identity race")
+                        artifact = session.get(RawArtifact, artifact_id)
+                        if artifact is None:
+                            raise DispatchError("created artifact disappeared")
+                except DispatchConflict:
+                    artifact = session.scalar(
+                        select(RawArtifact)
+                        .where(RawArtifact.sha256 == published.sha256)
+                        .with_for_update()
+                    )
+                    if artifact is None:
+                        raise DispatchError("artifact identity race did not converge") from None
+            if (
+                artifact.sha256 != published.sha256
+                or artifact.byte_size != published.byte_size
+                or artifact.storage_key != published.storage_key
+            ):
+                raise DispatchConflict("artifact metadata conflicts with verified bytes")
+            if artifact.source != ingest_channel or artifact.media_type != media_type:
+                raise DispatchConflict("artifact provenance conflicts with existing bytes")
+
+            existing = session.scalar(
+                select(ImportDispatch)
+                .where(
+                    ImportDispatch.artifact_id == artifact.id,
+                    ImportDispatch.ingest_channel == ingest_channel,
+                    ImportDispatch.manifest_generation == manifest_generation,
+                )
+                .with_for_update()
+            )
+            if existing is not None:
+                if existing.manifest_digest != manifest_digest:
+                    raise DispatchConflict("manifest digest conflicts with existing dispatch")
+                return self._snapshot(session, existing)
+
+            operation_id = uuid4()
+            try:
+                with session.begin_nested():
+                    accepted_audit_id = append_audit_event(
+                        session,
+                        actor=actor,
+                        action="import.dispatch.accepted",
+                        reason=reason,
+                        payload={
+                            "operation_id": str(operation_id),
+                            "artifact_id": str(artifact.id),
+                            "ingest_channel": ingest_channel,
+                            "manifest_generation": manifest_generation,
+                            "manifest_digest": manifest_digest.hex(),
+                        },
+                    )
+                    dispatch = ImportDispatch(
+                        id=operation_id,
+                        artifact_id=artifact.id,
+                        ingest_channel=ingest_channel,
+                        accepted_audit_event_id=accepted_audit_id,
+                        manifest_generation=manifest_generation,
+                        manifest_digest=manifest_digest,
+                        state=DispatchState.PENDING,
+                    )
+                    session.add(dispatch)
+                    session.flush()
+            except IntegrityError as exc:
+                existing = session.scalar(
+                    select(ImportDispatch).where(
+                        ImportDispatch.artifact_id == artifact.id,
+                        ImportDispatch.ingest_channel == ingest_channel,
+                        ImportDispatch.manifest_generation == manifest_generation,
+                    )
+                )
+                if existing is None:
+                    raise DispatchError("dispatch identity race did not converge") from exc
+                if existing.manifest_digest != manifest_digest:
+                    raise DispatchConflict(
+                        "manifest digest conflicts with existing dispatch"
+                    ) from exc
+                return self._snapshot(session, existing)
+            if dispatch is None:
+                raise DispatchError("dispatch creation failed")
+            return self._snapshot(session, dispatch)
+
     def get_for_actor(self, operation_id: UUID, actor: str) -> DispatchSnapshot:
         _validate_actor(actor)
         with self._sessions() as session:
@@ -199,6 +352,12 @@ class DispatchService:
                 result_status=result_status,
                 error_code=dispatch.error_code,
             )
+
+    def validate_ingest_channel(self, ingest_channel: str) -> None:
+        _validate_channel(ingest_channel)
+        with self._sessions() as session:
+            if session.get(IngestChannel, ingest_channel) is None:
+                raise DispatchError("ingest channel is not registered")
 
     def acceptance_principal(self, operation_id: UUID) -> DispatchPrincipal:
         with self._sessions() as session:
@@ -257,8 +416,9 @@ class DispatchService:
         current = _utc_now(now)
         lease_until = current + timedelta(seconds=self._lease_seconds)
         with self._sessions() as session, session.begin():
-            dispatch = session.scalar(
+            row = session.execute(
                 select(ImportDispatch)
+                .join(RawArtifact, RawArtifact.id == ImportDispatch.artifact_id)
                 .where(
                     ImportDispatch.state.in_((DispatchState.PENDING, DispatchState.RETRY_WAIT)),
                     ImportDispatch.available_at <= current,
@@ -266,9 +426,13 @@ class DispatchService:
                 .order_by(ImportDispatch.available_at, ImportDispatch.created_at, ImportDispatch.id)
                 .with_for_update(skip_locked=True)
                 .limit(1)
-            )
-            if dispatch is None:
+            ).one_or_none()
+            if row is None:
                 return None
+            dispatch = row[0]
+            artifact = session.get(RawArtifact, dispatch.artifact_id)
+            if artifact is None:
+                raise DispatchError("dispatch artifact disappeared")
             if dispatch.attempt_count >= self._max_attempts:
                 dispatch.state = DispatchState.FAILED
                 dispatch.completed_at = current
@@ -291,6 +455,10 @@ class DispatchService:
                 ingest_channel=dispatch.ingest_channel,
                 manifest_generation=dispatch.manifest_generation,
                 manifest_digest=dispatch.manifest_digest,
+                byte_size=artifact.byte_size,
+                storage_key=artifact.storage_key,
+                original_filename=artifact.original_filename,
+                media_type=artifact.media_type,
                 attempt_count=dispatch.attempt_count,
                 lease_owner=worker_id,
                 lease_until=lease_until,
@@ -466,8 +634,7 @@ class DispatchService:
 def _validate_request(request: DispatchRequest) -> None:
     if not isinstance(request.artifact_id, UUID):
         raise ValueError("artifact_id must be a UUID")
-    if not request.ingest_channel or len(request.ingest_channel) > 64:
-        raise ValueError("ingest_channel is invalid")
+    _validate_channel(request.ingest_channel)
     if (
         not request.manifest_generation
         or len(request.manifest_generation) > MAX_MANIFEST_GENERATION
@@ -480,9 +647,45 @@ def _validate_request(request: DispatchRequest) -> None:
         raise ValueError("reason is invalid")
 
 
+def _validate_published_metadata(
+    published: PublishedArtifact,
+    *,
+    ingest_channel: str,
+    original_filename: str,
+    media_type: str,
+    manifest_generation: str,
+    manifest_digest: bytes,
+    actor: str,
+    reason: str,
+) -> None:
+    if len(published.sha256) != 32 or published.byte_size < 0 or not published.storage_key:
+        raise ValueError("published artifact identity is invalid")
+    _validate_channel(ingest_channel)
+    if (
+        not original_filename
+        or len(original_filename) > 512
+        or contains_unstorable_text(original_filename)
+    ):
+        raise ValueError("original_filename is invalid")
+    if not media_type or len(media_type) > 200 or contains_unstorable_text(media_type):
+        raise ValueError("media_type is invalid")
+    if not manifest_generation or len(manifest_generation) > MAX_MANIFEST_GENERATION:
+        raise ValueError("manifest_generation is invalid")
+    if len(manifest_digest) != 32:
+        raise ValueError("manifest_digest must contain 32 bytes")
+    _validate_actor(actor)
+    if not reason or len(reason) > 500 or contains_unstorable_text(reason):
+        raise ValueError("reason is invalid")
+
+
 def _validate_actor(actor: str) -> None:
     if not actor or len(actor) > 200 or contains_unstorable_text(actor):
         raise ValueError("actor is invalid")
+
+
+def _validate_channel(channel: str) -> None:
+    if not re.fullmatch(r"^[a-z][a-z0-9_]{0,63}$", channel):
+        raise ValueError("ingest_channel is invalid")
 
 
 def _validate_worker_id(worker_id: str) -> None:
