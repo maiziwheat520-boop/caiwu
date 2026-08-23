@@ -6,6 +6,19 @@ Scope: remediate the independent Sol Max audit findings before any merge or depl
 
 ## Findings and fixes
 
+### Post-review hardening — service-scoped settings and artifact provenance
+
+An independent recheck found two follow-up gaps in the first remediation draft.
+They are now closed:
+
+- Compose sets an explicit `LEDGERBRIDGE_RUNTIME_ROLE` (`api`, `worker`, or
+  `migrate`). Settings now require only the URL for the current service, so API
+  and worker do not need to receive each other's credentials and the owner-only
+  migration container can start with only its owner URL.
+- The security-definer enqueue function now requires the artifact's
+  `raw_artifact.source` to equal the requested ingest channel, preventing a
+  cross-channel dispatch from being admitted.
+
 ### HIGH — runtime role credential crossover
 
 The audit found that API and worker inherited the compatibility database URL and

@@ -26,12 +26,17 @@ def test_only_worker_has_a_writable_artifact_volume() -> None:
     assert api["environment"]["LEDGERBRIDGE_API_DATABASE_URL"] == (
         "${LEDGERBRIDGE_API_DATABASE_URL:?api database URL is required}"
     )
+    assert api["environment"]["LEDGERBRIDGE_RUNTIME_ROLE"] == "api"
     assert worker["environment"]["LEDGERBRIDGE_WORKER_DATABASE_URL"] == (
         "${LEDGERBRIDGE_WORKER_DATABASE_URL:?worker database URL is required}"
     )
+    assert worker["environment"]["LEDGERBRIDGE_RUNTIME_ROLE"] == "worker"
     assert "LEDGERBRIDGE_DATABASE_URL" not in api["environment"]
     assert "LEDGERBRIDGE_DATABASE_URL" not in worker["environment"]
     assert "?api database URL is required" in api["environment"]["LEDGERBRIDGE_API_DATABASE_URL"]
+
+    migrate = services["migrate"]
+    assert migrate["environment"]["LEDGERBRIDGE_RUNTIME_ROLE"] == "migrate"
 
 
 def test_connector_runner_is_networkless_and_has_no_application_secrets() -> None:
@@ -83,6 +88,7 @@ def test_dispatch_acceptance_is_database_bound() -> None:
     assert "v_audit_xid IS DISTINCT FROM pg_current_xact_id()::text::xid" in migration
     assert "v_action IS DISTINCT FROM 'import.dispatch.accepted'" in migration
     assert "v_payload IS DISTINCT FROM v_expected" in migration
+    assert "AND a.source = p_ingest_channel" in migration
     assert (
         "REVOKE INSERT ON TABLE public.evidence_import_dispatch FROM ledgerbridge_api" in migration
     )

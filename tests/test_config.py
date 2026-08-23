@@ -8,6 +8,7 @@ from ledgerbridge.config import Settings, escape_alembic_ini_value, get_settings
 
 def test_database_url_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEDGERBRIDGE_DATABASE_URL", raising=False)
+    monkeypatch.setenv("LEDGERBRIDGE_ARTIFACT_ROOT", str(Path.cwd()))
     get_settings.cache_clear()
     try:
         with pytest.raises(ValidationError, match="database_url"):
@@ -48,8 +49,13 @@ def test_database_role_urls_fallback_outside_production_and_split_in_production(
     assert settings.resolved_api_database_url() == shared
     assert settings.resolved_worker_database_url() == shared
 
-    with pytest.raises(ValidationError, match="explicit api_database_url"):
-        Settings(env="production", database_url=shared, artifact_root=tmp_path.resolve())
+    migration = Settings(
+        env="production",
+        runtime_role="migrate",
+        database_url=shared,
+        artifact_root=tmp_path.resolve(),
+    )
+    assert migration.database_url == shared
 
     with pytest.raises(ValidationError, match="must differ"):
         Settings(
@@ -60,24 +66,37 @@ def test_database_role_urls_fallback_outside_production_and_split_in_production(
             artifact_root=tmp_path.resolve(),
         )
 
-    production = Settings(
+    production_api = Settings(
         env="production",
-        database_url=shared,
+        runtime_role="api",
         api_database_url="postgresql://ledgerbridge_api@db/app",
+        artifact_root=tmp_path.resolve(),
+    )
+    assert production_api.resolved_api_database_url() == "postgresql://ledgerbridge_api@db/app"
+
+    production_worker = Settings(
+        env="production",
+        runtime_role="worker",
         worker_database_url="postgresql://ledgerbridge_worker@db/app",
         artifact_root=tmp_path.resolve(),
     )
-    assert production.resolved_api_database_url() == "postgresql://ledgerbridge_api@db/app"
-    assert production.resolved_worker_database_url() == "postgresql://ledgerbridge_worker@db/app"
+    assert production_worker.resolved_worker_database_url() == (
+        "postgresql://ledgerbridge_worker@db/app"
+    )
 
-    with pytest.raises(ValidationError, match="dedicated runtime roles"):
+    with pytest.raises(
+        ValidationError,
+        match="dedicated runtime roles: ledgerbridge_api",
+    ):
         Settings(
             env="production",
-            database_url=shared,
+            runtime_role="api",
             api_database_url="postgresql://ledgerbridge_app@db/app",
-            worker_database_url="postgresql://ledgerbridge_worker@db/app",
             artifact_root=tmp_path.resolve(),
         )
+
+    with pytest.raises(ValidationError, match="worker_database_url"):
+        Settings(env="production", runtime_role="worker", artifact_root=tmp_path.resolve())
 
 
 def test_alembic_url_escapes_config_interpolation() -> None:

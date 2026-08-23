@@ -51,6 +51,12 @@ is `231 passed / 138 skipped / 1 warning`; Hermes disposable PostgreSQL replay
 through `0008` passed. Production remains unchanged and the branch is still
 review-only.
 
+The subsequent recheck also identified and fixed service-scoped settings: API,
+worker, and migrate now declare explicit runtime roles and only require their
+own database URL. The enqueue function additionally enforces artifact/channel
+provenance. These changes are included in the next pushed head and remain
+covered by the same CI/audit gate.
+
 ## Completed
 
 - Phase 0 scaffold and Claude blocker/high remediation.

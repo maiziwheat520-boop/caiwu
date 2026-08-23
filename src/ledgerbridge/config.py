@@ -20,7 +20,8 @@ class Settings(BaseSettings):
 
     env: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
-    database_url: str = Field(min_length=1)
+    runtime_role: Literal["api", "worker", "migrate"] = "migrate"
+    database_url: str | None = Field(default=None, min_length=1)
     api_database_url: str | None = Field(default=None, min_length=1)
     worker_database_url: str | None = Field(default=None, min_length=1)
     artifact_root: Path = Path("/var/lib/ledgerbridge/artifacts")
@@ -44,29 +45,59 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def production_requires_split_database_roles(self) -> "Settings":
+        if self.runtime_role == "migrate":
+            if not self.database_url:
+                raise ValueError("database_url is required for the migrate runtime role")
+        elif self.runtime_role == "api" and not self.api_database_url:
+            raise ValueError("api_database_url is required for the api runtime role")
+        elif self.runtime_role == "worker" and not self.worker_database_url:
+            raise ValueError("worker_database_url is required for the worker runtime role")
+
+        if (
+            self.api_database_url
+            and self.worker_database_url
+            and self.api_database_url == self.worker_database_url
+        ):
+            raise ValueError("production API and worker database URLs must differ")
+
         if self.env == "production":
-            if not self.api_database_url or not self.worker_database_url:
-                raise ValueError(
-                    "production requires explicit api_database_url and worker_database_url"
+            role_urls: list[tuple[str, str | None]] = []
+            if self.runtime_role == "api":
+                role_urls.append(("ledgerbridge_api", self.api_database_url))
+            elif self.runtime_role == "worker":
+                role_urls.append(("ledgerbridge_worker", self.worker_database_url))
+            else:
+                role_urls.extend(
+                    [
+                        ("ledgerbridge_api", self.api_database_url),
+                        ("ledgerbridge_worker", self.worker_database_url),
+                    ]
                 )
-            if self.api_database_url == self.worker_database_url:
-                raise ValueError("production API and worker database URLs must differ")
-            try:
-                api_user = make_url(self.api_database_url).username
-                worker_user = make_url(self.worker_database_url).username
-            except (TypeError, ValueError) as exc:
-                raise ValueError("production API and worker database URLs must be valid") from exc
-            if api_user != "ledgerbridge_api" or worker_user != "ledgerbridge_worker":
-                raise ValueError(
-                    "production API and worker database URLs must use the dedicated runtime roles"
-                )
+            for expected_user, value in role_urls:
+                if value is None:
+                    continue
+                try:
+                    username = make_url(value).username
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("production runtime database URL must be valid") from exc
+                if username != expected_user:
+                    raise ValueError(
+                        "production runtime database URL must use dedicated runtime roles: "
+                        f"{expected_user}"
+                    )
         return self
 
     def resolved_api_database_url(self) -> str:
-        return self.api_database_url or self.database_url
+        value = self.api_database_url or self.database_url
+        if value is None:
+            raise ValueError("an API database URL is required")
+        return value
 
     def resolved_worker_database_url(self) -> str:
-        return self.worker_database_url or self.database_url
+        value = self.worker_database_url or self.database_url
+        if value is None:
+            raise ValueError("a worker database URL is required")
+        return value
 
 
 def escape_alembic_ini_value(value: str) -> str:
@@ -75,4 +106,4 @@ def escape_alembic_ini_value(value: str) -> str:
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]
+    return Settings()

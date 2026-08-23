@@ -70,9 +70,12 @@ def upgrade() -> None:
             v_audit_id uuid;
         BEGIN
             IF NOT EXISTS (
-                SELECT 1 FROM public.raw_artifact AS a WHERE a.id = p_artifact_id
+                SELECT 1
+                  FROM public.raw_artifact AS a
+                 WHERE a.id = p_artifact_id
+                   AND a.source = p_ingest_channel
             ) THEN
-                RAISE EXCEPTION 'dispatch artifact does not exist'
+                RAISE EXCEPTION 'dispatch artifact does not exist for ingest channel'
                     USING ERRCODE = 'foreign_key_violation';
             END IF;
             IF NOT EXISTS (
