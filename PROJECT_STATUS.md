@@ -109,6 +109,12 @@ and narrow-audit entry point are preserved.
   `202` only after durable enqueue, and worker owns the runner socket. The
   current synchronous route remains an internal/test profile; no dispatch
   migration or source change has been implemented.
+- The user accepted the worker-async baseline for planning. The implementation
+  handoff is
+  `docs/security-hardening/2026-08-23-auth-connector-boundary/implementation/worker-async-dispatch-lease.md`:
+  it proposes a separate `evidence_import_dispatch` table, API enqueue plus
+  `202`/status contract, worker-only claim/lease/runner access, and a pre-
+  production API/worker database-role split. It remains plan-only.
 
 ## Ownership checkpoint
 
@@ -172,10 +178,10 @@ in an isolated Hermes project; no evidence was ingested.
 
 Review protected PR #18, including the bounded multipart adapter, handoff,
 feature-flagged internal upload route, and the authentication/Connector design
-portfolio. The next gate is accepting or rejecting the proposed worker-async
-dispatch/status contract, then resolving provider/key custody, gateway/provider
-ownership and source-system owner decisions before implementing in reviewable
-phases with a narrow Claude audit; the route stays disabled until
+portfolio. The next gate is implementing the accepted worker-async
+dispatch/status plan, then resolving provider/key custody, gateway/provider
+ownership and source-system owner decisions before implementation reaches a
+real manifest; the route stays disabled until
 those are approved. Merge and any production
 deployment require distinct authorization; do not register a real Connector,
 enable the flag in production, ingest evidence, or enable the mail collector

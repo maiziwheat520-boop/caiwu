@@ -54,6 +54,11 @@ current synchronous route is retained only as an explicitly internal/test
 profile until an async `202`/status contract and dispatch migration are
 accepted.
 
+The user has accepted that baseline for planning. The detailed handoff is
+[worker-async-dispatch-lease.md](implementation/worker-async-dispatch-lease.md);
+it remains design-only and requires separate source/migration implementation
+authorization.
+
 ## Recommendation Summary
 
 For today’s internal/test-only route, we can preserve the fast path with a
@@ -79,9 +84,9 @@ registered.
   authenticated flag as write authorization.
 - Select the manifest schema/signature owner and key-management location outside
   the repository.
-- Accept or reject the proposed worker-owned asynchronous composition and its
-  new dispatch/status contract; do not mount `connector-socket` into production
-  API as a shortcut.
+- Implement the accepted worker-owned asynchronous composition through the
+  dispatch/lease plan; do not mount `connector-socket` into production API as a
+  shortcut.
 - Before implementation: resolve key custody, gateway/provider ownership and
   source-system owner. No production enablement follows automatically from the
   selected plans.

@@ -16,8 +16,8 @@ source refresh found no drift: `get_internal_connectors()` and
 second defense, and API still lacks the runner socket mount. The companion
 [execution composition proposal](../proposals/connector-execution-composition.md)
 now recommends worker-owned asynchronous execution for the production runner
-profile; this plan records that recommendation but does not claim it is
-implemented or user-approved.
+profile; the user accepted this baseline for planning, but the dispatch
+implementation itself is still pending.
 
 Non-negotiable constraints:
 
@@ -59,12 +59,13 @@ composition as an explicit decision rather than assuming a mount is safe.
 
 ## Ordered Work Packages
 
-1. **Accept the composition decision first.** The proposed production choice is
-   worker-owned asynchronous execution: API publishes/binds and durably queues,
-   then returns `202`; worker claims the dispatch and owns the runner socket.
-   Keep the current synchronous path only for an explicit internal/test profile.
-   Record acceptance of the dispatch schema, status contract, lease/retry model
-   and rollback before writing a loader. The signed manifest cannot decide this.
+1. **Implement the accepted composition first.** Production uses worker-owned
+   asynchronous execution: API publishes/binds and durably queues, then
+   returns `202`; worker claims the dispatch and owns the runner socket. Keep
+   the current synchronous path only for an explicit internal/test profile.
+   Implement the dispatch schema, status contract, lease/retry model and
+   rollback before enabling a manifest entry. The signed manifest cannot decide
+   this.
 2. **Freeze the manifest schema.** Define canonical JSON fields: schema version,
    generation, factory ID, connector name/version, source system, execution mode,
    runner protocol version, code/image digest, allowed media types, byte limit,
@@ -193,9 +194,9 @@ restored. Do not roll back by constructing an arbitrary in-process Connector.
   or revokes verification keys?
 - Where does the manifest live at runtime: image layer, read-only secret mount,
   or a deployment artifact with an integrity-checked path?
-- Has the user accepted worker-owned asynchronous execution, including the
-  durable dispatch migration and `202`/status contract? Until then the plan is
-  design-only and the current route remains production-disabled.
+- Which exact owner and API version will publish the async operation/status
+  contract? This plan proposes a separate `/v1/evidence/import-requests`
+  endpoint and keeps `/v1/evidence/imports` synchronous/test-only.
 - Which owner approves source-system registration, factory IDs, parser versions
   and image/code digests?
 - What generation mismatch should readiness report, and how is an in-flight

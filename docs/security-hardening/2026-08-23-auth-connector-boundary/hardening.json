@@ -236,7 +236,7 @@
   ],
   "openQuestions": [
     "Which internal gateway or OIDC issuer is approved for Hermes?",
-    "Has the user accepted worker-owned async dispatch, including the 202/status contract and PostgreSQL lease schema?",
+    "Which owner approves the proposed async operation/status endpoint and API/worker role split?",
     "Where will manifest signing and verification keys be managed and rotated?",
     "Which owner approves source-system registration, factory IDs and parser versions?"
   ]
