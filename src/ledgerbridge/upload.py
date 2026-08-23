@@ -49,7 +49,14 @@ class MultipartFileEnd:
     pass
 
 
-MultipartEvent = MultipartField | MultipartFileStart | MultipartFileChunk | MultipartFileEnd
+@dataclass(frozen=True, slots=True)
+class MultipartComplete:
+    """The closing boundary was consumed and the body is valid."""
+
+
+MultipartEvent = (
+    MultipartField | MultipartFileStart | MultipartFileChunk | MultipartFileEnd | MultipartComplete
+)
 
 
 def parse_multipart(
@@ -196,6 +203,7 @@ def parse_multipart(
             raise MultipartError("multipart parser entered an invalid state")
 
     if state == "final" and not buffer and field_seen and file_seen and file_started:
+        yield MultipartComplete()
         return
     raise MultipartError("multipart body is truncated")
 

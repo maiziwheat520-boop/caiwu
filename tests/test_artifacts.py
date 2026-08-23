@@ -23,6 +23,12 @@ from ledgerbridge.artifacts import (
     PublishedArtifact,
     storage_key_for_digest,
 )
+from ledgerbridge.upload import (
+    MultipartComplete,
+    MultipartError,
+    MultipartFileChunk,
+    parse_multipart,
+)
 
 
 class ChunkedStream:
@@ -207,6 +213,127 @@ def test_stream_and_fsync_failures_leave_no_partial_file(
         store.publish(io.BytesIO(b"fsync failure"))
     assert not list((tmp_path / ".staging").iterdir())
     assert not list((tmp_path / "sha256").rglob("*")) if (tmp_path / "sha256").exists() else True
+
+
+def test_handoff_requires_parser_completion_and_commits_only_after_it(
+    tmp_path: Path,
+) -> None:
+    store = ArtifactStore(tmp_path.resolve(), max_bytes=100, staging_max_bytes=100)
+    handoff = store.begin_handoff()
+    handoff.write(b"sealed bytes")
+
+    with pytest.raises(ArtifactStoreError, match="parser completion"):
+        handoff.complete(parser_complete=False)
+    assert handoff.state == "open"
+
+    artifact = handoff.complete(parser_complete=True)
+
+    assert str(handoff.state) == "committed"
+    assert store.read_prefix(artifact, 100) == b"sealed bytes"
+    assert not list((tmp_path / ".staging").iterdir())
+    with pytest.raises(ArtifactStoreError, match="expected open"):
+        handoff.write(b"late bytes")
+
+
+def test_handoff_abort_is_idempotent_and_context_managed(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path.resolve(), max_bytes=100, staging_max_bytes=100)
+    with pytest.raises(RuntimeError, match="cancelled"), store.begin_handoff() as handoff:
+        handoff.write(b"cancelled")
+        raise RuntimeError("cancelled")
+
+    assert handoff.state == "aborted"
+    handoff.abort()
+    assert not list((tmp_path / ".staging").iterdir())
+    assert not (tmp_path / "sha256").exists()
+
+
+def test_malformed_multipart_after_file_end_aborts_handoff(tmp_path: Path) -> None:
+    boundary = "b"
+    body = (
+        b'--b\r\nContent-Disposition: form-data; name="ingest_channel"\r\n\r\n'
+        b"manual_upload\r\n"
+        b'--b\r\nContent-Disposition: form-data; name="file"; filename="x.txt"\r\n'
+        b"Content-Type: text/plain\r\n\r\n"
+        b"data\r\n--bXY"
+    )
+    store = ArtifactStore(tmp_path.resolve(), max_bytes=100, staging_max_bytes=100)
+    handoff = store.begin_handoff()
+    with pytest.raises(MultipartError, match="terminator"):
+        try:
+            for event in parse_multipart([body], f"multipart/form-data; boundary={boundary}"):
+                if isinstance(event, MultipartFileChunk):
+                    handoff.write(event.data)
+                elif isinstance(event, MultipartComplete):
+                    handoff.complete(parser_complete=True)
+        except BaseException:
+            handoff.abort()
+            raise
+
+    assert handoff.state == "aborted"
+    assert not list((tmp_path / ".staging").iterdir())
+    assert not (tmp_path / "sha256").exists()
+
+
+def test_handoff_deduplicates_and_rejects_published_quota(tmp_path: Path) -> None:
+    store = ArtifactStore(
+        tmp_path.resolve(),
+        max_bytes=100,
+        total_max_bytes=4,
+        staging_max_bytes=100,
+    )
+    first = store.begin_handoff()
+    first.write(b"same")
+    created = first.complete(parser_complete=True)
+
+    duplicate = store.begin_handoff()
+    duplicate.write(b"same")
+    deduplicated = duplicate.complete(parser_complete=True)
+    assert created.created
+    assert not deduplicated.created
+    assert deduplicated.sha256 == created.sha256
+
+    rejected = store.begin_handoff()
+    rejected.write(b"more")
+    with pytest.raises(ArtifactPublishedQuotaError):
+        rejected.complete(parser_complete=True)
+    assert rejected.state == "aborted"
+    assert store.quota_snapshot().staging_bytes == 0
+
+
+def test_handoff_staging_quota_counts_all_sessions(tmp_path: Path) -> None:
+    store = ArtifactStore(
+        tmp_path.resolve(),
+        max_bytes=100,
+        total_max_bytes=100,
+        staging_max_bytes=4,
+    )
+    first = store.begin_handoff()
+    first.write(b"1234")
+    second = store.begin_handoff()
+    with pytest.raises(ArtifactStagingQuotaError):
+        second.write(b"x")
+    assert second.state == "aborted"
+    first.abort()
+    assert store.quota_snapshot().staging_bytes == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not allow replacing an open handoff file")
+def test_handoff_rejects_staging_path_replacement(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path.resolve(), max_bytes=100, staging_max_bytes=100)
+    handoff = store.begin_handoff()
+    handoff.write(b"trusted")
+    temporary = next((tmp_path / ".staging").iterdir())
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"attacker")
+    os.replace(replacement, temporary)
+
+    with pytest.raises(ArtifactIntegrityError, match="staging path was replaced"):
+        handoff.complete(parser_complete=True)
+
+    assert handoff.state == "aborted"
+    assert temporary.read_bytes() == b"attacker"
+    temporary.unlink()
+    assert not (tmp_path / "sha256").exists()
 
 
 def test_size_limit_and_non_bytes_stream_fail_closed(tmp_path: Path) -> None:

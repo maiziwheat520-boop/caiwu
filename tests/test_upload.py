@@ -5,6 +5,7 @@ from collections.abc import Iterable
 import pytest
 
 from ledgerbridge.upload import (
+    MultipartComplete,
     MultipartError,
     MultipartField,
     MultipartFileChunk,
@@ -81,7 +82,8 @@ def test_parser_streams_file_and_handles_fragmented_boundaries() -> None:
     assert events[1] == MultipartFileStart("statement.csv", "text/csv")
     file_chunks = [event.data for event in events if isinstance(event, MultipartFileChunk)]
     assert b"".join(file_chunks) == b"row\r\n--not-the-boundary"
-    assert isinstance(events[-1], MultipartFileEnd)
+    assert isinstance(events[-2], MultipartFileEnd)
+    assert isinstance(events[-1], MultipartComplete)
 
 
 def test_parser_rejects_duplicate_or_unknown_fields() -> None:
@@ -253,7 +255,8 @@ def test_parser_validates_boundary_suffix_and_trailing_bytes() -> None:
             [valid[:split_at], valid[split_at:]], f"multipart/form-data; boundary={boundary}"
         )
     )
-    assert isinstance(events[-1], MultipartFileEnd)
+    assert isinstance(events[-2], MultipartFileEnd)
+    assert isinstance(events[-1], MultipartComplete)
 
     invalid_suffix = _channel(boundary) + _file(boundary) + b"--bXY"
     with pytest.raises(MultipartError, match="terminator"):
