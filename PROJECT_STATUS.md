@@ -37,12 +37,19 @@ bounded runner execution slots, per-context RunnerConnector state, upload
 read/admission limits, and legacy role-drift reassertion). The deferred-boundary
 remediation report is
 `docs/reviews/2026-08-24-deferred-boundary-remediation-codex.md`.
-The independent security audit report is
+The prior independent security audit report is
 `docs/reviews/2026-08-24-independent-security-audit-codex.md`; its canonical
-contract artifacts are retained in the terminal scan directory. The audit found
-no current reportable blocker/high/medium finding. The four previously deferred
-availability/role-drift controls are implemented in `bb3eee4`; real Connector
-registration and production enablement remain separately gated.
+contract artifacts are retained in the terminal scan directory. The subsequent
+release-readiness audit report is
+`docs/reviews/2026-08-24-release-readiness-independent-audit-codex.md`; it found
+one HIGH (0006 leaves arbitrary API/worker role memberships active), one MEDIUM
+(runner has no global pre-receipt connection/spool admission), and one LOW
+(shared-host heartbeat symlink hardening). The branch is therefore CHANGES
+REQUIRED for release: do not migrate an existing database until the HIGH is
+closed, and do not enable a hostile/real Connector until the MEDIUM is closed.
+The four previously deferred availability/role-drift controls are implemented
+in `bb3eee4`; real Connector registration and production enablement remain
+separately gated.
 Hosted CI for the prior documentation head was green across `secrets`,
 `quality`, and `compose`; push run `32655932217` and pull-request run
 `32655929294` for `6760725` are green across all three jobs.
