@@ -56,6 +56,10 @@ fallback for local/test composition.
   `api_temp=false`, and `worker_temp=false`.
 - `SET ROLE ledgerbridge_api` and `SET ROLE ledgerbridge_worker` both failed to
   create a temporary table, as required. Compose configuration validation passed.
+- A fresh Linux/PostgreSQL replay of the exact CI pytest command passed **353
+  tests**, with **95.44%** coverage. The replay also caught and confirmed the
+  fix for the pre-existing downgrade-guard assertion, which now expects the
+  transaction to remain at migration `20260823_0006` after a blocked downgrade.
 - Hermes production was read-only checked after cleanup: gateway active,
   `/health` returned `{"status":"ok","platform":"hermes-agent","version":"0.20.0"}`;
   API, worker, and PostgreSQL remained healthy on revision
