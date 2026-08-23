@@ -378,9 +378,11 @@ class DispatchService:
                 if error_code is None or summary is None:
                     raise ValueError("failed dispatch requires an error")
                 _validate_error(error_code, summary)
+                target = DispatchState.FAILED
             elif error_code is not None or summary is not None:
                 raise ValueError("review dispatch does not carry a dispatch error")
-            target = DispatchState.SUCCEEDED
+            else:
+                target = DispatchState.SUCCEEDED
         else:
             raise ValueError("dispatch completion requires a terminal import status")
         current = _utc_now(now)
