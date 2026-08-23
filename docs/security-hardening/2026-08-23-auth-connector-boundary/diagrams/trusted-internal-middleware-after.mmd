@@ -1,0 +1,8 @@
+flowchart LR
+    C[Internal caller] -->|loopback or mTLS| G[Trusted gateway]
+    G -->|verified identity| M[Principal middleware]
+    M -->|typed principal + evidence:write| P[Auth policy dependency]
+    P --> API[Upload route]
+    API -->|auth before body| H[ArtifactHandoff]
+    API --> I[EvidenceImporter]
+    I --> A[Audit actor from canonical subject]

@@ -1,0 +1,8 @@
+flowchart LR
+    C[Caller with bearer token] --> V[OIDC/JWT verifier]
+    K[Issuer JWKS] -->|bounded cached keys| V
+    V -->|issuer/audience/expiry/algorithm| P[Scope and tenant policy]
+    P --> API[Upload route]
+    API -->|auth before body| H[ArtifactHandoff]
+    API --> I[EvidenceImporter]
+    I --> A[Audit actor from sub]

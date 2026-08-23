@@ -1,0 +1,241 @@
+{
+  "documentType": "codex-security.hardening-analysis",
+  "schemaVersion": "1.0",
+  "analysisId": "auth_connector_boundary_20260823",
+  "sourceEvidence": {
+    "kind": "document_collection",
+    "label": "LedgerBridge internal upload, Connector and runner boundary",
+    "collectionSha256": "79175486a1716efbf17828e49efa809caeae5b74ba0b48d2ca0f2f80e6ee0149",
+    "artifactCount": 12,
+    "targetRevision": "48c695709c60db578242d290e7e1d7b5881150df",
+    "sourceDrift": "none"
+  },
+  "assessment": {
+    "outcome": "opportunities_identified",
+    "summary": "The route has a trusted-principal seam but no provider, and individual Connector validation but no deployment-owned manifest. Two separate admission boundaries should be designed before enablement."
+  },
+  "constraints": {
+    "profile": "balanced",
+    "changeHorizons": ["incremental", "medium_term", "foundational"],
+    "nonNegotiables": [
+      "Keep LEDGERBRIDGE_ENABLE_INTERNAL_UPLOAD false by default and reject it in production.",
+      "Do not register a real Connector or ingest evidence during design.",
+      "Keep runner network-disabled, read-only, low-privilege and credential-free.",
+      "Do not place credentials or signing keys in the repository."
+    ],
+    "assumptions": [
+      "No identity provider, signing service or latency budget has been selected.",
+      "The current synchronous route is internal/test-only until a separate exposure decision.",
+      "API-to-runner socket composition is unresolved and must be explicitly reviewed."
+    ]
+  },
+  "opportunities": [
+    {
+      "opportunityId": "trusted-principal-admission",
+      "title": "Trusted principal admission for evidence upload",
+      "summary": "Give the route an owned authentication and capability decision before any body bytes are consumed.",
+      "diagnosis": "The route checks a syntactically safe request.state value, but no provider proves who produced it or whether the caller has evidence:write authority.",
+      "evidence": [
+        {
+          "claimType": "observed",
+          "sourceKind": "source",
+          "path": "src/ledgerbridge/main.py",
+          "claim": "get_authenticated_principal reads request.state.authenticated_principal; no verifier, issuer, audience, expiry or scope policy is present."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "document",
+          "evidenceId": "A11",
+          "path": "docs/tasks/2026-08-23-phase-3-slice-c-upload-endpoint-design.md",
+          "claim": "The approved upload contract requires server-derived actor authentication before body read and keeps provider integration as a separate gate."
+        },
+        {
+          "claimType": "inferred",
+          "sourceKind": "source",
+          "path": "src/ledgerbridge/main.py",
+          "claim": "Without an owned producer, a future adapter could copy an attacker-controlled identity into request state while passing text validation."
+        }
+      ],
+      "desiredInvariants": [
+        "Authentication and evidence:write authorization complete before body read or staging.",
+        "Only a verifier-owned typed principal can supply the audit actor.",
+        "Invalid, expired, wrong-audience or insufficient-scope credentials fail closed without token leakage."
+      ],
+      "proposalPath": "proposals/trusted-principal-admission.md",
+      "options": [
+        {
+          "optionId": "trusted-internal-middleware",
+          "title": "Trusted internal gateway/middleware",
+          "kind": "incremental",
+          "summary": "Use loopback or mTLS gateway policy to install a typed principal in request state.",
+          "diagramPaths": {
+            "before": "diagrams/trusted-principal-admission-before.mmd",
+            "after": "diagrams/trusted-internal-middleware-after.mmd"
+          },
+          "evidenceCoverage": [
+            {"evidenceId": "A01", "effect": "addresses", "tacticalFixRequired": true, "rationale": "The state seam gets an owned gateway/middleware producer."},
+            {"evidenceId": "A11", "effect": "addresses", "tacticalFixRequired": true, "rationale": "Authentication remains before body read and actor remains server-derived."}
+          ],
+          "tradeoffs": [
+            {"dimension": "security", "direction": "improves", "confidence": "high", "basis": "source-derived", "assessment": "Removes raw-header substitution for the internal transport, but proxy policy remains critical.", "validationPlan": "Bypass-gateway and certificate-mapping tests must fail before body read."},
+            {"dimension": "performance", "direction": "improves", "confidence": "medium", "basis": "source-derived", "assessment": "Avoids per-request JWKS lookup; a local middleware path is bounded.", "validationPlan": "Measure warm request latency with gateway and direct-loopback profiles."},
+            {"dimension": "memory", "direction": "neutral", "confidence": "medium", "basis": "source-derived", "assessment": "Only a bounded typed principal and policy generation are retained.", "validationPlan": "Check peak RSS with concurrent rejected and accepted requests."},
+            {"dimension": "reliability", "direction": "improves", "confidence": "medium", "basis": "source-derived", "assessment": "Fail-closed gateway absence prevents unauthenticated import, but gateway availability gates uploads.", "validationPlan": "Exercise gateway outage, direct access and certificate expiry."},
+            {"dimension": "operability", "direction": "regresses", "confidence": "medium", "basis": "source-derived", "assessment": "Certificate/SAN mapping and proxy policy need runbooks and telemetry.", "validationPlan": "Review rotation, alerting and incident procedures in a disposable profile."},
+            {"dimension": "migration", "direction": "improves", "confidence": "high", "basis": "source-derived", "assessment": "Preserves the route/importer API and can be introduced without production enablement.", "validationPlan": "Run dependency-override tests and a loopback/mTLS integration profile."}
+          ],
+          "residualRisks": ["A bypassed or misconfigured gateway can still produce a valid-looking state value.", "Not suitable as a remote multi-client identity contract."],
+          "implementationReadiness": {
+            "affectedComponents": ["src/ledgerbridge/main.py", "src/ledgerbridge/config.py", "docker-compose.yml"],
+            "workPackages": ["Define typed principal and capability policy", "Add trusted gateway/middleware adapter", "Bind loopback/mTLS policy and diagnostics"],
+            "acceptanceCriteria": ["Every auth failure occurs before body read and staging", "No raw actor header is accepted", "Production flag remains false and forced off"],
+            "migrationNotes": ["Keep the provider as a dependency seam so OIDC can replace it later."],
+            "rollback": "Keep the route disabled and revert the middleware binding; never fall back to client headers."
+          }
+        },
+        {
+          "optionId": "oidc-jwt-verifier",
+          "title": "OIDC/JWT verifier in the API boundary",
+          "kind": "structural",
+          "summary": "Verify issuer, audience, signature, time claims and evidence:write scope before route body read.",
+          "diagramPaths": {
+            "before": "diagrams/trusted-principal-admission-before.mmd",
+            "after": "diagrams/oidc-jwt-verifier-after.mmd"
+          },
+          "evidenceCoverage": [
+            {"evidenceId": "A01", "effect": "addresses", "tacticalFixRequired": true, "rationale": "The dependency becomes a verifier-backed policy rather than a state convention."},
+            {"evidenceId": "A12", "effect": "addresses", "tacticalFixRequired": true, "rationale": "Provider settings, key cache and failure policy become explicit configuration."}
+          ],
+          "tradeoffs": [
+            {"dimension": "security", "direction": "improves", "confidence": "high", "basis": "source-derived", "assessment": "Provides portable proof and claim-level authorization, with verifier and key-policy risk made explicit.", "validationPlan": "Use forged, expired, wrong-audience, wrong-key and insufficient-scope tokens."},
+            {"dimension": "performance", "direction": "regresses", "confidence": "medium", "basis": "hypothetical", "assessment": "Adds token parsing and bounded cached-key verification to each request.", "validationPlan": "Measure cold/warm p50 and p95 auth latency under concurrent upload attempts."},
+            {"dimension": "memory", "direction": "regresses", "confidence": "medium", "basis": "source-derived", "assessment": "Requires a bounded JWKS cache and claim objects.", "validationPlan": "Measure RSS with key rotation and cache-size limits."},
+            {"dimension": "reliability", "direction": "unknown", "confidence": "low", "basis": "hypothetical", "assessment": "Fail-closed JWKS outages protect admission but can deny legitimate internal uploads.", "validationPlan": "Define and test key-cache outage and revocation windows."},
+            {"dimension": "operability", "direction": "regresses", "confidence": "high", "basis": "source-derived", "assessment": "Issuer, audience, clock, key rotation and redacted auth telemetry require new runbooks.", "validationPlan": "Run a provider rotation and outage rehearsal without real tokens."},
+            {"dimension": "migration", "direction": "regresses", "confidence": "medium", "basis": "source-derived", "assessment": "Requires provider selection and policy coordination before it can replace the internal seam.", "validationPlan": "Shadow-verify in test before making the policy enforcing."}
+          ],
+          "residualRisks": ["Verifier implementation and key-management failures become a privileged choke point.", "Provider outage policy may trade availability for fail-closed security."],
+          "implementationReadiness": {
+            "affectedComponents": ["src/ledgerbridge/main.py", "src/ledgerbridge/config.py", "docker-compose.yml"],
+            "workPackages": ["Select issuer and claim policy", "Implement bounded JWKS verifier", "Add redacted auth telemetry and outage runbook"],
+            "acceptanceCriteria": ["All invalid token classes fail before body read", "Only evidence:write principals reach importer", "No token or raw claim appears in logs or responses"],
+            "migrationNotes": ["Use only after a remote or multi-client exposure decision."],
+            "rollback": "Disable the provider-backed route and keep the production flag closed; do not accept unsigned headers."
+          }
+        }
+      ],
+      "recommendedOptionId": "trusted-internal-middleware",
+      "recommendation": "Use the trusted internal boundary while the route is loopback/internal and off by default; select the OIDC/JWT option before remote or multi-client exposure."
+    },
+    {
+      "opportunityId": "connector-manifest-governance",
+      "title": "Reviewable Connector manifest governance",
+      "summary": "Make the enabled Connector set, source-system ownership, code identity and runner capability boundary deployment-owned.",
+      "diagnosis": "Individual Connector objects are validated, but API, worker and runner have no shared manifest or generation agreement and the runner starts empty.",
+      "evidence": [
+        {
+          "claimType": "observed",
+          "sourceKind": "source",
+          "path": "src/ledgerbridge/main.py",
+          "claim": "get_internal_connectors returns an empty sequence, so the route has no production Connector registry."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "source",
+          "path": "src/ledgerbridge/connectors.py",
+          "claim": "validate_connector enforces object identity and production runner mode but does not select or attest implementation factories."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "source",
+          "path": "src/ledgerbridge/connector_runner.py",
+          "claim": "ConnectorSupervisor starts with an empty mapping unless tests inject connectors; its no-network boundary is not a manifest authority."
+        },
+        {
+          "claimType": "inferred",
+          "sourceKind": "source",
+          "path": "docker-compose.yml",
+          "claim": "API/worker/runner can drift because the API does not mount connector-socket and no composition loader compares a manifest generation."
+        }
+      ],
+      "desiredInvariants": [
+        "Requests never select Connector identity or source_system.",
+        "Every enabled entry has unique identity, canonical source-system ownership, allowlisted factory, protocol and bounded capability policy.",
+        "API, worker and runner load the same immutable generation/digest or fail closed.",
+        "Production entries are runner-only and cannot grant network, database, artifact or OAuth authority."
+      ],
+      "proposalPath": "proposals/connector-manifest-governance.md",
+      "options": [
+        {
+          "optionId": "static-built-in-manifest",
+          "title": "Static built-in manifest",
+          "kind": "incremental",
+          "summary": "Use a code-owned tuple and allowlisted factory map validated at startup.",
+          "diagramPaths": {
+            "before": "diagrams/connector-manifest-governance-before.mmd",
+            "after": "diagrams/static-built-in-manifest-after.mmd"
+          },
+          "evidenceCoverage": [
+            {"evidenceId": "A03", "effect": "mitigates", "tacticalFixRequired": true, "rationale": "Retains object-level validation while centralizing construction."},
+            {"evidenceId": "A07", "effect": "addresses", "tacticalFixRequired": true, "rationale": "Adds a shared composition root instead of empty per-process defaults."}
+          ],
+          "tradeoffs": [
+            {"dimension": "security", "direction": "improves", "confidence": "high", "basis": "source-derived", "assessment": "Removes request-selected factories, but code/image drift remains a residual risk.", "validationPlan": "Compare startup manifest digest and image revision across API, worker and runner."},
+            {"dimension": "performance", "direction": "neutral", "confidence": "high", "basis": "source-derived", "assessment": "Construction is startup-only and request detection keeps the existing path.", "validationPlan": "Benchmark startup and detection for one and many synthetic entries."},
+            {"dimension": "memory", "direction": "neutral", "confidence": "medium", "basis": "source-derived", "assessment": "Retains the existing connector objects and a small tuple.", "validationPlan": "Measure process RSS across registry sizes."},
+            {"dimension": "reliability", "direction": "improves", "confidence": "medium", "basis": "source-derived", "assessment": "Invalid sets fail closed at startup instead of partially enabling callers.", "validationPlan": "Inject duplicate, missing-source and factory-construction failures."},
+            {"dimension": "operability", "direction": "neutral", "confidence": "medium", "basis": "source-derived", "assessment": "Uses code review and image rollout without a new signing service.", "validationPlan": "Verify digest telemetry and rollback to empty registry."},
+            {"dimension": "migration", "direction": "improves", "confidence": "high", "basis": "source-derived", "assessment": "Minimal change for synthetic fixtures and preserves the Connector protocol.", "validationPlan": "Run current importer and runner suites with a static test manifest."}
+          ],
+          "residualRisks": ["Manifest identity is implicit in the code/image and can drift between compositions.", "No independent attestation of the factory implementation."],
+          "implementationReadiness": {
+            "affectedComponents": ["src/ledgerbridge/main.py", "src/ledgerbridge/worker.py", "src/ledgerbridge/connector_runner.py"],
+            "workPackages": ["Define factory allowlist and shared loader", "Validate source registry and runner mode", "Emit generation/digest diagnostics"],
+            "acceptanceCriteria": ["API/worker/runner reject differing revisions", "Production static entries are runner-only", "Empty/invalid manifest prevents route enablement"],
+            "migrationNotes": ["Use for synthetic/test connectors while signature infrastructure is absent."],
+            "rollback": "Deploy the empty static manifest or revert the composition revision."
+          }
+        },
+        {
+          "optionId": "signed-declarative-runner-manifest",
+          "title": "Signed declarative manifest plus runner",
+          "kind": "isolation",
+          "summary": "Verify a signed immutable manifest, map only allowlisted factories, and require generation agreement across API, worker and runner.",
+          "diagramPaths": {
+            "before": "diagrams/connector-manifest-governance-before.mmd",
+            "after": "diagrams/signed-declarative-runner-after.mmd"
+          },
+          "evidenceCoverage": [
+            {"evidenceId": "A03", "effect": "addresses", "tacticalFixRequired": true, "rationale": "Signature is an enablement control; object contract validation remains a second defense."},
+            {"evidenceId": "A05", "effect": "addresses", "tacticalFixRequired": true, "rationale": "Runner registry becomes an explicit, verified generation instead of an empty implicit map."},
+            {"evidenceId": "A08", "effect": "mitigates", "tacticalFixRequired": true, "rationale": "Manifest capabilities are cross-checked against the no-network/read-only Compose boundary."}
+          ],
+          "tradeoffs": [
+            {"dimension": "security", "direction": "improves", "confidence": "high", "basis": "source-derived", "assessment": "Makes enablement, code identity and generation agreement reviewable while preserving runner isolation.", "validationPlan": "Test signature, factory, source registry, image digest, capability and cross-process mismatch failures."},
+            {"dimension": "performance", "direction": "regresses", "confidence": "medium", "basis": "hypothetical", "assessment": "Adds bounded startup verification and manifest parsing; request path remains importer/socket bounded.", "validationPlan": "Measure startup and request p95 before/after with one and many entries."},
+            {"dimension": "memory", "direction": "regresses", "confidence": "medium", "basis": "source-derived", "assessment": "Adds manifest and verification-key material to each consumer.", "validationPlan": "Measure RSS and cache limits in API, worker and runner images."},
+            {"dimension": "reliability", "direction": "improves", "confidence": "high", "basis": "source-derived", "assessment": "Mixed or invalid generations fail closed instead of silently running a different parser.", "validationPlan": "Replay partial rollout, missing-key and rollback scenarios."},
+            {"dimension": "operability", "direction": "regresses", "confidence": "high", "basis": "source-derived", "assessment": "Requires signing, key rotation, digest telemetry, generation rollout and incident runbooks.", "validationPlan": "Exercise a disposable signing/verification workflow with no production key."},
+            {"dimension": "migration", "direction": "regresses", "confidence": "medium", "basis": "source-derived", "assessment": "Requires schema/factory pipeline and an explicit API-to-runner socket or async handoff decision.", "validationPlan": "Run Linux Compose tests for both composition choices before real enablement."}
+          ],
+          "residualRisks": ["A compromised signing process can authorize a malicious allowlisted factory.", "A valid manifest cannot compensate for an overprivileged Compose mount or missing API socket decision."],
+          "implementationReadiness": {
+            "affectedComponents": ["src/ledgerbridge/main.py", "src/ledgerbridge/worker.py", "src/ledgerbridge/connector_runner.py", "docker-compose.yml"],
+            "workPackages": ["Define canonical signed schema", "Implement shared verifier/factory loader", "Pin code/image digest and generation", "Resolve synchronous socket versus worker async composition"],
+            "acceptanceCriteria": ["All consumers report the same manifest digest", "Unknown/unsigned/mixed entries fail closed", "Runner capabilities never exceed Compose authority", "No request selects connector identity"],
+            "migrationNotes": ["Start with an empty signed generation and synthetic test fixtures; add real source-system rows only after separate approval."],
+            "rollback": "Select the previous signed generation or empty manifest and restart all consumers; keep the route flag closed during rollback."
+          }
+        }
+      ],
+      "recommendedOptionId": "signed-declarative-runner-manifest",
+      "recommendation": "Use a static manifest only for synthetic/test fixtures; require the signed declarative runner manifest for any real Connector or production path."
+    }
+  ],
+  "openQuestions": [
+    "Which internal gateway or OIDC issuer is approved for Hermes?",
+    "Will synchronous API execution mount the runner socket, or will Connector execution move to the worker?",
+    "Where will manifest signing and verification keys be managed and rotated?",
+    "Which owner approves source-system registration, factory IDs and parser versions?"
+  ]
+}

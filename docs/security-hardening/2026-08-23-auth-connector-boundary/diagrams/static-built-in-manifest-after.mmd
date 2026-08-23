@@ -1,0 +1,9 @@
+flowchart LR
+    C[Reviewed source code] --> F[Allowlisted factory map]
+    F --> M[Static manifest tuple]
+    M --> V[Contract + source registry validation]
+    V --> API[API/worker composition]
+    V --> RUN[Runner composition]
+    API --> I[EvidenceImporter]
+    I --> S[Unix socket runner]
+    S --> RUN

@@ -1,0 +1,11 @@
+flowchart LR
+    SG[Review + signing process] --> MF[Immutable signed manifest]
+    MF --> VM[Schema/signature/factory verifier]
+    VM --> G[Generation + digest gate]
+    G --> API[API registry]
+    G --> WK[Worker registry]
+    G --> RUN[Runner registry]
+    API --> I[EvidenceImporter]
+    I --> RC[RunnerConnector]
+    RC -->|explicit socket composition| RUN
+    RUN --> X[No network / no DB / no OAuth / read-only runner]

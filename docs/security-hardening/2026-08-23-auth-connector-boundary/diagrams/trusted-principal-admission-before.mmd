@@ -1,0 +1,7 @@
+flowchart LR
+    C[Caller] -->|HTTP request| API[FastAPI upload route]
+    F[Feature flag / production guard] --> API
+    API -.-> S[request.state.authenticated_principal?]
+    S --> I[EvidenceImporter actor]
+    API --> B[Request body and ArtifactHandoff]
+    I --> A[Audit actor]
