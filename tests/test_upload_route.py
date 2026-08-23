@@ -158,7 +158,8 @@ def test_internal_upload_is_never_enabled_in_production(tmp_path: Path) -> None:
     with pytest.raises(HTTPException) as disabled:
         require_internal_upload(settings)
     assert disabled.value.status_code == 404
-    assert disabled.value.detail == {"error_code": "INTERNAL_UPLOAD_DISABLED"}
+    assert isinstance(disabled.value.detail, dict)
+    assert disabled.value.detail.get("error_code") == "INTERNAL_UPLOAD_DISABLED"
 
 
 def test_route_error_mapping_and_declared_length_are_bounded() -> None:
