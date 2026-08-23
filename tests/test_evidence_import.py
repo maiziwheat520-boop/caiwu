@@ -1989,7 +1989,7 @@ def test_phase2_downgrade_refuses_to_delete_evidence(
         with temporary_engine.connect() as connection:
             assert (
                 connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                == "20260823_0007"
+                == "20260823_0008"
             )
             assert connection.execute(text("SELECT count(*) FROM raw_artifact")).scalar_one() == 1
             assert connection.execute(text("SELECT count(*) FROM ingest_channel")).scalar_one() == 2

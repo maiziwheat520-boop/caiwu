@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -36,6 +36,7 @@ from ledgerbridge.dispatch import (
 )
 from ledgerbridge.models import (
     DispatchState,
+    ImportDispatch,
     ImportJob,
     ImportJobStatus,
     RawArtifact,
@@ -301,33 +302,50 @@ def test_concurrent_enqueue_converges_without_duplicate_acceptance(
     dispatch_context: tuple[DispatchService, UUID, sessionmaker[Session]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service, artifact_id, _sessions = dispatch_context
+    service, artifact_id, sessions = dispatch_context
     request = _request(artifact_id, generation="concurrent-enqueue")
     barrier = Barrier(2)
+    original_enqueue = DispatchService._enqueue_dispatch_row
 
-    def gated_append(
+    def gated_enqueue(
         session: Session,
         *,
+        operation_id: UUID,
+        artifact_id: UUID,
+        ingest_channel: str,
+        manifest_generation: str,
+        manifest_digest: bytes,
         actor: str,
-        action: str,
         reason: str,
-        payload: Mapping[str, object] | None = None,
-        rule_version: str | None = None,
-    ) -> UUID:
+    ) -> ImportDispatch:
         barrier.wait(timeout=10)
-        return append_audit_event(
+        return original_enqueue(
             session,
+            operation_id=operation_id,
+            artifact_id=artifact_id,
+            ingest_channel=ingest_channel,
+            manifest_generation=manifest_generation,
+            manifest_digest=manifest_digest,
             actor=actor,
-            action=action,
             reason=reason,
-            payload=payload,
-            rule_version=rule_version,
         )
 
-    monkeypatch.setattr("ledgerbridge.dispatch.append_audit_event", gated_append)
+    monkeypatch.setattr(
+        DispatchService,
+        "_enqueue_dispatch_row",
+        staticmethod(gated_enqueue),
+    )
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(service.enqueue, (request, request)))
     assert results[0] == results[1]
+    with sessions() as session:
+        assert session.scalar(text("SELECT count(*) FROM evidence_import_dispatch")) == 1
+        assert (
+            session.scalar(
+                text("SELECT count(*) FROM audit_event WHERE action = 'import.dispatch.accepted'")
+            )
+            == 1
+        )
 
 
 def test_claim_renew_retry_reclaim_and_complete(
