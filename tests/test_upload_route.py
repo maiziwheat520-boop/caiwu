@@ -8,9 +8,10 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from starlette.requests import Request
 
+import ledgerbridge.dispatch as dispatch_module
 from ledgerbridge import main as main_module
 from ledgerbridge.artifacts import (
     ArtifactIntegrityError,
@@ -27,6 +28,7 @@ from ledgerbridge.dispatch import (
     DispatchConflict,
     DispatchError,
     DispatchNotFound,
+    DispatchService,
     DispatchSnapshot,
 )
 from ledgerbridge.imports import EvidenceIngestionError, ImportOutcome, IngestMetadata
@@ -95,6 +97,96 @@ class FakeImporter:
             duplicate_count=0,
             error_code=None,
             artifact_created=published.created,
+        )
+
+
+def test_dispatch_service_validates_registered_channel_without_database() -> None:
+    class Session:
+        def __enter__(self) -> Session:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def get(self, _model: object, _channel: str) -> object:
+            return object()
+
+    service = DispatchService(lambda: Session())
+    service.validate_ingest_channel("internal_upload")
+
+
+def test_dispatch_service_rejects_unregistered_channel_without_database() -> None:
+    class Session:
+        def __enter__(self) -> Session:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def get(self, _model: object, _channel: str) -> None:
+            return None
+
+    service = DispatchService(lambda: Session())
+    with pytest.raises(DispatchError, match="not registered"):
+        service.validate_ingest_channel("internal_upload")
+
+
+def test_dispatch_service_reports_published_identity_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Transaction:
+        def __enter__(self) -> Transaction:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    class NestedTransaction(Transaction):
+        def __exit__(self, *_args: object) -> None:
+            raise IntegrityError("race", {}, RuntimeError("race"))
+
+    class Session:
+        def __init__(self) -> None:
+            self.scalar_calls = 0
+
+        def __enter__(self) -> Session:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def begin(self) -> Transaction:
+            return Transaction()
+
+        def begin_nested(self) -> NestedTransaction:
+            return NestedTransaction()
+
+        def get(self, _model: object, _channel: str) -> object:
+            return object()
+
+        def scalar(self, _statement: object) -> None:
+            self.scalar_calls += 1
+            return None
+
+        def add(self, _value: object) -> None:
+            return None
+
+        def flush(self) -> None:
+            return None
+
+    monkeypatch.setattr(dispatch_module, "append_audit_event", lambda *args, **kwargs: uuid4())
+    service = DispatchService(lambda: Session())
+    published = PublishedArtifact(b"p" * 32, 1, "sha256/p", False)
+    with pytest.raises(DispatchError, match="identity race"):
+        service.enqueue_published(
+            published,
+            ingest_channel="internal_upload",
+            original_filename="statement.csv",
+            media_type="text/csv",
+            manifest_generation="manifest-1",
+            manifest_digest=b"m" * 32,
+            actor="actor-1",
+            reason="test race",
         )
 
 
