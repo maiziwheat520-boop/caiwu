@@ -21,6 +21,8 @@ npm run dev
 
 默认端口为 `4173`，开发服务器监听所有接口，便于后续在 Hermes 内网环境验证。
 
+Hermes 合成数据预览的容器部署方式见 [DEPLOYMENT.md](./DEPLOYMENT.md)。
+
 ## 验证
 
 ```bash

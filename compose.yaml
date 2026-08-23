@@ -1,0 +1,16 @@
+services:
+  web:
+    build:
+      context: .
+    image: ledgerbridge-web:prototype
+    container_name: ledgerbridge-web-preview
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    ports:
+      - "${LEDGERBRIDGE_WEB_PORT:-8780}:8080"
