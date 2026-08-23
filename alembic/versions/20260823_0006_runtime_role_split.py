@@ -9,50 +9,49 @@ down_revision: str | None = "20260823_0005"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-API_ROLE = "ledgerbridge_api"
-WORKER_ROLE = "ledgerbridge_worker"
-
 
 def upgrade() -> None:
+    # Role identifiers are fixed deployment contract values; keeping this DDL
+    # literal avoids constructing SQL from runtime input.
     op.execute(
-        f"""
+        """
         DO $ledgerbridge$
         BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{API_ROLE}')
-               OR NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{WORKER_ROLE}') THEN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_api')
+               OR NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_worker') THEN
                 RAISE EXCEPTION
-                    'runtime role split requires {API_ROLE} and {WORKER_ROLE} bootstrap roles';
+                    'runtime role split requires bootstrap roles';
             END IF;
         END
         $ledgerbridge$;
         """
     )
     op.execute(
-        f"""
+        """
         REVOKE ALL ON TABLE public.raw_artifact, public.source_record,
             public.import_job, public.ingest_channel, public.source_system,
             public.audit_event, public.evidence_import_dispatch
-            FROM {API_ROLE}, {WORKER_ROLE};
+            FROM ledgerbridge_api, ledgerbridge_worker;
         REVOKE ALL ON FUNCTION public.append_audit_event(text, text, text, text, jsonb)
-            FROM {API_ROLE}, {WORKER_ROLE};
+            FROM ledgerbridge_api, ledgerbridge_worker;
         REVOKE ALL ON TYPE public.import_job_status, public.dispatch_state
-            FROM {API_ROLE}, {WORKER_ROLE};
+            FROM ledgerbridge_api, ledgerbridge_worker;
 
-        GRANT USAGE ON SCHEMA public TO {API_ROLE}, {WORKER_ROLE};
+        GRANT USAGE ON SCHEMA public TO ledgerbridge_api, ledgerbridge_worker;
 
-        GRANT SELECT, INSERT ON TABLE public.raw_artifact TO {API_ROLE};
+        GRANT SELECT, INSERT ON TABLE public.raw_artifact TO ledgerbridge_api;
         GRANT SELECT ON TABLE public.ingest_channel, public.source_system,
             public.audit_event, public.import_job, public.evidence_import_dispatch
-            TO {API_ROLE};
-        GRANT INSERT ON TABLE public.evidence_import_dispatch TO {API_ROLE};
-        GRANT USAGE ON TYPE public.dispatch_state TO {API_ROLE};
+            TO ledgerbridge_api;
+        GRANT INSERT ON TABLE public.evidence_import_dispatch TO ledgerbridge_api;
+        GRANT USAGE ON TYPE public.dispatch_state TO ledgerbridge_api;
         GRANT EXECUTE ON FUNCTION public.append_audit_event(text, text, text, text, jsonb)
-            TO {API_ROLE};
+            TO ledgerbridge_api;
 
         GRANT SELECT, INSERT ON TABLE public.raw_artifact, public.source_record,
-            public.import_job TO {WORKER_ROLE};
+            public.import_job TO ledgerbridge_worker;
         GRANT SELECT ON TABLE public.ingest_channel, public.source_system,
-            public.audit_event, public.evidence_import_dispatch TO {WORKER_ROLE};
+            public.audit_event, public.evidence_import_dispatch TO ledgerbridge_worker;
         GRANT UPDATE (
             status,
             started_at,
@@ -63,7 +62,7 @@ def upgrade() -> None:
             duplicate_count,
             error_code,
             diagnostic_summary
-        ) ON TABLE public.import_job TO {WORKER_ROLE};
+        ) ON TABLE public.import_job TO ledgerbridge_worker;
         GRANT UPDATE (
             state,
             attempt_count,
@@ -75,41 +74,41 @@ def upgrade() -> None:
             import_job_id,
             error_code,
             diagnostic_summary
-        ) ON TABLE public.evidence_import_dispatch TO {WORKER_ROLE};
+        ) ON TABLE public.evidence_import_dispatch TO ledgerbridge_worker;
         GRANT USAGE ON TYPE public.import_job_status, public.dispatch_state
-            TO {WORKER_ROLE};
+            TO ledgerbridge_worker;
         GRANT EXECUTE ON FUNCTION public.append_audit_event(text, text, text, text, jsonb)
-            TO {WORKER_ROLE};
+            TO ledgerbridge_worker;
         """
     )
 
 
 def downgrade() -> None:
     op.execute(
-        f"""
+        """
         DO $ledgerbridge$
         BEGIN
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{API_ROLE}') THEN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_api') THEN
                 REVOKE ALL ON TABLE public.raw_artifact, public.source_record,
                     public.import_job, public.ingest_channel, public.source_system,
                     public.audit_event, public.evidence_import_dispatch
-                    FROM {API_ROLE};
+                    FROM ledgerbridge_api;
                 REVOKE ALL ON FUNCTION public.append_audit_event(text, text, text, text, jsonb)
-                    FROM {API_ROLE};
+                    FROM ledgerbridge_api;
                 REVOKE ALL ON TYPE public.import_job_status, public.dispatch_state
-                    FROM {API_ROLE};
-                REVOKE USAGE ON SCHEMA public FROM {API_ROLE};
+                    FROM ledgerbridge_api;
+                REVOKE USAGE ON SCHEMA public FROM ledgerbridge_api;
             END IF;
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{WORKER_ROLE}') THEN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_worker') THEN
                 REVOKE ALL ON TABLE public.raw_artifact, public.source_record,
                     public.import_job, public.ingest_channel, public.source_system,
                     public.audit_event, public.evidence_import_dispatch
-                    FROM {WORKER_ROLE};
+                    FROM ledgerbridge_worker;
                 REVOKE ALL ON FUNCTION public.append_audit_event(text, text, text, text, jsonb)
-                    FROM {WORKER_ROLE};
+                    FROM ledgerbridge_worker;
                 REVOKE ALL ON TYPE public.import_job_status, public.dispatch_state
-                    FROM {WORKER_ROLE};
-                REVOKE USAGE ON SCHEMA public FROM {WORKER_ROLE};
+                    FROM ledgerbridge_worker;
+                REVOKE USAGE ON SCHEMA public FROM ledgerbridge_worker;
             END IF;
         END
         $ledgerbridge$;
