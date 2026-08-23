@@ -5,10 +5,10 @@ import socket
 import threading
 import time
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from tempfile import gettempdir
+from tempfile import gettempdir, mkstemp
 from types import FrameType
 from typing import cast
 from uuid import UUID
@@ -51,9 +51,25 @@ def write_heartbeat(path: Path | None = None, now: float | None = None) -> None:
     target = path if path is not None else heartbeat_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     timestamp = time.time() if now is None else now
-    temporary = target.with_name(f"{target.name}.tmp")
-    temporary.write_text(f"{timestamp:.6f}\n", encoding="ascii")
-    temporary.replace(target)
+    file_descriptor, temporary_name = mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=target.parent,
+        text=True,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="ascii") as handle:
+            file_descriptor = -1
+            handle.write(f"{timestamp:.6f}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
+        with suppress(FileNotFoundError):
+            temporary.unlink()
 
 
 def heartbeat_is_fresh(

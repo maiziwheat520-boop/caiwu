@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import os
 import socket
 import stat
 import struct
+import threading
 import time
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -26,6 +29,7 @@ from ledgerbridge.connectors import (
 )
 from ledgerbridge.runner_client import ConnectorRunnerClient, RunnerClientError, RunnerConnector
 from ledgerbridge.runner_protocol import (
+    MAX_ARTIFACT_BYTES,
     MAX_RESPONSE_BYTES,
     FrameKind,
     RunnerOperation,
@@ -496,10 +500,155 @@ def test_supervisor_rejects_invalid_timeout_and_unknown_connector() -> None:
         ConnectorSupervisor(request_timeout_seconds=91)
     with pytest.raises(ValueError, match="positive"):
         ConnectorSupervisor(request_timeout_seconds=0)
+    with pytest.raises(ValueError, match="connections"):
+        ConnectorSupervisor(max_connections=0)
+    with pytest.raises(ValueError, match="at least one maximum-size artifact"):
+        ConnectorSupervisor(spool_budget_bytes=MAX_ARTIFACT_BYTES - 1)
+    with pytest.raises(ValueError, match="at most"):
+        ConnectorSupervisor(spool_budget_bytes=runner_module.MAX_SPOOL_BUDGET_BYTES + 1)
     supervisor = ConnectorSupervisor()
     with pytest.raises(RunnerExecutionError, match="not registered") as error:
         supervisor._execute_with_artifact(_request(b"ok", RunnerOperation.PARSE), BytesIO(b"ok"))
     assert error.value.error_code == "CONNECTOR_UNKNOWN"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_rejects_excess_connections_before_reading_control() -> None:
+    with TemporaryDirectory() as directory:
+        socket_path = str(Path(directory) / "runner.sock")
+        supervisor = ConnectorSupervisor(max_connections=1, request_timeout_seconds=1)
+        start_unix_server = getattr(asyncio, "start_unix_server", None)
+        if start_unix_server is None:
+            raise RuntimeError("Unix socket tests require a POSIX asyncio implementation")
+        open_unix_connection = getattr(asyncio, "open_unix_connection", None)
+        if open_unix_connection is None:
+            raise RuntimeError("Unix socket tests require a POSIX asyncio implementation")
+        server = await start_unix_server(supervisor.handle, path=socket_path)
+        first_reader, first_writer = await open_unix_connection(socket_path)
+        del first_reader
+        await asyncio.sleep(0)
+        second_reader, second_writer = await open_unix_connection(socket_path)
+        try:
+            assert await asyncio.wait_for(second_reader.read(1), timeout=0.5) == b""
+            assert supervisor._connection_slots.locked()
+        finally:
+            first_writer.close()
+            second_writer.close()
+            with contextlib.suppress(ConnectionError, OSError):
+                await first_writer.wait_closed()
+            with contextlib.suppress(ConnectionError, OSError):
+                await second_writer.wait_closed()
+            server.close()
+            await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_bounds_aggregate_spool_and_releases_on_disconnect() -> None:
+    with TemporaryDirectory() as directory:
+        socket_path = str(Path(directory) / "runner.sock")
+        supervisor = ConnectorSupervisor(
+            max_connections=3,
+            spool_budget_bytes=MAX_ARTIFACT_BYTES,
+            request_timeout_seconds=1,
+        )
+        start_unix_server = getattr(asyncio, "start_unix_server", None)
+        if start_unix_server is None:
+            raise RuntimeError("Unix socket tests require a POSIX asyncio implementation")
+        open_unix_connection = getattr(asyncio, "open_unix_connection", None)
+        if open_unix_connection is None:
+            raise RuntimeError("Unix socket tests require a POSIX asyncio implementation")
+        server = await start_unix_server(supervisor.handle, path=socket_path)
+        request = replace(
+            _request(b"x"),
+            declared_artifact_size=MAX_ARTIFACT_BYTES,
+        )
+        first_reader, first_writer = await open_unix_connection(socket_path)
+        del first_reader
+        first_writer.write(encode_frame(FrameKind.CONTROL, request_control(request)))
+        await first_writer.drain()
+        for _ in range(100):
+            if supervisor._reserved_spool_bytes == MAX_ARTIFACT_BYTES:
+                break
+            await asyncio.sleep(0.005)
+        assert supervisor._reserved_spool_bytes == MAX_ARTIFACT_BYTES
+
+        second_reader, second_writer = await open_unix_connection(socket_path)
+        second_request = replace(request, request_id=str(uuid4()))
+        second_writer.write(encode_frame(FrameKind.CONTROL, request_control(second_request)))
+        await second_writer.drain()
+        try:
+            kind, payload = await asyncio.wait_for(read_async_frame(second_reader), timeout=0.5)
+            assert kind is FrameKind.TERMINAL
+            terminal = parse_terminal_payload(payload)
+            assert terminal.status is RunnerStatus.ERROR
+            assert terminal.error_code == "RUNNER_UNAVAILABLE"
+            assert supervisor._reserved_spool_bytes == MAX_ARTIFACT_BYTES
+        finally:
+            first_writer.close()
+            second_writer.close()
+            with contextlib.suppress(ConnectionError, OSError):
+                await first_writer.wait_closed()
+            with contextlib.suppress(ConnectionError, OSError):
+                await second_writer.wait_closed()
+            for _ in range(100):
+                if supervisor._reserved_spool_bytes == 0:
+                    break
+                await asyncio.sleep(0.005)
+            assert supervisor._reserved_spool_bytes == 0
+            server.close()
+            await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_holds_spool_reservation_until_timed_out_thread_finishes() -> None:
+    started = threading.Event()
+    finish = threading.Event()
+
+    class BlockingConnector(SyntheticRunnerConnector):
+        def parse(self, stream: BinaryIO) -> list[ParsedSourceRecord]:
+            started.set()
+            if not finish.wait(timeout=2):
+                raise RuntimeError("test connector did not receive its release signal")
+            return super().parse(stream)
+
+    with TemporaryDirectory() as directory:
+        socket_path = str(Path(directory) / "runner.sock")
+        supervisor = ConnectorSupervisor(
+            {("synthetic.csv", "1"): BlockingConnector()},  # type: ignore[dict-item]
+            request_timeout_seconds=0.05,
+            max_execution_workers=1,
+            max_connections=1,
+        )
+        start_unix_server = getattr(asyncio, "start_unix_server", None)
+        if start_unix_server is None:
+            raise RuntimeError("Unix socket tests require a POSIX asyncio implementation")
+        server = await start_unix_server(supervisor.handle, path=socket_path)
+        content = b"ok"
+        client = ConnectorRunnerClient(socket_path, timeout_seconds=1)
+        try:
+            with pytest.raises(RunnerClientError) as error:
+                await asyncio.to_thread(
+                    client.parse,
+                    _request(content),
+                    _bytes(content),
+                )
+            assert error.value.error_code == "TIMEOUT"
+            assert started.is_set()
+            assert supervisor._active_executions == 1
+            assert supervisor._reserved_spool_bytes == len(content)
+            assert not supervisor._connection_slots.locked()
+
+            finish.set()
+            for _ in range(100):
+                if supervisor._reserved_spool_bytes == 0:
+                    break
+                await asyncio.sleep(0.005)
+            assert supervisor._reserved_spool_bytes == 0
+            assert supervisor._active_executions == 0
+        finally:
+            finish.set()
+            server.close()
+            await server.wait_closed()
 
 
 @pytest.mark.parametrize(

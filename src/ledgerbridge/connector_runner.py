@@ -50,6 +50,15 @@ DEFAULT_SOCKET_PATH = "/run/ledgerbridge-connector/runner.sock"
 # 128 MiB container limit; callers may raise this only within the hard cap.
 DEFAULT_EXECUTION_WORKERS = 4
 MAX_EXECUTION_WORKERS = 8
+# Admission applies before request bodies are received.  The aggregate spool
+# reservation is based on the validated control frame's declared artifact size, so
+# a peer cannot create unbounded 4 MiB in-memory spools or fill the runner's
+# private /tmp with many near-limit artifacts before execution slots apply.
+DEFAULT_MAX_CONNECTIONS = 16
+MAX_CONNECTIONS = 64
+SPOOL_MEMORY_BYTES = 4 * 1024 * 1024
+DEFAULT_SPOOL_BUDGET_BYTES = MAX_ARTIFACT_BYTES
+MAX_SPOOL_BUDGET_BYTES = 64 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
 
@@ -82,6 +91,8 @@ class ConnectorSupervisor:
         *,
         request_timeout_seconds: float = 90.0,
         max_execution_workers: int = DEFAULT_EXECUTION_WORKERS,
+        max_connections: int = DEFAULT_MAX_CONNECTIONS,
+        spool_budget_bytes: int = DEFAULT_SPOOL_BUDGET_BYTES,
     ) -> None:
         if request_timeout_seconds <= 0 or request_timeout_seconds > 90:
             raise ValueError("runner timeout must be positive and at most 90 seconds")
@@ -89,10 +100,19 @@ class ConnectorSupervisor:
             raise ValueError(
                 f"runner execution workers must be between 1 and {MAX_EXECUTION_WORKERS}"
             )
+        if max_connections <= 0 or max_connections > MAX_CONNECTIONS:
+            raise ValueError(f"runner connections must be between 1 and {MAX_CONNECTIONS}")
+        if spool_budget_bytes < MAX_ARTIFACT_BYTES:
+            raise ValueError("runner spool budget must admit at least one maximum-size artifact")
+        if spool_budget_bytes > MAX_SPOOL_BUDGET_BYTES:
+            raise ValueError(f"runner spool budget must be at most {MAX_SPOOL_BUDGET_BYTES} bytes")
         self._connectors = dict(connectors or {})
         self._request_timeout_seconds = request_timeout_seconds
         self._execution_workers = max_execution_workers
         self._active_executions = 0
+        self._connection_slots = asyncio.BoundedSemaphore(max_connections)
+        self._spool_budget_bytes = spool_budget_bytes
+        self._reserved_spool_bytes = 0
         self._executor = ThreadPoolExecutor(
             max_workers=max_execution_workers,
             thread_name_prefix="ledgerbridge-connector",
@@ -101,7 +121,15 @@ class ConnectorSupervisor:
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         request_id = ""
         operation: RunnerOperation | None = None
+        connection_admitted = False
         try:
+            if self._connection_slots.locked():
+                # No control frame has been read, so there is no trustworthy
+                # request_id to echo.  A transport close maps to the existing
+                # retryable RUNNER_UNAVAILABLE client contract.
+                return
+            await self._connection_slots.acquire()
+            connection_admitted = True
             first_kind, first_payload = await asyncio.wait_for(
                 read_async_frame(reader), timeout=self._request_timeout_seconds
             )
@@ -161,6 +189,8 @@ class ConnectorSupervisor:
                 "connector runner failed",
             )
         finally:
+            if connection_admitted:
+                self._connection_slots.release()
             writer.close()
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
@@ -170,11 +200,19 @@ class ConnectorSupervisor:
         reader: asyncio.StreamReader,
         request: RunnerRequest,
     ) -> _ExecutionResult:
-        artifact = tempfile.SpooledTemporaryFile(  # noqa: SIM115 - ownership crosses timeout cancellation
-            max_size=4 * 1024 * 1024,
-            mode="w+b",
-        )
+        reserved_spool_bytes = request.declared_artifact_size
+        self._reserve_spool(reserved_spool_bytes)
+        reservation_owned = True
+        artifact: BinaryIO | None = None
         try:
+            artifact_file = cast(
+                BinaryIO,
+                tempfile.SpooledTemporaryFile(  # noqa: SIM115 - ownership crosses timeout cancellation
+                    max_size=SPOOL_MEMORY_BYTES,
+                    mode="w+b",
+                ),
+            )
+            artifact = artifact_file
             observed = 0
             chunks = 0
             digest = hashlib.sha256()
@@ -192,7 +230,7 @@ class ConnectorSupervisor:
                         raise RunnerExecutionError(
                             "ARTIFACT_SIZE_MISMATCH", "artifact stream exceeds its declaration"
                         )
-                    artifact.write(payload)
+                    artifact_file.write(payload)
                     digest.update(payload)
                     continue
                 if kind is FrameKind.ARTIFACT_END:
@@ -209,16 +247,40 @@ class ConnectorSupervisor:
                     ended = True
                     continue
                 raise RunnerProtocolError("artifact stream contains an unexpected frame")
-            artifact.seek(0)
+            artifact_file.seek(0)
         except BaseException:
-            artifact.close()
+            if artifact is not None:
+                artifact.close()
+            if reservation_owned:
+                self._release_spool(reserved_spool_bytes)
             raise
-        return await self._execute_with_artifact_bounded(request, cast(BinaryIO, artifact))
+        reservation_owned = False
+        return await self._execute_with_artifact_bounded(
+            request,
+            artifact,
+            reserved_spool_bytes=reserved_spool_bytes,
+        )
+
+    def _reserve_spool(self, byte_count: int) -> None:
+        if self._reserved_spool_bytes + byte_count > self._spool_budget_bytes:
+            raise RunnerExecutionError(
+                "RUNNER_UNAVAILABLE",
+                "runner artifact capacity is unavailable",
+            )
+        self._reserved_spool_bytes += byte_count
+
+    def _release_spool(self, byte_count: int) -> None:
+        self._reserved_spool_bytes -= byte_count
+        if self._reserved_spool_bytes < 0:
+            logger.error("runner spool reservation accounting underflow")
+            self._reserved_spool_bytes = 0
 
     async def _execute_with_artifact_bounded(
         self,
         request: RunnerRequest,
         artifact: BinaryIO,
+        *,
+        reserved_spool_bytes: int = 0,
     ) -> _ExecutionResult:
         """Run connector code without growing an unbounded executor queue.
 
@@ -230,6 +292,7 @@ class ConnectorSupervisor:
 
         if self._active_executions >= self._execution_workers:
             artifact.close()
+            self._release_spool(reserved_spool_bytes)
             raise RunnerExecutionError("TIMEOUT", "connector timed out")
         self._active_executions += 1
         loop = asyncio.get_running_loop()
@@ -242,17 +305,22 @@ class ConnectorSupervisor:
         except BaseException:
             self._active_executions -= 1
             artifact.close()
+            self._release_spool(reserved_spool_bytes)
             raise
 
         def release_slot(_future: object) -> None:
             with contextlib.suppress(RuntimeError):
-                loop.call_soon_threadsafe(self._release_execution_slot)
+                loop.call_soon_threadsafe(
+                    self._release_execution_slot,
+                    reserved_spool_bytes,
+                )
 
         future.add_done_callback(release_slot)
         return await asyncio.wrap_future(future)
 
-    def _release_execution_slot(self) -> None:
+    def _release_execution_slot(self, reserved_spool_bytes: int = 0) -> None:
         self._active_executions -= 1
+        self._release_spool(reserved_spool_bytes)
 
     def _execute_with_artifact_and_close(
         self,

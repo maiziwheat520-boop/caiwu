@@ -37,6 +37,23 @@ def test_worker_heartbeat_is_fresh_within_window(tmp_path: Path) -> None:
     assert heartbeat_is_fresh(path, now=129.0, max_age_seconds=30.0)
 
 
+def test_worker_heartbeat_does_not_follow_predictable_temp_symlink(tmp_path: Path) -> None:
+    path = tmp_path / "heartbeat"
+    sensitive = tmp_path / "sensitive"
+    predictable_temporary = path.with_name(f"{path.name}.tmp")
+    sensitive.write_text("keep-me", encoding="ascii")
+    try:
+        predictable_temporary.symlink_to(sensitive)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    write_heartbeat(path, now=100.0)
+
+    assert sensitive.read_text(encoding="ascii") == "keep-me"
+    assert float(path.read_text(encoding="ascii").strip()) == 100.0
+    assert predictable_temporary.is_symlink()
+
+
 def test_worker_heartbeat_rejects_missing_stale_future_and_malformed(tmp_path: Path) -> None:
     path = tmp_path / "heartbeat"
     assert not heartbeat_is_fresh(path, now=100.0)
