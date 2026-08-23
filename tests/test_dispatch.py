@@ -603,7 +603,7 @@ def test_dispatch_input_bounds_and_missing_artifact(
         service.enqueue(
             DispatchRequest(
                 artifact_id=artifact_id,
-                ingest_channel="missing-channel",
+                    ingest_channel="missingchannel",
                 manifest_generation="test-6",
                 manifest_digest=b"d" * 32,
                 actor="pytest",

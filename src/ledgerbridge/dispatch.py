@@ -208,7 +208,7 @@ class DispatchService:
             if session.get(IngestChannel, ingest_channel) is None:
                 raise DispatchError("ingest channel is not registered")
             artifact = session.scalar(
-                select(RawArtifact).where(RawArtifact.sha256 == published.sha256).with_for_update()
+                select(RawArtifact).where(RawArtifact.sha256 == published.sha256)
             )
             if artifact is None:
                 try:
@@ -250,9 +250,7 @@ class DispatchService:
                             raise DispatchError("created artifact disappeared")
                 except DispatchConflict:
                     artifact = session.scalar(
-                        select(RawArtifact)
-                        .where(RawArtifact.sha256 == published.sha256)
-                        .with_for_update()
+                        select(RawArtifact).where(RawArtifact.sha256 == published.sha256)
                     )
                     if artifact is None:
                         raise DispatchError("artifact identity race did not converge") from None
@@ -386,7 +384,7 @@ class DispatchService:
                     ImportDispatch.lease_until <= current,
                 )
                 .order_by(ImportDispatch.lease_until, ImportDispatch.id)
-                .with_for_update(skip_locked=True)
+                .with_for_update(of=ImportDispatch, skip_locked=True)
                 .limit(limit)
             ).all()
             for dispatch in rows:
