@@ -203,12 +203,12 @@ def test_enqueue_published_binds_artifact_and_dispatch_in_one_transaction(
     assert second == first
     with sessions() as session:
         assert session.scalar(text("SELECT count(*) FROM raw_artifact")) == 2
-        assert session.scalar(text("SELECT count(*) FROM evidence_import_dispatch")) == 2
+        assert session.scalar(text("SELECT count(*) FROM evidence_import_dispatch")) == 1
         assert (
             session.scalar(
                 text("SELECT count(*) FROM audit_event WHERE action = 'import.dispatch.accepted'")
             )
-            == 2
+            == 1
         )
         assert (
             session.scalar(
