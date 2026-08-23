@@ -213,8 +213,11 @@ def test_route_dependency_factories_and_principal_are_explicit(tmp_path: Path) -
     settings = _settings(tmp_path)
     store = get_artifact_store(settings)
     importer = get_evidence_importer(settings, store)
+    dispatch = get_dispatch_service(settings)
     assert importer._store is store
+    assert dispatch._max_attempts == settings.dispatch_max_attempts
     assert get_internal_connectors() == ()
+    assert get_async_dispatch_manifest() is None
 
     request = _request()
     request.state.authenticated_principal = "server/actor"

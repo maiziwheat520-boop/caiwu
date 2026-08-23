@@ -713,6 +713,36 @@ def test_dispatch_snapshot_projects_import_job_status() -> None:
     assert snapshot.job_id == dispatch.import_job_id
 
 
+def test_get_for_actor_projects_bounded_status() -> None:
+    dispatch = SimpleNamespace(
+        id=uuid4(),
+        artifact_id=uuid4(),
+        import_job_id=uuid4(),
+        state=DispatchState.SUCCEEDED,
+        error_code=None,
+    )
+
+    class Result:
+        def one_or_none(self) -> tuple[object, str, ImportJobStatus]:
+            return (dispatch, "actor", ImportJobStatus.NEEDS_REVIEW)
+
+    class Session:
+        def __enter__(self) -> Session:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def execute(self, _statement: object) -> Result:
+            return Result()
+
+    service = DispatchService(cast(Any, lambda: Session()))
+    snapshot = service.get_for_actor(dispatch.id, "actor")
+    assert snapshot.operation_id == dispatch.id
+    assert snapshot.artifact_id == dispatch.artifact_id
+    assert snapshot.result_status is ImportJobStatus.NEEDS_REVIEW
+
+
 def test_enqueue_published_rejects_unregistered_and_conflicting_artifact_metadata(
     dispatch_context: tuple[DispatchService, UUID, sessionmaker[Session]],
 ) -> None:
