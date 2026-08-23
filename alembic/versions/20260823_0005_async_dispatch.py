@@ -200,7 +200,7 @@ def upgrade() -> None:
                     USING ERRCODE = 'integrity_constraint_violation';
             END IF;
             IF OLD.state::text = 'RUNNING'
-               AND NEW.state::text NOT IN ('SUCCEEDED', 'FAILED', 'RETRY_WAIT') THEN
+               AND NEW.state::text NOT IN ('RUNNING', 'SUCCEEDED', 'FAILED', 'RETRY_WAIT') THEN
                 RAISE EXCEPTION 'illegal dispatch transition from RUNNING to %', NEW.state
                     USING ERRCODE = 'integrity_constraint_violation';
             END IF;
