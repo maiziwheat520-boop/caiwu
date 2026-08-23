@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -111,7 +111,7 @@ def test_dispatch_service_validates_registered_channel_without_database() -> Non
         def get(self, _model: object, _channel: str) -> object:
             return object()
 
-    service = DispatchService(lambda: Session())
+    service = DispatchService(cast(Any, lambda: Session()))
     service.validate_ingest_channel("internal_upload")
 
 
@@ -126,7 +126,7 @@ def test_dispatch_service_rejects_unregistered_channel_without_database() -> Non
         def get(self, _model: object, _channel: str) -> None:
             return None
 
-    service = DispatchService(lambda: Session())
+    service = DispatchService(cast(Any, lambda: Session()))
     with pytest.raises(DispatchError, match="not registered"):
         service.validate_ingest_channel("internal_upload")
 
@@ -175,7 +175,7 @@ def test_dispatch_service_reports_published_identity_race(
             return None
 
     monkeypatch.setattr(dispatch_module, "append_audit_event", lambda *args, **kwargs: uuid4())
-    service = DispatchService(lambda: Session())
+    service = DispatchService(cast(Any, lambda: Session()))
     published = PublishedArtifact(b"p" * 32, 1, "sha256/p", False)
     with pytest.raises(DispatchError, match="identity race"):
         service.enqueue_published(

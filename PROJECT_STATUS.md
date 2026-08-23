@@ -22,7 +22,7 @@ explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is implemented and
 the Slice C bounded multipart adapter, ArtifactStore-owned transactional handoff,
 and default-disabled internal upload route are pushed on the Codex branch
-`ai/chatgpt/phase-3-connector-runner` at code/test head `9c7d589` (route
+`ai/chatgpt/phase-3-connector-runner` at code/test head `d47c6f5` (route
 implementation `74d81eb`; async dispatch schema/service and feature-flagged
 operation/worker composition are included in the current head); the current
 design/plan head is `cdecbdb`; the prior runner audit baseline remains
@@ -125,6 +125,14 @@ and narrow-audit entry point are preserved.
   production API/worker database-role split. The table/service, feature-flagged
   endpoint and worker claim loop are implemented; runner composition, signed
   manifest, role split and production enablement remain separate gates.
+- Final local validation is green: **212 passed / 136 skipped**, with Ruff,
+  strict mypy and offline lock resolution passing. The exact hosted CI coverage
+  command was replayed in a disposable Hermes PostgreSQL project with **348
+  passed** and **95.26%** coverage; the unchanged 95% threshold was not lowered.
+  The temporary project, volume, images and directory were removed afterward.
+- Production Hermes remains unchanged and healthy at `e426b488b2abb02f10ef02a61aae7ebe24c3283f`
+  / migration `20260822_0004`; no async flag, dispatch row, Connector or real
+  evidence was created.
 
 ## Ownership checkpoint
 

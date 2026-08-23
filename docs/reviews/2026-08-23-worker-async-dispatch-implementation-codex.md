@@ -2,7 +2,7 @@
 
 Date: 2026-08-23
 Implementation branch: `ai/chatgpt/phase-3-connector-runner`
-Implementation head: `9c7d589`
+Implementation head: `d47c6f5`
 Protected review: PR #18 (review-only; not merged)
 
 ## Scope
@@ -65,16 +65,15 @@ Windows local validation:
 
 - `uv lock --offline` passed.
 - Ruff format/check and strict mypy passed for changed source/tests.
-- Full local pytest: **188 passed, 131 skipped, 1 warning**.
+- Full local pytest: **212 passed, 136 skipped, 1 warning**.
 - Sensitive-path scan and `git diff --check` passed.
 
 Disposable Hermes Linux/PostgreSQL validation:
 
-- Full suite: **319 passed**.
-- The prior Hermes coverage gate was **95.03%**; this final direct replay ran
-  the complete behavior suite without the coverage plugin.
-- Alembic downgrade-to-base and upgrade-to-head round-trip passed; final head
-  was `20260823_0005`.
+- Exact CI coverage command: **348 passed, 7 warnings**, total coverage
+  **95.26%** (the unchanged `--cov-fail-under=95` gate).
+- The complete replay also passed the migration downgrade-to-base and
+  upgrade-to-head round-trip; the final head was `20260823_0005`.
 - Runtime TEMP creation and public shadow-table creation were rejected.
 - Dispatch trigger configuration reported `search_path=pg_catalog`.
 - Runtime table/column grants matched the intended compatibility boundary.

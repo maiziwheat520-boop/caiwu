@@ -153,7 +153,9 @@ the API never calls the importer in this profile. Both are guarded by the
 internal async flag and by production fail-closed checks. The default manifest
 loader returns no generation and the default worker Connector registry is empty,
 so the endpoint and loop cannot execute real import work until a separately
-reviewed manifest, Connector and role split are supplied. Production Hermes
+reviewed manifest, Connector and role split are supplied. The final local
+regression is `212 passed / 136 skipped`; the exact hosted CI coverage command
+passed in disposable Hermes at `348 passed` and `95.26%`. Production Hermes
 remains on `20260822_0004`; no dispatch row, endpoint request, evidence bytes or
 real Connector was used in production.
 
