@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.requests import Request
 
 from ledgerbridge import main as main_module
@@ -22,7 +23,12 @@ from ledgerbridge.artifacts import (
     PublishedArtifact,
 )
 from ledgerbridge.config import Settings, get_settings
-from ledgerbridge.dispatch import DispatchNotFound, DispatchSnapshot
+from ledgerbridge.dispatch import (
+    DispatchConflict,
+    DispatchError,
+    DispatchNotFound,
+    DispatchSnapshot,
+)
 from ledgerbridge.imports import EvidenceIngestionError, ImportOutcome, IngestMetadata
 from ledgerbridge.main import (
     _declared_length,
@@ -38,6 +44,7 @@ from ledgerbridge.main import (
     require_internal_upload,
 )
 from ledgerbridge.models import DispatchState, ImportJobStatus
+from ledgerbridge.upload import MultipartError, MultipartLimitError
 
 
 class FakeImporter:
@@ -312,6 +319,80 @@ def test_async_dispatch_route_publishes_and_returns_202_location(tmp_path: Path)
     assert store.quota_snapshot().staging_bytes == 0
 
 
+def test_async_dispatch_rejects_advertised_body_over_limit_before_reading(
+    tmp_path: Path,
+) -> None:
+    _install_async_overrides(tmp_path, manifest=("synthetic-test", b"m" * 32))
+    try:
+        response = TestClient(app).post(
+            "/v1/evidence/import-requests",
+            content=b"",
+            headers={
+                "content-type": "multipart/form-data; boundary=unused",
+                "content-length": "999999",
+            },
+        )
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": {"error_code": "EVIDENCE_LIMIT"}}
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code", "error_code"),
+    [
+        (MultipartLimitError("bounded"), 413, "EVIDENCE_LIMIT"),
+        (MultipartError("bounded"), 400, "INVALID_MULTIPART"),
+        (DispatchConflict("bounded"), 409, "DISPATCH_CONFLICT"),
+        (DispatchError("bounded"), 503, "DISPATCH_UNAVAILABLE"),
+        (ValueError("bounded"), 422, "INVALID_METADATA"),
+        (ArtifactTooLargeError("bounded"), 413, "EVIDENCE_LIMIT"),
+        (
+            ArtifactStagingQuotaError("bounded", limit=3, observed=3, requested=1),
+            413,
+            "ARTIFACT_STAGING_QUOTA",
+        ),
+        (
+            ArtifactPublishedQuotaError("bounded", limit=3, observed=3, requested=1),
+            507,
+            "ARTIFACT_TOTAL_QUOTA",
+        ),
+        (ArtifactQuotaStateError("bounded"), 503, "ARTIFACT_QUOTA_STATE"),
+        (ArtifactIntegrityError("bounded"), 500, "EVIDENCE_INTEGRITY"),
+        (ArtifactStoreError("bounded"), 500, "EVIDENCE_STORAGE"),
+        (OSError("bounded"), 500, "EVIDENCE_STORAGE"),
+        (SQLAlchemyError("bounded"), 503, "IMPORT_DATABASE"),
+    ],
+)
+def test_async_dispatch_maps_handoff_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: BaseException,
+    status_code: int,
+    error_code: str,
+) -> None:
+    _store, dispatch = _install_async_overrides(tmp_path)
+
+    async def fail_receive(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise error
+
+    monkeypatch.setattr(main_module, "_receive_handoff", fail_receive)
+    try:
+        response = TestClient(app).post(
+            "/v1/evidence/import-requests",
+            content=b"body",
+            headers={"content-type": "multipart/form-data; boundary=unused"},
+        )
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == status_code
+    assert response.json() == {"detail": {"error_code": error_code}}
+    assert dispatch.calls == []
+
+
 def test_async_dispatch_requires_manifest_before_reading_body(tmp_path: Path) -> None:
     store, dispatch = _install_async_overrides(tmp_path, manifest=None)
     try:
@@ -341,6 +422,18 @@ def test_async_dispatch_status_is_principal_scoped(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["status"] == "PENDING"
+
+
+def test_async_dispatch_status_hides_unknown_operation(tmp_path: Path) -> None:
+    _store, dispatch = _install_async_overrides(tmp_path)
+    try:
+        response = TestClient(app).get(f"/v1/evidence/import-requests/{uuid4()}")
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": {"error_code": "OPERATION_NOT_FOUND"}}
+    del dispatch
 
 
 def test_async_dispatch_is_disabled_before_authentication(tmp_path: Path) -> None:

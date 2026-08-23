@@ -2,13 +2,25 @@ import hashlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import gettempdir
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
+
+import pytest
 
 import ledgerbridge.worker as worker
 from ledgerbridge.artifacts import PublishedArtifact, storage_key_for_digest
-from ledgerbridge.dispatch import DispatchClaim, DispatchPrincipal, DispatchService
-from ledgerbridge.imports import EvidenceImporter, ImportOutcome, IngestMetadata
+from ledgerbridge.dispatch import (
+    DispatchClaim,
+    DispatchClaimLost,
+    DispatchPrincipal,
+    DispatchService,
+)
+from ledgerbridge.imports import (
+    EvidenceImporter,
+    EvidenceIngestionError,
+    ImportOutcome,
+    IngestMetadata,
+)
 from ledgerbridge.models import DispatchState, ImportJobStatus
 from ledgerbridge.worker import heartbeat_is_fresh, heartbeat_path, write_heartbeat
 
@@ -67,6 +79,38 @@ def test_worker_main_writes_once_and_stops(monkeypatch: object) -> None:
     assert importer_builds == ["build"]
 
 
+def test_worker_main_processes_enabled_async_profile(monkeypatch: object) -> None:
+    calls: list[object] = []
+
+    class Settings:
+        env = "test"
+        enable_internal_async_dispatch = True
+        dispatch_poll_seconds = 1.0
+
+    monkeypatch.setattr(worker, "get_settings", lambda: Settings())  # type: ignore[attr-defined]
+    monkeypatch.setattr(worker, "build_evidence_importer", lambda: "importer")  # type: ignore[attr-defined]
+    monkeypatch.setattr(worker, "build_dispatch_service", lambda _settings: "dispatch")  # type: ignore[attr-defined]
+    monkeypatch.setattr(worker, "build_worker_manifest", lambda: ("generation", b"m" * 32))  # type: ignore[attr-defined]
+    monkeypatch.setattr(worker, "build_worker_connectors", lambda: ("connector",))  # type: ignore[attr-defined]
+    monkeypatch.setattr(worker, "worker_id", lambda: "worker")  # type: ignore[attr-defined]
+    monkeypatch.setattr(worker.signal, "signal", lambda *_args: None)  # type: ignore[attr-defined]
+    monkeypatch.setattr(worker, "write_heartbeat", lambda: calls.append("heartbeat"))  # type: ignore[attr-defined]
+
+    def process(*args: object, **kwargs: object) -> bool:
+        calls.append((args, kwargs))
+        worker._stop(0, None)
+        return True
+
+    monkeypatch.setattr(worker, "process_dispatch_once", process)  # type: ignore[attr-defined]
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)  # type: ignore[attr-defined]
+
+    worker.main()
+
+    assert calls[0] == "heartbeat"
+    assert calls[1][0][0:4] == ("dispatch", "importer", ("connector",), "worker")  # type: ignore[index]
+    assert calls[1][1]["expected_manifest"] == ("generation", b"m" * 32)  # type: ignore[index]
+
+
 def test_worker_composition_enables_production_connector_boundary(
     monkeypatch: object,
     tmp_path: Path,
@@ -100,6 +144,241 @@ def test_worker_composition_enables_production_connector_boundary(
 
     assert captured["database_url"] == "postgresql+psycopg://runtime"
     assert captured["production"] is True
+
+
+def test_worker_defaults_are_empty_and_dispatch_service_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class Settings:
+        database_url = "postgresql+psycopg://runtime"
+        dispatch_lease_seconds = 7
+        dispatch_max_attempts = 4
+
+    monkeypatch.setattr(
+        worker, "get_session_factory", lambda value: captured.update(url=value) or "sessions"
+    )
+
+    service = worker.build_dispatch_service(Settings())  # type: ignore[arg-type]
+
+    assert isinstance(service, DispatchService)
+    assert captured["url"] == "postgresql+psycopg://runtime"
+    assert worker.build_worker_connectors() == ()
+    assert worker.build_worker_manifest() is None
+
+
+@pytest.mark.parametrize("renew_error", [DispatchClaimLost("lost"), RuntimeError("transient")])
+def test_worker_lease_renewal_handles_lost_and_transient_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    renew_error: BaseException,
+) -> None:
+    class Event:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def wait(self, _interval: float) -> bool:
+            self.calls += 1
+            return self.calls > 1
+
+        def set(self) -> None:
+            return None
+
+    event = Event()
+
+    class Thread:
+        def __init__(self, target: Any, **_kwargs: object) -> None:
+            self.target = target
+
+        def start(self) -> None:
+            self.target()
+
+        def join(self, **_kwargs: object) -> None:
+            return None
+
+    class Dispatch:
+        def renew_lease(self, _operation_id: object, _owner: str) -> None:
+            raise renew_error
+
+    monkeypatch.setattr(worker.threading, "Event", lambda: event)  # type: ignore[attr-defined]
+    monkeypatch.setattr(worker.threading, "Thread", Thread)  # type: ignore[attr-defined]
+
+    with worker.renew_dispatch_lease(
+        cast(DispatchService, Dispatch()), uuid4(), "owner", lease_seconds=3
+    ):
+        pass
+
+
+def test_process_dispatch_once_covers_guards_manifest_and_failure_paths() -> None:
+    now = datetime(2026, 8, 23, tzinfo=UTC)
+    digest = hashlib.sha256(b"evidence").digest()
+
+    class Dispatch:
+        def __init__(
+            self,
+            error: BaseException | None = None,
+            claim: DispatchClaim | None = None,
+            principal_error: BaseException | None = None,
+        ) -> None:
+            self.claim = claim
+            self.error = error
+            self.principal_error = principal_error
+            self.failed: list[dict[str, object]] = []
+            self.retried: list[dict[str, object]] = []
+            self.completed = False
+
+        def recover_expired_leases(self, **_kwargs: object) -> int:
+            return 0
+
+        def claim_next(self, _owner: str, **_kwargs: object) -> DispatchClaim | None:
+            if self.error is not None:
+                raise self.error
+            return self.claim
+
+        def acceptance_principal(self, _operation_id: object) -> DispatchPrincipal:
+            if self.principal_error is not None:
+                raise self.principal_error
+            return DispatchPrincipal(actor="actor", reason="reason")
+
+        def fail(self, *_args: object, **kwargs: object) -> DispatchState:
+            self.failed.append(kwargs)
+            return DispatchState.FAILED
+
+        def mark_retry(self, *_args: object, **kwargs: object) -> DispatchState:
+            self.retried.append(kwargs)
+            return DispatchState.RETRY_WAIT
+
+        def complete(self, *_args: object, **_kwargs: object) -> DispatchState:
+            self.completed = True
+            return DispatchState.SUCCEEDED
+
+    claim = DispatchClaim(
+        operation_id=uuid4(),
+        artifact_id=uuid4(),
+        ingest_channel="manual_upload",
+        manifest_generation="generation-a",
+        manifest_digest=b"m" * 32,
+        byte_size=8,
+        storage_key=storage_key_for_digest(digest),
+        original_filename="statement.csv",
+        media_type="text/csv",
+        attempt_count=2,
+        lease_owner="owner",
+        lease_until=now + timedelta(seconds=30),
+    )
+
+    assert not worker.process_dispatch_once(
+        cast(DispatchService, Dispatch()),
+        cast(EvidenceImporter, object()),
+        (),
+        "owner",
+        now=now,
+    )
+    assert not worker.process_dispatch_once(
+        cast(DispatchService, Dispatch(claim=None)),
+        cast(EvidenceImporter, object()),
+        cast(Any, (object(),)),
+        "owner",
+        now=now,
+    )
+
+    drift = Dispatch(claim=claim)
+    assert worker.process_dispatch_once(
+        cast(DispatchService, drift),
+        cast(EvidenceImporter, object()),
+        cast(Any, (object(),)),
+        "owner",
+        now=now,
+        expected_manifest=("generation-b", b"m" * 32),
+    )
+    assert drift.failed[0]["error_code"] == "MANIFEST_DRIFT"
+
+    failed = Dispatch(claim=claim)
+
+    class FailedImporter:
+        def ingest_published(self, *_args: object, **_kwargs: object) -> ImportOutcome:
+            return ImportOutcome(
+                artifact_id=uuid4(),
+                job_id=uuid4(),
+                status=ImportJobStatus.FAILED,
+                parsed_count=0,
+                created_count=0,
+                duplicate_count=0,
+                error_code=None,
+                artifact_created=False,
+            )
+
+    assert worker.process_dispatch_once(
+        cast(DispatchService, failed),
+        cast(EvidenceImporter, FailedImporter()),
+        cast(Any, (object(),)),
+        "owner",
+        now=now,
+    )
+    assert failed.failed[0]["error_code"] == "IMPORT_FAILED"
+
+    retry = Dispatch(claim=claim)
+
+    class RetryImporter:
+        def ingest_published(self, *_args: object, **_kwargs: object) -> ImportOutcome:
+            raise EvidenceIngestionError("RUNNER_UNAVAILABLE", "bounded")
+
+    assert worker.process_dispatch_once(
+        cast(DispatchService, retry),
+        cast(EvidenceImporter, RetryImporter()),
+        cast(Any, (object(),)),
+        "owner",
+        now=now,
+    )
+    assert retry.retried[0]["error_code"] == "RUNNER_UNAVAILABLE"
+
+    internal = Dispatch(claim=claim)
+
+    class InternalImporter:
+        def ingest_published(self, *_args: object, **_kwargs: object) -> ImportOutcome:
+            raise RuntimeError("bounded")
+
+    assert worker.process_dispatch_once(
+        cast(DispatchService, internal),
+        cast(EvidenceImporter, InternalImporter()),
+        cast(Any, (object(),)),
+        "owner",
+        now=now,
+    )
+    assert internal.retried[0]["error_code"] == "WORKER_INTERNAL"
+
+    lost = Dispatch(claim=claim, principal_error=DispatchClaimLost("lost"))
+    assert worker.process_dispatch_once(
+        cast(DispatchService, lost),
+        cast(EvidenceImporter, object()),
+        cast(Any, (object(),)),
+        "owner",
+        now=now,
+    )
+
+    terminal = Dispatch(claim=claim)
+    worker._handle_dispatch_error(
+        cast(DispatchService, terminal),
+        claim,
+        "owner",
+        "CONNECTOR_CONTRACT",
+        "bounded",
+        now,
+    )
+    assert terminal.failed[0]["error_code"] == "CONNECTOR_CONTRACT"
+
+    class LostRecorder(Dispatch):
+        def mark_retry(self, *_args: object, **_kwargs: object) -> DispatchState:
+            raise DispatchClaimLost("lost while recording")
+
+    worker._handle_dispatch_error(
+        cast(DispatchService, LostRecorder(claim=claim)),
+        claim,
+        "owner",
+        "RUNNER_UNAVAILABLE",
+        "bounded",
+        now,
+    )
 
 
 def test_process_dispatch_once_imports_and_terminalizes(monkeypatch: object) -> None:

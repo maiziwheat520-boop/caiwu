@@ -5,10 +5,12 @@ import io
 import os
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -17,7 +19,7 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
-from ledgerbridge.artifacts import ArtifactStore
+from ledgerbridge.artifacts import ArtifactStore, PublishedArtifact
 from ledgerbridge.audit import append_audit_event
 from ledgerbridge.dispatch import (
     MAX_ATTEMPTS,
@@ -27,6 +29,9 @@ from ledgerbridge.dispatch import (
     DispatchNotFound,
     DispatchRequest,
     DispatchService,
+    _utc_now,
+    _validate_published_metadata,
+    _validate_request,
 )
 from ledgerbridge.models import (
     DispatchState,
@@ -614,3 +619,95 @@ def test_dispatch_input_bounds_and_missing_artifact(
         DispatchService(cast(sessionmaker[Session], object()), lease_seconds=0)
     with pytest.raises(ValueError):
         DispatchService(cast(sessionmaker[Session], object()), max_attempts=MAX_ATTEMPTS + 1)
+
+
+def test_dispatch_private_validators_cover_published_and_request_bounds() -> None:
+    artifact = PublishedArtifact(
+        sha256=b"a" * 32,
+        byte_size=1,
+        storage_key="sha256/aa/aa/" + "a" * 64,
+        created=False,
+    )
+    common = {
+        "ingest_channel": "manual_upload",
+        "original_filename": "statement.csv",
+        "media_type": "text/csv",
+        "manifest_generation": "generation",
+        "manifest_digest": b"m" * 32,
+        "actor": "actor",
+        "reason": "reason",
+    }
+
+    invalid_published = [
+        (PublishedArtifact(b"short", 1, artifact.storage_key, False), {}),
+        (PublishedArtifact(artifact.sha256, -1, artifact.storage_key, False), {}),
+        (PublishedArtifact(artifact.sha256, 1, "", False), {}),
+        (artifact, {"ingest_channel": "Bad"}),
+        (artifact, {"original_filename": ""}),
+        (artifact, {"original_filename": "x" * 513}),
+        (artifact, {"original_filename": "bad\x00name"}),
+        (artifact, {"media_type": ""}),
+        (artifact, {"media_type": "x" * 201}),
+        (artifact, {"media_type": "bad\x00type"}),
+        (artifact, {"manifest_generation": ""}),
+        (artifact, {"manifest_generation": "x" * 101}),
+        (artifact, {"manifest_digest": b"short"}),
+        (artifact, {"actor": ""}),
+        (artifact, {"actor": "x" * 201}),
+        (artifact, {"actor": "bad\x00actor"}),
+        (artifact, {"reason": ""}),
+        (artifact, {"reason": "x" * 501}),
+        (artifact, {"reason": "bad\x00reason"}),
+    ]
+    for value, changes in invalid_published:
+        arguments = cast(dict[str, Any], {**common, **cast(dict[str, Any], changes)})
+        with pytest.raises(ValueError):
+            _validate_published_metadata(value, **arguments)
+
+    request = DispatchRequest(
+        artifact_id=uuid4(),
+        ingest_channel="manual_upload",
+        manifest_generation="generation",
+        manifest_digest=b"m" * 32,
+        actor="actor",
+        reason="reason",
+    )
+    invalid_requests: list[DispatchRequest] = [
+        DispatchRequest(
+            artifact_id=cast(Any, "not-a-uuid"),
+            ingest_channel=request.ingest_channel,
+            manifest_generation=request.manifest_generation,
+            manifest_digest=request.manifest_digest,
+            actor=request.actor,
+            reason=request.reason,
+        ),
+        replace(request, ingest_channel="Bad"),
+        replace(request, manifest_generation=""),
+        replace(request, manifest_generation="x" * 101),
+        replace(request, manifest_digest=b"short"),
+        replace(request, actor="bad\x00actor"),
+        replace(request, reason="bad\x00reason"),
+    ]
+    for invalid in invalid_requests:
+        with pytest.raises(ValueError):
+            _validate_request(invalid)
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        _utc_now(datetime(2026, 8, 23))
+
+
+def test_dispatch_snapshot_projects_import_job_status() -> None:
+    class Session:
+        def scalar(self, _statement: object) -> ImportJobStatus:
+            return ImportJobStatus.SUCCEEDED
+
+    dispatch = SimpleNamespace(
+        id=uuid4(),
+        artifact_id=uuid4(),
+        import_job_id=uuid4(),
+        state=DispatchState.SUCCEEDED,
+        error_code=None,
+    )
+    snapshot = DispatchService._snapshot(cast(Any, Session()), cast(Any, dispatch))
+    assert snapshot.result_status is ImportJobStatus.SUCCEEDED
+    assert snapshot.job_id == dispatch.import_job_id
