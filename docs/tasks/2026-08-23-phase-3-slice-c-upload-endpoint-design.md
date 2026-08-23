@@ -1,12 +1,11 @@
 # Phase 3 Slice C: upload endpoint prerequisite design
 
-Status: **APPROVED INTERNAL DESIGN — bounded adapter implemented; no HTTP
-upload route or production data path is implemented.**
+Status: **IMPLEMENTED INTERNAL/TEST-ONLY ROUTE — feature flag defaults off;
+production composition remains closed.**
 
-This document prepares the first-party upload boundary that may be implemented
-after the current Slice B review. It does not register a real Connector, enable
-OAuth/mail collection, expose a public endpoint, or authorize production
-deployment.
+This document records the first-party upload boundary and its gated internal
+implementation. It does not register a real Connector, enable OAuth/mail
+collection, expose a public endpoint, or authorize production deployment.
 
 ## Existing boundaries to preserve
 
@@ -95,8 +94,9 @@ status resource, but that is not part of this Slice C prerequisite.
 | Connector registry unavailable/empty | 503 | no internal registry detail |
 | Runner/ingest terminal failure | 422/500 by error class | existing bounded `error_code` and summary mapping |
 
-The exact status-code choice for quota and asynchronous semantics is a product
-decision; the storage and audit error codes are not negotiable.
+The internal implementation uses the documented stable status-code mapping; the
+storage and audit error codes are not negotiable. A real authentication provider
+and Connector manifest remain separate gates.
 
 ## Transaction and failure sequence
 
@@ -140,13 +140,16 @@ decision; the storage and audit error codes are not negotiable.
 
 1. **Decided:** use `/v1/evidence/imports` as a synchronous internal/test-only
    first version; do not require `Idempotency-Key` yet; keep actor server-derived.
-2. Confirm the quota HTTP status mapping and authentication dependency before
-   writing the route.
-3. Implement a pure bounded multipart adapter and unit-test it without FastAPI
-   or PostgreSQL.
-4. Add an internal/test-only route behind an explicit feature flag; wire it to
-   `EvidenceImporter` without adding a real Connector.
-5. Run the full local/Linux/PostgreSQL/CI gates and a security-diff review.
+2. **Implemented:** the quota HTTP status mapping and trusted server-side
+   authentication dependency are explicit in `src/ledgerbridge/main.py`.
+3. **Implemented:** the pure bounded multipart adapter is unit-tested without
+   FastAPI or PostgreSQL and is reused by the route.
+4. **Implemented:** `/v1/evidence/imports` is behind
+   `LEDGERBRIDGE_ENABLE_INTERNAL_UPLOAD`, wires the bounded handoff to
+   `EvidenceImporter.ingest_published()`, and fails closed while the connector
+   manifest is empty.
+5. **Validated:** the current route head passed the full local suite and hosted
+   Linux/PostgreSQL CI; a separate narrow security audit remains a review task.
 6. Only after a separate decision may a future PR add authentication provider
    integration, a real Connector manifest, or a production deployment.
 
@@ -164,11 +167,11 @@ fragmentation, binary content containing boundary-like bytes, unknown and
 duplicate fields, file-before-channel ordering, header/field/file/body limits,
 malformed headers and parameters, unsafe filenames, invalid UTF-8/control text,
 file overflow, declared body overflow, and invalid content types. The adapter
-has not been wired to FastAPI or `ArtifactStore`; publication handoff remains a
-separate implementation step with its own cleanup and quota tests. Commits
-`1765356`, `15b0b80`, and `99e4085` are pushed on PR #18; Hosted push run
-`32601095055` and pull-request run `32601097122` pass all three jobs, with
-quality coverage at 95.92%.
+is now connected to FastAPI through the bounded `ArtifactHandoff`; route tests
+also prove default-off behavior, trusted server actor derivation, parser
+completion, quota/storage/database mappings, and staging cleanup. The route and
+importer continuation implementation is in `74d81eb`, with the mypy follow-up
+at `19f4c30`; PR #18 CI is the authoritative Linux/PostgreSQL gate.
 
 ## ArtifactStore handoff design gate
 
@@ -177,19 +180,18 @@ The next boundary is documented in the derived hardening portfolio
 and the detailed proposal
 [`artifact-handoff-publication-boundary.md`](../security-hardening/2026-08-23-artifact-handoff/proposals/artifact-handoff-publication-boundary.md).
 It compares a bounded request spool, an ArtifactStore-owned transactional
-handoff session, and a completion-aware stream. The current recommendation is
-the transactional session because it keeps completion, staging quota, digest
-verification and publication under one authority without holding the global
-quota lock across network pauses. This is a design recommendation only: no
-handoff API, route, production path, or database state change has been added.
+handoff session, and a completion-aware stream. The selected transactional
+session keeps completion, staging quota, digest verification and publication
+under one authority without holding the global quota lock across network pauses.
 
 Option 2 was subsequently selected and implemented at `6300bf5`. Its
 implementation handoff is
 [`transactional-handoff-session.md`](../security-hardening/2026-08-23-artifact-handoff/implementation/transactional-handoff-session.md),
 and the evidence report is
 [`2026-08-23-artifact-handoff-implementation-codex.md`](../reviews/2026-08-23-artifact-handoff-implementation-codex.md).
-The handoff source and tests are complete; no route, database state, or
-production deployment has been changed.
+The handoff source and tests are complete. The internal route is implemented but
+the production composition remains closed; no production database state or
+evidence has been changed.
 
 ## Explicit non-goals
 

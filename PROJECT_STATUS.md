@@ -20,10 +20,10 @@ that are not covered by table grants and keeps `import_job` updates limited to
 the state-machine columns. Same-UID open-inode identity separation remains an
 explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is implemented and
-the pure Slice C bounded multipart adapter plus the ArtifactStore-owned
-transactional handoff are pushed on the Codex branch
-`ai/chatgpt/phase-3-connector-runner` at current docs head `c24355a` (implementation
-code `6300bf5`); the prior runner audit baseline remains
+the Slice C bounded multipart adapter, ArtifactStore-owned transactional handoff,
+and default-disabled internal upload route are pushed on the Codex branch
+`ai/chatgpt/phase-3-connector-runner` at code/test head `19f4c30` (route
+implementation `74d81eb`); the prior runner audit baseline remains
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e`. The isolated runner
 image and the handoff replay were tested only as disposable Hermes workloads and
 are not deployed.
@@ -83,8 +83,13 @@ and narrow-audit entry point are preserved.
   multipart parser emits `MultipartComplete` only after the closing boundary;
   `ArtifactStore.begin_handoff()` owns bounded `write/complete/abort` sessions,
   descriptor-level verification, staging/published quotas, deduplication, fsync,
-  and identity-safe cleanup. The HTTP route, authentication, importer wiring,
-  and production composition remain intentionally absent.
+  and identity-safe cleanup. The internal route implementation at `74d81eb`
+  authenticates through a server-side principal dependency, spools requests into
+  the handoff only after a complete multipart boundary, maps bounded error codes,
+  and continues through `EvidenceImporter.ingest_published()`; its feature flag
+  defaults to false and production rejects it even when explicitly enabled.
+  The connector manifest is empty by default, so the route fails closed with
+  `CONNECTOR_REGISTRY_UNAVAILABLE` until a separately reviewed manifest exists.
 
 ## Ownership checkpoint
 
@@ -124,29 +129,29 @@ is green across `secrets`, `quality`, and `compose`; Claude's approval applies t
 the earlier fixed code/test SHA, while this follow-up is Codex-verified.
 Protected PR #18 is open at
 `https://github.com/maiziwheat520-boop/caiwu/pull/18`; its current head is
-`c24355a`. The push and pull-request runs for this head (`32613837354` and
-`32613840247`) both passed `secrets`, `quality`, and `compose`; the preceding
+`19f4c30`. The push and pull-request runs for this head (`32615944190` and
+`32615946593`) both passed `secrets`, `quality`, and `compose`; the preceding
 implementation head `6300bf5` was green in runs `32613520982` and `32613522285`.
 The PR is review-only; it has not been merged or deployed.
-The approved Slice C upload-boundary design is recorded in
-`docs/tasks/2026-08-23-phase-3-slice-c-upload-endpoint-design.md`; no route is
-implemented or exposed. The pure bounded multipart adapter is implemented and
-tested, but remains disconnected from FastAPI, `ArtifactStore`, and production
-data paths. The derived handoff hardening portfolio compares bounded request
-spool, ArtifactStore-owned transactional session, and completion-aware stream.
-The recommended session is now implemented and independently replayed on
-Hermes; the route remains gated behind a later authentication and status-mapping
-review.
+The approved Slice C upload-boundary design and implementation evidence are
+recorded in `docs/tasks/2026-08-23-phase-3-slice-c-upload-endpoint-design.md` and
+`docs/reviews/2026-08-23-internal-upload-route-implementation-codex.md`. The
+route is internal/test-only, default-disabled, and not exposed through the
+production composition. The pure bounded multipart adapter is connected to the
+ArtifactStore-owned transactional handoff and the importer continuation API;
+the server-side authentication provider and real Connector manifest remain
+separate review gates. The handoff and production-disabled gate were replayed
+in an isolated Hermes project; no evidence was ingested.
 
 ## Next task
 
-Review protected PR #18, including the bounded multipart adapter and the
-ArtifactStore-owned handoff implementation. The next gate is the explicitly
-feature-flagged internal route: authentication, quota error mapping, importer
-ordering, and no-row/no-audit failure behavior must be designed and reviewed
-before any route code is added. Merge and any production runner deployment
-require distinct authorization; do not register a real Connector, ingest
-evidence, or enable the mail collector without corresponding later authorization.
+Review protected PR #18, including the bounded multipart adapter, handoff, and
+feature-flagged internal upload route. The next gate is a separately reviewed
+authentication provider and Connector manifest; the route stays disabled until
+those are approved. Merge and any production deployment require distinct
+authorization; do not register a real Connector, enable the flag in production,
+ingest evidence, or enable the mail collector without corresponding later
+authorization.
 
 ## Blocking decisions
 
