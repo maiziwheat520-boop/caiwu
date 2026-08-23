@@ -92,11 +92,15 @@ def dispatch_context(
         connection.execute(
             text(
                 "INSERT INTO ingest_channel (id, description) VALUES "
-                "('internal', 'Internal test upload')"
+                "('internal', 'Internal test upload') "
+                "ON CONFLICT (id) DO NOTHING"
             )
         )
         connection.execute(
-            text("INSERT INTO source_system (id, description) VALUES ('synthetic', 'Synthetic')")
+            text(
+                "INSERT INTO source_system (id, description) VALUES "
+                "('synthetic', 'Synthetic') ON CONFLICT (id) DO NOTHING"
+            )
         )
     sessions = sessionmaker(bind=runtime_engine, expire_on_commit=False)
     store = ArtifactStore(tmp_path.resolve(), max_bytes=1_000_000, chunk_size=127)
