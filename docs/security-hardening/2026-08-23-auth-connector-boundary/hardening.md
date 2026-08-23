@@ -34,12 +34,25 @@ capabilities before we consume or persist evidence. They should be implemented
 as separate reviewable changes, because authentication provider failure and
 connector code isolation have different owners and rollback paths.
 
+The API-versus-worker runner choice is a supplemental composition decision for
+the Connector opportunity, recorded in
+[connector-execution-composition.md](proposals/connector-execution-composition.md).
+It does not introduce a third admission opportunity or authorize source/code
+changes.
+
 The user selected the current internal middleware option and the signed runner
 manifest option for planning. The resulting handoffs are
 [trusted-internal-middleware.md](implementation/trusted-internal-middleware.md)
 and
 [signed-declarative-runner-manifest.md](implementation/signed-declarative-runner-manifest.md);
 they remain plans, not source changes.
+
+The composition review now recommends worker-owned asynchronous execution for
+the production runner profile. The API remains socket-free; the worker owns
+the runner socket and must claim a durable dispatch before executing. The
+current synchronous route is retained only as an explicitly internal/test
+profile until an async `202`/status contract and dispatch migration are
+accepted.
 
 ## Recommendation Summary
 
@@ -66,8 +79,9 @@ registered.
   authenticated flag as write authorization.
 - Select the manifest schema/signature owner and key-management location outside
   the repository.
-- Decide whether synchronous API execution may mount `connector-socket`, or
-  whether Connector work moves to the worker asynchronously.
-- Before implementation: resolve the API socket versus worker async composition,
-  key custody, gateway/provider ownership and source-system owner. No production
-  enablement follows automatically from the selected plans.
+- Accept or reject the proposed worker-owned asynchronous composition and its
+  new dispatch/status contract; do not mount `connector-socket` into production
+  API as a shortcut.
+- Before implementation: resolve key custody, gateway/provider ownership and
+  source-system owner. No production enablement follows automatically from the
+  selected plans.

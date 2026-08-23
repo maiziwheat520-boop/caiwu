@@ -23,7 +23,7 @@ evidence, and ledger automation remain out of scope. Slice B is implemented and
 the Slice C bounded multipart adapter, ArtifactStore-owned transactional handoff,
 and default-disabled internal upload route are pushed on the Codex branch
 `ai/chatgpt/phase-3-connector-runner` at code/test head `19f4c30` (route
-implementation `74d81eb`); the current design/plan head is `21d0880`; the prior runner audit baseline remains
+implementation `74d81eb`); the current design/plan head is `fd0c8d4`; the prior runner audit baseline remains
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e`. The isolated runner
 image and the handoff replay were tested only as disposable Hermes workloads and
 are not deployed.
@@ -91,8 +91,8 @@ and narrow-audit entry point are preserved.
   The connector manifest is empty by default, so the route fails closed with
   `CONNECTOR_REGISTRY_UNAVAILABLE` until a separately reviewed manifest exists.
 - The authentication and Connector admission design is recorded in
-  `docs/security-hardening/2026-08-23-auth-connector-boundary/`: two proposals,
-  six comparable diagrams, a twelve-file evidence digest, and a structured
+  `docs/security-hardening/2026-08-23-auth-connector-boundary/`: three proposals,
+  nine comparable diagrams, a twelve-file evidence digest, and a structured
   `hardening.json`. The current recommendation is an internal loopback/mTLS
   principal boundary for the disabled route, and a signed declarative
   runner-only manifest for any real Connector. No provider, signing key,
@@ -101,9 +101,14 @@ and narrow-audit entry point are preserved.
   implementation planning. The handoffs are in
   `docs/security-hardening/2026-08-23-auth-connector-boundary/implementation/`:
   `trusted-internal-middleware.md` and
-  `signed-declarative-runner-manifest.md`. They are plans only; API socket vs
-  worker async composition, key custody, gateway/provider ownership and
-  source-system ownership remain open decisions.
+  `signed-declarative-runner-manifest.md`. They are plans only; key custody,
+  gateway/provider ownership and source-system ownership remain open decisions.
+- The API-versus-worker runner composition is documented in
+  `proposals/connector-execution-composition.md`. The proposed production
+  choice is worker-owned asynchronous dispatch: API stays socket-free, returns
+  `202` only after durable enqueue, and worker owns the runner socket. The
+  current synchronous route remains an internal/test profile; no dispatch
+  migration or source change has been implemented.
 
 ## Ownership checkpoint
 
@@ -165,9 +170,10 @@ in an isolated Hermes project; no evidence was ingested.
 
 Review protected PR #18, including the bounded multipart adapter, handoff,
 feature-flagged internal upload route, and the authentication/Connector design
-portfolio. The next gate is resolving the selected plans' API socket/worker
-async, provider/key custody and source-system owner decisions, then implementing
-in reviewable phases with a narrow Claude audit; the route stays disabled until
+portfolio. The next gate is accepting or rejecting the proposed worker-async
+dispatch/status contract, then resolving provider/key custody, gateway/provider
+ownership and source-system owner decisions before implementing in reviewable
+phases with a narrow Claude audit; the route stays disabled until
 those are approved. Merge and any production
 deployment require distinct authorization; do not register a real Connector,
 enable the flag in production, ingest evidence, or enable the mail collector

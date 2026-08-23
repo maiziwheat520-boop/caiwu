@@ -223,7 +223,7 @@
           "implementationReadiness": {
             "planPath": "implementation/signed-declarative-runner-manifest.md",
             "affectedComponents": ["src/ledgerbridge/main.py", "src/ledgerbridge/worker.py", "src/ledgerbridge/connector_runner.py", "docker-compose.yml"],
-            "workPackages": ["Define canonical signed schema", "Implement shared verifier/factory loader", "Pin code/image digest and generation", "Resolve synchronous socket versus worker async composition"],
+            "workPackages": ["Define canonical signed schema", "Implement shared verifier/factory loader", "Pin code/image digest and generation", "Implement the accepted worker-owned async dispatch composition"],
             "acceptanceCriteria": ["All consumers report the same manifest digest", "Unknown/unsigned/mixed entries fail closed", "Runner capabilities never exceed Compose authority", "No request selects connector identity"],
             "migrationNotes": ["Start with an empty signed generation and synthetic test fixtures; add real source-system rows only after separate approval."],
             "rollback": "Select the previous signed generation or empty manifest and restart all consumers; keep the route flag closed during rollback."
@@ -236,7 +236,7 @@
   ],
   "openQuestions": [
     "Which internal gateway or OIDC issuer is approved for Hermes?",
-    "Will synchronous API execution mount the runner socket, or will Connector execution move to the worker?",
+    "Has the user accepted worker-owned async dispatch, including the 202/status contract and PostgreSQL lease schema?",
     "Where will manifest signing and verification keys be managed and rotated?",
     "Which owner approves source-system registration, factory IDs and parser versions?"
   ]

@@ -13,7 +13,11 @@ The plan is anchored to source revision
 `79175486a1716efbf17828e49efa809caeae5b74ba0b48d2ca0f2f80e6ee0149`. The
 source refresh found no drift: `get_internal_connectors()` and
 `ConnectorSupervisor()` are still empty, `validate_connector()` remains the
-second defense, and API still lacks the runner socket mount.
+second defense, and API still lacks the runner socket mount. The companion
+[execution composition proposal](../proposals/connector-execution-composition.md)
+now recommends worker-owned asynchronous execution for the production runner
+profile; this plan records that recommendation but does not claim it is
+implemented or user-approved.
 
 Non-negotiable constraints:
 
@@ -55,10 +59,12 @@ composition as an explicit decision rather than assuming a mount is safe.
 
 ## Ordered Work Packages
 
-1. **Resolve composition first.** Choose between mounting `connector-socket` in
-   API for synchronous imports and moving connector execution to the worker via
-   an asynchronous handoff. Record the authority, volume mode, failure model and
-   rollback before writing a loader. The signed manifest cannot decide this.
+1. **Accept the composition decision first.** The proposed production choice is
+   worker-owned asynchronous execution: API publishes/binds and durably queues,
+   then returns `202`; worker claims the dispatch and owns the runner socket.
+   Keep the current synchronous path only for an explicit internal/test profile.
+   Record acceptance of the dispatch schema, status contract, lease/retry model
+   and rollback before writing a loader. The signed manifest cannot decide this.
 2. **Freeze the manifest schema.** Define canonical JSON fields: schema version,
    generation, factory ID, connector name/version, source system, execution mode,
    runner protocol version, code/image digest, allowed media types, byte limit,
@@ -158,7 +164,8 @@ not evidence that it is safe for production.
 2. Run a test-only unsigned/static fixture through dependency overrides.
 3. Run a signed empty generation in a disposable Linux/Compose profile; verify
    all consumers report the same digest and runner remains no-network.
-4. Decide API socket versus worker async, then test that composition separately.
+4. Implement and test the accepted worker-async composition separately from the
+   manifest loader. Do not add an API socket mount to production as a fallback.
 5. Add only a synthetic signed entry after review; request Claude narrow audit.
 6. A real source-system/Connector generation requires a separate user gate and
    production deployment authorization.
@@ -186,8 +193,9 @@ restored. Do not roll back by constructing an arbitrary in-process Connector.
   or revokes verification keys?
 - Where does the manifest live at runtime: image layer, read-only secret mount,
   or a deployment artifact with an integrity-checked path?
-- Is synchronous API-to-runner socket mounting acceptable, or must imports be
-  handed to the worker asynchronously?
+- Has the user accepted worker-owned asynchronous execution, including the
+  durable dispatch migration and `202`/status contract? Until then the plan is
+  design-only and the current route remains production-disabled.
 - Which owner approves source-system registration, factory IDs, parser versions
   and image/code digests?
 - What generation mismatch should readiness report, and how is an in-flight
