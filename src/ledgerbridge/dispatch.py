@@ -11,7 +11,6 @@ from typing import Final
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -192,7 +191,13 @@ class DispatchService:
         actor: str,
         reason: str,
     ) -> DispatchSnapshot:
-        """Bind a verified artifact and enqueue it in one database transaction."""
+        """Bind a verified artifact and enqueue it in one database transaction.
+
+        Artifact creation is retried as a whole transaction so the database audit
+        trigger can prove that the ``artifact.ingest`` event and row were written
+        under the same top-level transaction, including when two callers race on
+        the content hash.
+        """
 
         _validate_published_metadata(
             published,
@@ -204,6 +209,37 @@ class DispatchService:
             actor=actor,
             reason=reason,
         )
+        for attempt in range(2):
+            try:
+                return self._enqueue_published_once(
+                    published,
+                    ingest_channel=ingest_channel,
+                    original_filename=original_filename,
+                    media_type=media_type,
+                    manifest_generation=manifest_generation,
+                    manifest_digest=manifest_digest,
+                    actor=actor,
+                    reason=reason,
+                )
+            except IntegrityError:
+                if attempt == 1:
+                    raise
+        raise DispatchError("published artifact enqueue did not converge")
+
+    def _enqueue_published_once(
+        self,
+        published: PublishedArtifact,
+        *,
+        ingest_channel: str,
+        original_filename: str,
+        media_type: str,
+        manifest_generation: str,
+        manifest_digest: bytes,
+        actor: str,
+        reason: str,
+    ) -> DispatchSnapshot:
+        """Perform one atomic published-artifact enqueue attempt."""
+
         with self._sessions() as session, session.begin():
             if session.get(IngestChannel, ingest_channel) is None:
                 raise DispatchError("ingest channel is not registered")
@@ -211,49 +247,33 @@ class DispatchService:
                 select(RawArtifact).where(RawArtifact.sha256 == published.sha256)
             )
             if artifact is None:
-                try:
-                    with session.begin_nested():
-                        artifact_audit_id = append_audit_event(
-                            session,
-                            actor=actor,
-                            action="artifact.ingest",
-                            reason=reason,
-                            payload={
-                                "sha256": published.sha256_hex,
-                                "byte_size": published.byte_size,
-                                "storage_key": published.storage_key,
-                                "source": ingest_channel,
-                                "original_filename_sha256": hashlib.sha256(
-                                    original_filename.encode("utf-8")
-                                ).hexdigest(),
-                                "media_type": media_type,
-                            },
-                        )
-                        artifact_id = session.execute(
-                            postgresql_insert(RawArtifact)
-                            .values(
-                                sha256=published.sha256,
-                                source=ingest_channel,
-                                original_filename=original_filename,
-                                media_type=media_type,
-                                byte_size=published.byte_size,
-                                storage_key=published.storage_key,
-                                audit_event_id=artifact_audit_id,
-                            )
-                            .on_conflict_do_nothing(index_elements=[RawArtifact.sha256])
-                            .returning(RawArtifact.id)
-                        ).scalar_one_or_none()
-                        if artifact_id is None:
-                            raise DispatchConflict("artifact identity race")
-                        artifact = session.get(RawArtifact, artifact_id)
-                        if artifact is None:
-                            raise DispatchError("created artifact disappeared")
-                except DispatchConflict:
-                    artifact = session.scalar(
-                        select(RawArtifact).where(RawArtifact.sha256 == published.sha256)
-                    )
-                    if artifact is None:
-                        raise DispatchError("artifact identity race did not converge") from None
+                artifact_audit_id = append_audit_event(
+                    session,
+                    actor=actor,
+                    action="artifact.ingest",
+                    reason=reason,
+                    payload={
+                        "sha256": published.sha256_hex,
+                        "byte_size": published.byte_size,
+                        "storage_key": published.storage_key,
+                        "source": ingest_channel,
+                        "original_filename_sha256": hashlib.sha256(
+                            original_filename.encode("utf-8")
+                        ).hexdigest(),
+                        "media_type": media_type,
+                    },
+                )
+                artifact = RawArtifact(
+                    sha256=published.sha256,
+                    source=ingest_channel,
+                    original_filename=original_filename,
+                    media_type=media_type,
+                    byte_size=published.byte_size,
+                    storage_key=published.storage_key,
+                    audit_event_id=artifact_audit_id,
+                )
+                session.add(artifact)
+                session.flush()
             if (
                 artifact.sha256 != published.sha256
                 or artifact.byte_size != published.byte_size
@@ -416,7 +436,6 @@ class DispatchService:
         with self._sessions() as session, session.begin():
             row = session.execute(
                 select(ImportDispatch)
-                .join(RawArtifact, RawArtifact.id == ImportDispatch.artifact_id)
                 .where(
                     ImportDispatch.state.in_((DispatchState.PENDING, DispatchState.RETRY_WAIT)),
                     ImportDispatch.available_at <= current,

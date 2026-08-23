@@ -168,7 +168,7 @@ def test_enqueue_is_idempotent_and_binds_acceptance_audit(
         assert (
             session.scalar(
                 text("SELECT count(*) FROM audit_event WHERE action = 'import.dispatch.accepted'")
-        )
+            )
             == 1
         )
 
@@ -603,7 +603,7 @@ def test_dispatch_input_bounds_and_missing_artifact(
         service.enqueue(
             DispatchRequest(
                 artifact_id=artifact_id,
-                    ingest_channel="missingchannel",
+                ingest_channel="missingchannel",
                 manifest_generation="test-6",
                 manifest_digest=b"d" * 32,
                 actor="pytest",
