@@ -86,6 +86,7 @@
           ],
           "residualRisks": ["A bypassed or misconfigured gateway can still produce a valid-looking state value.", "Not suitable as a remote multi-client identity contract."],
           "implementationReadiness": {
+            "planPath": "implementation/trusted-internal-middleware.md",
             "affectedComponents": ["src/ledgerbridge/main.py", "src/ledgerbridge/config.py", "docker-compose.yml"],
             "workPackages": ["Define typed principal and capability policy", "Add trusted gateway/middleware adapter", "Bind loopback/mTLS policy and diagnostics"],
             "acceptanceCriteria": ["Every auth failure occurs before body read and staging", "No raw actor header is accepted", "Production flag remains false and forced off"],
@@ -220,6 +221,7 @@
           ],
           "residualRisks": ["A compromised signing process can authorize a malicious allowlisted factory.", "A valid manifest cannot compensate for an overprivileged Compose mount or missing API socket decision."],
           "implementationReadiness": {
+            "planPath": "implementation/signed-declarative-runner-manifest.md",
             "affectedComponents": ["src/ledgerbridge/main.py", "src/ledgerbridge/worker.py", "src/ledgerbridge/connector_runner.py", "docker-compose.yml"],
             "workPackages": ["Define canonical signed schema", "Implement shared verifier/factory loader", "Pin code/image digest and generation", "Resolve synchronous socket versus worker async composition"],
             "acceptanceCriteria": ["All consumers report the same manifest digest", "Unknown/unsigned/mixed entries fail closed", "Runner capabilities never exceed Compose authority", "No request selects connector identity"],

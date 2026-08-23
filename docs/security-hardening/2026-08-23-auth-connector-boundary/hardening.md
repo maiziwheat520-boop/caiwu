@@ -34,6 +34,13 @@ capabilities before we consume or persist evidence. They should be implemented
 as separate reviewable changes, because authentication provider failure and
 connector code isolation have different owners and rollback paths.
 
+The user selected the current internal middleware option and the signed runner
+manifest option for planning. The resulting handoffs are
+[trusted-internal-middleware.md](implementation/trusted-internal-middleware.md)
+and
+[signed-declarative-runner-manifest.md](implementation/signed-declarative-runner-manifest.md);
+they remain plans, not source changes.
+
 ## Recommendation Summary
 
 For today’s internal/test-only route, we can preserve the fast path with a
@@ -61,6 +68,6 @@ registered.
   the repository.
 - Decide whether synchronous API execution may mount `connector-socket`, or
   whether Connector work moves to the worker asynchronously.
-- Only after those decisions: generate an implementation plan, add synthetic
-  manifest fixtures, and request a narrow Claude audit. No production enablement
-  follows automatically from this design.
+- Before implementation: resolve the API socket versus worker async composition,
+  key custody, gateway/provider ownership and source-system owner. No production
+  enablement follows automatically from the selected plans.

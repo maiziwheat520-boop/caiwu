@@ -97,6 +97,13 @@ and narrow-audit entry point are preserved.
   principal boundary for the disabled route, and a signed declarative
   runner-only manifest for any real Connector. No provider, signing key,
   Connector, socket mount or production behavior was added.
+- The user selected authentication Option 1 and Connector manifest Option 2 for
+  implementation planning. The handoffs are in
+  `docs/security-hardening/2026-08-23-auth-connector-boundary/implementation/`:
+  `trusted-internal-middleware.md` and
+  `signed-declarative-runner-manifest.md`. They are plans only; API socket vs
+  worker async composition, key custody, gateway/provider ownership and
+  source-system ownership remain open decisions.
 
 ## Ownership checkpoint
 
@@ -156,9 +163,10 @@ in an isolated Hermes project; no evidence was ingested.
 
 Review protected PR #18, including the bounded multipart adapter, handoff,
 feature-flagged internal upload route, and the authentication/Connector design
-portfolio. The next gate is user selection of an auth provider boundary and a
-manifest option, followed by an implementation plan and narrow Claude audit;
-the route stays disabled until those are approved. Merge and any production
+portfolio. The next gate is resolving the selected plans' API socket/worker
+async, provider/key custody and source-system owner decisions, then implementing
+in reviewable phases with a narrow Claude audit; the route stays disabled until
+those are approved. Merge and any production
 deployment require distinct authorization; do not register a real Connector,
 enable the flag in production, ingest evidence, or enable the mail collector
 without corresponding later authorization.
