@@ -44,10 +44,16 @@ fallback for local/test composition.
   `tests/test_phase2_runtime_boundary.py`, and `tests/test_worker.py`:
   identity, digest, duplicate, role URL, composition, and socket-boundary tests.
 
+The follow-up hardening commit `99f8d05` validates manifest connector text and
+canonical source fields at the composition boundary, rejects mutable digest or
+connector containers, and covers invalid generations, multiple facade sharing,
+worker socket-path handoff, and production async fail-closed behavior. The
+worker test additions are in `b453874`.
+
 ## Verification
 
-- Windows: `uv lock --offline`, Ruff format/check, strict mypy, and the full
-  regression passed: **217 passed / 136 skipped / 1 warning**.
+- Windows: `uv lock --offline`, Ruff format/check, strict mypy, and the final
+  full regression passed: **230 passed / 136 skipped / 1 warning**.
 - Hermes disposable PostgreSQL 15: migration `0001→0006` succeeded, and an
   explicit `base→head` downgrade/upgrade round-trip succeeded.
 - Hermes grant probes after the round-trip reported:
@@ -67,6 +73,9 @@ fallback for local/test composition.
 - GitHub PR #18 head `823b7de` passed both push run `32648157898` and pull
   request run `32648154595`; each run was green for `secrets`, `quality`, and
   `compose`.
+- After the boundary-test hardening, PR #18 head `b453874` passed push run
+  `32648931938` and pull request run `32648934569`; both again passed
+  `secrets`, `quality`, and `compose`.
 - Hermes production was read-only checked after cleanup: gateway active,
   `/health` returned `{"status":"ok","platform":"hermes-agent","version":"0.20.0"}`;
   API, worker, and PostgreSQL remained healthy on revision
