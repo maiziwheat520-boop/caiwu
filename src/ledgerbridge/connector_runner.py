@@ -27,6 +27,7 @@ from ledgerbridge.runner_protocol import (
     MAX_CHUNK_COUNT,
     MAX_RECORDS,
     MAX_RESPONSE_BYTES,
+    MAX_TERMINAL_FRAME_BYTES,
     FrameKind,
     RunnerOperation,
     RunnerProtocolError,
@@ -228,6 +229,8 @@ class ConnectorSupervisor:
             values = connector.parse(artifact)
             records: list[ParsedSourceRecord] = []
             locators: set[str] = set()
+            response_bytes = 0
+            terminal_frame_budget = 4 + MAX_TERMINAL_FRAME_BYTES
             for value in values:
                 if len(records) >= MAX_RECORDS:
                     raise RunnerExecutionError(
@@ -257,6 +260,15 @@ class ConnectorSupervisor:
                     raise RunnerExecutionError(
                         "DUPLICATE_LOCATOR", "record locators must be unique"
                     )
+                record_frame = encode_frame(
+                    FrameKind.RECORD,
+                    record_payload(request.request_id, validated),
+                )
+                if response_bytes + len(record_frame) + terminal_frame_budget > MAX_RESPONSE_BYTES:
+                    raise RunnerExecutionError(
+                        "RESPONSE_LIMIT", "connector response exceeded the limit"
+                    )
+                response_bytes += len(record_frame)
                 locators.add(validated.record_locator)
                 records.append(validated)
             return _ExecutionResult(detection=None, records=tuple(records))

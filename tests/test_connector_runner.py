@@ -665,6 +665,41 @@ async def test_supervisor_send_success_enforces_response_budget(
     assert writer.frames
 
 
+def test_supervisor_bounds_record_materialization_before_response_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ManyRecords:
+        name = "synthetic.csv"
+        version = "1"
+        source_system = "synthetic"
+
+        def detect(self, metadata: ArtifactMetadata, bounded_prefix: bytes) -> DetectionResult:
+            return DetectionResult.MATCH
+
+        def parse(self, stream: BinaryIO) -> list[ParsedSourceRecord]:
+            return [
+                ParsedSourceRecord(
+                    record_locator=f"row:{index}",
+                    source="synthetic",
+                    parser_version="1",
+                    raw_fields={},
+                    normalized_fields={},
+                )
+                for index in range(10)
+            ]
+
+    monkeypatch.setattr(runner_module, "MAX_RESPONSE_BYTES", 500)
+    monkeypatch.setattr(runner_module, "MAX_TERMINAL_FRAME_BYTES", 100)
+    request = _request(b"ok")
+    with pytest.raises(RunnerExecutionError, match="response exceeded"):
+        ConnectorSupervisor(
+            {("synthetic.csv", "1"): ManyRecords()}  # type: ignore[dict-item]
+        )._execute_with_artifact(
+            request,
+            BytesIO(b"ok"),
+        )
+
+
 def test_runner_connector_facade_requires_verified_detection() -> None:
     class StubClient:
         def __init__(self) -> None:
