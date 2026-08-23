@@ -80,14 +80,14 @@ def test_artifact_directory_and_database_temp_privilege_are_hardened() -> None:
     assert "runtime database passwords must be distinct" in init_script
 
 
-def test_example_generic_database_url_uses_a_dedicated_runtime_role() -> None:
+def test_example_generic_database_url_uses_the_compatibility_role() -> None:
     example = Path(".env.example").read_text(encoding="utf-8")
     generic_url = next(
         line for line in example.splitlines() if line.startswith("LEDGERBRIDGE_DATABASE_URL=")
     )
 
-    assert "://ledgerbridge_api:" in generic_url
-    assert "ledgerbridge_app" not in generic_url
+    assert "://ledgerbridge_app:" in generic_url
+    assert "ledgerbridge_api" not in generic_url
     assert "ledgerbridge_worker" not in generic_url
 
 
@@ -96,7 +96,8 @@ def test_dispatch_acceptance_is_database_bound() -> None:
         encoding="utf-8"
     )
     assert "SET search_path = pg_catalog" in migration
-    assert "v_audit_xid IS DISTINCT FROM pg_current_xact_id()::text::xid" in migration
+    assert "pg_xact_status(v_audit_xid::text::xid8)" in migration
+    assert "IS DISTINCT FROM 'in progress'" in migration
     assert "v_action IS DISTINCT FROM 'import.dispatch.accepted'" in migration
     assert "v_payload IS DISTINCT FROM v_expected" in migration
     assert "AND a.source = p_ingest_channel" in migration

@@ -38,7 +38,8 @@ def upgrade() -> None:
             );
 
             IF v_audit_xid IS NULL
-               OR v_audit_xid IS DISTINCT FROM pg_current_xact_id()::text::xid
+               OR pg_xact_status(v_audit_xid::text::xid8)
+                    IS DISTINCT FROM 'in progress'
                OR v_action IS DISTINCT FROM 'import.dispatch.accepted'
                OR v_payload IS DISTINCT FROM v_expected THEN
                 RAISE EXCEPTION 'dispatch acceptance audit binding is invalid'
