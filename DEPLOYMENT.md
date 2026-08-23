@@ -20,6 +20,14 @@ curl -I http://127.0.0.1:8780/
 
 容器以非特权用户运行，根文件系统只读，丢弃全部 Linux capabilities，并启用 `no-new-privileges`。Nginx 添加了 CSP、禁止嵌入、MIME 嗅探防护和权限策略响应头。
 
+如果 Hermes 暂时无法访问镜像仓库，可先在可信构建机执行 `npm ci && npm run build`，将 `dist` 完整同步到部署目录，再使用 Hermes 已缓存的 Python 运行时：
+
+```bash
+docker compose -f compose.offline.yaml up -d
+```
+
+离线预览服务器提供相同的安全响应头，仍以非特权用户、只读根文件系统和只读静态文件卷运行。它只用于合成数据预览；恢复镜像访问后应回到 Nginx 镜像方案。
+
 ## 更新
 
 先同步已提交的仓库内容，再执行：
