@@ -22,14 +22,14 @@ explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is implemented and
 the Slice C bounded multipart adapter, ArtifactStore-owned transactional handoff,
 and default-disabled internal upload route are pushed on the Codex branch
-`ai/chatgpt/phase-3-connector-runner` at implementation head `b453874` (the
+`ai/chatgpt/phase-3-connector-runner` at implementation head `6ae1fc3` (the
 runner composition and API/worker role split are included in the current head;
 the current design/plan head is `cdecbdb`; the prior runner audit baseline remains
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e`. The isolated runner
 image and the handoff replay were tested only as disposable Hermes workloads and
 are not deployed.
 
-The latest implementation head `b453874` passed push run `32648931938` and
+The preceding implementation head `b453874` passed push run `32648931938` and
 pull-request run `32648934569` across `secrets`, `quality`, and `compose`.
 The migration's two controlled-role B608 reports were removed by using fixed
 deployment-contract role literals; the final Bandit scan reports no issues.
@@ -47,15 +47,15 @@ migration `20260823_0007`, and moves dispatch creation to the security-definer
 function/acceptance-binding trigger in migration `20260823_0008`. The full
 remediation report is
 `docs/reviews/2026-08-24-sol-max-audit-remediation-codex.md`. Windows regression
-is `231 passed / 138 skipped / 1 warning`; Hermes disposable PostgreSQL replay
-through `0008` passed. Production remains unchanged and the branch is still
-review-only.
+is `232 passed / 138 skipped / 1 warning`; Hermes disposable PostgreSQL replay
+through `0008` passed, including API enqueue success and cross-channel rejection.
+Production remains unchanged and the branch is still review-only.
 
 The subsequent recheck also identified and fixed service-scoped settings: API,
 worker, and migrate now declare explicit runtime roles and only require their
 own database URL. The enqueue function additionally enforces artifact/channel
-provenance. These changes are included in the next pushed head and remain
-covered by the same CI/audit gate.
+provenance. These changes are included in implementation head `6ae1fc3`; its
+Hosted CI run is pending publication after the transient GitHub DNS failure.
 
 ## Completed
 

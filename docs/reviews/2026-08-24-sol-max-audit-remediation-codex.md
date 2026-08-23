@@ -47,7 +47,8 @@ Implemented controls:
 - The function creates the exact `import.dispatch.accepted` audit payload and
   dispatch row in one transaction.
 - A BEFORE INSERT trigger verifies the action, exact payload, and that the audit
-  event `xmin` matches the current transaction.
+  event is still `in progress` in the current transaction. This transaction-
+  status check remains valid when the application uses SQLAlchemy savepoints.
 - Direct API INSERT is revoked; API receives only EXECUTE on the enqueue
   function. Compatibility-role direct inserts are covered by a negative trigger
   test in non-production CI.
@@ -56,14 +57,14 @@ Implemented controls:
 
 ## Verification
 
-- Windows: full pytest `231 passed / 138 skipped / 1 warning`; Ruff format/check,
+- Windows: full pytest `232 passed / 138 skipped / 1 warning`; Ruff format/check,
   strict mypy, and Bandit all pass.
 - Alembic static SQL generation succeeds for both non-production and production
   paths.
 - Hermes disposable PostgreSQL 15 replay succeeds through migrations `0001` to
   `0008`. Production replay confirms `ledgerbridge_app` is `NOLOGIN`, API and
-  worker remain login roles, the API enqueue function succeeds, and direct API
-  dispatch INSERT is denied.
+  worker remain login roles, the API enqueue function succeeds, cross-channel
+  dispatch is rejected, and direct API dispatch INSERT is denied.
 - Production Hermes was not modified; current deployed revision remains
   `e426b488b2abb02f10ef02a61aae7ebe24c3283f` with migration `20260822_0004`.
 
