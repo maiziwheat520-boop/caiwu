@@ -45,8 +45,10 @@ release-readiness audit report is
 one HIGH (0006 leaves arbitrary API/worker role memberships active), one MEDIUM
 (runner has no global pre-receipt connection/spool admission), and one LOW
 (shared-host heartbeat symlink hardening). The branch is therefore CHANGES
-REQUIRED for release: do not migrate an existing database until the HIGH is
-closed, and do not enable a hostile/real Connector until the MEDIUM is closed.
+REQUIRED for release. The HIGH is now remediated at `54b0f2e`; the remediation
+and Hermes drift replay are recorded in
+`docs/reviews/2026-08-24-role-membership-remediation-codex.md`. Do not enable a
+hostile/real Connector until the MEDIUM is closed.
 The four previously deferred availability/role-drift controls are implemented
 in `bb3eee4`; real Connector registration and production enablement remain
 separately gated.
