@@ -16,6 +16,8 @@ def upgrade() -> None:
     op.execute(
         """
         DO $ledgerbridge$
+        DECLARE
+            v_membership RECORD;
         BEGIN
             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_api')
                OR NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_worker') THEN
@@ -23,9 +25,27 @@ def upgrade() -> None:
                     'runtime role split requires bootstrap roles';
             END IF;
 
-            -- Reassert the deployment contract for existing databases.  Merely
-            -- checking that the roles exist leaves an operator-created role
-            -- membership or elevated attribute in place across migrations.
+            -- Runtime roles have an empty role-membership allowlist.  Merely
+            -- setting NOINHERIT leaves an operator-created membership usable by
+            -- an explicit SET ROLE, so remove every direct membership before
+            -- reasserting the deployment contract on an existing database.
+            FOR v_membership IN
+                SELECT member_role.rolname AS member_name,
+                       granted_role.rolname AS granted_name
+                FROM pg_auth_members AS membership
+                JOIN pg_roles AS member_role ON member_role.oid = membership.member
+                JOIN pg_roles AS granted_role ON granted_role.oid = membership.role
+                WHERE member_role.rolname IN ('ledgerbridge_api', 'ledgerbridge_worker')
+            LOOP
+                EXECUTE format(
+                    'REVOKE %I FROM %I',
+                    v_membership.granted_name,
+                    v_membership.member_name
+                );
+            END LOOP;
+
+            -- Reassert the deployment contract for existing databases after
+            -- clearing historical role memberships and elevated attributes.
             ALTER ROLE ledgerbridge_api
                 NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
                 NOREPLICATION NOBYPASSRLS;

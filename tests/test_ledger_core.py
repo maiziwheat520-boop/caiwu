@@ -1484,3 +1484,84 @@ def test_phase1_migration_real_round_trip(migration_database_url: str) -> None:
             )
             connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
         maintenance_engine.dispose()
+
+
+def test_runtime_role_split_removes_preexisting_owner_membership(
+    migration_database_url: str,
+) -> None:
+    url = create_engine(migration_database_url).url
+    database_name = f"ledgerbridge_role_split_{uuid4().hex[:12]}"
+    maintenance_url = url.set(database="postgres")
+    temporary_url = url.set(database=database_name)
+    maintenance_engine = create_engine(maintenance_url, isolation_level="AUTOCOMMIT")
+    temporary_engine: Engine | None = None
+
+    try:
+        with maintenance_engine.connect() as connection:
+            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+
+        rendered = temporary_url.render_as_string(hide_password=False)
+        _run_alembic(rendered, "20260823_0005")
+        temporary_engine = create_engine(temporary_url)
+        with temporary_engine.begin() as connection:
+            assert (
+                connection.execute(
+                    text(
+                        """
+                    SELECT count(*)
+                    FROM pg_auth_members AS membership
+                    JOIN pg_roles AS member_role ON member_role.oid = membership.member
+                    WHERE member_role.rolname IN ('ledgerbridge_api', 'ledgerbridge_worker')
+                      AND membership.role = 'ledgerbridge_owner'::regrole
+                    """
+                    )
+                ).scalar_one()
+                == 0
+            )
+            connection.execute(
+                text("GRANT ledgerbridge_owner TO ledgerbridge_api, ledgerbridge_worker")
+            )
+        temporary_engine.dispose()
+        temporary_engine = None
+
+        _run_alembic(rendered, "20260823_0006")
+        temporary_engine = create_engine(temporary_url)
+        with temporary_engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text(
+                        """
+                    SELECT count(*)
+                    FROM pg_auth_members AS membership
+                    JOIN pg_roles AS member_role ON member_role.oid = membership.member
+                    WHERE member_role.rolname IN ('ledgerbridge_api', 'ledgerbridge_worker')
+                    """
+                    )
+                ).scalar_one()
+                == 0
+            )
+
+            # The migration owner is a superuser in the disposable CI database;
+            # SET SESSION AUTHORIZATION models an API login without storing
+            # another password, so the following SET ROLE check is evaluated
+            # against ledgerbridge_api rather than the owner session.
+            connection.execute(text("SET SESSION AUTHORIZATION ledgerbridge_api"))
+            with pytest.raises(DBAPIError):
+                connection.execute(text("SET ROLE ledgerbridge_owner"))
+            connection.rollback()
+    finally:
+        if temporary_engine is not None:
+            temporary_engine.dispose()
+        with maintenance_engine.connect() as connection:
+            connection.execute(
+                text("REVOKE ledgerbridge_owner FROM ledgerbridge_api, ledgerbridge_worker")
+            )
+            connection.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :database_name"
+                ),
+                {"database_name": database_name},
+            )
+            connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+        maintenance_engine.dispose()

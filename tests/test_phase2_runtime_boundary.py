@@ -120,3 +120,6 @@ def test_runtime_role_split_reasserts_least_privilege_and_membership_boundary() 
     assert "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT" in migration
     assert "NOREPLICATION NOBYPASSRLS" in migration
     assert "REVOKE ledgerbridge_app FROM ledgerbridge_api, ledgerbridge_worker" in migration
+    assert "FROM pg_auth_members" in migration
+    assert "FOR v_membership IN" in migration
+    assert "REVOKE %I FROM %I" in migration
