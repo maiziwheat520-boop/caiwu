@@ -183,10 +183,13 @@ verification and publication under one authority without holding the global
 quota lock across network pauses. This is a design recommendation only: no
 handoff API, route, production path, or database state change has been added.
 
-Option 2 was subsequently selected for planning. Its implementation handoff is
-[`transactional-handoff-session.md`](../security-hardening/2026-08-23-artifact-handoff/implementation/transactional-handoff-session.md).
-The handoff remains a design artifact: no source code, route, database state,
-or production deployment has been changed.
+Option 2 was subsequently selected and implemented at `6300bf5`. Its
+implementation handoff is
+[`transactional-handoff-session.md`](../security-hardening/2026-08-23-artifact-handoff/implementation/transactional-handoff-session.md),
+and the evidence report is
+[`2026-08-23-artifact-handoff-implementation-codex.md`](../reviews/2026-08-23-artifact-handoff-implementation-codex.md).
+The handoff source and tests are complete; no route, database state, or
+production deployment has been changed.
 
 ## Explicit non-goals
 

@@ -20,13 +20,12 @@ that are not covered by table grants and keeps `import_job` updates limited to
 the state-machine columns. Same-UID open-inode identity separation remains an
 explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is implemented and
-the pure Slice C bounded multipart adapter and the ArtifactStore handoff design
-are pushed on the Codex branch
-`ai/chatgpt/phase-3-connector-runner` at head
-`93620847a43144c51aa35db0390f6b789518107b`; the fixed code/test head for final
-audit is `bd2ba4a2513597e83764a56215c72b61c99a8c1e`;
-the isolated runner image was tested only as a disposable Hermes image and is
-not deployed.
+the pure Slice C bounded multipart adapter plus the ArtifactStore-owned
+transactional handoff are pushed on the Codex branch
+`ai/chatgpt/phase-3-connector-runner` at head `6300bf5`; the prior runner audit
+baseline remains `bd2ba4a2513597e83764a56215c72b61c99a8c1e`. The isolated runner
+image and the handoff replay were tested only as disposable Hermes workloads and
+are not deployed.
 
 The deployment report is
 `docs/reviews/2026-08-22-phase-3-hermes-deployment-codex.md`. Rollback trees and
@@ -79,6 +78,12 @@ and narrow-audit entry point are preserved.
 - Phase 2 remediation PR #11 merged as `c56b6ff`; the exact merge SHA is deployed
   at migration `20260821_0003`. The deployment report is
   `docs/reviews/2026-08-22-phase-2-hermes-deployment-codex.md`.
+- The Slice C handoff implementation is complete at `6300bf5`: the pure
+  multipart parser emits `MultipartComplete` only after the closing boundary;
+  `ArtifactStore.begin_handoff()` owns bounded `write/complete/abort` sessions,
+  descriptor-level verification, staging/published quotas, deduplication, fsync,
+  and identity-safe cleanup. The HTTP route, authentication, importer wiring,
+  and production composition remain intentionally absent.
 
 ## Ownership checkpoint
 
@@ -118,27 +123,28 @@ is green across `secrets`, `quality`, and `compose`; Claude's approval applies t
 the earlier fixed code/test SHA, while this follow-up is Codex-verified.
 Protected PR #18 is open at
 `https://github.com/maiziwheat520-boop/caiwu/pull/18`; its current head is
-`93620847a43144c51aa35db0390f6b789518107b`. The final design push run
-`32611892703` and pull-request run `32611894301` passed `secrets`, `quality`,
-and `compose`; the preceding code head passed with 95.92% quality coverage.
+`6300bf5`. The push and pull-request runs for this head (`32613520982` and
+`32613522285`) both passed `secrets`, `quality`, and `compose`.
 The PR is review-only; it has not been merged or deployed.
 The approved Slice C upload-boundary design is recorded in
 `docs/tasks/2026-08-23-phase-3-slice-c-upload-endpoint-design.md`; no route is
 implemented or exposed. The pure bounded multipart adapter is implemented and
 tested, but remains disconnected from FastAPI, `ArtifactStore`, and production
 data paths. The derived handoff hardening portfolio compares bounded request
-spool, ArtifactStore-owned transactional session, and completion-aware stream;
-the recommended session design is not implemented.
+spool, ArtifactStore-owned transactional session, and completion-aware stream.
+The recommended session is now implemented and independently replayed on
+Hermes; the route remains gated behind a later authentication and status-mapping
+review.
 
 ## Next task
 
-Review protected PR #18, including the bounded multipart adapter and handoff
-portfolio. The next implementation gate is selecting an option and explicitly
-authorizing a bounded temporary handoff into `ArtifactStore`, followed by an
-explicitly feature-flagged internal route. Merge and any production runner
-deployment require distinct authorization; do not register a real Connector,
-ingest evidence, or enable the mail collector without corresponding later
-authorization.
+Review protected PR #18, including the bounded multipart adapter and the
+ArtifactStore-owned handoff implementation. The next gate is the explicitly
+feature-flagged internal route: authentication, quota error mapping, importer
+ordering, and no-row/no-audit failure behavior must be designed and reviewed
+before any route code is added. Merge and any production runner deployment
+require distinct authorization; do not register a real Connector, ingest
+evidence, or enable the mail collector without corresponding later authorization.
 
 ## Blocking decisions
 

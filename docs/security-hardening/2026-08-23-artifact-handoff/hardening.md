@@ -62,6 +62,10 @@ availability risk part of the storage authority.
    for explicit implementation authorization. This design itself changes no
    source behavior.
 
-Option 2 has now been selected for planning. The implementation handoff is
-[`implementation/transactional-handoff-session.md`](implementation/transactional-handoff-session.md);
-it remains a plan only and contains no source change authorization.
+Option 2 has now been selected and implemented at `6300bf5`. The implementation
+handoff remains the contract and evidence index:
+[`implementation/transactional-handoff-session.md`](implementation/transactional-handoff-session.md).
+The implementation report is
+[`../../reviews/2026-08-23-artifact-handoff-implementation-codex.md`](../../reviews/2026-08-23-artifact-handoff-implementation-codex.md).
+The HTTP route, authentication, importer wiring and production composition remain
+outside this implementation.

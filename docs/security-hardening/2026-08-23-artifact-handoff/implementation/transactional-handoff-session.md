@@ -334,3 +334,14 @@ following are true:
 - Decide whether `ArtifactStore.publish()` should be refactored onto the new
   primitives in the first implementation or retained as a compatibility path
   until a second review.
+
+## Implementation Status (2026-08-23)
+
+Option 2 is implemented at commit `6300bf5`. The parser completion event,
+ArtifactStore-owned `write/complete/abort` session, bounded staging admission,
+descriptor verification, inode-identity path checks, hard-link adoption,
+deduplication, directory fsync and abort cleanup are covered by
+`tests/test_artifacts.py` and `tests/test_upload.py`. Windows and hosted
+Linux/PostgreSQL quality gates are green, and a disposable Hermes replay covered
+migrations plus commit/read/dedupe smoke. The route and all importer/database
+side effects remain intentionally unimplemented and require a later gate.
