@@ -119,6 +119,9 @@ paths:
               schema:
                 type: string
           content:
+            text/plain:
+              schema:
+                type: string
             application/octet-stream:
               schema:
                 type: string

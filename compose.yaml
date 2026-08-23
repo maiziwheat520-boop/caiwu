@@ -10,7 +10,13 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    environment:
+      LEDGERBRIDGE_MODE: synthetic-preview
+      PORT: "8080"
+      BIND_ADDRESS: 0.0.0.0
+      SESSION_COOKIE_SECURE: "0"
+      SITE_ROOT: /site
     tmpfs:
       - /tmp:size=16m,mode=1777
     ports:
-      - "${LEDGERBRIDGE_WEB_PORT:-8780}:8080"
+      - "${LEDGERBRIDGE_WEB_BIND_ADDRESS:-127.0.0.1}:${LEDGERBRIDGE_WEB_PORT:-8780}:8080"

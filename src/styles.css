@@ -51,7 +51,16 @@ button { -webkit-tap-highlight-color: transparent; }
 .content { width: min(1440px, 100%); margin: 0 auto; padding: 34px 38px 60px; }
 .notice { display: flex; align-items: center; gap: 9px; margin: 14px 38px -12px; padding: 10px 14px; border: 1px solid #b8e1ca; border-radius: 10px; color: var(--success); background: #eefaf3; font-size: 13px; }
 .notice button { display: grid; place-items: center; margin-left: auto; padding: 3px; border: 0; color: inherit; background: none; cursor: pointer; }
+.notice.info { border-color: #b9d2f2; color: #315d9c; background: #edf5ff; }
+.notice.error { border-color: #f1bcc1; color: var(--danger); background: var(--danger-soft); }
 .bottom-nav { display: none; }
+
+.state-panel { display: grid; place-items: center; min-height: 430px; padding: 48px 24px; border: 1px solid var(--line); border-radius: 14px; color: #58708f; background: white; text-align: center; box-shadow: var(--shadow); }
+.state-panel h1 { margin: 16px 0 0; color: #1c2d47; font-size: 20px; }
+.state-panel p { margin: 8px 0 22px; color: var(--muted); font-size: 13px; }
+.state-spinner { animation: state-spin 1s linear infinite; }
+.error-state > svg { color: var(--danger); }
+@keyframes state-spin { to { transform: rotate(360deg); } }
 
 .page-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 30px; margin-bottom: 27px; }
 .eyebrow { display: block; margin-bottom: 7px; color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
@@ -138,6 +147,9 @@ button { -webkit-tap-highlight-color: transparent; }
 .evidence-box { margin-top: 22px; padding: 17px; border: 1px solid #dce3ed; border-radius: 11px; background: #f7f9fc; }
 .section-label { color: #65758c; font-size: 10px; font-weight: 800; letter-spacing: .08em; }
 .evidence-box blockquote { margin: 12px 0; color: #2b394f; font-size: 13px; line-height: 1.7; }
+.evidence-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.evidence-links a { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 11px; border-radius: 8px; color: #315d9c; background: #eaf2fd; font-size: 11px; font-weight: 650; text-decoration: none; }
+.evidence-links a:hover { background: #dceafe; }
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 18px; }
 .field-grid label { display: grid; gap: 7px; color: #536279; font-size: 11px; font-weight: 650; }
 .blocking-note { display: flex; align-items: flex-start; gap: 10px; margin-top: 17px; padding: 12px 14px; border: 1px solid #f1bcc1; border-radius: 10px; color: var(--danger); background: var(--danger-soft); font-size: 11px; }

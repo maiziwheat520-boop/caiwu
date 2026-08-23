@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   Badge,
   Button,
@@ -35,8 +35,19 @@ import {
   getCoreRowModel,
   useReactTable,
 } from '@tanstack/react-table'
-import { initialCandidates, reconciliationRows } from './data'
-import type { Candidate, Notice, Page } from './types'
+import { api, majorToMinor, minorToMajor } from './api'
+import type {
+  ApiCandidate,
+  Candidate,
+  CandidateCorrections,
+  ConnectionStatus,
+  Notice,
+  Page,
+  Reconciliation as ReconciliationData,
+  Session,
+} from './types'
+
+const CURRENT_MONTH = '2026-08'
 
 const navigation: Array<{ id: Page; label: string; icon: typeof House }> = [
   { id: 'overview', label: '概览', icon: House },
@@ -59,22 +70,148 @@ const categoryTone: Record<string, 'blue' | 'green' | 'amber' | 'purple' | 'gray
   税费: 'gray',
 }
 
+const sourceLabels: Record<ApiCandidate['source_channel'], Candidate['source']> = {
+  telegram: 'Telegram',
+  dingtalk: '钉钉',
+  weixin: '微信',
+}
+
+function toCandidate(candidate: ApiCandidate): Candidate {
+  const blockerCodes = new Set(candidate.blockers.map((blocker) => blocker.code))
+  return {
+    id: candidate.id,
+    shortId: candidate.short_id,
+    revision: candidate.revision,
+    source: sourceLabels[candidate.source_channel],
+    sourceChannel: candidate.source_channel,
+    receivedAt: new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(candidate.received_at)),
+    businessUnit: candidate.business_unit,
+    category: candidate.category,
+    amount: minorToMajor(candidate.amount_minor),
+    amountMinor: candidate.amount_minor,
+    accountingMonth: candidate.accounting_month,
+    summary: candidate.summary,
+    evidence: candidate.evidence,
+    confidence: candidate.confidence_basis_points / 10000,
+    status: candidate.status,
+    blockers: candidate.blockers,
+    incomplete: candidate.status === 'INCOMPLETE' || blockerCodes.has('MISSING_ACCOUNTING_MONTH'),
+    conflict: candidate.status === 'CONFLICTED' || blockerCodes.has('BUSINESS_KEY_CONFLICT') || blockerCodes.has('DUPLICATE_MESSAGE') || blockerCodes.has('DUPLICATE_ATTACHMENT'),
+    raw: candidate,
+  }
+}
+
 function App() {
   const [page, setPage] = useState<Page>('overview')
-  const [candidates, setCandidates] = useState(initialCandidates)
+  const [candidates, setCandidates] = useState<Candidate[]>([])
+  const [session, setSession] = useState<Session | null>(null)
+  const [reconciliation, setReconciliation] = useState<ReconciliationData | null>(null)
+  const [selectedMonth, setSelectedMonth] = useState(CURRENT_MONTH)
+  const [connections, setConnections] = useState<ConnectionStatus[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [decisionBusyId, setDecisionBusyId] = useState<string | null>(null)
+  const [draftBusy, setDraftBusy] = useState(false)
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
 
-  const pendingCandidates = candidates.filter((candidate) => candidate.status === 'pending')
-  const confirmedCandidates = candidates.filter((candidate) => candidate.status === 'confirmed')
+  const loadData = useCallback(async () => {
+    setLoading(true)
+    setLoadError(null)
+    try {
+      const [sessionData, candidateData, reconciliationData, connectionData] = await Promise.all([
+        api.getSession(),
+        api.listCandidates(),
+        api.getReconciliation(selectedMonth),
+        api.listConnections(),
+      ])
+      setSession(sessionData)
+      setCandidates(candidateData.items.map(toCandidate))
+      setReconciliation(reconciliationData)
+      setConnections(connectionData)
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : '无法读取财务数据')
+    } finally {
+      setLoading(false)
+    }
+  }, [selectedMonth])
 
-  const updateCandidate = (id: string, status: Candidate['status']) => {
-    setCandidates((items) => items.map((item) => (item.id === id ? { ...item, status } : item)))
-    setSelectedCandidate(null)
-    setNotice({
-      tone: 'success',
-      message: status === 'confirmed' ? `${id} 已确认并进入本月草稿数据` : `${id} 已忽略，原始证据仍保留`,
-    })
+  useEffect(() => {
+    const loadTimer = window.setTimeout(() => void loadData(), 0)
+    return () => window.clearTimeout(loadTimer)
+  }, [loadData])
+
+  const changeMonth = (month: string) => setSelectedMonth(month)
+
+  const pendingCandidates = candidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
+  const confirmedCandidates = candidates.filter((candidate) => candidate.status === 'CONFIRMED')
+
+  const updateCandidate = async (candidate: Candidate, status: 'CONFIRMED' | 'IGNORED', corrections?: CandidateCorrections) => {
+    if (!session) {
+      setNotice({ tone: 'error', message: '会话尚未就绪，请刷新后重试' })
+      return
+    }
+    if (status === 'CONFIRMED' && (candidate.conflict || (candidate.incomplete && !corrections?.accounting_month))) {
+      setNotice({ tone: 'error', message: `${candidate.shortId} 仍有阻断项，不能确认` })
+      return
+    }
+    setDecisionBusyId(candidate.id)
+    try {
+      const result = await api.appendDecision({
+        candidate: candidate.raw,
+        decision: status === 'IGNORED' ? 'IGNORE' : corrections ? 'CORRECT_AND_CONFIRM' : 'CONFIRM',
+        reason: status === 'IGNORED' ? 'Web 审核：忽略候选' : corrections ? 'Web 审核：更正并确认' : 'Web 审核：确认候选',
+        corrections,
+        csrfToken: session.csrf_token,
+      })
+      const updated = toCandidate(result.candidate)
+      setCandidates((items) => items.map((item) => (item.id === updated.id ? updated : item)))
+      setSelectedCandidate(null)
+      try {
+        const refreshedReconciliation = await api.getReconciliation(selectedMonth)
+        setReconciliation(refreshedReconciliation)
+        setNotice({
+          tone: 'success',
+          message: status === 'CONFIRMED' ? `${candidate.shortId} 已确认并进入本月草稿数据` : `${candidate.shortId} 已忽略，原始证据仍保留`,
+        })
+      } catch {
+        setNotice({ tone: 'info', message: `${candidate.shortId} 决定已保存，对账状态需刷新` })
+      }
+    } catch (error) {
+      setNotice({ tone: 'error', message: error instanceof Error ? error.message : '提交审核决定失败，请重试' })
+    } finally {
+      setDecisionBusyId(null)
+    }
+  }
+
+  const openCandidate = async (candidate: Candidate) => {
+    setSelectedCandidate(candidate)
+    try {
+      const detail = await api.getCandidate(candidate.id)
+      setSelectedCandidate((current) => current?.id === candidate.id ? toCandidate(detail) : current)
+    } catch (error) {
+      setNotice({ tone: 'error', message: error instanceof Error ? `证据详情读取失败：${error.message}` : '证据详情读取失败' })
+    }
+  }
+
+  const generateDraft = async () => {
+    if (!session || !reconciliation || !reconciliation.ready || reconciliation.blockers.length > 0) {
+      setNotice({ tone: 'error', message: '当前对账仍有阻断项，不能生成草稿' })
+      return
+    }
+    setDraftBusy(true)
+    try {
+      const draft = await api.createWorkbookDraft({
+        accountingMonth: reconciliation.accounting_month,
+        expectedRevision: reconciliation.revision,
+        csrfToken: session.csrf_token,
+      })
+      setNotice({ tone: 'success', message: `对账草稿已进入${draft.status === 'QUEUED' ? '生成队列' : '处理流程'}` })
+    } catch (error) {
+      setNotice({ tone: 'error', message: error instanceof Error ? error.message : '草稿生成请求失败' })
+    } finally {
+      setDraftBusy(false)
+    }
   }
 
   const renderPage = () => {
@@ -84,7 +221,7 @@ function App() {
           pending={pendingCandidates}
           confirmed={confirmedCandidates}
           onNavigate={setPage}
-          onOpenCandidate={setSelectedCandidate}
+          onOpenCandidate={openCandidate}
         />
       )
     }
@@ -92,15 +229,17 @@ function App() {
       return (
         <ReviewQueue
           candidates={pendingCandidates}
-          onOpenCandidate={setSelectedCandidate}
+          onOpenCandidate={openCandidate}
           onUpdate={updateCandidate}
+          onRefresh={loadData}
+          busyId={decisionBusyId}
         />
       )
     }
     if (page === 'reconciliation') {
-      return <Reconciliation confirmed={confirmedCandidates} onNavigate={setPage} />
+      return <Reconciliation data={reconciliation} confirmed={confirmedCandidates} selectedMonth={selectedMonth} onMonthChange={changeMonth} onGenerate={generateDraft} generating={draftBusy} onNavigate={setPage} />
     }
-    return <FilesAndConnections />
+    return <FilesAndConnections connections={connections} onRefresh={loadData} />
   }
 
   return (
@@ -113,6 +252,7 @@ function App() {
             return (
               <button
                 className={`nav-item ${page === item.id ? 'active' : ''}`}
+                aria-current={page === item.id ? 'page' : undefined}
                 key={item.id}
                 onClick={() => setPage(item.id)}
                 type="button"
@@ -129,9 +269,9 @@ function App() {
         <div className="sidebar-foot">
           <div className="secure-line">
             <ShieldCheck size={17} weight="fill" />
-            <span>仅限本人访问</span>
+            <span>合成预览环境</span>
           </div>
-          <span>Hermes 内网服务</span>
+          <span>无真实财务数据</span>
         </div>
       </aside>
 
@@ -140,7 +280,7 @@ function App() {
           <div className="mobile-brand"><Brand compact /></div>
           <div className="prototype-flag">
             <span className="flag-dot" />
-            原型环境 · 合成数据
+            原型环境 · 合成 API 数据
           </div>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger>
@@ -157,14 +297,16 @@ function App() {
         </header>
 
         {notice ? (
-          <div className="notice" role="status">
-            <CheckCircle size={18} weight="fill" />
+          <div className={`notice ${notice.tone}`} role={notice.tone === 'error' ? 'alert' : 'status'}>
+            {notice.tone === 'error' ? <Warning size={18} weight="fill" /> : notice.tone === 'info' ? <Info size={18} weight="fill" /> : <CheckCircle size={18} weight="fill" />}
             <span>{notice.message}</span>
             <button aria-label="关闭提示" onClick={() => setNotice(null)} type="button"><X size={16} /></button>
           </div>
         ) : null}
 
-        <main className="content">{renderPage()}</main>
+        <main className="content">
+          {loading ? <LoadingState /> : loadError ? <ErrorState message={loadError} onRetry={loadData} /> : renderPage()}
+        </main>
       </div>
 
       <nav className="bottom-nav" aria-label="移动端主导航">
@@ -173,6 +315,7 @@ function App() {
           return (
             <button
               className={page === item.id ? 'active' : ''}
+              aria-current={page === item.id ? 'page' : undefined}
               key={item.id}
               onClick={() => setPage(item.id)}
               type="button"
@@ -187,11 +330,15 @@ function App() {
         })}
       </nav>
 
-      <CandidateDialog
-        candidate={selectedCandidate}
-        onClose={() => setSelectedCandidate(null)}
-        onUpdate={updateCandidate}
-      />
+      {selectedCandidate ? (
+        <CandidateDialog
+          key={`${selectedCandidate.id}:${selectedCandidate.revision}`}
+          candidate={selectedCandidate}
+          onClose={() => setSelectedCandidate(null)}
+          onUpdate={updateCandidate}
+          busy={selectedCandidate.id === decisionBusyId}
+        />
+      ) : null}
     </div>
   )
 }
@@ -217,6 +364,27 @@ function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; 
         <p>{description}</p>
       </div>
       {action ? <div className="page-action">{action}</div> : null}
+    </div>
+  )
+}
+
+function LoadingState() {
+  return (
+    <div className="state-panel" role="status" aria-live="polite">
+      <ArrowsClockwise className="state-spinner" size={30} />
+      <h1>正在读取财务数据</h1>
+      <p>正在连接同源 API，并校验当前会话。</p>
+    </div>
+  )
+}
+
+function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="state-panel error-state" role="alert">
+      <Warning size={31} weight="fill" />
+      <h1>数据读取失败</h1>
+      <p>{message}</p>
+      <Button onClick={onRetry}><ArrowsClockwise size={17} />重试</Button>
     </div>
   )
 }
@@ -264,7 +432,7 @@ function Overview({
                 <SourceIcon source={candidate.source} />
                 <span className="preview-main">
                   <strong>{candidate.summary}</strong>
-                  <small>{candidate.businessUnit} · {candidate.receivedAt} · {candidate.id}</small>
+                  <small>{candidate.businessUnit} · {candidate.receivedAt} · {candidate.shortId}</small>
                 </span>
                 <span className="preview-value">
                   <strong>{currency.format(candidate.amount)}</strong>
@@ -327,7 +495,13 @@ function StatusLine({ icon, label, detail, tone }: { icon: React.ReactNode; labe
   )
 }
 
-function ReviewQueue({ candidates, onOpenCandidate, onUpdate }: { candidates: Candidate[]; onOpenCandidate: (candidate: Candidate) => void; onUpdate: (id: string, status: Candidate['status']) => void }) {
+function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId }: {
+  candidates: Candidate[]
+  onOpenCandidate: (candidate: Candidate) => void
+  onUpdate: (candidate: Candidate, status: 'CONFIRMED' | 'IGNORED', corrections?: CandidateCorrections) => void
+  onRefresh: () => void
+  busyId: string | null
+}) {
   const [filter, setFilter] = useState('all')
   const filtered = candidates.filter((candidate) => filter === 'all' || candidate.source === filter)
   return (
@@ -336,7 +510,7 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate }: { candidates: Ca
         eyebrow="人工确认队列"
         title="待审核候选"
         description="逐条核对字段与原始证据。确认不会直接生成正式凭证。"
-        action={<Button variant="outline" color="gray"><ArrowsClockwise size={17} />刷新</Button>}
+        action={<Button variant="outline" color="gray" onClick={onRefresh}><ArrowsClockwise size={17} />刷新</Button>}
       />
       <div className="filter-bar">
         <div className="filter-tabs" role="group" aria-label="来源筛选">
@@ -346,10 +520,10 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate }: { candidates: Ca
             ['钉钉', '钉钉'],
             ['微信', '微信'],
           ].map(([value, label]) => (
-            <button className={filter === value ? 'active' : ''} key={value} onClick={() => setFilter(value)} type="button">{label}</button>
+            <button aria-pressed={filter === value} className={filter === value ? 'active' : ''} key={value} onClick={() => setFilter(value)} type="button">{label}</button>
           ))}
         </div>
-        <TextField.Root className="search-field" placeholder="搜索候选编号、门店或科目">
+        <TextField.Root aria-label="搜索候选编号、门店或科目" className="search-field" placeholder="搜索候选编号、门店或科目">
           <TextField.Slot><MagnifyingGlass size={16} /></TextField.Slot>
         </TextField.Root>
         <Button variant="soft" color="gray"><SlidersHorizontal size={17} />筛选</Button>
@@ -378,22 +552,22 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate }: { candidates: Ca
                 {candidate.incomplete ? <Badge color="amber">缺少归属月份</Badge> : null}
               </div>
               <h2>{candidate.summary}</h2>
-              <p>{candidate.evidence}</p>
+              <p>{candidate.summary}</p>
               <div className="candidate-meta">
                 <span>{candidate.businessUnit}</span>
                 <span>{candidate.accountingMonth ?? '建议归入 2026-08'}</span>
                 <span>置信度 {Math.round(candidate.confidence * 100)}%</span>
-                {candidate.attachment ? <span><Paperclip size={14} />{candidate.attachment}</span> : null}
+                {candidate.evidence.some((item) => item.kind === 'attachment') ? <span><Paperclip size={14} />{candidate.evidence.filter((item) => item.kind === 'attachment').length} 个附件</span> : null}
               </div>
             </button>
             <div className="candidate-amount">
               <span>提取金额</span>
               <strong>{currency.format(candidate.amount)}</strong>
-              <small>{candidate.id}</small>
+              <small>{candidate.shortId}</small>
             </div>
             <div className="candidate-actions">
-              <Button variant="soft" color="gray" onClick={() => onUpdate(candidate.id, 'ignored')}><X size={16} />忽略</Button>
-              <Button disabled={candidate.conflict || candidate.incomplete} onClick={() => onUpdate(candidate.id, 'confirmed')}><Check size={16} />确认</Button>
+              <Button disabled={busyId === candidate.id} variant="soft" color="gray" onClick={() => onUpdate(candidate, 'IGNORED')}><X size={16} />忽略</Button>
+              <Button disabled={busyId === candidate.id || candidate.conflict || candidate.incomplete} onClick={() => onUpdate(candidate, 'CONFIRMED')}><Check size={16} />确认</Button>
             </div>
           </article>
         ))}
@@ -407,28 +581,60 @@ function SourceIcon({ source }: { source: Candidate['source'] }) {
   return <span className={`source-icon source-${source}`}>{initials[source]}</span>
 }
 
-function CandidateDialog({ candidate, onClose, onUpdate }: { candidate: Candidate | null; onClose: () => void; onUpdate: (id: string, status: Candidate['status']) => void }) {
+function CandidateDialog({ candidate, onClose, onUpdate, busy }: {
+  candidate: Candidate
+  onClose: () => void
+  onUpdate: (candidate: Candidate, status: 'CONFIRMED' | 'IGNORED', corrections?: CandidateCorrections) => void
+  busy: boolean
+}) {
+  const [businessUnit, setBusinessUnit] = useState(candidate.businessUnit)
+  const [category, setCategory] = useState(candidate.category)
+  const [amount, setAmount] = useState(candidate.amount.toFixed(2))
+  const [accountingMonth, setAccountingMonth] = useState(candidate.accountingMonth ?? '')
+
+  const parsedAmount = Number(amount)
+  const formComplete = businessUnit.trim().length > 0
+    && category.trim().length > 0
+    && Number.isFinite(parsedAmount)
+    && accountingMonth.length > 0
+  const confirmBlocked = busy || candidate.conflict || !formComplete
+
+  const submitCorrection = () => {
+    if (confirmBlocked) return
+    onUpdate(candidate, 'CONFIRMED', {
+      business_unit: businessUnit.trim(),
+      category: category.trim(),
+      amount_minor: majorToMinor(parsedAmount),
+      accounting_month: accountingMonth,
+    })
+  }
+
   return (
-    <Dialog.Root open={Boolean(candidate)} onOpenChange={(open) => { if (!open) onClose() }}>
+    <Dialog.Root open onOpenChange={(open) => { if (!open) onClose() }}>
       <Dialog.Content className="candidate-dialog" maxWidth="680px">
-        {candidate ? (
           <>
-            <div className="dialog-kicker"><SourceIcon source={candidate.source} /><span>{candidate.source} · {candidate.receivedAt} · {candidate.id}</span></div>
+            <div className="dialog-kicker"><SourceIcon source={candidate.source} /><span>{candidate.source} · {candidate.receivedAt} · {candidate.shortId}</span></div>
             <Dialog.Title>核对候选数据</Dialog.Title>
             <Dialog.Description>字段来自规则与模型提取，原始消息保持不变。</Dialog.Description>
             <div className="evidence-box">
-              <span className="section-label">原始消息证据</span>
-              <blockquote>{candidate.evidence}</blockquote>
-              {candidate.attachment ? <Button variant="soft" color="gray"><Paperclip size={16} />{candidate.attachment}</Button> : null}
+              <span className="section-label">原始证据引用</span>
+              <blockquote>{candidate.summary}</blockquote>
+              <div className="evidence-links">
+                {candidate.evidence.map((item) => (
+                  <a href={`/api/v1/evidence/${encodeURIComponent(item.id)}/content`} key={item.id}>
+                    <Paperclip size={16} />{item.original_filename ?? (item.kind === 'message' ? '消息原文' : '附件')}
+                  </a>
+                ))}
+              </div>
             </div>
             <div className="field-grid">
-              <label><span>营业单元</span><TextField.Root defaultValue={candidate.businessUnit} /></label>
-              <label><span>科目</span><TextField.Root defaultValue={candidate.category} /></label>
-              <label><span>金额</span><TextField.Root defaultValue={candidate.amount.toFixed(2)} /></label>
+              <label htmlFor="candidate-business-unit"><span>营业单元</span><TextField.Root id="candidate-business-unit" value={businessUnit} onChange={(event) => setBusinessUnit(event.target.value)} /></label>
+              <label htmlFor="candidate-category"><span>科目</span><TextField.Root id="candidate-category" value={category} onChange={(event) => setCategory(event.target.value)} /></label>
+              <label htmlFor="candidate-amount"><span>金额</span><TextField.Root id="candidate-amount" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} /></label>
               <label>
-                <span>归属月份</span>
-                <Select.Root defaultValue={candidate.accountingMonth ?? '2026-08'}>
-                  <Select.Trigger />
+                <span id="candidate-month-label">归属月份</span>
+                <Select.Root value={accountingMonth} onValueChange={setAccountingMonth}>
+                  <Select.Trigger aria-labelledby="candidate-month-label" placeholder="请选择归属月份" />
                   <Select.Content><Select.Item value="2026-08">2026 年 8 月</Select.Item><Select.Item value="2026-07">2026 年 7 月</Select.Item></Select.Content>
                 </Select.Root>
               </label>
@@ -438,78 +644,119 @@ function CandidateDialog({ candidate, onClose, onUpdate }: { candidate: Candidat
             <Separator my="4" size="4" />
             <div className="dialog-actions">
               <Button variant="soft" color="gray" onClick={onClose}>取消</Button>
-              <Button variant="outline" color="gray" onClick={() => onUpdate(candidate.id, 'ignored')}>忽略候选</Button>
-              <Button disabled={candidate.conflict} onClick={() => onUpdate(candidate.id, 'confirmed')}>保存更正并确认</Button>
+              <Button disabled={busy} variant="outline" color="gray" onClick={() => onUpdate(candidate, 'IGNORED')}>忽略候选</Button>
+              <Button disabled={confirmBlocked} onClick={submitCorrection}>保存更正并确认</Button>
             </div>
           </>
-        ) : null}
       </Dialog.Content>
     </Dialog.Root>
   )
 }
 
-type ReconciliationRow = (typeof reconciliationRows)[number]
+type ReconciliationRow = {
+  unit: string
+  waterMinor: number
+  taxMinor: number
+  linenMinor: number
+  bottledWaterMinor: number
+  receiptsMinor: number
+  readiness: string
+}
+
+function amountFor(amounts: Record<string, number>, ...keys: string[]) {
+  const key = keys.find((candidate) => candidate in amounts)
+  return key ? amounts[key] : 0
+}
+
+function toReconciliationRows(data: ReconciliationData | null): ReconciliationRow[] {
+  if (!data) return []
+  return data.business_units.map((unit) => ({
+    unit: unit.name,
+    waterMinor: amountFor(unit.amounts_minor, 'water', 'water_fee', '水费'),
+    taxMinor: amountFor(unit.amounts_minor, 'tax', 'tax_fee', '税费'),
+    linenMinor: amountFor(unit.amounts_minor, 'linen', 'linen_fee', '布草'),
+    bottledWaterMinor: amountFor(unit.amounts_minor, 'bottled_water', 'bottledWater', '瓶装水'),
+    receiptsMinor: amountFor(unit.amounts_minor, 'bank_receipts', 'receipts', '银行收款'),
+    readiness: data.ready ? '可生成' : '待处理',
+  }))
+}
+
 const columnHelper = createColumnHelper<ReconciliationRow>()
 const columns = [
   columnHelper.accessor('unit', { header: '营业单元', cell: (info) => <strong>{info.getValue()}</strong> }),
-  columnHelper.accessor('water', { header: '水费', cell: (info) => currency.format(info.getValue()) }),
-  columnHelper.accessor('tax', { header: '税费', cell: (info) => currency.format(info.getValue()) }),
-  columnHelper.accessor('linen', { header: '布草', cell: (info) => currency.format(info.getValue()) }),
-  columnHelper.accessor('bottledWater', { header: '瓶装水', cell: (info) => currency.format(info.getValue()) }),
-  columnHelper.accessor('receipts', { header: '银行收款', cell: (info) => currency.format(info.getValue()) }),
+  columnHelper.accessor('waterMinor', { header: '水费', cell: (info) => currency.format(minorToMajor(info.getValue())) }),
+  columnHelper.accessor('taxMinor', { header: '税费', cell: (info) => currency.format(minorToMajor(info.getValue())) }),
+  columnHelper.accessor('linenMinor', { header: '布草', cell: (info) => currency.format(minorToMajor(info.getValue())) }),
+  columnHelper.accessor('bottledWaterMinor', { header: '瓶装水', cell: (info) => currency.format(minorToMajor(info.getValue())) }),
+  columnHelper.accessor('receiptsMinor', { header: '银行收款', cell: (info) => currency.format(minorToMajor(info.getValue())) }),
   columnHelper.accessor('readiness', {
     header: '状态',
     cell: (info) => {
       const value = info.getValue()
-      return <Badge color={value === '可生成' ? 'green' : value === '有冲突' ? 'red' : 'amber'}>{value}</Badge>
+      return <Badge color={value === '可生成' ? 'green' : 'amber'}>{value}</Badge>
     },
   }),
 ]
 
-function Reconciliation({ confirmed, onNavigate }: { confirmed: Candidate[]; onNavigate: (page: Page) => void }) {
-  const table = useReactTable({ data: reconciliationRows, columns, getCoreRowModel: getCoreRowModel() })
-  const monthTotal = reconciliationRows.reduce((sum, row) => sum + row.water + row.tax + row.linen + row.bottledWater + row.receipts, 0)
+function Reconciliation({ data, confirmed, selectedMonth, onMonthChange, onGenerate, generating, onNavigate }: {
+  data: ReconciliationData | null
+  confirmed: Candidate[]
+  selectedMonth: string
+  onMonthChange: (month: string) => void
+  onGenerate: () => void
+  generating: boolean
+  onNavigate: (page: Page) => void
+}) {
+  const rows = toReconciliationRows(data)
+  const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel() })
+  const monthTotalMinor = rows.reduce((sum, row) => sum + row.waterMinor + row.taxMinor + row.linenMinor + row.bottledWaterMinor + row.receiptsMinor, 0)
+  const receiptsTotalMinor = rows.reduce((sum, row) => sum + row.receiptsMinor, 0)
+  const ready = Boolean(data?.ready && data.blockers.length === 0)
+  const monthLabel = selectedMonth === '2026-08' ? '2026 年 8 月' : '2026 年 7 月'
   return (
     <>
       <PageHeader
         eyebrow="酒店月度对账"
-        title="2026 年 8 月对账草稿"
+        title={`${monthLabel}对账草稿`}
         description="当前是预览层。确认保存仍由原程序完成，候选不会直接入正式账。"
-        action={<Select.Root defaultValue="2026-08"><Select.Trigger /><Select.Content><Select.Item value="2026-08">2026 年 8 月</Select.Item><Select.Item value="2026-07">2026 年 7 月</Select.Item></Select.Content></Select.Root>}
+        action={<Select.Root value={selectedMonth} onValueChange={onMonthChange}><Select.Trigger aria-label="选择对账月份" /><Select.Content><Select.Item value="2026-08">2026 年 8 月</Select.Item><Select.Item value="2026-07">2026 年 7 月</Select.Item></Select.Content></Select.Root>}
       />
 
-      <div className="blocking-banner" role="alert">
-        <Warning size={21} weight="fill" />
-        <div><strong>本月草稿尚不可生成</strong><span>1 条收款冲突和 1 条缺失月份记录需要处理。</span></div>
-        <Button color="red" variant="soft" onClick={() => onNavigate('review')}>处理阻断项</Button>
-      </div>
+      {!ready ? (
+        <div className="blocking-banner" role="alert">
+          <Warning size={21} weight="fill" />
+          <div><strong>本月草稿尚不可生成</strong><span>{data?.blockers.map((blocker) => blocker.message).join('；') || '对账数据尚未就绪。'}</span></div>
+          <Button color="red" variant="soft" onClick={() => onNavigate('review')}>处理阻断项</Button>
+        </div>
+      ) : null}
 
       <section className="metric-grid reconciliation-metrics">
-        <Metric label="本月汇总" value={currency.format(monthTotal)} detail="跨 3 个营业单元" icon={<Bank size={20} />} />
+        <Metric label="本月汇总" value={currency.format(minorToMajor(monthTotalMinor))} detail={`跨 ${rows.length} 个营业单元`} icon={<Bank size={20} />} />
         <Metric label="已确认来源" value={`${confirmed.length} 条`} detail="均可回溯至原始证据" icon={<CheckCircle size={20} />} />
-        <Metric label="待处理" value="2 条" detail="冲突 1 条，缺字段 1 条" icon={<Warning size={20} />} tone="attention" />
+        <Metric label="待处理" value={`${data?.blockers.length ?? 0} 条`} detail={ready ? '无草稿阻断项' : '需先处理阻断项'} icon={<Warning size={20} />} tone={ready ? undefined : 'attention'} />
         <Metric label="计算验证" value="待运行" detail="草稿生成后由 LibreOffice 校验" icon={<ArrowsClockwise size={20} />} />
       </section>
 
       <section className="panel table-panel">
         <div className="panel-heading">
           <div><h2>营业单元汇总</h2><p>只展示审核通过或既有数据库中的数据</p></div>
-          <Button disabled><FileText size={17} />生成对账草稿</Button>
+          <Button disabled={!ready || generating} onClick={onGenerate}><FileText size={17} />{generating ? '正在提交' : '生成对账草稿'}</Button>
         </div>
         <div className="desktop-table-wrap">
           <table>
             <thead>{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th key={header.id}>{flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}</thead>
             <tbody>{table.getRowModel().rows.map((row) => <tr key={row.id}>{row.getVisibleCells().map((cell) => <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}</tr>)}</tbody>
-            <tfoot><tr><td>本月合计</td><td colSpan={4}>按营业单元与科目汇总</td><td>{currency.format(reconciliationRows.reduce((sum, row) => sum + row.receipts, 0))}</td><td><Badge color="red">阻断</Badge></td></tr></tfoot>
+            <tfoot><tr><td>本月合计</td><td colSpan={4}>按营业单元与科目汇总</td><td>{currency.format(minorToMajor(receiptsTotalMinor))}</td><td><Badge color={ready ? 'green' : 'red'}>{ready ? '就绪' : '阻断'}</Badge></td></tr></tfoot>
           </table>
         </div>
         <div className="mobile-reconciliation-list">
-          {reconciliationRows.map((row) => (
+          {rows.map((row) => (
             <article key={row.unit}>
-              <div><strong>{row.unit}</strong><Badge color={row.readiness === '可生成' ? 'green' : row.readiness === '有冲突' ? 'red' : 'amber'}>{row.readiness}</Badge></div>
-              <dl><dt>运营支出</dt><dd>{currency.format(row.water + row.tax + row.linen + row.bottledWater)}</dd><dt>银行收款</dt><dd>{currency.format(row.receipts)}</dd></dl>
+              <div><strong>{row.unit}</strong><Badge color={row.readiness === '可生成' ? 'green' : 'amber'}>{row.readiness}</Badge></div>
+              <dl><dt>运营支出</dt><dd>{currency.format(minorToMajor(row.waterMinor + row.taxMinor + row.linenMinor + row.bottledWaterMinor))}</dd><dt>银行收款</dt><dd>{currency.format(minorToMajor(row.receiptsMinor))}</dd></dl>
             </article>
           ))}
+          {rows.length === 0 ? <div className="empty-state compact-empty"><Table size={32} /><h2>本月没有对账数据</h2><p>审核通过的候选和既有数据库汇总会显示在这里。</p></div> : null}
           <p className="mobile-grid-note"><Info size={16} />完整科目网格请在平板或电脑查看。</p>
         </div>
       </section>
@@ -530,31 +777,45 @@ function Reconciliation({ confirmed, onNavigate }: { confirmed: Candidate[]; onN
   )
 }
 
-function FilesAndConnections() {
+const connectionStateLabel: Record<ConnectionStatus['state'], string> = {
+  CONNECTED: '已连接',
+  DISCONNECTED: '已断开',
+  DEGRADED: '服务降级',
+  NOT_CONFIGURED: '未配置',
+}
+
+function ConnectionBadge({ connection }: { connection?: ConnectionStatus }) {
+  const state = connection?.state ?? 'NOT_CONFIGURED'
+  const color = state === 'CONNECTED' ? 'green' : state === 'DEGRADED' ? 'amber' : 'gray'
+  return <Badge color={color}>{connectionStateLabel[state]}</Badge>
+}
+
+function FilesAndConnections({ connections, onRefresh }: { connections: ConnectionStatus[]; onRefresh: () => void }) {
+  const connection = (id: ConnectionStatus['id']) => connections.find((item) => item.id === id)
   return (
     <>
       <PageHeader
         eyebrow="服务与文件"
         title="文件与连接"
-        description="连接状态仅为原型展示。尚未请求真实账户权限，也没有存储凭据。"
-        action={<Button variant="outline" color="gray"><ArrowsClockwise size={17} />重新检查</Button>}
+        description="状态来自同源 API。界面不显示令牌或其他敏感凭据。"
+        action={<Button variant="outline" color="gray" onClick={onRefresh}><ArrowsClockwise size={17} />重新检查</Button>}
       />
 
       <div className="connection-grid">
         <section className="panel connection-card">
-          <div className="connection-title"><div className="service-icon onedrive"><CloudArrowUp size={24} weight="fill" /></div><div><h2>OneDrive Personal</h2><p>应用专用文件夹</p></div><Badge color="amber">未连接</Badge></div>
+          <div className="connection-title"><div className="service-icon onedrive"><CloudArrowUp size={24} weight="fill" /></div><div><h2>OneDrive Personal</h2><p>应用专用文件夹</p></div><ConnectionBadge connection={connection('onedrive_appfolder')} /></div>
           <p>仅访问 <code>Apps/LedgerBridge</code>，不读取 OneDrive 中的其他文件。</p>
           <div className="permission-line"><ShieldCheck size={17} /><span>计划权限：Files.ReadWrite.AppFolder</span></div>
           <Button>连接 OneDrive</Button>
         </section>
         <section className="panel connection-card">
-          <div className="connection-title"><div className="service-icon hermes"><Database size={24} weight="fill" /></div><div><h2>Hermes 消息入口</h2><p>Telegram、钉钉、微信</p></div><Badge color="green">原型正常</Badge></div>
+          <div className="connection-title"><div className="service-icon hermes"><Database size={24} weight="fill" /></div><div><h2>Hermes 消息入口</h2><p>Telegram、钉钉、微信</p></div><ConnectionBadge connection={connection('hermes_ingress')} /></div>
           <p>只处理启用后的主账号私聊。家庭账号、群聊和历史消息均不在范围内。</p>
           <div className="permission-line"><ShieldCheck size={17} /><span>附件在消息入口即时提取与留证</span></div>
           <Button variant="soft" color="gray">查看入口规则</Button>
         </section>
         <section className="panel connection-card">
-          <div className="connection-title"><div className="service-icon office"><FileText size={24} weight="fill" /></div><div><h2>LibreOffice 计算服务</h2><p>Hermes 后台进程</p></div><Badge color="gray">尚未安装</Badge></div>
+          <div className="connection-title"><div className="service-icon office"><FileText size={24} weight="fill" /></div><div><h2>LibreOffice 计算服务</h2><p>Hermes 后台进程</p></div><ConnectionBadge connection={connection('libreoffice_worker')} /></div>
           <p>在临时副本上重算工作簿，检查公式错误和关键值，不覆盖原始文件。</p>
           <div className="permission-line"><Info size={17} /><span>结果标记为 LibreOffice 已验证</span></div>
           <Button variant="soft" color="gray">查看验证策略</Button>

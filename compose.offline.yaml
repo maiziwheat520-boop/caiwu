@@ -10,18 +10,26 @@ services:
     cap_drop:
       - ALL
     environment:
+      LEDGERBRIDGE_MODE: synthetic-preview
       PORT: "8080"
+      BIND_ADDRESS: 0.0.0.0
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      # Offline preview is plain HTTP. A distinct preview-only cookie avoids
+      # misrepresenting it as the production __Host cookie.
+      SESSION_COOKIE_SECURE: "0"
       SITE_ROOT: /site
     command:
       - python
-      - /app/server.py
+      - /app/run_preview.py
     volumes:
       - ./dist:/site:ro
-      - ./deploy/server.py:/app/server.py:ro
+      - ./deploy/server.py:/app/run_preview.py:ro
+      - ./server:/app/server:ro
     tmpfs:
       - /tmp:size=16m,mode=1777
     ports:
-      - "${LEDGERBRIDGE_WEB_PORT:-8780}:8080"
+      - "${LEDGERBRIDGE_WEB_BIND_ADDRESS:-127.0.0.1}:${LEDGERBRIDGE_WEB_PORT:-8780}:8080"
     healthcheck:
       test:
         - CMD
