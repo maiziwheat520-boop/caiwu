@@ -22,8 +22,9 @@ explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is implemented and
 the pure Slice C bounded multipart adapter plus the ArtifactStore-owned
 transactional handoff are pushed on the Codex branch
-`ai/chatgpt/phase-3-connector-runner` at head `6300bf5`; the prior runner audit
-baseline remains `bd2ba4a2513597e83764a56215c72b61c99a8c1e`. The isolated runner
+`ai/chatgpt/phase-3-connector-runner` at current docs head `c24355a` (implementation
+code `6300bf5`); the prior runner audit baseline remains
+`bd2ba4a2513597e83764a56215c72b61c99a8c1e`. The isolated runner
 image and the handoff replay were tested only as disposable Hermes workloads and
 are not deployed.
 
@@ -123,8 +124,9 @@ is green across `secrets`, `quality`, and `compose`; Claude's approval applies t
 the earlier fixed code/test SHA, while this follow-up is Codex-verified.
 Protected PR #18 is open at
 `https://github.com/maiziwheat520-boop/caiwu/pull/18`; its current head is
-`6300bf5`. The push and pull-request runs for this head (`32613520982` and
-`32613522285`) both passed `secrets`, `quality`, and `compose`.
+`c24355a`. The push and pull-request runs for this head (`32613837354` and
+`32613840247`) both passed `secrets`, `quality`, and `compose`; the preceding
+implementation head `6300bf5` was green in runs `32613520982` and `32613522285`.
 The PR is review-only; it has not been merged or deployed.
 The approved Slice C upload-boundary design is recorded in
 `docs/tasks/2026-08-23-phase-3-slice-c-upload-endpoint-design.md`; no route is
