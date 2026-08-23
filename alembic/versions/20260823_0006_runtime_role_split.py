@@ -22,6 +22,17 @@ def upgrade() -> None:
                 RAISE EXCEPTION
                     'runtime role split requires bootstrap roles';
             END IF;
+
+            -- Reassert the deployment contract for existing databases.  Merely
+            -- checking that the roles exist leaves an operator-created role
+            -- membership or elevated attribute in place across migrations.
+            ALTER ROLE ledgerbridge_api
+                NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+                NOREPLICATION NOBYPASSRLS;
+            ALTER ROLE ledgerbridge_worker
+                NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+                NOREPLICATION NOBYPASSRLS;
+            REVOKE ledgerbridge_app FROM ledgerbridge_api, ledgerbridge_worker;
         END
         $ledgerbridge$;
         """

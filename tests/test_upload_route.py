@@ -33,6 +33,8 @@ from ledgerbridge.dispatch import (
 )
 from ledgerbridge.imports import EvidenceIngestionError, ImportOutcome, IngestMetadata
 from ledgerbridge.main import (
+    UploadConcurrencyError,
+    UploadReadTimeoutError,
     _declared_length,
     _map_ingestion_error,
     _read_bounded_request,
@@ -368,6 +370,48 @@ def test_bounded_request_spool_enforces_type_and_size() -> None:
         asyncio.run(_read_bounded_request(LargeRequest(), 3))  # type: ignore[arg-type]
 
 
+def test_bounded_request_spool_times_out_and_releases_admission() -> None:
+    class SlowRequest:
+        async def stream(self) -> Any:
+            await asyncio.sleep(0.05)
+            yield b"late"
+
+    with pytest.raises(UploadReadTimeoutError):
+        asyncio.run(
+            _read_bounded_request(
+                SlowRequest(),
+                10,
+                timeout_seconds=0.001,
+                concurrency=1,  # type: ignore[arg-type]
+            )
+        )
+
+    class FastRequest:
+        async def stream(self) -> Any:
+            yield b"ok"
+
+    body = asyncio.run(
+        _read_bounded_request(FastRequest(), 10, timeout_seconds=1, concurrency=1)  # type: ignore[arg-type]
+    )
+    body.close()
+
+
+def test_bounded_request_spool_holds_loop_independent_admission_until_close() -> None:
+    class RequestBody:
+        async def stream(self) -> Any:
+            yield b"ok"
+
+    first = asyncio.run(_read_bounded_request(RequestBody(), 10, concurrency=1))  # type: ignore[arg-type]
+    try:
+        with pytest.raises(UploadConcurrencyError):
+            asyncio.run(_read_bounded_request(RequestBody(), 10, concurrency=1))  # type: ignore[arg-type]
+    finally:
+        first.close()
+
+    third = asyncio.run(_read_bounded_request(RequestBody(), 10, concurrency=1))  # type: ignore[arg-type]
+    third.close()
+
+
 def test_internal_upload_route_commits_then_calls_importer_with_server_actor(
     tmp_path: Path,
 ) -> None:
@@ -442,6 +486,8 @@ def test_async_dispatch_rejects_advertised_body_over_limit_before_reading(
 @pytest.mark.parametrize(
     ("error", "status_code", "error_code"),
     [
+        (UploadReadTimeoutError("bounded"), 408, "EVIDENCE_READ_TIMEOUT"),
+        (UploadConcurrencyError("bounded"), 429, "EVIDENCE_UPLOAD_BUSY"),
         (MultipartLimitError("bounded"), 413, "EVIDENCE_LIMIT"),
         (MultipartError("bounded"), 400, "INVALID_MULTIPART"),
         (DispatchConflict("bounded"), 409, "DISPATCH_CONFLICT"),
@@ -491,6 +537,41 @@ def test_async_dispatch_maps_handoff_failures(
     assert response.status_code == status_code
     assert response.json() == {"detail": {"error_code": error_code}}
     assert dispatch.calls == []
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code", "error_code"),
+    [
+        (UploadReadTimeoutError("bounded"), 408, "EVIDENCE_READ_TIMEOUT"),
+        (UploadConcurrencyError("bounded"), 429, "EVIDENCE_UPLOAD_BUSY"),
+    ],
+)
+def test_internal_upload_maps_request_read_boundary_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: BaseException,
+    status_code: int,
+    error_code: str,
+) -> None:
+    _store, importer = _install_overrides(tmp_path)
+
+    async def fail_read(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise error
+
+    monkeypatch.setattr(main_module, "_read_bounded_request", fail_read)
+    try:
+        response = TestClient(app).post(
+            "/v1/evidence/imports",
+            content=b"body",
+            headers={"content-type": "multipart/form-data; boundary=unused"},
+        )
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == status_code
+    assert response.json() == {"detail": {"error_code": error_code}}
+    assert importer.calls == []
 
 
 def test_async_dispatch_incomplete_parser_aborts_handoff(

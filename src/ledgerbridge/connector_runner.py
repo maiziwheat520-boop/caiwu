@@ -10,6 +10,7 @@ import logging
 import os
 import tempfile
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, cast
@@ -45,6 +46,10 @@ from ledgerbridge.runner_protocol import (
 )
 
 DEFAULT_SOCKET_PATH = "/run/ledgerbridge-connector/runner.sock"
+# Four in-flight connector calls bound the runner's synchronous work under its
+# 128 MiB container limit; callers may raise this only within the hard cap.
+DEFAULT_EXECUTION_WORKERS = 4
+MAX_EXECUTION_WORKERS = 8
 logger = logging.getLogger(__name__)
 
 
@@ -76,11 +81,22 @@ class ConnectorSupervisor:
         connectors: Mapping[tuple[str, str], Connector] | None = None,
         *,
         request_timeout_seconds: float = 90.0,
+        max_execution_workers: int = DEFAULT_EXECUTION_WORKERS,
     ) -> None:
         if request_timeout_seconds <= 0 or request_timeout_seconds > 90:
             raise ValueError("runner timeout must be positive and at most 90 seconds")
+        if max_execution_workers <= 0 or max_execution_workers > MAX_EXECUTION_WORKERS:
+            raise ValueError(
+                f"runner execution workers must be between 1 and {MAX_EXECUTION_WORKERS}"
+            )
         self._connectors = dict(connectors or {})
         self._request_timeout_seconds = request_timeout_seconds
+        self._execution_workers = max_execution_workers
+        self._active_executions = 0
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_execution_workers,
+            thread_name_prefix="ledgerbridge-connector",
+        )
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         request_id = ""
@@ -154,7 +170,11 @@ class ConnectorSupervisor:
         reader: asyncio.StreamReader,
         request: RunnerRequest,
     ) -> _ExecutionResult:
-        with tempfile.SpooledTemporaryFile(max_size=4 * 1024 * 1024, mode="w+b") as artifact:
+        artifact = tempfile.SpooledTemporaryFile(  # noqa: SIM115 - ownership crosses timeout cancellation
+            max_size=4 * 1024 * 1024,
+            mode="w+b",
+        )
+        try:
             observed = 0
             chunks = 0
             digest = hashlib.sha256()
@@ -190,11 +210,59 @@ class ConnectorSupervisor:
                     continue
                 raise RunnerProtocolError("artifact stream contains an unexpected frame")
             artifact.seek(0)
-            return await asyncio.to_thread(
-                self._execute_with_artifact,
+        except BaseException:
+            artifact.close()
+            raise
+        return await self._execute_with_artifact_bounded(request, cast(BinaryIO, artifact))
+
+    async def _execute_with_artifact_bounded(
+        self,
+        request: RunnerRequest,
+        artifact: BinaryIO,
+    ) -> _ExecutionResult:
+        """Run connector code without growing an unbounded executor queue.
+
+        A timeout cancels the asyncio wrapper, not the underlying synchronous
+        connector call.  The execution slot therefore remains occupied until
+        the concurrent future really finishes; otherwise every timeout could
+        release a slot while leaving another thread alive.
+        """
+
+        if self._active_executions >= self._execution_workers:
+            artifact.close()
+            raise RunnerExecutionError("TIMEOUT", "connector timed out")
+        self._active_executions += 1
+        loop = asyncio.get_running_loop()
+        try:
+            future = self._executor.submit(
+                self._execute_with_artifact_and_close,
                 request,
-                cast(BinaryIO, artifact),
+                artifact,
             )
+        except BaseException:
+            self._active_executions -= 1
+            artifact.close()
+            raise
+
+        def release_slot(_future: object) -> None:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(self._release_execution_slot)
+
+        future.add_done_callback(release_slot)
+        return await asyncio.wrap_future(future)
+
+    def _release_execution_slot(self) -> None:
+        self._active_executions -= 1
+
+    def _execute_with_artifact_and_close(
+        self,
+        request: RunnerRequest,
+        artifact: BinaryIO,
+    ) -> _ExecutionResult:
+        try:
+            return self._execute_with_artifact(request, artifact)
+        finally:
+            artifact.close()
 
     def _execute_with_artifact(
         self,

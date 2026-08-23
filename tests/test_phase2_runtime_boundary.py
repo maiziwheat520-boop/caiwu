@@ -75,6 +75,7 @@ def test_artifact_directory_and_database_temp_privilege_are_hardened() -> None:
     assert "REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC" in init_script
     assert "ledgerbridge_api" in init_script
     assert "ledgerbridge_worker" in init_script
+    assert "NOINHERIT" in init_script
     assert "LEDGERBRIDGE_API_DB_PASSWORD:?" in init_script
     assert "LEDGERBRIDGE_WORKER_DB_PASSWORD:?" in init_script
     assert "runtime database passwords must be distinct" in init_script
@@ -108,3 +109,14 @@ def test_dispatch_acceptance_is_database_bound() -> None:
         "REVOKE INSERT ON TABLE public.evidence_import_dispatch FROM ledgerbridge_api" in migration
     )
     assert "SECURITY DEFINER" in migration
+
+
+def test_runtime_role_split_reasserts_least_privilege_and_membership_boundary() -> None:
+    migration = Path("alembic/versions/20260823_0006_runtime_role_split.py").read_text(
+        encoding="utf-8"
+    )
+    assert "ALTER ROLE ledgerbridge_api" in migration
+    assert "ALTER ROLE ledgerbridge_worker" in migration
+    assert "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT" in migration
+    assert "NOREPLICATION NOBYPASSRLS" in migration
+    assert "REVOKE ledgerbridge_app FROM ledgerbridge_api, ledgerbridge_worker" in migration

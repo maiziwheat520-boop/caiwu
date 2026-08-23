@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 import re
 import socket
-import threading
 import time
 from collections.abc import Iterable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from io import BytesIO
 from typing import BinaryIO
@@ -249,14 +249,21 @@ class RunnerConnector:
         self.version = version
         self.source_system = source_system
         self._client = client
-        self._pending_request: RunnerRequest | None = None
-        self._lock = threading.Lock()
+        # Detection and parsing are separate Connector protocol calls, so the
+        # verified request has to survive between them.  Keep that one-shot
+        # context local: a worker may reuse one facade from multiple threads
+        # (or async tasks), and a process-wide slot would let one import steal
+        # another import's request metadata.
+        self._pending_request: ContextVar[RunnerRequest | None] = ContextVar(
+            f"ledgerbridge_runner_pending_request_{id(self)}", default=None
+        )
 
     def detect(self, metadata: ArtifactMetadata, bounded_prefix: bytes) -> DetectionResult:
         # Direct in-process calls only have a prefix.  Keep this helper useful
         # for synthetic fixtures by declaring and hashing exactly that bounded
         # prefix; production importer calls detect_verified below with the full
         # verified artifact stream.
+        self._pending_request.set(None)
         prefix_digest = hashlib.sha256(bounded_prefix).hexdigest()
         prefix_metadata = ArtifactMetadata(
             source=metadata.source,
@@ -269,16 +276,18 @@ class RunnerConnector:
         return self._client.detect(request, BytesIO(bounded_prefix))
 
     def detect_verified(self, metadata: ArtifactMetadata, stream: BinaryIO) -> DetectionResult:
+        # Invalidate any previous one-shot context before starting a new
+        # detection.  A failed detection must not leave a stale request that a
+        # later parse call could consume.
+        self._pending_request.set(None)
         request = self._request(metadata, RunnerOperation.DETECT)
         result = self._client.detect(request, stream)
-        with self._lock:
-            self._pending_request = request
+        self._pending_request.set(request)
         return result
 
     def parse(self, stream: BinaryIO) -> Iterable[ParsedSourceRecord]:
-        with self._lock:
-            request = self._pending_request
-            self._pending_request = None
+        request = self._pending_request.get()
+        self._pending_request.set(None)
         if request is None:
             raise ConnectorContractError("runner parse requires a preceding verified detection")
         request = RunnerRequest(

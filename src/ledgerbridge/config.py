@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     artifact_total_max_bytes: int = Field(default=10 * 1024 * 1024 * 1024, gt=0, le=2**63 - 1)
     artifact_staging_max_bytes: int = Field(default=512 * 1024 * 1024, gt=0, le=2**63 - 1)
     artifact_staging_ttl_seconds: int = Field(default=60 * 60, gt=0, le=2**31 - 1)
+    upload_read_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
+    upload_concurrency: int = Field(default=2, gt=0, le=64)
     enable_internal_upload: bool = False
     enable_internal_async_dispatch: bool = False
     dispatch_lease_seconds: int = Field(default=120, gt=0, le=3600)

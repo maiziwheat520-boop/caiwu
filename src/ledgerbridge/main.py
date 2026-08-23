@@ -1,5 +1,7 @@
+import asyncio
 import tempfile
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from typing import Annotated, BinaryIO, cast
 from uuid import UUID
 
@@ -51,6 +53,68 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+
+
+class UploadReadTimeoutError(TimeoutError):
+    """The request body did not arrive within the configured read deadline."""
+
+
+class UploadConcurrencyError(RuntimeError):
+    """The bounded upload-body admission pool is currently full."""
+
+
+class _UploadAdmission:
+    def __init__(self, limit: int) -> None:
+        self._semaphore = threading.BoundedSemaphore(limit)
+
+    def acquire(self) -> bool:
+        return self._semaphore.acquire(blocking=False)
+
+    def release(self) -> None:
+        self._semaphore.release()
+
+
+class _AdmittedBody:
+    """A temporary request body that releases its loop-independent admission slot."""
+
+    def __init__(self, body: BinaryIO, release: Callable[[], None]) -> None:
+        self._body = body
+        self._release = release
+        self._closed = False
+
+    def read(self, size: int = -1) -> bytes:
+        return self._body.read(size)
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self._body.seek(offset, whence)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._body.close()
+        finally:
+            self._release()
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+
+_UPLOAD_ADMISSIONS: dict[int, _UploadAdmission] = {}
+_UPLOAD_ADMISSIONS_LOCK = threading.Lock()
+
+
+def _get_upload_admission(limit: int) -> _UploadAdmission:
+    if limit <= 0:
+        raise ValueError("upload concurrency must be positive")
+    with _UPLOAD_ADMISSIONS_LOCK:
+        admission = _UPLOAD_ADMISSIONS.get(limit)
+        if admission is None:
+            admission = _UploadAdmission(limit)
+            _UPLOAD_ADMISSIONS[limit] = admission
+        return admission
 
 
 @app.get("/health/live", tags=["health"])
@@ -196,7 +260,12 @@ async def upload_evidence(
     if declared_length is not None and declared_length > max_body_bytes:
         raise _route_error("EVIDENCE_LIMIT", status.HTTP_413_CONTENT_TOO_LARGE)
     try:
-        request_body = await _read_bounded_request(request, max_body_bytes)
+        request_body = await _read_bounded_request(
+            request,
+            max_body_bytes,
+            timeout_seconds=settings.upload_read_timeout_seconds,
+            concurrency=settings.upload_concurrency,
+        )
         try:
             handoff = store.begin_handoff()
             try:
@@ -234,6 +303,10 @@ async def upload_evidence(
                 raise
         finally:
             request_body.close()
+    except UploadReadTimeoutError as exc:
+        raise _route_error("EVIDENCE_READ_TIMEOUT", status.HTTP_408_REQUEST_TIMEOUT) from exc
+    except UploadConcurrencyError as exc:
+        raise _route_error("EVIDENCE_UPLOAD_BUSY", status.HTTP_429_TOO_MANY_REQUESTS) from exc
     except MultipartLimitError as exc:
         raise _route_error("EVIDENCE_LIMIT", status.HTTP_413_CONTENT_TOO_LARGE) from exc
     except MultipartError as exc:
@@ -324,6 +397,10 @@ async def enqueue_evidence_import(
             actor=principal,
             reason="internal async evidence import request",
         )
+    except UploadReadTimeoutError as exc:
+        raise _route_error("EVIDENCE_READ_TIMEOUT", status.HTTP_408_REQUEST_TIMEOUT) from exc
+    except UploadConcurrencyError as exc:
+        raise _route_error("EVIDENCE_UPLOAD_BUSY", status.HTTP_429_TOO_MANY_REQUESTS) from exc
     except MultipartLimitError as exc:
         raise _route_error("EVIDENCE_LIMIT", status.HTTP_413_CONTENT_TOO_LARGE) from exc
     except MultipartError as exc:
@@ -391,7 +468,12 @@ async def _receive_handoff(
     max_body_bytes: int,
     dispatch: DispatchService,
 ) -> tuple[PublishedArtifact, str, str, str]:
-    request_body = await _read_bounded_request(request, max_body_bytes)
+    request_body = await _read_bounded_request(
+        request,
+        max_body_bytes,
+        timeout_seconds=settings.upload_read_timeout_seconds,
+        concurrency=settings.upload_concurrency,
+    )
     channel: str | None = None
     filename: str | None = None
     media_type: str | None = None
@@ -429,22 +511,40 @@ async def _receive_handoff(
     return published, channel, filename, media_type
 
 
-async def _read_bounded_request(request: Request, maximum: int) -> BinaryIO:
-    body = cast(BinaryIO, tempfile.TemporaryFile(mode="w+b"))  # noqa: SIM115
+async def _read_bounded_request(
+    request: Request,
+    maximum: int,
+    *,
+    timeout_seconds: float = 120.0,
+    concurrency: int = 2,
+) -> BinaryIO:
+    admission = _get_upload_admission(concurrency)
+    if not admission.acquire():
+        raise UploadConcurrencyError("upload body admission pool is full")
+    body: BinaryIO | None = None
     total = 0
     try:
-        async for chunk in request.stream():
-            if not isinstance(chunk, bytes):
-                raise MultipartError("multipart chunks must be bytes")
-            total += len(chunk)
-            if total > maximum:
-                raise MultipartLimitError("multipart body exceeds its configured limit")
-            if chunk:
-                body.write(chunk)
+        body = cast(BinaryIO, tempfile.TemporaryFile(mode="w+b"))  # noqa: SIM115
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                async for chunk in request.stream():
+                    if not isinstance(chunk, bytes):
+                        raise MultipartError("multipart chunks must be bytes")
+                    total += len(chunk)
+                    if total > maximum:
+                        raise MultipartLimitError("multipart body exceeds its configured limit")
+                    if chunk:
+                        body.write(chunk)
+        except TimeoutError as exc:
+            raise UploadReadTimeoutError("multipart body read timed out") from exc
         body.seek(0)
-        return body
+        return cast(BinaryIO, _AdmittedBody(body, admission.release))
     except BaseException:
-        body.close()
+        try:
+            if body is not None:
+                body.close()
+        finally:
+            admission.release()
         raise
 
 
