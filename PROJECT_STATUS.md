@@ -30,8 +30,8 @@ image and the handoff replay were tested only as disposable Hermes workloads and
 are not deployed.
 
 The current follow-up hardening implementation head is `bb3eee4`; the latest
-branch head is `44c3fab` (final CI status record), and the
-documentation-inclusive branch head is `44c3fab` (dispatch provenance trigger,
+branch head before the release-readiness audit was `350e415`, and the
+documentation-inclusive audit head is `29aec3b` (dispatch provenance trigger,
 fail-closed migration environment, bounded runner response materialization,
 bounded runner execution slots, per-context RunnerConnector state, upload
 read/admission limits, and legacy role-drift reassertion). The deferred-boundary
