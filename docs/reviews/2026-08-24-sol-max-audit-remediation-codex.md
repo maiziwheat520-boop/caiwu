@@ -76,6 +76,8 @@ Implemented controls:
 
 ## Remaining gate
 
-This branch is ready for a fresh independent review and Hosted CI. Merge,
-production migration, password rollout, feature-flag enablement, Connector
-registration, and real evidence ingestion remain separately authorized actions.
+The final remediation head is `bc97511`. Hosted CI push run `32653235633` and
+pull-request run `32653238132` both pass `secrets`, `quality`, and `compose`.
+The branch is ready for a fresh independent review. Merge, production
+migration, password rollout, feature-flag enablement, Connector registration,
+and real evidence ingestion remain separately authorized actions.

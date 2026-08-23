@@ -22,7 +22,7 @@ explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is implemented and
 the Slice C bounded multipart adapter, ArtifactStore-owned transactional handoff,
 and default-disabled internal upload route are pushed on the Codex branch
-`ai/chatgpt/phase-3-connector-runner` at implementation head `6ae1fc3` (the
+`ai/chatgpt/phase-3-connector-runner` at implementation head `bc97511` (the
 runner composition and API/worker role split are included in the current head;
 the current design/plan head is `cdecbdb`; the prior runner audit baseline remains
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e`. The isolated runner
@@ -57,8 +57,9 @@ own database URL. The enqueue function additionally enforces artifact/channel
 provenance. A second security recheck also closed the compatibility-role grant
 and production fallback gaps: 0008 grants enqueue only to API in production,
 and production API/worker resolution requires an explicit service role. These
-changes are currently uncommitted; local validation remains green and Hosted CI
-publication is pending the transient GitHub DNS failure.
+changes are included in head `bc97511`; Hosted CI push run `32653235633` and
+pull-request run `32653238132` are green across `secrets`, `quality`, and
+`compose`.
 
 ## Completed
 
