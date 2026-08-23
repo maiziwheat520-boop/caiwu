@@ -1512,7 +1512,7 @@ def test_runtime_role_split_removes_preexisting_owner_membership(
                     FROM pg_auth_members AS membership
                     JOIN pg_roles AS member_role ON member_role.oid = membership.member
                     WHERE member_role.rolname IN ('ledgerbridge_api', 'ledgerbridge_worker')
-                      AND membership.role = 'ledgerbridge_owner'::regrole
+                      AND membership.roleid = 'ledgerbridge_owner'::regrole
                     """
                     )
                 ).scalar_one()
