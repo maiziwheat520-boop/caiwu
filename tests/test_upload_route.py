@@ -44,7 +44,12 @@ from ledgerbridge.main import (
     require_internal_upload,
 )
 from ledgerbridge.models import DispatchState, ImportJobStatus
-from ledgerbridge.upload import MultipartError, MultipartLimitError
+from ledgerbridge.upload import (
+    MultipartError,
+    MultipartField,
+    MultipartFileStart,
+    MultipartLimitError,
+)
 
 
 class FakeImporter:
@@ -391,6 +396,33 @@ def test_async_dispatch_maps_handoff_failures(
     assert response.status_code == status_code
     assert response.json() == {"detail": {"error_code": error_code}}
     assert dispatch.calls == []
+
+
+def test_async_dispatch_incomplete_parser_aborts_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, dispatch = _install_async_overrides(tmp_path)
+
+    def incomplete_parser(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        yield MultipartField("ingest_channel", "manual_upload")
+        yield MultipartFileStart("incomplete.csv", "text/csv")
+
+    monkeypatch.setattr(main_module, "parse_multipart", incomplete_parser)
+    try:
+        response = TestClient(app).post(
+            "/v1/evidence/import-requests",
+            data={"ingest_channel": "manual_upload"},
+            files={"file": ("incomplete.csv", b"body", "text/csv")},
+        )
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": {"error_code": "INVALID_MULTIPART"}}
+    assert dispatch.calls == []
+    assert store.quota_snapshot().staging_bytes == 0
 
 
 def test_async_dispatch_requires_manifest_before_reading_body(tmp_path: Path) -> None:

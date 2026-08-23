@@ -15,7 +15,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from alembic.config import Config
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
@@ -711,3 +711,113 @@ def test_dispatch_snapshot_projects_import_job_status() -> None:
     snapshot = DispatchService._snapshot(cast(Any, Session()), cast(Any, dispatch))
     assert snapshot.result_status is ImportJobStatus.SUCCEEDED
     assert snapshot.job_id == dispatch.import_job_id
+
+
+def test_enqueue_published_rejects_unregistered_and_conflicting_artifact_metadata(
+    dispatch_context: tuple[DispatchService, UUID, sessionmaker[Session]],
+) -> None:
+    service, _artifact_id, sessions = dispatch_context
+    with sessions() as session:
+        raw = session.scalar(select(RawArtifact))
+    assert raw is not None
+    published = PublishedArtifact(raw.sha256, raw.byte_size, raw.storage_key, False)
+
+    with pytest.raises(DispatchError, match="ingest channel"):
+        service.enqueue_published(
+            published,
+            ingest_channel="missingchannel",
+            original_filename=raw.original_filename,
+            media_type=raw.media_type,
+            manifest_generation="missing-channel",
+            manifest_digest=b"m" * 32,
+            actor="pytest",
+            reason="bounded",
+        )
+    with pytest.raises(DispatchConflict, match="metadata"):
+        service.enqueue_published(
+            PublishedArtifact(raw.sha256, raw.byte_size + 1, raw.storage_key, False),
+            ingest_channel=raw.source,
+            original_filename=raw.original_filename,
+            media_type=raw.media_type,
+            manifest_generation="metadata-conflict",
+            manifest_digest=b"m" * 32,
+            actor="pytest",
+            reason="bounded",
+        )
+    with pytest.raises(DispatchConflict, match="provenance"):
+        service.enqueue_published(
+            published,
+            ingest_channel=raw.source,
+            original_filename=raw.original_filename,
+            media_type="application/octet-stream",
+            manifest_generation="provenance-conflict",
+            manifest_digest=b"m" * 32,
+            actor="pytest",
+            reason="bounded",
+        )
+
+    first = service.enqueue_published(
+        published,
+        ingest_channel=raw.source,
+        original_filename=raw.original_filename,
+        media_type=raw.media_type,
+        manifest_generation="digest-conflict",
+        manifest_digest=b"a" * 32,
+        actor="pytest",
+        reason="bounded",
+    )
+    assert first.state is DispatchState.PENDING
+    with pytest.raises(DispatchConflict, match="manifest digest"):
+        service.enqueue_published(
+            published,
+            ingest_channel=raw.source,
+            original_filename=raw.original_filename,
+            media_type=raw.media_type,
+            manifest_generation="digest-conflict",
+            manifest_digest=b"b" * 32,
+            actor="pytest",
+            reason="bounded",
+        )
+
+
+def test_claim_next_fails_closed_when_artifact_disappears() -> None:
+    dispatch = SimpleNamespace(
+        id=uuid4(),
+        artifact_id=uuid4(),
+        ingest_channel="manual_upload",
+        state=DispatchState.PENDING,
+        available_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+        attempt_count=0,
+    )
+
+    class Result:
+        def one_or_none(self) -> tuple[object]:
+            return (dispatch,)
+
+    class Transaction:
+        def __enter__(self) -> Transaction:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    class Session:
+        def __enter__(self) -> Session:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def begin(self) -> Transaction:
+            return Transaction()
+
+        def execute(self, _statement: object) -> Result:
+            return Result()
+
+        def get(self, _model: object, _identity: object) -> None:
+            return None
+
+    service = DispatchService(cast(Any, lambda: Session()))
+    with pytest.raises(DispatchError, match="artifact disappeared"):
+        service.claim_next("worker", now=datetime.now(UTC))
