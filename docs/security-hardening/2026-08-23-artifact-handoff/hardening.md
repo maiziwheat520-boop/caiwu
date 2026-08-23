@@ -61,3 +61,7 @@ availability risk part of the storage authority.
 4. Only after those decisions, write `implementation/<option-id>.md` and ask
    for explicit implementation authorization. This design itself changes no
    source behavior.
+
+Option 2 has now been selected for planning. The implementation handoff is
+[`implementation/transactional-handoff-session.md`](implementation/transactional-handoff-session.md);
+it remains a plan only and contains no source change authorization.
