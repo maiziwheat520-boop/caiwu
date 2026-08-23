@@ -1,0 +1,529 @@
+openapi: 3.1.0
+info:
+  title: LedgerBridge Web API
+  version: 0.1.0-draft
+  description: >-
+    Hotel finance review and reconciliation contract. This draft intentionally
+    has no endpoint that posts journal entries or enables real message ingestion.
+servers:
+  - url: /
+security:
+  - sessionCookie: []
+paths:
+  /api/v1/session:
+    get:
+      operationId: getSession
+      responses:
+        "200":
+          description: Authenticated single-user session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/candidates:
+    get:
+      operationId: listCandidates
+      parameters:
+        - $ref: "#/components/parameters/CandidateStatus"
+        - $ref: "#/components/parameters/AccountingMonth"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Cursor-paginated candidate projection
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Candidate"
+                  next_cursor:
+                    type: [string, "null"]
+                    maxLength: 512
+  /api/v1/candidates/{candidate_id}:
+    get:
+      operationId: getCandidate
+      parameters:
+        - $ref: "#/components/parameters/CandidateId"
+      responses:
+        "200":
+          description: Candidate with evidence and review history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/candidates/{candidate_id}/decisions:
+    post:
+      operationId: appendCandidateDecision
+      description: Append a review event and update the candidate projection atomically.
+      parameters:
+        - $ref: "#/components/parameters/CandidateId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CandidateDecisionRequest"
+      responses:
+        "200":
+          description: Updated candidate projection and appended event
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [candidate, event]
+                properties:
+                  candidate:
+                    $ref: "#/components/schemas/Candidate"
+                  event:
+                    $ref: "#/components/schemas/ReviewEvent"
+        "409":
+          description: Stale revision, unresolved conflict, or repeated idempotency key mismatch
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          description: Required accounting fields are incomplete
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/evidence/{evidence_id}/content:
+    get:
+      operationId: downloadEvidence
+      description: Download one authorized evidence object with a safe attachment filename.
+      parameters:
+        - name: evidence_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Immutable original evidence bytes
+          headers:
+            Content-Digest:
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/reconciliations/{accounting_month}:
+    get:
+      operationId: getReconciliation
+      parameters:
+        - $ref: "#/components/parameters/AccountingMonthPath"
+      responses:
+        "200":
+          description: Read-only reconciliation projection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Reconciliation"
+  /api/v1/reconciliations/{accounting_month}/drafts:
+    post:
+      operationId: createWorkbookDraft
+      description: >-
+        Create a workbook draft from a frozen input revision. The output remains
+        a draft and never posts a journal entry.
+      parameters:
+        - $ref: "#/components/parameters/AccountingMonthPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expected_revision]
+              properties:
+                expected_revision:
+                  type: integer
+                  minimum: 1
+      responses:
+        "202":
+          description: Draft generation accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkbookDraft"
+        "409":
+          description: Reconciliation has blockers or the revision is stale
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/connections:
+    get:
+      operationId: listConnections
+      responses:
+        "200":
+          description: Redacted connection health without secrets or tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ConnectionStatus"
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-ledgerbridge_session
+  parameters:
+    CandidateId:
+      name: candidate_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CandidateStatus:
+      name: status
+      in: query
+      schema:
+        $ref: "#/components/schemas/CandidateStatus"
+    AccountingMonth:
+      name: accounting_month
+      in: query
+      schema:
+        type: string
+        pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+    AccountingMonthPath:
+      name: accounting_month
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+        maxLength: 512
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 32
+        maxLength: 256
+  responses:
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: Resource not found or not visible to the principal
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    Session:
+      type: object
+      additionalProperties: false
+      required: [principal, csrf_token, expires_at]
+      properties:
+        principal:
+          type: string
+          maxLength: 200
+        csrf_token:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+    CandidateStatus:
+      type: string
+      enum: [INCOMPLETE, PENDING, CONFLICTED, CONFIRMED, IGNORED, SUPERSEDED]
+    Candidate:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - short_id
+        - revision
+        - status
+        - source_channel
+        - source_message_id
+        - received_at
+        - business_unit
+        - category
+        - amount_minor
+        - currency
+        - accounting_month
+        - summary
+        - confidence_basis_points
+        - evidence
+        - blockers
+      properties:
+        id:
+          type: string
+          format: uuid
+        short_id:
+          type: string
+          pattern: "^C-[A-Z0-9]{4,8}$"
+        revision:
+          type: integer
+          minimum: 1
+        status:
+          $ref: "#/components/schemas/CandidateStatus"
+        source_channel:
+          type: string
+          enum: [telegram, dingtalk, weixin]
+        source_message_id:
+          type: string
+          minLength: 1
+          maxLength: 500
+        received_at:
+          type: string
+          format: date-time
+        business_unit:
+          type: string
+          minLength: 1
+          maxLength: 200
+        category:
+          type: string
+          minLength: 1
+          maxLength: 200
+        amount_minor:
+          type: integer
+          format: int64
+        currency:
+          type: string
+          const: CNY
+        accounting_month:
+          type: [string, "null"]
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        summary:
+          type: string
+          maxLength: 1000
+        confidence_basis_points:
+          type: integer
+          minimum: 0
+          maximum: 10000
+        evidence:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/EvidenceReference"
+        blockers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Blocker"
+    CandidateDetail:
+      allOf:
+        - $ref: "#/components/schemas/Candidate"
+        - type: object
+          required: [review_events]
+          properties:
+            review_events:
+              type: array
+              items:
+                $ref: "#/components/schemas/ReviewEvent"
+    EvidenceReference:
+      type: object
+      additionalProperties: false
+      required: [id, kind, media_type, sha256, original_filename]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [message, attachment]
+        media_type:
+          type: string
+          maxLength: 200
+        sha256:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+        original_filename:
+          type: [string, "null"]
+          maxLength: 500
+    Blocker:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [MISSING_ACCOUNTING_MONTH, DUPLICATE_MESSAGE, DUPLICATE_ATTACHMENT, BUSINESS_KEY_CONFLICT]
+        message:
+          type: string
+          maxLength: 500
+    CandidateDecisionRequest:
+      type: object
+      additionalProperties: false
+      required: [decision, expected_revision, reason]
+      properties:
+        decision:
+          type: string
+          enum: [CONFIRM, CORRECT_AND_CONFIRM, IGNORE, RESOLVE_CONFLICT]
+        expected_revision:
+          type: integer
+          minimum: 1
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        corrections:
+          type: object
+          additionalProperties: false
+          properties:
+            business_unit:
+              type: string
+              minLength: 1
+              maxLength: 200
+            category:
+              type: string
+              minLength: 1
+              maxLength: 200
+            amount_minor:
+              type: integer
+              format: int64
+            accounting_month:
+              type: string
+              pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+    ReviewEvent:
+      type: object
+      additionalProperties: false
+      required: [id, candidate_id, sequence, decision, actor, reason, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        candidate_id:
+          type: string
+          format: uuid
+        sequence:
+          type: integer
+          minimum: 1
+        decision:
+          type: string
+        actor:
+          type: string
+          maxLength: 200
+        reason:
+          type: string
+          maxLength: 1000
+        created_at:
+          type: string
+          format: date-time
+    Reconciliation:
+      type: object
+      additionalProperties: false
+      required: [accounting_month, revision, ready, blockers, business_units]
+      properties:
+        accounting_month:
+          type: string
+        revision:
+          type: integer
+          minimum: 1
+        ready:
+          type: boolean
+        blockers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Blocker"
+        business_units:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, amounts_minor]
+            properties:
+              name:
+                type: string
+              amounts_minor:
+                type: object
+                additionalProperties:
+                  type: integer
+                  format: int64
+    WorkbookDraft:
+      type: object
+      additionalProperties: false
+      required: [id, accounting_month, input_revision, status, verification]
+      properties:
+        id:
+          type: string
+          format: uuid
+        accounting_month:
+          type: string
+        input_revision:
+          type: integer
+        status:
+          type: string
+          enum: [QUEUED, BUILDING, NEEDS_REVIEW, VERIFIED, FAILED]
+        verification:
+          type: [string, "null"]
+          enum: [LIBREOFFICE_VERIFIED, null]
+    ConnectionStatus:
+      type: object
+      additionalProperties: false
+      required: [id, state, checked_at]
+      properties:
+        id:
+          type: string
+          enum: [hermes_ingress, ledgerbridge_core, onedrive_appfolder, libreoffice_worker]
+        state:
+          type: string
+          enum: [CONNECTED, DISCONNECTED, DEGRADED, NOT_CONFIGURED]
+        checked_at:
+          type: string
+          format: date-time
+        detail:
+          type: string
+          maxLength: 500
+    Problem:
+      type: object
+      additionalProperties: true
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+        code:
+          type: string
+        detail:
+          type: string
