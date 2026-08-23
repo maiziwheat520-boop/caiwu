@@ -56,8 +56,10 @@ accepted.
 
 The user has accepted that baseline for planning. The detailed handoff is
 [worker-async-dispatch-lease.md](implementation/worker-async-dispatch-lease.md);
-it remains design-only and requires separate source/migration implementation
-authorization.
+the schema/grants and dispatch-service portion is now implemented on the Codex
+branch at `5fbb5fb` under the authorized implementation slice. The async HTTP
+endpoint, worker claim loop, runner composition, and API/worker role split still
+require separate authorization; production remains unchanged.
 
 ## Recommendation Summary
 

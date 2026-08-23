@@ -22,8 +22,9 @@ explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is implemented and
 the Slice C bounded multipart adapter, ArtifactStore-owned transactional handoff,
 and default-disabled internal upload route are pushed on the Codex branch
-`ai/chatgpt/phase-3-connector-runner` at code/test head `19f4c30` (route
-implementation `74d81eb`); the current design/plan head is `cdecbdb`; the prior runner audit baseline remains
+`ai/chatgpt/phase-3-connector-runner` at code/test head `5fbb5fb` (route
+implementation `74d81eb`; async dispatch schema/service `5fbb5fb`); the current
+design/plan head is `cdecbdb`; the prior runner audit baseline remains
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e`. The isolated runner
 image and the handoff replay were tested only as disposable Hermes workloads and
 are not deployed.
@@ -107,14 +108,18 @@ and narrow-audit entry point are preserved.
   `proposals/connector-execution-composition.md`. The proposed production
   choice is worker-owned asynchronous dispatch: API stays socket-free, returns
   `202` only after durable enqueue, and worker owns the runner socket. The
-  current synchronous route remains an internal/test profile; no dispatch
-  migration or source change has been implemented.
-- The user accepted the worker-async baseline for planning. The implementation
+  current synchronous route remains an internal/test profile. The accepted
+  dispatch schema, grants, service, and PostgreSQL-backed tests are implemented
+  on the Codex branch; the async endpoint, worker claim loop, runner composition,
+  and API/worker role split are not wired.
+- The user accepted the worker-async baseline and authorized the schema/grants
+  and dispatch-service implementation. The implementation
   handoff is
   `docs/security-hardening/2026-08-23-auth-connector-boundary/implementation/worker-async-dispatch-lease.md`:
   it proposes a separate `evidence_import_dispatch` table, API enqueue plus
   `202`/status contract, worker-only claim/lease/runner access, and a pre-
-  production API/worker database-role split. It remains plan-only.
+  production API/worker database-role split. The table/service portion is
+  implemented; endpoint, worker loop, and role split remain separate gates.
 
 ## Ownership checkpoint
 
@@ -154,7 +159,9 @@ is green across `secrets`, `quality`, and `compose`; Claude's approval applies t
 the earlier fixed code/test SHA, while this follow-up is Codex-verified.
 Protected PR #18 is open at
 `https://github.com/maiziwheat520-boop/caiwu/pull/18`; its current head is
-`cdecbdb`. The code/test push and pull-request runs for `19f4c30`
+`5fbb5fb`. The latest code/test push run is `32640116719` and pull-request run
+`32640114300` (both pending at the time of this update). The preceding green
+implementation-plan and code runs remain recorded below. The code/test push and pull-request runs for `19f4c30`
 (`32615944190` and `32615946593`) passed `secrets`, `quality`, and `compose`;
 the design/status head `85253b2` push and pull-request runs (`32618527733`
 and `32618529442`) also passed all three jobs; the implementation-plan push
@@ -178,11 +185,11 @@ in an isolated Hermes project; no evidence was ingested.
 
 Review protected PR #18, including the bounded multipart adapter, handoff,
 feature-flagged internal upload route, and the authentication/Connector design
-portfolio. The next gate is implementing the accepted worker-async
-dispatch/status plan, then resolving provider/key custody, gateway/provider
-ownership and source-system owner decisions before implementation reaches a
-real manifest; the route stays disabled until
-those are approved. Merge and any production
+portfolio. Finish CI and the narrow dispatch audit, then implement the async
+endpoint and worker claim loop only after their separate authorization; resolve
+provider/key custody, gateway/provider ownership and source-system owner
+decisions before implementation reaches a real manifest. The route stays
+disabled until those are approved. Merge and any production
 deployment require distinct authorization; do not register a real Connector,
 enable the flag in production, ingest evidence, or enable the mail collector
 without corresponding later authorization.

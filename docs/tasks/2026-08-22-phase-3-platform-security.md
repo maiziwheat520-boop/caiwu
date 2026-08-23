@@ -485,3 +485,27 @@ and `99e4085` on PR #18. Hosted push run `32601095055` and pull-request run
 `32601097122` passed `secrets`, `quality`, and `compose`; quality coverage was
 95.92%. Merge, route enablement, authentication integration, Connector
 registration, and production deployment remain separately gated.
+
+## Worker-async dispatch foundation (Codex, 2026-08-23)
+
+The user-authorized schema/grants and dispatch-service slice is implemented on
+`ai/chatgpt/phase-3-connector-runner` through `5fbb5fb`. Migration
+`20260823_0005` adds the durable `evidence_import_dispatch` state machine with
+manifest identity, acceptance-audit binding, claim leases, retry/recovery, and
+non-destructive downgrade protection. `DispatchService` provides audited
+enqueue, principal-scoped status, SKIP-LOCKED claim, lease renewal, bounded
+retry, and terminal completion/failure; PostgreSQL tests cover duplicate
+convergence, claim races, expiry, exhaustion, invalid transitions, and failed
+outcome mapping.
+
+Local Windows validation passed 183 tests with 128 skips plus Ruff, strict
+mypy, offline lock, and sensitive-path checks. The disposable Hermes replay
+passed 313 Linux/PostgreSQL tests at 95.03% coverage, migration round-trip, and
+runtime TEMP/public-shadow/grant probes. Temporary Compose resources were
+removed and production stayed on `e426b488b2abb02f10ef02a61aae7ebe24c3283f` /
+`20260822_0004`; no real evidence or Connector was used.
+
+The async HTTP endpoint, worker claim loop, runner composition, signed
+manifest, and API/worker role split remain unimplemented and disabled pending
+separate review gates. The evidence report is
+`docs/reviews/2026-08-23-worker-async-dispatch-implementation-codex.md`.

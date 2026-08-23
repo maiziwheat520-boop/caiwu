@@ -495,3 +495,30 @@ events. Every operator action must retain the existing audit-chain discipline.
   manifest generation signing and status endpoint authorization.
 - Decide whether a dedicated broker is necessary only after PostgreSQL queue
   latency/concurrency evidence; do not add one speculatively.
+
+## Implementation evidence (Codex, 2026-08-23)
+
+The authorized schema/grants and service slice is implemented on
+`ai/chatgpt/phase-3-connector-runner` through `5fbb5fb` (with the dispatch
+foundation in `b1c1480`, lease-renewal correction in `e544d22`, fixture and
+state-machine coverage in `1f92c1d`/`6968ba3`, failed-outcome mapping in
+`5a4af52`, and race/exhaustion coverage in `5fbb5fb`). The implementation adds
+`ImportDispatch` and `DispatchState`, migration `20260823_0005`, exact
+compatibility-role grants, transition enforcement, and `DispatchService` for
+audited enqueue, status, claim, lease, retry, recovery, and terminalization.
+
+The async HTTP `202`/status endpoints, worker claim loop, runner composition,
+signed manifest, separate API/worker database roles, and real Connector are not
+implemented or enabled. The existing synchronous route remains an internal/test
+profile. Production Hermes remains on `e426b488b2abb02f10ef02a61aae7ebe24c3283f`
+and migration `20260822_0004`.
+
+Validation completed on the disposable Hermes environment: the full Linux/
+PostgreSQL suite passed 313 tests with 95.03% coverage at the unchanged 95%
+threshold; migration downgrade/upgrade round-trip passed; runtime TEMP and
+public-shadow creation were rejected; dispatch trigger configuration and
+column-level grants matched the intended boundary; all temporary Compose
+projects, volumes, images, and test directories were removed. Windows local
+validation also passed 183 tests with 128 skips, strict mypy, Ruff, offline
+locking, and the sensitive-path scan. No production route, connector, or
+evidence bytes were touched.

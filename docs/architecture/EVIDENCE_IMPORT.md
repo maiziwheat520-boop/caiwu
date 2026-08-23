@@ -1,7 +1,8 @@
 # Evidence and Import operations
 
-Status: implementation contract through Phase 3 platform-controls Slice A
-Date: 2026-08-22
+Status: implementation contract plus worker-async dispatch schema/service through
+Phase 3 platform-controls Slice A; endpoint and worker wiring remain pending
+Date: 2026-08-23
 
 ## Evidence identity and retention
 
@@ -121,6 +122,33 @@ a row lock on the job. Unique locator races converge as duplicates; other
 identity conflicts roll back the entire batch. Phase 2 never creates a
 JournalEntry from imported evidence.
 
+## Worker-owned asynchronous dispatch (implemented, not enabled)
+
+The Codex branch implements the durable dispatch foundation in migration
+`20260823_0005` and `src/ledgerbridge/dispatch.py`. `ImportDispatch` captures the
+artifact, ingest channel, verified manifest generation/digest, acceptance audit,
+bounded attempt state, lease owner/deadline, and the eventual `ImportJob`.
+The unique `(artifact_id, ingest_channel, manifest_generation)` key makes
+repeated admissions converge; a digest disagreement is rejected rather than
+silently reusing a different manifest. The database trigger pins
+`search_path=pg_catalog`, schema-qualifies business references, and enforces
+the legal PENDING/RUNNING/RETRY_WAIT/SUCCEEDED/FAILED transitions.
+
+`DispatchService` provides transactionally audited enqueue, principal-scoped
+status reads, SKIP-LOCKED claims, lease renewal, expiry recovery, bounded retry,
+and terminal completion/failure. A `NEEDS_REVIEW` import is an execution
+success (`dispatch=SUCCEEDED`) whose status projection exposes the review
+result; a failed import is terminal `dispatch=FAILED`. The migration revokes
+database TEMPORARY and PUBLIC privileges and grants only the currently tested
+compatibility-role columns. The future API/worker role split remains a separate
+production gate.
+
+This is a schema/service implementation only. The async HTTP `202`/status
+routes, worker claim loop, runner composition, signed manifest, and real
+Connector remain unwired and disabled. Production Hermes remains on
+`20260822_0004`; no dispatch row, evidence bytes, or real Connector was used
+in production.
+
 ## Database permissions
 
 Migration `20260822_0004` creates `ingest_channel` and `source_system` with
@@ -189,14 +217,18 @@ legacy fields actually present in the source backup and lists the richer restore
 observations separately; it does not invent Phase 2 or Phase 3 source-side
 evidence. Unsupported future formats fail closed.
 
-No production migration is implied by merging Phase 2. Before an authorized
+No production migration is implied by merging Phase 2 or implementing the
+dispatch foundation. Before an authorized
 deployment, create a fresh encrypted backup and pass an isolated restore
 rehearsal. After deployment, create another encrypted backup and repeat the
 restore verification. Real financial evidence and real connectors remain out of
 scope until separately approved.
 
-The Phase 2 and Phase 3 downgrades are intentionally non-destructive: if any RawArtifact,
-ImportJob, or SourceRecord exists, downgrade to `20260821_0002` fails closed.
+The Phase 2 and Phase 3 downgrades are intentionally non-destructive: if any
+dispatch, RawArtifact, ImportJob, or SourceRecord exists, the relevant downgrade
+fails closed rather than deleting provenance. The dispatch migration first
+downgrades only when `evidence_import_dispatch` is empty; the underlying Phase 2
+objects still refuse downgrade to `20260821_0002` while evidence exists.
 Operators must export and explicitly dispose of evidence through a separately
 approved procedure before removing Phase 2 objects. The Phase 1 function
 hardening and database-wide `PUBLIC` temporary-privilege revocation remain in
