@@ -141,8 +141,13 @@ and terminal completion/failure. A `NEEDS_REVIEW` import is an execution
 success (`dispatch=SUCCEEDED`) whose status projection exposes the review
 result; a failed import is terminal `dispatch=FAILED`. The migration revokes
 database TEMPORARY and PUBLIC privileges and grants only the currently tested
-compatibility-role columns. The future API/worker role split remains a separate
-production gate.
+compatibility-role columns. Migration `20260823_0006` adds separate
+`ledgerbridge_api` and `ledgerbridge_worker` runtime roles: API can insert
+dispatch rows but cannot update dispatch state; worker can update bounded
+dispatch lease/result columns but cannot insert dispatch rows. Both roles are
+non-owner logins without TEMPORARY privilege. The owner-only migrate service
+uses an explicit test profile, while production API and worker settings require
+distinct role URLs.
 
 The Codex branch now also contains the separately named async operation
 profile: `POST /v1/evidence/import-requests` returns `202` only after the
@@ -153,9 +158,12 @@ the API never calls the importer in this profile. Both are guarded by the
 internal async flag and by production fail-closed checks. The default manifest
 loader returns no generation and the default worker Connector registry is empty,
 so the endpoint and loop cannot execute real import work until a separately
-reviewed manifest, Connector and role split are supplied. The final local
-regression is `212 passed / 136 skipped`; the exact hosted CI coverage command
-passed in disposable Hermes at `348 passed` and `95.26%`. Production Hermes
+reviewed manifest and real Connector are supplied. The worker composition root
+now accepts only an injected `VerifiedRunnerManifest`; it performs canonical
+digest/identity checks and constructs worker-owned `RunnerConnector` facades,
+but does not load files, keys, or providers. The final local regression is
+`217 passed / 136 skipped`; the exact hosted CI coverage command passed in the
+prior disposable Hermes run at `348 passed` and `95.26%`. Production Hermes
 remains on `20260822_0004`; no dispatch row, endpoint request, evidence bytes or
 real Connector was used in production.
 

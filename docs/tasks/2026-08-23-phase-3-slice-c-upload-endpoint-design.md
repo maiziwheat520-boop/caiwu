@@ -196,7 +196,7 @@ evidence has been changed.
 ## Worker-owned async operation profile (implemented 2026-08-23)
 
 The accepted worker-owned composition is now implemented on the Codex branch at
-`7d1bb1b`. The separately named `POST /v1/evidence/import-requests` endpoint
+`389a02d`. The separately named `POST /v1/evidence/import-requests` endpoint
 returns `202` only after the verified handoff, audit-bound `RawArtifact` and
 `evidence_import_dispatch` row commit. Its `GET` operation status is principal-
 scoped and exposes only bounded dispatch/result fields. The API never invokes
@@ -207,11 +207,14 @@ lease renewal, expired-lease recovery, bounded retry classification and
 terminal success/failure mapping. The internal flag is disabled by default and
 production-forced off. The default manifest loader and worker Connector
 registry are empty, so endpoint/worker code is testable but cannot execute a
-real Connector until signed-manifest, runner-composition and API/worker-role
-gates are separately approved. Windows target tests and a disposable Hermes
-PostgreSQL replay passed. The final local regression is `212 passed / 136
-skipped`; the exact CI coverage command passed in disposable Hermes with `348
-passed` and `95.26%` coverage. Production Hermes was not modified.
+real Connector until signed-manifest/key custody and production enablement are
+separately approved. The runner composition root now accepts only an injected
+verified manifest and the API/worker database-role migration is implemented;
+neither is enabled in production. Windows target tests and a disposable Hermes
+PostgreSQL replay passed, including migration downgrade/upgrade and privilege
+probes. The final local regression is `217 passed / 136 skipped`; the exact CI
+coverage command passed in the prior disposable Hermes run with `348 passed`
+and `95.26%` coverage. Production Hermes was not modified.
 
 ## Explicit non-goals
 

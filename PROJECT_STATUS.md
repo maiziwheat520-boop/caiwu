@@ -22,10 +22,9 @@ explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is implemented and
 the Slice C bounded multipart adapter, ArtifactStore-owned transactional handoff,
 and default-disabled internal upload route are pushed on the Codex branch
-`ai/chatgpt/phase-3-connector-runner` at code/test head `d47c6f5` (route
-implementation `74d81eb`; async dispatch schema/service and feature-flagged
-operation/worker composition are included in the current head); the current
-design/plan head is `cdecbdb`; the prior runner audit baseline remains
+`ai/chatgpt/phase-3-connector-runner` at implementation head `389a02d` (the
+runner composition and API/worker role split are included in the current head;
+the current design/plan head is `cdecbdb`; the prior runner audit baseline remains
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e`. The isolated runner
 image and the handoff replay were tested only as disposable Hermes workloads and
 are not deployed.
@@ -114,8 +113,10 @@ and narrow-audit entry point are preserved.
   on the Codex branch; the feature-flagged async operation/status endpoint and
   worker claim/lease loop are now wired. They remain default-disabled and fail
   closed because the default manifest is empty and the worker Connector
-  registry is empty; runner composition, signed manifest and API/worker role
-  split are still separate production gates.
+  registry is empty. The fail-closed runner composition root and migration
+  `20260823_0006` API/worker role split are now implemented on the Codex branch;
+  signed manifest verification, role-password rollout and production
+  enablement remain separate gates.
 - The user accepted the worker-async baseline and authorized the schema/grants
   and dispatch-service implementation. The implementation
   handoff is
@@ -123,12 +124,15 @@ and narrow-audit entry point are preserved.
   it proposes a separate `evidence_import_dispatch` table, API enqueue plus
   `202`/status contract, worker-only claim/lease/runner access, and a pre-
   production API/worker database-role split. The table/service, feature-flagged
-  endpoint and worker claim loop are implemented; runner composition, signed
-  manifest, role split and production enablement remain separate gates.
-- Final local validation is green: **212 passed / 136 skipped**, with Ruff,
+  endpoint and worker claim loop are implemented. Runner composition and the
+  role-split migration are implemented but remain disabled in production until
+  their independent review gates close.
+- Final local validation is green: **217 passed / 136 skipped**, with Ruff,
   strict mypy and offline lock resolution passing. The exact hosted CI coverage
-  command was replayed in a disposable Hermes PostgreSQL project with **348
-  passed** and **95.26%** coverage; the unchanged 95% threshold was not lowered.
+  command was replayed in the prior disposable Hermes PostgreSQL project with
+  **348 passed** and **95.26%** coverage; the unchanged 95% threshold was not
+  lowered. The role-split migration was separately replayed through head and
+  back to base in a disposable PostgreSQL project.
   The temporary project, volume, images and directory were removed afterward.
 - Production Hermes remains unchanged and healthy at `e426b488b2abb02f10ef02a61aae7ebe24c3283f`
   / migration `20260822_0004`; no async flag, dispatch row, Connector or real
@@ -197,16 +201,14 @@ in an isolated Hermes project; no evidence was ingested.
 
 ## Next task
 
-Review protected PR #18, including the bounded multipart adapter, handoff,
-feature-flagged internal upload route, async operation/status contract and
-worker claim loop. Finish CI and the narrow dispatch audit; then resolve
-provider/key custody, gateway/provider ownership, source-system ownership,
-signed manifest and API/worker role-split decisions before implementation
-reaches a real Connector. The routes and worker loop stay disabled until those
-are approved. Merge and any production deployment require distinct
-authorization; do not register a real Connector, enable the flag in production,
-ingest evidence, or enable the mail collector without corresponding later
-authorization.
+Review protected PR #18 at the new implementation head, including the bounded
+multipart adapter, async operation/status contract, worker claim loop, runner
+composition root, and migration `20260823_0006`. The default manifest and
+Connector registry stay empty. Next gates are signed-manifest/key custody,
+provider/source ownership, production role-password rollout, and a narrow
+Claude audit. Merge, production role migration, feature-flag enablement,
+real Connector registration, evidence ingestion, and mail collection each
+require distinct later authorization.
 
 ## Blocking decisions
 

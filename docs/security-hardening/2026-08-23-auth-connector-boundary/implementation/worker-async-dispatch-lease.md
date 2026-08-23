@@ -339,10 +339,10 @@ dropping accepted evidence.
 
 ## Database Roles And Grants
 
-The current shared `ledgerbridge_app` role is sufficient for a test-only first
-slice but does not distinguish API enqueue authority from worker claim
-authority. Before production async enablement, split the login URLs into two
-deploy-time roles with passwords supplied outside the repository:
+Migration `20260823_0006_runtime_role_split.py` now provisions the tested
+database boundary with separate `ledgerbridge_api` and `ledgerbridge_worker`
+login URLs. Before production async enablement, deploy those roles with
+passwords supplied outside the repository:
 
 | Capability | API role | Worker role | Migration/owner role |
 | --- | --- | --- | --- |
@@ -363,7 +363,23 @@ compatibility role only until the split is deployed; no role alias or
 
 CI and Hermes disposable tests may use non-production fixture passwords in
 environment variables, but no password or URL value is committed to this
-repository or `work.md`.
+repository or `work.md`. The existing `ledgerbridge_app` role remains a
+compatibility role until a separately authorized production rollout.
+
+## Implementation status (2026-08-23)
+
+The worker-owned composition root and role migration are implemented on the
+Codex branch. `VerifiedRunnerManifest` is an immutable, digest-checked input;
+`build_worker_runner_connectors()` creates runner facades only from that
+injected value and returns an empty tuple for the default `None` manifest. No
+signature verifier, key loader, provider, or real Connector was added.
+
+The API service resolves `LEDGERBRIDGE_API_DATABASE_URL` and never mounts the
+runner socket. The worker resolves `LEDGERBRIDGE_WORKER_DATABASE_URL` and is the
+only application service that mounts the socket. Migration round-trip and
+Hermes privilege probes verified API enqueue-only and worker update-only
+behavior plus TEMPORARY denial. Production remains on the prior migration and
+the async/runner flags remain fail-closed.
 
 ## Affected Components
 
