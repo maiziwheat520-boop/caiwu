@@ -101,6 +101,7 @@ def test_dispatch_acceptance_is_database_bound() -> None:
     assert "v_action IS DISTINCT FROM 'import.dispatch.accepted'" in migration
     assert "v_payload IS DISTINCT FROM v_expected" in migration
     assert "AND a.source = p_ingest_channel" in migration
+    assert "v_artifact_source IS DISTINCT FROM NEW.ingest_channel" in migration
     assert 'os.environ.get("LEDGERBRIDGE_ENV"' in migration
     assert "TO ledgerbridge_api;" in migration
     assert (

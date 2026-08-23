@@ -24,11 +24,21 @@ def upgrade() -> None:
             v_action text;
             v_payload jsonb;
             v_expected jsonb;
+            v_artifact_source text;
         BEGIN
             SELECT e.xmin, e.action, e.payload
               INTO v_audit_xid, v_action, v_payload
               FROM public.audit_event AS e
              WHERE e.id = NEW.accepted_audit_event_id;
+
+            SELECT a.source
+              INTO v_artifact_source
+              FROM public.raw_artifact AS a
+             WHERE a.id = NEW.artifact_id;
+            IF v_artifact_source IS DISTINCT FROM NEW.ingest_channel THEN
+                RAISE EXCEPTION 'dispatch artifact and ingest channel provenance is invalid'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
 
             v_expected := jsonb_build_object(
                 'operation_id', NEW.id::text,

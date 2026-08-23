@@ -81,7 +81,9 @@ services:
     environment:
       # The migration container is an owner-only tool, not an API/worker runtime.
       LEDGERBRIDGE_RUNTIME_ROLE: migrate
-      LEDGERBRIDGE_ENV: ${LEDGERBRIDGE_ENV:-development}
+      # A missing environment must stop the owner-only migration rather than
+      # silently taking the non-production compatibility path.
+      LEDGERBRIDGE_ENV: ${LEDGERBRIDGE_ENV:?LEDGERBRIDGE_ENV is required}
       LEDGERBRIDGE_LOG_LEVEL: ${LEDGERBRIDGE_LOG_LEVEL:-INFO}
       LEDGERBRIDGE_DATABASE_URL: ${LEDGERBRIDGE_MIGRATION_DATABASE_URL:?migration database URL is required}
       LEDGERBRIDGE_ARTIFACT_ROOT: ${LEDGERBRIDGE_ARTIFACT_ROOT:-/var/lib/ledgerbridge/artifacts}
