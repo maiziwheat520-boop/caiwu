@@ -31,7 +31,7 @@ are not deployed.
 
 The current follow-up hardening implementation head is `bb3eee4`; the latest
 branch head before the release-readiness audit was `350e415`, and the
-documentation-inclusive audit head is `e80fc77` (dispatch provenance trigger,
+documentation-inclusive audit head is `8d990ca` (dispatch provenance trigger,
 fail-closed migration environment, bounded runner response materialization,
 bounded runner execution slots, per-context RunnerConnector state, upload
 read/admission limits, and legacy role-drift reassertion). The deferred-boundary
