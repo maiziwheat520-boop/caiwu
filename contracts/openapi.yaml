@@ -162,6 +162,13 @@ paths:
       responses:
         "202":
           description: Draft generation accepted
+          headers:
+            Location:
+              required: true
+              description: Same-origin status URL for the accepted draft job.
+              schema:
+                type: string
+                format: uri-reference
           content:
             application/json:
               schema:
@@ -172,6 +179,26 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+  /api/v1/workbook-drafts/{draft_id}:
+    get:
+      operationId: getWorkbookDraft
+      description: Poll one authorized draft until it reaches a terminal state.
+      parameters:
+        - name: draft_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Current draft generation and verification state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkbookDraft"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /api/v1/connections:
     get:
       operationId: listConnections
@@ -273,8 +300,11 @@ components:
       type: string
       enum: [INCOMPLETE, PENDING, CONFLICTED, CONFIRMED, IGNORED, SUPERSEDED]
     Candidate:
+      allOf:
+        - $ref: "#/components/schemas/CandidateFields"
+      unevaluatedProperties: false
+    CandidateFields:
       type: object
-      additionalProperties: false
       required:
         - id
         - short_id
@@ -349,7 +379,7 @@ components:
             $ref: "#/components/schemas/Blocker"
     CandidateDetail:
       allOf:
-        - $ref: "#/components/schemas/Candidate"
+        - $ref: "#/components/schemas/CandidateFields"
         - type: object
           required: [review_events]
           properties:
@@ -357,6 +387,7 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/ReviewEvent"
+      unevaluatedProperties: false
     EvidenceReference:
       type: object
       additionalProperties: false
@@ -389,13 +420,19 @@ components:
           type: string
           maxLength: 500
     CandidateDecisionRequest:
+      oneOf:
+        - $ref: "#/components/schemas/ConfirmDecision"
+        - $ref: "#/components/schemas/CorrectAndConfirmDecision"
+        - $ref: "#/components/schemas/IgnoreDecision"
+        - $ref: "#/components/schemas/ResolveConflictDecision"
+      discriminator:
+        propertyName: decision
+    DecisionBase:
       type: object
-      additionalProperties: false
       required: [decision, expected_revision, reason]
       properties:
         decision:
           type: string
-          enum: [CONFIRM, CORRECT_AND_CONFIRM, IGNORE, RESOLVE_CONFLICT]
         expected_revision:
           type: integer
           minimum: 1
@@ -403,28 +440,81 @@ components:
           type: string
           minLength: 1
           maxLength: 1000
-        corrections:
-          type: object
-          additionalProperties: false
+    ConfirmDecision:
+      allOf:
+        - $ref: "#/components/schemas/DecisionBase"
+        - type: object
           properties:
-            business_unit:
+            decision:
+              const: CONFIRM
+      unevaluatedProperties: false
+    IgnoreDecision:
+      allOf:
+        - $ref: "#/components/schemas/DecisionBase"
+        - type: object
+          properties:
+            decision:
+              const: IGNORE
+      unevaluatedProperties: false
+    CorrectAndConfirmDecision:
+      allOf:
+        - $ref: "#/components/schemas/DecisionBase"
+        - type: object
+          required: [corrections]
+          properties:
+            decision:
+              const: CORRECT_AND_CONFIRM
+            corrections:
+              $ref: "#/components/schemas/CorrectionSet"
+      unevaluatedProperties: false
+    ResolveConflictDecision:
+      allOf:
+        - $ref: "#/components/schemas/DecisionBase"
+        - type: object
+          required: [conflict_resolution]
+          properties:
+            decision:
+              const: RESOLVE_CONFLICT
+            conflict_resolution:
               type: string
               minLength: 1
-              maxLength: 200
-            category:
-              type: string
-              minLength: 1
-              maxLength: 200
-            amount_minor:
-              type: integer
-              format: int64
-            accounting_month:
-              type: string
-              pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+              maxLength: 1000
+            corrections:
+              $ref: "#/components/schemas/CorrectionSet"
+      unevaluatedProperties: false
+    CorrectionSet:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        business_unit:
+          type: string
+          minLength: 1
+          maxLength: 200
+        category:
+          type: string
+          minLength: 1
+          maxLength: 200
+        amount_minor:
+          type: integer
+          format: int64
+        accounting_month:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
     ReviewEvent:
       type: object
       additionalProperties: false
-      required: [id, candidate_id, sequence, decision, actor, reason, created_at]
+      required:
+        - id
+        - candidate_id
+        - sequence
+        - from_revision
+        - to_revision
+        - decision
+        - actor
+        - reason
+        - changes
+        - created_at
       properties:
         id:
           type: string
@@ -435,17 +525,43 @@ components:
         sequence:
           type: integer
           minimum: 1
+        from_revision:
+          type: integer
+          minimum: 1
+        to_revision:
+          type: integer
+          minimum: 2
         decision:
           type: string
+          enum: [CONFIRM, CORRECT_AND_CONFIRM, IGNORE, RESOLVE_CONFLICT]
         actor:
           type: string
           maxLength: 200
         reason:
           type: string
           maxLength: 1000
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldChange"
+        conflict_resolution:
+          type: [string, "null"]
+          maxLength: 1000
         created_at:
           type: string
           format: date-time
+    FieldChange:
+      type: object
+      additionalProperties: false
+      required: [field, previous_value, new_value]
+      properties:
+        field:
+          type: string
+          enum: [business_unit, category, amount_minor, accounting_month, status]
+        previous_value:
+          type: [string, integer, "null"]
+        new_value:
+          type: [string, integer, "null"]
     Reconciliation:
       type: object
       additionalProperties: false
@@ -479,7 +595,7 @@ components:
     WorkbookDraft:
       type: object
       additionalProperties: false
-      required: [id, accounting_month, input_revision, status, verification]
+      required: [id, accounting_month, input_revision, status, verification, monitor_url]
       properties:
         id:
           type: string
@@ -494,6 +610,15 @@ components:
         verification:
           type: [string, "null"]
           enum: [LIBREOFFICE_VERIFIED, null]
+        monitor_url:
+          type: string
+          format: uri-reference
+        output_sha256:
+          type: [string, "null"]
+          pattern: "^[a-f0-9]{64}$"
+        verification_detail:
+          type: [string, "null"]
+          maxLength: 2000
     ConnectionStatus:
       type: object
       additionalProperties: false
