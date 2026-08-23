@@ -52,7 +52,9 @@ must not weaken the current creation binding.
 
 ## Runtime boundary
 
-The API and worker log in directly as `ledgerbridge_app`, a non-owner,
-non-superuser role. They do not receive migration credentials and do not use
-`SET ROLE`. The runtime role cannot reset to an owner, alter tables or triggers,
+The API and worker log in directly as separate `ledgerbridge_api` and
+`ledgerbridge_worker` non-owner, non-superuser roles. They do not receive
+migration credentials and do not use `SET ROLE`. Production migration
+`20260823_0007` retires the legacy `ledgerbridge_app` compatibility login.
+Neither dedicated runtime role can reset to an owner, alter tables or triggers,
 truncate ledger tables, or directly forge AuditEvent rows.

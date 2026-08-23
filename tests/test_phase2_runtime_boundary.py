@@ -24,11 +24,14 @@ def test_only_worker_has_a_writable_artifact_volume() -> None:
         "connector-socket:/run/ledgerbridge-connector",
     ]
     assert api["environment"]["LEDGERBRIDGE_API_DATABASE_URL"] == (
-        "${LEDGERBRIDGE_API_DATABASE_URL:-}"
+        "${LEDGERBRIDGE_API_DATABASE_URL:?api database URL is required}"
     )
     assert worker["environment"]["LEDGERBRIDGE_WORKER_DATABASE_URL"] == (
-        "${LEDGERBRIDGE_WORKER_DATABASE_URL:-}"
+        "${LEDGERBRIDGE_WORKER_DATABASE_URL:?worker database URL is required}"
     )
+    assert "LEDGERBRIDGE_DATABASE_URL" not in api["environment"]
+    assert "LEDGERBRIDGE_DATABASE_URL" not in worker["environment"]
+    assert "?api database URL is required" in api["environment"]["LEDGERBRIDGE_API_DATABASE_URL"]
 
 
 def test_connector_runner_is_networkless_and_has_no_application_secrets() -> None:
@@ -67,3 +70,20 @@ def test_artifact_directory_and_database_temp_privilege_are_hardened() -> None:
     assert "REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC" in init_script
     assert "ledgerbridge_api" in init_script
     assert "ledgerbridge_worker" in init_script
+    assert "LEDGERBRIDGE_API_DB_PASSWORD:?" in init_script
+    assert "LEDGERBRIDGE_WORKER_DB_PASSWORD:?" in init_script
+    assert "runtime database passwords must be distinct" in init_script
+
+
+def test_dispatch_acceptance_is_database_bound() -> None:
+    migration = Path("alembic/versions/20260823_0008_dispatch_acceptance_binding.py").read_text(
+        encoding="utf-8"
+    )
+    assert "SET search_path = pg_catalog" in migration
+    assert "v_audit_xid IS DISTINCT FROM pg_current_xact_id()::text::xid" in migration
+    assert "v_action IS DISTINCT FROM 'import.dispatch.accepted'" in migration
+    assert "v_payload IS DISTINCT FROM v_expected" in migration
+    assert (
+        "REVOKE INSERT ON TABLE public.evidence_import_dispatch FROM ledgerbridge_api" in migration
+    )
+    assert "SECURITY DEFINER" in migration

@@ -142,12 +142,16 @@ success (`dispatch=SUCCEEDED`) whose status projection exposes the review
 result; a failed import is terminal `dispatch=FAILED`. The migration revokes
 database TEMPORARY and PUBLIC privileges and grants only the currently tested
 compatibility-role columns. Migration `20260823_0006` adds separate
-`ledgerbridge_api` and `ledgerbridge_worker` runtime roles: API can insert
-dispatch rows but cannot update dispatch state; worker can update bounded
-dispatch lease/result columns but cannot insert dispatch rows. Both roles are
-non-owner logins without TEMPORARY privilege. The owner-only migrate service
-uses an explicit test profile, while production API and worker settings require
-distinct role URLs.
+`ledgerbridge_api` and `ledgerbridge_worker` runtime roles; migration
+`20260823_0007` retires the legacy `ledgerbridge_app` login and runtime grants
+in production. Migration `20260823_0008` makes dispatch acceptance a
+security-definer enqueue operation and binds each row to an exact
+`import.dispatch.accepted` payload created in the same transaction. API can
+call the enqueue function but cannot insert dispatch rows or update dispatch
+state; worker can update bounded dispatch lease/result columns but cannot insert
+dispatch rows. Both roles are non-owner logins without TEMPORARY privilege. The
+owner-only migrate service uses an explicit non-production profile in CI, while
+production API and worker settings require distinct dedicated role URLs.
 
 The Codex branch now also contains the separately named async operation
 profile: `POST /v1/evidence/import-requests` returns `202` only after the
@@ -177,12 +181,13 @@ only. UPDATE and DELETE are blocked even for the owner by a trigger function wit
 unregistered provenance makes upgrade roll back, and any dependent data makes
 downgrade refuse rather than erase provenance.
 
-`ledgerbridge_app` receives SELECT/INSERT on `raw_artifact` and `source_record`,
-SELECT/INSERT plus updates to the explicit lifecycle columns on `import_job`, and
-no direct AuditEvent write privilege. Database triggers reject RawArtifact or
-SourceRecord UPDATE/DELETE even from the migration owner and reject illegal job
-transitions. The SourceRecord and external transaction identities use unique
-constraints, and every evidence relationship uses `ON DELETE RESTRICT`.
+The compatibility role receives the legacy SELECT/INSERT grants only in
+non-production test profiles. Production API enqueue uses the dedicated
+security-definer function and cannot directly insert dispatch rows; the worker
+can update only explicit lifecycle columns. Database triggers reject RawArtifact
+or SourceRecord UPDATE/DELETE even from the migration owner and reject illegal
+job transitions. The SourceRecord and external transaction identities use
+unique constraints, and every evidence relationship uses `ON DELETE RESTRICT`.
 
 The runtime role has no database `TEMPORARY` privilege (including through
 `PUBLIC`). Every security-relevant trigger function pins

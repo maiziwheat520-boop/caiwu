@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
@@ -176,6 +177,70 @@ def test_enqueue_is_idempotent_and_binds_acceptance_audit(
             )
             == 1
         )
+
+
+def test_api_role_cannot_direct_insert_dispatch(
+    dispatch_context: tuple[DispatchService, UUID, sessionmaker[Session]],
+    admin_engine: Engine,
+) -> None:
+    _service, artifact_id, _sessions = dispatch_context
+    with admin_engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            connection.execute(text("SET LOCAL ROLE ledgerbridge_api"))
+            with pytest.raises(DBAPIError, match="permission denied"):
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO public.evidence_import_dispatch (
+                            id, artifact_id, ingest_channel, accepted_audit_event_id,
+                            manifest_generation, manifest_digest, state
+                        )
+                        SELECT :operation_id, :artifact_id, 'synthetic_upload',
+                               (SELECT id FROM public.audit_event LIMIT 1),
+                               'direct', :manifest_digest, 'PENDING'::public.dispatch_state
+                        """
+                    ),
+                    {
+                        "operation_id": uuid4(),
+                        "artifact_id": artifact_id,
+                        "manifest_digest": b"x" * 32,
+                    },
+                )
+        finally:
+            transaction.rollback()
+
+
+def test_compatibility_role_direct_insert_requires_bound_acceptance_audit(
+    dispatch_context: tuple[DispatchService, UUID, sessionmaker[Session]],
+    admin_engine: Engine,
+) -> None:
+    _service, artifact_id, _sessions = dispatch_context
+    with admin_engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            connection.execute(text("SET LOCAL ROLE ledgerbridge_app"))
+            with pytest.raises(DBAPIError, match="dispatch acceptance audit binding is invalid"):
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO public.evidence_import_dispatch (
+                            id, artifact_id, ingest_channel, accepted_audit_event_id,
+                            manifest_generation, manifest_digest, state
+                        )
+                        SELECT :operation_id, :artifact_id, 'synthetic_upload',
+                               (SELECT id FROM public.audit_event LIMIT 1),
+                               'direct', :manifest_digest, 'PENDING'::public.dispatch_state
+                        """
+                    ),
+                    {
+                        "operation_id": uuid4(),
+                        "artifact_id": artifact_id,
+                        "manifest_digest": b"x" * 32,
+                    },
+                )
+        finally:
+            transaction.rollback()
 
 
 def test_enqueue_published_binds_artifact_and_dispatch_in_one_transaction(

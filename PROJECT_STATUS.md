@@ -1,6 +1,6 @@
 # Project status
 
-Updated: 2026-08-23
+Updated: 2026-08-24
 
 ## Current phase
 
@@ -39,6 +39,17 @@ The deployment report is
 the prior `c56b6ff`/`e73e718` images remain on Hermes. The public GitHub repository
 and protected main branch remain the source of truth; Claude's independent clone
 and narrow-audit entry point are preserved.
+
+Sol Max's follow-up audit found one HIGH and one MEDIUM. The Codex remediation
+adds mandatory distinct API/worker credentials and role-specific production URL
+validation, retires the legacy `ledgerbridge_app` role in production through
+migration `20260823_0007`, and moves dispatch creation to the security-definer
+function/acceptance-binding trigger in migration `20260823_0008`. The full
+remediation report is
+`docs/reviews/2026-08-24-sol-max-audit-remediation-codex.md`. Windows regression
+is `231 passed / 136 skipped / 1 warning`; Hermes disposable PostgreSQL replay
+through `0008` passed. Production remains unchanged and the branch is still
+review-only.
 
 ## Completed
 

@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Final
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -138,30 +138,16 @@ class DispatchService:
             dispatch: ImportDispatch | None = None
             try:
                 with session.begin_nested():
-                    audit_event_id = append_audit_event(
+                    dispatch = self._enqueue_dispatch_row(
                         session,
-                        actor=request.actor,
-                        action="import.dispatch.accepted",
-                        reason=request.reason,
-                        payload={
-                            "operation_id": str(operation_id),
-                            "artifact_id": str(request.artifact_id),
-                            "ingest_channel": request.ingest_channel,
-                            "manifest_generation": request.manifest_generation,
-                            "manifest_digest": request.manifest_digest.hex(),
-                        },
-                    )
-                    dispatch = ImportDispatch(
-                        id=operation_id,
+                        operation_id=operation_id,
                         artifact_id=request.artifact_id,
                         ingest_channel=request.ingest_channel,
-                        accepted_audit_event_id=audit_event_id,
                         manifest_generation=request.manifest_generation,
                         manifest_digest=request.manifest_digest,
-                        state=DispatchState.PENDING,
+                        actor=request.actor,
+                        reason=request.reason,
                     )
-                    session.add(dispatch)
-                    session.flush()
             except IntegrityError as exc:
                 existing = session.scalar(
                     select(ImportDispatch).where(
@@ -300,30 +286,16 @@ class DispatchService:
             operation_id = uuid4()
             try:
                 with session.begin_nested():
-                    accepted_audit_id = append_audit_event(
+                    dispatch = self._enqueue_dispatch_row(
                         session,
-                        actor=actor,
-                        action="import.dispatch.accepted",
-                        reason=reason,
-                        payload={
-                            "operation_id": str(operation_id),
-                            "artifact_id": str(artifact.id),
-                            "ingest_channel": ingest_channel,
-                            "manifest_generation": manifest_generation,
-                            "manifest_digest": manifest_digest.hex(),
-                        },
-                    )
-                    dispatch = ImportDispatch(
-                        id=operation_id,
+                        operation_id=operation_id,
                         artifact_id=artifact.id,
                         ingest_channel=ingest_channel,
-                        accepted_audit_event_id=accepted_audit_id,
                         manifest_generation=manifest_generation,
                         manifest_digest=manifest_digest,
-                        state=DispatchState.PENDING,
+                        actor=actor,
+                        reason=reason,
                     )
-                    session.add(dispatch)
-                    session.flush()
             except IntegrityError as exc:
                 existing = session.scalar(
                     select(ImportDispatch).where(
@@ -626,6 +598,47 @@ class DispatchService:
             or dispatch.lease_until <= now
         ):
             raise DispatchClaimLost("dispatch lease is no longer owned")
+        return dispatch
+
+    @staticmethod
+    def _enqueue_dispatch_row(
+        session: Session,
+        *,
+        operation_id: UUID,
+        artifact_id: UUID,
+        ingest_channel: str,
+        manifest_generation: str,
+        manifest_digest: bytes,
+        actor: str,
+        reason: str,
+    ) -> ImportDispatch:
+        created_id = session.execute(
+            text(
+                """
+                SELECT public.evidence_import_dispatch_enqueue(
+                    :operation_id,
+                    :artifact_id,
+                    :ingest_channel,
+                    :manifest_generation,
+                    :manifest_digest,
+                    :actor,
+                    :reason
+                )
+                """
+            ),
+            {
+                "operation_id": operation_id,
+                "artifact_id": artifact_id,
+                "ingest_channel": ingest_channel,
+                "manifest_generation": manifest_generation,
+                "manifest_digest": manifest_digest,
+                "actor": actor,
+                "reason": reason,
+            },
+        ).scalar_one()
+        dispatch = session.get(ImportDispatch, created_id)
+        if dispatch is None:
+            raise DispatchError("dispatch creation failed")
         return dispatch
 
     @staticmethod

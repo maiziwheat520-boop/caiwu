@@ -63,12 +63,21 @@ def test_database_role_urls_fallback_outside_production_and_split_in_production(
     production = Settings(
         env="production",
         database_url=shared,
-        api_database_url="postgresql://api",
-        worker_database_url="postgresql://worker",
+        api_database_url="postgresql://ledgerbridge_api@db/app",
+        worker_database_url="postgresql://ledgerbridge_worker@db/app",
         artifact_root=tmp_path.resolve(),
     )
-    assert production.resolved_api_database_url() == "postgresql://api"
-    assert production.resolved_worker_database_url() == "postgresql://worker"
+    assert production.resolved_api_database_url() == "postgresql://ledgerbridge_api@db/app"
+    assert production.resolved_worker_database_url() == "postgresql://ledgerbridge_worker@db/app"
+
+    with pytest.raises(ValidationError, match="dedicated runtime roles"):
+        Settings(
+            env="production",
+            database_url=shared,
+            api_database_url="postgresql://ledgerbridge_app@db/app",
+            worker_database_url="postgresql://ledgerbridge_worker@db/app",
+            artifact_root=tmp_path.resolve(),
+        )
 
 
 def test_alembic_url_escapes_config_interpolation() -> None:

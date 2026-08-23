@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 
 class Settings(BaseSettings):
@@ -50,6 +51,15 @@ class Settings(BaseSettings):
                 )
             if self.api_database_url == self.worker_database_url:
                 raise ValueError("production API and worker database URLs must differ")
+            try:
+                api_user = make_url(self.api_database_url).username
+                worker_user = make_url(self.worker_database_url).username
+            except (TypeError, ValueError) as exc:
+                raise ValueError("production API and worker database URLs must be valid") from exc
+            if api_user != "ledgerbridge_api" or worker_user != "ledgerbridge_worker":
+                raise ValueError(
+                    "production API and worker database URLs must use the dedicated runtime roles"
+                )
         return self
 
     def resolved_api_database_url(self) -> str:
