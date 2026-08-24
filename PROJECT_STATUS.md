@@ -396,5 +396,9 @@ ingestion require their later explicit gates.
 - Disposable Hermes PostgreSQL 15 R1 migration suite: **14 passed** after final
   hardening.  Windows full suite is **472 passed / 155 skipped / 1 warning**;
   Ruff format/check, strict mypy, offline lock, Bandit, and diff-check pass.
-  Commit `67fcc7c` is pushed; Hosted CI run `32718742603` is in progress.
+  Local follow-up commit `eef214a` additionally makes all R1 trigger validators
+  owner-executed, preserves compatibility `CONNECT` for `ledgerbridge_app` while
+  retaining no fact-table/TEMPORARY/CREATE privileges, and updates the legacy
+  downgrade assertion. It is ready to push; GitHub HTTPS is currently
+  unreachable from this workstation.
 - No merge, production role migration, real data read, or deployment is authorized.
