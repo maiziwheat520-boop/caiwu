@@ -71,6 +71,10 @@ jobs:
           -v ON_ERROR_STOP=1
           -c "GRANT USAGE, CREATE ON SCHEMA public TO ledgerbridge_owner; ALTER SCHEMA public OWNER TO ledgerbridge_owner"
       - run: >-
+          psql -h localhost -U ledgerbridge_admin -d template1
+          -v ON_ERROR_STOP=1
+          -c "GRANT USAGE, CREATE ON SCHEMA public TO ledgerbridge_owner; ALTER SCHEMA public OWNER TO ledgerbridge_owner"
+      - run: >-
           psql -h localhost -U ledgerbridge_admin -d postgres
           -v ON_ERROR_STOP=1
           -c "ALTER DATABASE ledgerbridge_test OWNER TO ledgerbridge_owner"
