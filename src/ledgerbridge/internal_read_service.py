@@ -430,19 +430,16 @@ class DatabaseInternalReadService:
                     last_created_at = None
                     last_candidate_id = None
                 else:
-                    try:
-                        assert self._cursor_signer is not None
-                        cursor_claims = self._cursor_signer.verify(
-                            cursor,
-                            principal,
-                            month=month,
-                            status=status.value if status is not None else None,
-                            business_unit=business_unit,
-                        )
-                    except AssertionError as exc:
-                        raise InternalReadBackendUnavailable(
-                            "signed cursor key is unavailable"
-                        ) from exc
+                    cursor_signer = self._cursor_signer
+                    if cursor_signer is None:
+                        raise InternalReadBackendUnavailable("signed cursor key is unavailable")
+                    cursor_claims = cursor_signer.verify(
+                        cursor,
+                        principal,
+                        month=month,
+                        status=status.value if status is not None else None,
+                        business_unit=business_unit,
+                    )
                     sequence = cursor_claims["horizon_sequence"]
                     horizon_hash = cursor_claims["horizon_hash"]
                     last_created_at = cursor_claims["last_created_at"]

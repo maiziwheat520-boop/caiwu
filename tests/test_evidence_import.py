@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, inspect, text, update
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -60,6 +61,31 @@ def _run_alembic(database_url: str, revision: str, *, downgrade: bool = False) -
         command.upgrade(config, revision)
 
 
+def _test_admin_url() -> URL:
+    value = os.environ.get("LEDGERBRIDGE_TEST_ADMIN_DATABASE_URL")
+    if value is None:
+        pytest.skip(
+            "PostgreSQL integration tests require LEDGERBRIDGE_TEST_ADMIN_DATABASE_URL "
+            "for temporary database bootstrap and cleanup"
+        )
+    return make_url(value)
+
+
+def _maintenance_engine(admin_url: URL) -> Engine:
+    return create_engine(admin_url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+
+
+def _migration_owner_name(owner_url: URL) -> str:
+    username = owner_url.username
+    if not isinstance(username, str) or not username:
+        pytest.skip("LEDGERBRIDGE_MIGRATION_DATABASE_URL must identify a database owner")
+    return username
+
+
+def _quote_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
 @pytest.fixture(scope="session")
 def database_url() -> str:
     value = os.environ.get("LEDGERBRIDGE_DATABASE_URL")
@@ -76,18 +102,62 @@ def migration_database_url() -> str:
     return value
 
 
-@pytest.fixture(scope="session")
-def admin_engine(migration_database_url: str) -> Iterator[Engine]:
-    _run_alembic(migration_database_url, "head")
-    engine = create_engine(migration_database_url, pool_pre_ping=True)
+@pytest.fixture(scope="module")
+def isolated_legacy_urls(
+    database_url: str,
+    migration_database_url: str,
+) -> Iterator[tuple[str, str]]:
+    """Run the pre-R1 evidence lifecycle against a disposable 0013 database.
+
+    Other integration modules intentionally exercise the R1 head on the
+    shared CI database.  Alembic upgrades are monotonic, so an in-place
+    ``upgrade 0013`` would silently leave this legacy suite on head and make
+    its valid POSTED fixtures fail the mandatory R1 attribution trigger.
+    """
+    owner_url = make_url(migration_database_url)
+    runtime_url = make_url(database_url)
+    owner_name = _migration_owner_name(owner_url)
+    database_name = f"ledgerbridge_evidence_legacy_{uuid4().hex[:12]}"
+    maintenance_engine = _maintenance_engine(_test_admin_url())
+    temporary_owner_url = owner_url.set(database=database_name)
+    temporary_runtime_url = runtime_url.set(database=database_name)
+    try:
+        with maintenance_engine.connect() as connection:
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
+        _run_alembic(temporary_owner_url.render_as_string(hide_password=False), "20260824_0013")
+        yield (
+            temporary_owner_url.render_as_string(hide_password=False),
+            temporary_runtime_url.render_as_string(hide_password=False),
+        )
+    finally:
+        with maintenance_engine.connect() as connection:
+            connection.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :database_name"
+                ),
+                {"database_name": database_name},
+            )
+            connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+        maintenance_engine.dispose()
+
+
+@pytest.fixture(scope="module")
+def admin_engine(isolated_legacy_urls: tuple[str, str]) -> Iterator[Engine]:
+    engine = create_engine(isolated_legacy_urls[0], pool_pre_ping=True)
     yield engine
     engine.dispose()
 
 
-@pytest.fixture(scope="session")
-def runtime_engine(database_url: str, admin_engine: Engine) -> Iterator[Engine]:
+@pytest.fixture(scope="module")
+def runtime_engine(
+    isolated_legacy_urls: tuple[str, str],
+    admin_engine: Engine,
+) -> Iterator[Engine]:
     del admin_engine
-    engine = build_engine(database_url)
+    engine = build_engine(isolated_legacy_urls[1])
     yield engine
     engine.dispose()
 
@@ -1916,14 +1986,17 @@ def test_balance_failure_rolls_back_post_audit_atomically(runtime_engine: Engine
 def test_phase2_migration_round_trip_and_objects(
     migration_database_url: str,
 ) -> None:
-    url = create_engine(migration_database_url).url
+    owner_url = make_url(migration_database_url)
+    owner_name = _migration_owner_name(owner_url)
     database_name = f"ledgerbridge_phase2_rt_{uuid4().hex[:12]}"
-    maintenance_engine = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
-    temporary_url = url.set(database=database_name)
+    maintenance_engine = _maintenance_engine(_test_admin_url())
+    temporary_url = owner_url.set(database=database_name)
     temporary_engine: Engine | None = None
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
         rendered = temporary_url.render_as_string(hide_password=False)
         _run_alembic(rendered, "head")
         temporary_engine = create_engine(temporary_url)
@@ -2011,17 +2084,17 @@ def test_phase2_migration_round_trip_and_objects(
 def test_phase2_downgrade_refuses_to_delete_evidence(
     migration_database_url: str,
 ) -> None:
-    url = create_engine(migration_database_url).url
+    owner_url = make_url(migration_database_url)
+    owner_name = _migration_owner_name(owner_url)
     database_name = f"ledgerbridge_phase2_downgrade_{uuid4().hex[:10]}"
-    maintenance_engine = create_engine(
-        url.set(database="postgres"),
-        isolation_level="AUTOCOMMIT",
-    )
-    temporary_url = url.set(database=database_name)
+    maintenance_engine = _maintenance_engine(_test_admin_url())
+    temporary_url = owner_url.set(database=database_name)
     temporary_engine: Engine | None = None
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
         rendered = temporary_url.render_as_string(hide_password=False)
         _run_alembic(rendered, "head")
         temporary_engine = create_engine(temporary_url)
@@ -2093,14 +2166,17 @@ def test_phase2_downgrade_refuses_to_delete_evidence(
 def test_phase3_registry_migration_round_trip_preserves_security_controls(
     migration_database_url: str,
 ) -> None:
-    url = create_engine(migration_database_url).url
+    owner_url = make_url(migration_database_url)
+    owner_name = _migration_owner_name(owner_url)
     database_name = f"ledgerbridge_phase3_roundtrip_{uuid4().hex[:10]}"
-    maintenance_engine = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
-    temporary_url = url.set(database=database_name)
+    maintenance_engine = _maintenance_engine(_test_admin_url())
+    temporary_url = owner_url.set(database=database_name)
     temporary_engine: Engine | None = None
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
         rendered = temporary_url.render_as_string(hide_password=False)
         _run_alembic(rendered, "head")
         temporary_engine = create_engine(temporary_url)
@@ -2166,14 +2242,17 @@ def test_phase3_registry_migration_round_trip_preserves_security_controls(
 def test_phase3_upgrade_rolls_back_on_unregistered_legacy_provenance(
     migration_database_url: str,
 ) -> None:
-    url = create_engine(migration_database_url).url
+    owner_url = make_url(migration_database_url)
+    owner_name = _migration_owner_name(owner_url)
     database_name = f"ledgerbridge_phase3_legacy_{uuid4().hex[:10]}"
-    maintenance_engine = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
-    temporary_url = url.set(database=database_name)
+    maintenance_engine = _maintenance_engine(_test_admin_url())
+    temporary_url = owner_url.set(database=database_name)
     temporary_engine: Engine | None = None
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
         rendered = temporary_url.render_as_string(hide_password=False)
         _run_alembic(rendered, "20260821_0003")
         temporary_engine = create_engine(temporary_url)
@@ -2248,14 +2327,17 @@ def test_phase3_upgrade_rolls_back_on_unregistered_legacy_provenance(
 def test_phase2_migration_fails_closed_on_existing_posted_entry(
     migration_database_url: str,
 ) -> None:
-    url = create_engine(migration_database_url).url
+    owner_url = make_url(migration_database_url)
+    owner_name = _migration_owner_name(owner_url)
     database_name = f"ledgerbridge_phase2_posted_{uuid4().hex[:10]}"
-    maintenance_engine = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
-    temporary_url = url.set(database=database_name)
+    maintenance_engine = _maintenance_engine(_test_admin_url())
+    temporary_url = owner_url.set(database=database_name)
     temporary_engine: Engine | None = None
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
         rendered = temporary_url.render_as_string(hide_password=False)
         _run_alembic(rendered, "20260821_0002")
         temporary_engine = create_engine(temporary_url)
@@ -2334,14 +2416,17 @@ def test_phase2_migration_fails_closed_on_existing_posted_entry(
 def test_phase2_migration_fails_closed_on_orphan_source_placeholder(
     migration_database_url: str,
 ) -> None:
-    url = create_engine(migration_database_url).url
+    owner_url = make_url(migration_database_url)
+    owner_name = _migration_owner_name(owner_url)
     database_name = f"ledgerbridge_phase2_orphan_{uuid4().hex[:10]}"
-    maintenance_engine = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
-    temporary_url = url.set(database=database_name)
+    maintenance_engine = _maintenance_engine(_test_admin_url())
+    temporary_url = owner_url.set(database=database_name)
     temporary_engine: Engine | None = None
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
         rendered = temporary_url.render_as_string(hide_password=False)
         _run_alembic(rendered, "20260821_0002")
         temporary_engine = create_engine(temporary_url)

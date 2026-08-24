@@ -69,6 +69,14 @@ def migration_database_url() -> str:
 
 
 @pytest.fixture(scope="session")
+def api_database_url() -> str:
+    value = os.environ.get("LEDGERBRIDGE_API_DATABASE_URL")
+    if value is None:
+        pytest.skip("PostgreSQL integration tests require LEDGERBRIDGE_API_DATABASE_URL")
+    return value
+
+
+@pytest.fixture(scope="session")
 def admin_engine(migration_database_url: str) -> Iterator[Engine]:
     _run_alembic(migration_database_url, "head")
     engine = create_engine(migration_database_url, pool_pre_ping=True)
@@ -80,6 +88,13 @@ def admin_engine(migration_database_url: str) -> Iterator[Engine]:
 def runtime_engine(database_url: str, admin_engine: Engine) -> Iterator[Engine]:
     del admin_engine
     engine = create_engine(database_url, pool_pre_ping=True)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def api_engine(api_database_url: str) -> Iterator[Engine]:
+    engine = create_engine(api_database_url, pool_pre_ping=True)
     yield engine
     engine.dispose()
 
@@ -182,13 +197,12 @@ def test_enqueue_is_idempotent_and_binds_acceptance_audit(
 
 def test_api_role_cannot_direct_insert_dispatch(
     dispatch_context: tuple[DispatchService, UUID, sessionmaker[Session]],
-    admin_engine: Engine,
+    api_engine: Engine,
 ) -> None:
     _service, artifact_id, _sessions = dispatch_context
-    with admin_engine.connect() as connection:
+    with api_engine.connect() as connection:
         transaction = connection.begin()
         try:
-            connection.execute(text("SET LOCAL ROLE ledgerbridge_api"))
             with pytest.raises(DBAPIError, match="permission denied"):
                 connection.execute(
                     text(
@@ -214,13 +228,12 @@ def test_api_role_cannot_direct_insert_dispatch(
 
 def test_compatibility_role_direct_insert_requires_bound_acceptance_audit(
     dispatch_context: tuple[DispatchService, UUID, sessionmaker[Session]],
-    admin_engine: Engine,
+    runtime_engine: Engine,
 ) -> None:
     _service, artifact_id, _sessions = dispatch_context
-    with admin_engine.connect() as connection:
+    with runtime_engine.connect() as connection:
         transaction = connection.begin()
         try:
-            connection.execute(text("SET LOCAL ROLE ledgerbridge_app"))
             with pytest.raises(DBAPIError, match="dispatch acceptance audit binding is invalid"):
                 connection.execute(
                     text(

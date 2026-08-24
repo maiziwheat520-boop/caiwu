@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic.config import Config
 from sqlalchemy import Connection, Engine, create_engine, inspect, text, update
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
@@ -39,6 +40,31 @@ def _run_alembic(database_url: str, revision: str, *, downgrade: bool = False) -
         command.upgrade(config, revision)
 
 
+def _test_admin_url() -> URL:
+    value = os.environ.get("LEDGERBRIDGE_TEST_ADMIN_DATABASE_URL")
+    if value is None:
+        pytest.skip(
+            "PostgreSQL integration tests require LEDGERBRIDGE_TEST_ADMIN_DATABASE_URL "
+            "for temporary database bootstrap and cleanup"
+        )
+    return make_url(value)
+
+
+def _maintenance_engine(admin_url: URL) -> Engine:
+    return create_engine(admin_url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+
+
+def _migration_owner_name(owner_url: URL) -> str:
+    username = owner_url.username
+    if not isinstance(username, str) or not username:
+        pytest.skip("LEDGERBRIDGE_MIGRATION_DATABASE_URL must identify a database owner")
+    return username
+
+
+def _quote_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
 @pytest.fixture(scope="session")
 def database_url() -> str:
     value = os.environ.get("LEDGERBRIDGE_DATABASE_URL")
@@ -55,18 +81,56 @@ def migration_database_url() -> str:
     return value
 
 
-@pytest.fixture(scope="session")
-def admin_engine(migration_database_url: str) -> Iterator[Engine]:
-    _run_alembic(migration_database_url, "head")
-    engine = create_engine(migration_database_url, pool_pre_ping=True)
+@pytest.fixture(scope="module")
+def isolated_legacy_urls(
+    database_url: str,
+    migration_database_url: str,
+) -> Iterator[tuple[str, str]]:
+    """Run the pre-R1 Core lifecycle against a disposable 0013 database."""
+    owner_url = make_url(migration_database_url)
+    runtime_url = make_url(database_url)
+    owner_name = _migration_owner_name(owner_url)
+    database_name = f"ledgerbridge_ledger_legacy_{uuid4().hex[:12]}"
+    maintenance_engine = _maintenance_engine(_test_admin_url())
+    temporary_owner_url = owner_url.set(database=database_name)
+    temporary_runtime_url = runtime_url.set(database=database_name)
+    try:
+        with maintenance_engine.connect() as connection:
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
+        _run_alembic(temporary_owner_url.render_as_string(hide_password=False), "20260824_0013")
+        yield (
+            temporary_owner_url.render_as_string(hide_password=False),
+            temporary_runtime_url.render_as_string(hide_password=False),
+        )
+    finally:
+        with maintenance_engine.connect() as connection:
+            connection.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :database_name"
+                ),
+                {"database_name": database_name},
+            )
+            connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+        maintenance_engine.dispose()
+
+
+@pytest.fixture(scope="module")
+def admin_engine(isolated_legacy_urls: tuple[str, str]) -> Iterator[Engine]:
+    engine = create_engine(isolated_legacy_urls[0], pool_pre_ping=True)
     yield engine
     engine.dispose()
 
 
-@pytest.fixture(scope="session")
-def runtime_engine(database_url: str, admin_engine: Engine) -> Iterator[Engine]:
+@pytest.fixture(scope="module")
+def runtime_engine(
+    isolated_legacy_urls: tuple[str, str],
+    admin_engine: Engine,
+) -> Iterator[Engine]:
     del admin_engine
-    engine = build_engine(database_url)
+    engine = build_engine(isolated_legacy_urls[1])
     yield engine
     engine.dispose()
 
@@ -188,6 +252,74 @@ def _create_entry(
     return entry.id
 
 
+def _seed_r1_attribution(
+    admin_engine: Engine,
+    entry_id: UUID,
+    entity_id: UUID,
+    posting_ids: list[UUID],
+) -> None:
+    business_unit_id = uuid4()
+    category_id = uuid4()
+    business_unit_ref = f"r1-test-{uuid4().hex[:8]}"
+    category_code = f"R1-TEST-{uuid4().hex[:8]}"
+    accounting_month = datetime.now(UTC).date().replace(day=1)
+    with admin_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO business_unit "
+                "(id, entity_id, ref, label) "
+                "VALUES (:id, :entity_id, :ref, :label)"
+            ),
+            {
+                "id": business_unit_id,
+                "entity_id": entity_id,
+                "ref": business_unit_ref,
+                "label": "R1 test unit",
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reporting_category "
+                "(id, entity_id, code, label) "
+                "VALUES (:id, :entity_id, :code, :label)"
+            ),
+            {
+                "id": category_id,
+                "entity_id": entity_id,
+                "code": category_code,
+                "label": "R1 test category",
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO journal_entry_attribution "
+                "(entry_id, entity_id, business_unit_id, accounting_month) "
+                "VALUES (:entry_id, :entity_id, :business_unit_id, :accounting_month)"
+            ),
+            {
+                "entry_id": entry_id,
+                "entity_id": entity_id,
+                "business_unit_id": business_unit_id,
+                "accounting_month": accounting_month,
+            },
+        )
+        for posting_id in posting_ids:
+            connection.execute(
+                text(
+                    "INSERT INTO posting_attribution "
+                    "(posting_id, reporting_category_id, category_code_snapshot, "
+                    "category_label_snapshot) "
+                    "VALUES (:posting_id, :category_id, :category_code, :category_label)"
+                ),
+                {
+                    "posting_id": posting_id,
+                    "category_id": category_id,
+                    "category_code": category_code,
+                    "category_label": "R1 test category",
+                },
+            )
+
+
 def test_runtime_login_remains_unprivileged_after_read_only_pool_reuse(
     admin_engine: Engine,
     runtime_engine: Engine,
@@ -307,6 +439,8 @@ def test_security_functions_pin_their_search_path(admin_engine: Engine) -> None:
 def _assert_phase1_invariants_ignore_pg_temp_shadow_tables(
     admin_engine: Engine,
     runtime_engine: Engine,
+    *,
+    r1_compatible: bool = False,
 ) -> None:
     with Session(runtime_engine, expire_on_commit=False) as session:
         entity_id, accounts = _create_accounts(session)
@@ -314,6 +448,7 @@ def _assert_phase1_invariants_ignore_pg_temp_shadow_tables(
             session,
             entity_id,
             [(accounts["bank"], 500), (accounts["wallet"], -500)],
+            status=JournalStatus.DRAFT if r1_compatible else JournalStatus.POSTED,
         )
         posting_ids = list(
             session.execute(
@@ -321,6 +456,15 @@ def _assert_phase1_invariants_ignore_pg_temp_shadow_tables(
                 {"entry_id": posted_entry_id},
             ).scalars()
         )
+        if r1_compatible:
+            _seed_r1_attribution(admin_engine, posted_entry_id, entity_id, posting_ids)
+            post_journal_entry(
+                session,
+                posted_entry_id,
+                actor="pytest",
+                reason="R1-compatible pg_temp shadow regression",
+            )
+            session.commit()
         other_entity = Entity(entity_type=EntityType.COMPANY, name="Other entity")
         session.add(other_entity)
         session.flush()
@@ -1416,16 +1560,18 @@ def test_partial_refund_reduces_expense_without_income(runtime_engine: Engine) -
 
 
 def test_phase1_migration_real_round_trip(migration_database_url: str) -> None:
-    url = create_engine(migration_database_url).url
+    owner_url = make_url(migration_database_url)
+    owner_name = _migration_owner_name(owner_url)
     database_name = f"ledgerbridge_rt_{uuid4().hex[:12]}"
-    maintenance_url = url.set(database="postgres")
-    temporary_url = url.set(database=database_name)
-    maintenance_engine = create_engine(maintenance_url, isolation_level="AUTOCOMMIT")
+    temporary_url = owner_url.set(database=database_name)
+    maintenance_engine = _maintenance_engine(_test_admin_url())
     temporary_engine: Engine | None = None
 
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
 
         _run_alembic(temporary_url.render_as_string(hide_password=False), "head")
         temporary_engine = create_engine(temporary_url)
@@ -1710,19 +1856,13 @@ def test_security_function_forward_migration_repairs_historical_definitions(
     migration_database_url: str,
     database_url: str,
 ) -> None:
-    owner_source = create_engine(migration_database_url)
-    runtime_source = create_engine(database_url)
-    owner_url = owner_source.url
-    runtime_url = runtime_source.url
-    owner_source.dispose()
-    runtime_source.dispose()
+    owner_url = make_url(migration_database_url)
+    runtime_url = make_url(database_url)
+    owner_name = _migration_owner_name(owner_url)
 
     database_name = f"ledgerbridge_search_path_{uuid4().hex[:10]}"
     control_database_name = f"ledgerbridge_search_path_control_{uuid4().hex[:10]}"
-    maintenance_engine = create_engine(
-        owner_url.set(database="postgres"),
-        isolation_level="AUTOCOMMIT",
-    )
+    maintenance_engine = _maintenance_engine(_test_admin_url())
     temporary_owner_url = owner_url.set(database=database_name)
     temporary_runtime_url = runtime_url.set(database=database_name)
     control_owner_url = owner_url.set(database=control_database_name)
@@ -1754,8 +1894,15 @@ def test_security_function_forward_migration_repairs_historical_definitions(
 
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-            connection.execute(text(f'CREATE DATABASE "{control_database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
+            connection.execute(
+                text(
+                    f'CREATE DATABASE "{control_database_name}" '
+                    f"OWNER {_quote_identifier(owner_name)}"
+                )
+            )
 
         control_rendered = control_owner_url.render_as_string(hide_password=False)
         _run_alembic(control_rendered, "20260823_0008")
@@ -1839,10 +1986,34 @@ def test_security_function_forward_migration_repairs_historical_definitions(
         _assert_phase1_invariants_ignore_pg_temp_shadow_tables(
             temporary_admin_engine,
             temporary_runtime_engine,
+            r1_compatible=True,
         )
 
         temporary_runtime_engine.dispose()
         temporary_runtime_engine = None
+        temporary_admin_engine.dispose()
+        temporary_admin_engine = None
+        # The R1-compatible fixture above intentionally leaves attribution
+        # facts behind so the protected downgrade path is exercised by the
+        # migration itself.  Remove only this disposable database's R1 facts
+        # before the test continues with the historical downgrade assertion.
+        temporary_admin_engine = create_engine(temporary_owner_url)
+        with temporary_admin_engine.begin() as connection:
+            connection.execute(text("ALTER TABLE posting_attribution DISABLE TRIGGER USER"))
+            connection.execute(text("ALTER TABLE journal_entry_attribution DISABLE TRIGGER USER"))
+            connection.execute(text("ALTER TABLE reporting_category DISABLE TRIGGER USER"))
+            connection.execute(text("ALTER TABLE business_unit DISABLE TRIGGER USER"))
+            connection.execute(text("DELETE FROM posting_attribution"))
+            connection.execute(text("DELETE FROM journal_entry_attribution"))
+            connection.execute(text("DELETE FROM reporting_category"))
+            connection.execute(text("DELETE FROM business_unit"))
+        # PostgreSQL requires the pending row-level trigger events to be
+        # committed before the trigger state can be restored.
+        with temporary_admin_engine.begin() as connection:
+            connection.execute(text("ALTER TABLE business_unit ENABLE TRIGGER USER"))
+            connection.execute(text("ALTER TABLE reporting_category ENABLE TRIGGER USER"))
+            connection.execute(text("ALTER TABLE journal_entry_attribution ENABLE TRIGGER USER"))
+            connection.execute(text("ALTER TABLE posting_attribution ENABLE TRIGGER USER"))
         temporary_admin_engine.dispose()
         temporary_admin_engine = None
         _run_alembic(rendered, "20260823_0008", downgrade=True)
@@ -1885,21 +2056,30 @@ def test_security_function_forward_migration_repairs_historical_definitions(
 def test_runtime_role_split_removes_preexisting_owner_membership(
     migration_database_url: str,
 ) -> None:
-    url = create_engine(migration_database_url).url
+    url = make_url(migration_database_url)
+    owner_name = _migration_owner_name(url)
     database_name = f"ledgerbridge_role_split_{uuid4().hex[:12]}"
-    maintenance_url = url.set(database="postgres")
     temporary_url = url.set(database=database_name)
-    maintenance_engine = create_engine(maintenance_url, isolation_level="AUTOCOMMIT")
+    admin_url = _test_admin_url()
+    maintenance_engine = _maintenance_engine(admin_url)
     temporary_engine: Engine | None = None
+    runtime_contract = (
+        "ALTER ROLE ledgerbridge_api LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+        "NOINHERIT NOREPLICATION NOBYPASSRLS; "
+        "ALTER ROLE ledgerbridge_worker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+        "NOINHERIT NOREPLICATION NOBYPASSRLS"
+    )
 
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
 
         rendered = temporary_url.render_as_string(hide_password=False)
         _run_alembic(rendered, "20260823_0005")
         temporary_engine = create_engine(temporary_url)
-        with temporary_engine.begin() as connection:
+        with temporary_engine.connect() as connection:
             assert (
                 connection.execute(
                     text(
@@ -1914,6 +2094,9 @@ def test_runtime_role_split_removes_preexisting_owner_membership(
                 ).scalar_one()
                 == 0
             )
+        temporary_engine.dispose()
+        temporary_engine = None
+        with maintenance_engine.begin() as connection:
             connection.execute(
                 text(
                     "ALTER ROLE ledgerbridge_api SUPERUSER CREATEDB CREATEROLE "
@@ -1929,10 +2112,11 @@ def test_runtime_role_split_removes_preexisting_owner_membership(
             connection.execute(
                 text("GRANT ledgerbridge_owner TO ledgerbridge_api, ledgerbridge_worker")
             )
-        temporary_engine.dispose()
-        temporary_engine = None
 
-        _run_alembic(rendered, "20260823_0006")
+        role_admin_rendered = admin_url.set(database=database_name).render_as_string(
+            hide_password=False
+        )
+        _run_alembic(role_admin_rendered, "20260823_0006")
         temporary_engine = create_engine(temporary_url)
         with temporary_engine.connect() as connection:
             assert [
@@ -1966,14 +2150,14 @@ def test_runtime_role_split_removes_preexisting_owner_membership(
                 == 0
             )
 
-            # The migration owner is a superuser in the disposable CI database;
-            # SET SESSION AUTHORIZATION models an API login without storing
-            # another password, so the following SET ROLE check is evaluated
-            # against ledgerbridge_api rather than the owner session.
+        # Use the test-admin connection only to model a runtime API login;
+        # the restricted migration owner must never be able to impersonate it.
+        with maintenance_engine.connect() as connection:
             connection.execute(text("SET SESSION AUTHORIZATION ledgerbridge_api"))
             with pytest.raises(DBAPIError):
                 connection.execute(text("SET ROLE ledgerbridge_owner"))
             connection.rollback()
+            connection.execute(text("RESET SESSION AUTHORIZATION"))
     finally:
         if temporary_engine is not None:
             temporary_engine.dispose()
@@ -1981,6 +2165,7 @@ def test_runtime_role_split_removes_preexisting_owner_membership(
             connection.execute(
                 text("REVOKE ledgerbridge_owner FROM ledgerbridge_api, ledgerbridge_worker")
             )
+            connection.execute(text(runtime_contract))
             connection.execute(
                 text(
                     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
@@ -1995,17 +2180,16 @@ def test_runtime_role_split_removes_preexisting_owner_membership(
 def test_runtime_role_split_restricted_owner_validates_bootstrap_contract(
     migration_database_url: str,
 ) -> None:
-    source = create_engine(migration_database_url)
-    url = source.url
-    source.dispose()
+    url = make_url(migration_database_url)
     database_name = f"ledgerbridge_role_restricted_{uuid4().hex[:12]}"
     role_name = f"ledgerbridge_migrate_{uuid4().hex[:12]}"
+    source_owner_name = f"ledgerbridge_seed_owner_{uuid4().hex[:12]}"
     role_password = uuid4().hex
-    maintenance_engine = create_engine(
-        url.set(database="postgres"),
-        isolation_level="AUTOCOMMIT",
-    )
+    source_owner_password = uuid4().hex
+    admin_url = _test_admin_url()
+    maintenance_engine = _maintenance_engine(admin_url)
     temporary_engine: Engine | None = None
+    temporary_admin_engine: Engine | None = None
     restricted_engine: Engine | None = None
     api_contract = (
         "ALTER ROLE ledgerbridge_api LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
@@ -2014,16 +2198,31 @@ def test_runtime_role_split_restricted_owner_validates_bootstrap_contract(
 
     try:
         with maintenance_engine.connect() as connection:
-            admin_role = connection.execute(text("SELECT current_user")).scalar_one()
             connection.execute(
                 text(
                     f'CREATE ROLE "{role_name}" LOGIN NOSUPERUSER NOCREATEDB '
                     f"NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '{role_password}'"
                 )
             )
-            connection.execute(text(f'CREATE DATABASE "{database_name}" OWNER "{role_name}"'))
+            connection.execute(
+                text(
+                    f'CREATE ROLE "{source_owner_name}" LOGIN NOSUPERUSER NOCREATEDB '
+                    f"NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS "
+                    f"PASSWORD '{source_owner_password}'"
+                )
+            )
+            connection.execute(
+                text(
+                    f'CREATE DATABASE "{database_name}" '
+                    f"OWNER {_quote_identifier(source_owner_name)}"
+                )
+            )
 
-        temporary_url = url.set(database=database_name)
+        temporary_url = url.set(
+            database=database_name,
+            username=source_owner_name,
+            password=source_owner_password,
+        )
         restricted_url = url.set(
             database=database_name,
             username=role_name,
@@ -2036,10 +2235,16 @@ def test_runtime_role_split_restricted_owner_validates_bootstrap_contract(
         # Transfer the disposable migration objects to the restricted owner.
         # The 0005 grants are intentionally left in their pre-split state so
         # 0006 must normalize the ACLs itself.
-        temporary_engine = create_engine(temporary_url)
-        with temporary_engine.begin() as connection:
-            connection.execute(text(f'REASSIGN OWNED BY "{admin_role}" TO "{role_name}"'))
-            connection.execute(text(f'ALTER SCHEMA public OWNER TO "{role_name}"'))
+        temporary_admin_engine = create_engine(admin_url.set(database=database_name))
+        with temporary_admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    f"REASSIGN OWNED BY {_quote_identifier(source_owner_name)} "
+                    f"TO {_quote_identifier(role_name)}"
+                )
+            )
+            connection.execute(text(f"ALTER SCHEMA public OWNER TO {_quote_identifier(role_name)}"))
+        with maintenance_engine.begin() as connection:
             connection.execute(text("ALTER ROLE ledgerbridge_api CREATEDB"))
 
         # Role drift must fail before a restricted owner can rely on any ACL.
@@ -2070,8 +2275,16 @@ def test_runtime_role_split_restricted_owner_validates_bootstrap_contract(
             restricted_engine.dispose()
         if temporary_engine is not None:
             temporary_engine.dispose()
+        if temporary_admin_engine is not None:
+            temporary_admin_engine.dispose()
         with maintenance_engine.connect() as connection:
             connection.execute(text(api_contract))
+            connection.execute(
+                text(
+                    "ALTER ROLE ledgerbridge_worker LOGIN NOSUPERUSER NOCREATEDB "
+                    "NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS"
+                )
+            )
             connection.execute(
                 text(
                     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
@@ -2079,6 +2292,18 @@ def test_runtime_role_split_restricted_owner_validates_bootstrap_contract(
                 ),
                 {"database_name": database_name},
             )
-            connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
-            connection.execute(text(f'DROP ROLE IF EXISTS "{role_name}"'))
+            if connection.execute(
+                text("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = :name)"),
+                {"name": database_name},
+            ).scalar_one():
+                connection.execute(
+                    text(
+                        f'ALTER DATABASE "{database_name}" '
+                        f"OWNER TO {_quote_identifier(source_owner_name)}"
+                    )
+                )
+                connection.execute(text(f'DROP DATABASE "{database_name}"'))
+            with maintenance_engine.connect() as connection:
+                connection.execute(text(f'DROP ROLE IF EXISTS "{role_name}"'))
+                connection.execute(text(f'DROP ROLE IF EXISTS "{source_owner_name}"'))
         maintenance_engine.dispose()

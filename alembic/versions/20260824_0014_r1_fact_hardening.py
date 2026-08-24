@@ -3016,7 +3016,11 @@ def upgrade() -> None:
             v_match_count bigint;
         BEGIN
             IF TG_TABLE_NAME = 'journal_entry' THEN
-                v_entry_id := NEW.id;
+                IF TG_OP = 'DELETE' THEN
+                    v_entry_id := OLD.id;
+                ELSE
+                    v_entry_id := NEW.id;
+                END IF;
             ELSIF TG_OP = 'DELETE' THEN
                 v_entry_id := OLD.entry_id;
             ELSE
@@ -3036,20 +3040,22 @@ def upgrade() -> None:
                          USING ERRCODE = 'integrity_constraint_violation';
                  END IF;
              END IF;
-             IF TG_OP = 'UPDATE' AND OLD.entry_id IS DISTINCT FROM NEW.entry_id THEN
-                 SELECT je.status, je.primary_account_id
-                   INTO v_status, v_primary_account
-                   FROM public.journal_entry AS je
-                  WHERE je.id = OLD.entry_id;
-                 IF v_status = 'POSTED' THEN
-                     SELECT count(*) INTO v_match_count
-                       FROM public.posting AS p
-                      WHERE p.entry_id = OLD.entry_id
-                        AND p.account_id IS NOT DISTINCT FROM v_primary_account;
-                     IF v_primary_account IS NULL OR v_match_count IS DISTINCT FROM 1 THEN
-                         RAISE EXCEPTION
-                             'POSTED journal entry requires one matching primary account posting'
-                             USING ERRCODE = 'integrity_constraint_violation';
+             IF TG_TABLE_NAME = 'posting' AND TG_OP = 'UPDATE' THEN
+                 IF OLD.entry_id IS DISTINCT FROM NEW.entry_id THEN
+                     SELECT je.status, je.primary_account_id
+                       INTO v_status, v_primary_account
+                       FROM public.journal_entry AS je
+                      WHERE je.id = OLD.entry_id;
+                     IF v_status = 'POSTED' THEN
+                         SELECT count(*) INTO v_match_count
+                           FROM public.posting AS p
+                          WHERE p.entry_id = OLD.entry_id
+                            AND p.account_id IS NOT DISTINCT FROM v_primary_account;
+                         IF v_primary_account IS NULL OR v_match_count IS DISTINCT FROM 1 THEN
+                             RAISE EXCEPTION
+                                 'POSTED journal entry requires one matching primary account posting'
+                                 USING ERRCODE = 'integrity_constraint_violation';
+                         END IF;
                      END IF;
                  END IF;
              END IF;

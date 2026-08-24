@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import sessionmaker
 
 from alembic import command
@@ -19,21 +20,40 @@ from ledgerbridge.synthetic_connector import SyntheticBankConnector
 FIXTURE = Path(__file__).parent / "fixtures" / "synthetic_bank_statement.json"
 
 
+def _test_admin_url() -> URL:
+    value = os.environ.get("LEDGERBRIDGE_TEST_ADMIN_DATABASE_URL")
+    if value is None:
+        pytest.skip(
+            "PostgreSQL integration tests require LEDGERBRIDGE_TEST_ADMIN_DATABASE_URL "
+            "for temporary database bootstrap and cleanup"
+        )
+    return make_url(value)
+
+
+def _quote_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
 @pytest.fixture(scope="module")
 def replay_database_url() -> Iterator[str]:
     value = os.environ.get("LEDGERBRIDGE_MIGRATION_DATABASE_URL")
     if value is None:
         pytest.skip("PostgreSQL integration tests require LEDGERBRIDGE_MIGRATION_DATABASE_URL")
-    owner_url = create_engine(value).url
+    owner_url = make_url(value)
+    owner_name = owner_url.username
+    if not isinstance(owner_name, str) or not owner_name:
+        pytest.skip("LEDGERBRIDGE_MIGRATION_DATABASE_URL must identify a database owner")
     database_name = f"ledgerbridge_phase6_replay_{uuid4().hex[:12]}"
     maintenance_engine = create_engine(
-        owner_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
+        _test_admin_url().set(database="postgres"), isolation_level="AUTOCOMMIT"
     )
     temporary_url = owner_url.set(database=database_name)
     temporary_engine: Engine | None = None
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
         rendered = temporary_url.render_as_string(hide_password=False)
         config = Config("alembic.ini")
         config.attributes["database_url"] = rendered
