@@ -23,6 +23,7 @@ from scripts.backup_restore import (
     PHASE_3_FUNCTIONS,
     PHASE_3_TABLE_PRIVILEGES,
     PHASE_3_TRIGGERS,
+    R1_INTERNAL_READ_FUNCTION_SIGNATURES,
     R1_INTERNAL_READ_FUNCTIONS,
     R1_INTERNAL_READ_VIEWS,
     R1_OPTIONAL_ROLES,
@@ -233,11 +234,7 @@ def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
             {
                 "schema": "internal_read",
                 "name": name,
-                "identity_arguments": (
-                    "uuid, uuid, date, date, bigint, bytea"
-                    if name == "get_ledger_summary_as_of"
-                    else ""
-                ),
+                "identity_arguments": R1_INTERNAL_READ_FUNCTION_SIGNATURES[name],
                 "owner": "ledgerbridge_owner",
                 "security_definer": True,
                 "proconfig": ["search_path=pg_catalog"],
@@ -887,6 +884,79 @@ def test_r1_database_metadata_requires_ledger_summary_reader_execute() -> None:
     }
     with pytest.raises(BackupError, match="function privilege matrix"):
         _validate_restored_database(reader_execute_drift, reader_execute_drift.copy())
+
+
+def test_r1_security_sql_matches_fixed_function_signatures() -> None:
+    assert tuple(R1_INTERNAL_READ_FUNCTION_SIGNATURES) == R1_INTERNAL_READ_FUNCTIONS
+    assert "expected_r1_functions(function_name, identity_arguments) AS" in R1_SECURITY_SQL
+    assert "expected.function_name = p.proname" in R1_SECURITY_SQL
+    assert (
+        "expected.identity_arguments = pg_get_function_identity_arguments(p.oid)" in R1_SECURITY_SQL
+    )
+    assert "p.proname IN" not in R1_SECURITY_SQL
+    for name, identity_arguments in R1_INTERNAL_READ_FUNCTION_SIGNATURES.items():
+        assert f"('{name}', '{identity_arguments}')" in R1_SECURITY_SQL
+
+
+@pytest.mark.parametrize("mutation", ["missing", "wrong_signature", "overload"])
+def test_r1_database_metadata_rejects_non_allowlisted_function_signatures(
+    mutation: str,
+) -> None:
+    expected = _r1_database_metadata()
+    functions = cast(list[dict[str, object]], expected["r1_functions"])
+    summary = next(
+        item
+        for item in functions
+        if item.get("schema") == "internal_read" and item.get("name") == "get_ledger_summary_as_of"
+    )
+    if mutation == "missing":
+        drifted_functions = [item for item in functions if item is not summary]
+    elif mutation == "wrong_signature":
+        drifted_functions = [
+            {**item, "identity_arguments": "uuid"} if item is summary else item
+            for item in functions
+        ]
+    else:
+        drifted_functions = [*functions, {**summary, "identity_arguments": "uuid"}]
+
+    drifted = {**expected, "r1_functions": drifted_functions}
+    with pytest.raises(BackupError, match="signature baseline"):
+        _validate_restored_database(drifted, drifted.copy())
+
+
+@pytest.mark.parametrize("mutation", ["missing", "wrong_signature", "overload"])
+def test_r1_database_metadata_uses_fixed_signatures_for_function_privileges(
+    mutation: str,
+) -> None:
+    expected = _r1_database_metadata()
+    function_privileges = cast(
+        list[dict[str, object]], expected["r1_effective_function_privileges"]
+    )
+    summary_rows = [
+        item
+        for item in function_privileges
+        if item.get("schema") == "internal_read" and item.get("name") == "get_ledger_summary_as_of"
+    ]
+    assert summary_rows
+    if mutation == "missing":
+        drifted_privileges = [item for item in function_privileges if item not in summary_rows]
+    elif mutation == "wrong_signature":
+        drifted_privileges = [
+            {**item, "identity_arguments": "uuid"} if item in summary_rows else item
+            for item in function_privileges
+        ]
+    else:
+        drifted_privileges = [
+            *function_privileges,
+            {**summary_rows[0], "identity_arguments": "uuid"},
+        ]
+
+    drifted = {
+        **expected,
+        "r1_effective_function_privileges": drifted_privileges,
+    }
+    with pytest.raises(BackupError, match="function privilege matrix"):
+        _validate_restored_database(drifted, drifted.copy())
 
 
 def test_r1_database_metadata_requires_closed_objects_and_default_acl() -> None:
