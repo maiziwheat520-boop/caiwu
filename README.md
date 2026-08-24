@@ -1,5 +1,10 @@
 # LedgerBridge
 
+The versioned R0 synthetic Core read/state contract is documented in
+`docs/tasks/2026-08-24-r0-synthetic-contract.md`. It is an offline contract and
+test fixture only: `/internal/v1` is not installed, production remains unchanged,
+and no real-data source is enabled.
+
 LedgerBridge is a self-hosted financial ledger gateway for importing personal
 financial evidence, normalizing source records, and building a traceable
 double-entry ledger for trusted queries through Hermes.

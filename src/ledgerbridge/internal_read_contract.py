@@ -1,0 +1,298 @@
+"""Deny-by-default authorization contract for the R0 synthetic read surface.
+
+The certificate facts accepted here represent output from a future trusted mTLS
+terminator.  R0 uses them only as deterministic test inputs; it does not install
+middleware, parse identity headers, or enable an HTTP route.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from enum import StrEnum
+from typing import Annotated, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from ledgerbridge.candidate_contract import (
+    JSON_SAFE_INTEGER,
+    Blocker,
+    CandidateAction,
+    CandidateProjection,
+)
+
+READ_CONTRACT_VERSION = "ledgerbridge.internal-read.v1"
+
+
+class Capability(StrEnum):
+    SYSTEM_READ = "system:read"
+    CANDIDATE_READ = "candidate:read"
+    EVIDENCE_READ = "evidence:read"
+    RECONCILIATION_READ = "reconciliation:read"
+    LEDGER_READ = "ledger:read"
+    CANDIDATE_CREATE = "candidate:create"
+    CANDIDATE_DECIDE = "candidate:decide"
+    CANDIDATE_SUPERSEDE = "candidate:supersede"
+
+
+class ScopeMode(StrEnum):
+    SYSTEM = "SYSTEM"
+    COLLECTION = "COLLECTION"
+    OBJECT = "OBJECT"
+
+
+READ_CAPABILITIES = frozenset(
+    {
+        Capability.SYSTEM_READ,
+        Capability.CANDIDATE_READ,
+        Capability.EVIDENCE_READ,
+        Capability.RECONCILIATION_READ,
+        Capability.LEDGER_READ,
+    }
+)
+
+
+READ_ROUTE_CAPABILITIES: Mapping[str, Capability] = {
+    "GET /internal/v1/capabilities": Capability.SYSTEM_READ,
+    "GET /internal/v1/candidates": Capability.CANDIDATE_READ,
+    "GET /internal/v1/candidates/{id}": Capability.CANDIDATE_READ,
+    "GET /internal/v1/evidence/{id}/content": Capability.EVIDENCE_READ,
+    "GET /internal/v1/reconciliations/{month}": Capability.RECONCILIATION_READ,
+    "GET /internal/v1/ledger-summary": Capability.LEDGER_READ,
+}
+
+READ_ROUTE_SCOPE_MODES: Mapping[str, ScopeMode] = {
+    "GET /internal/v1/capabilities": ScopeMode.SYSTEM,
+    "GET /internal/v1/candidates": ScopeMode.COLLECTION,
+    "GET /internal/v1/candidates/{id}": ScopeMode.OBJECT,
+    "GET /internal/v1/evidence/{id}/content": ScopeMode.OBJECT,
+    "GET /internal/v1/reconciliations/{month}": ScopeMode.OBJECT,
+    "GET /internal/v1/ledger-summary": ScopeMode.OBJECT,
+}
+
+CANDIDATE_ACTION_CAPABILITIES: Mapping[CandidateAction, Capability] = {
+    CandidateAction.COMPLETE_FIELDS: Capability.CANDIDATE_DECIDE,
+    CandidateAction.RESOLVE_CONFLICT: Capability.CANDIDATE_DECIDE,
+    CandidateAction.CONFIRM: Capability.CANDIDATE_DECIDE,
+    CandidateAction.IGNORE: Capability.CANDIDATE_DECIDE,
+    CandidateAction.SUPERSEDE: Capability.CANDIDATE_SUPERSEDE,
+}
+
+
+class _FrozenModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+ReadMoneyMinor = Annotated[
+    int,
+    Field(strict=True, ge=-JSON_SAFE_INTEGER, le=JSON_SAFE_INTEGER),
+]
+BusinessUnitRef = Annotated[str, Field(min_length=1, max_length=100)]
+
+
+class CapabilitiesResponse(_FrozenModel):
+    contract_version: Literal["ledgerbridge.internal-read.v1"] = "ledgerbridge.internal-read.v1"
+    candidate_contract_version: Literal["ledgerbridge.candidate.v1"] = "ledgerbridge.candidate.v1"
+    state_graph_version: Literal["ledgerbridge.candidate-state.v1"] = (
+        "ledgerbridge.candidate-state.v1"
+    )
+    data_mode: Literal["synthetic"] = "synthetic"
+    enabled_modules: tuple[
+        Literal["candidates", "evidence", "reconciliations", "ledger-summary"], ...
+    ]
+
+
+class CandidatePage(_FrozenModel):
+    items: tuple[CandidateProjection, ...] = Field(max_length=100)
+    next_cursor: str | None = Field(default=None, min_length=1, max_length=512)
+
+
+class ReconciliationProposal(_FrozenModel):
+    proposal_ref: UUID
+    relation: Literal["1:1", "1:N", "N:1"]
+    status: Literal["PROPOSED", "CONFIRMED", "REJECTED"]
+    amount_minor: ReadMoneyMinor
+    currency: Literal["CNY"] = "CNY"
+
+
+class SuspenseProjection(_FrozenModel):
+    suspense_ref: UUID
+    status: Literal["OPEN", "RESOLVED"]
+    reason: Literal[
+        "UNKNOWN_COUNTERPARTY",
+        "UNMATCHED_TRANSFER",
+        "BALANCE_GAP",
+        "LOAN_BREAKDOWN",
+    ]
+    amount_minor: ReadMoneyMinor
+    currency: Literal["CNY"] = "CNY"
+
+
+class ReconciliationProjection(_FrozenModel):
+    entity_ref: UUID
+    business_unit_ref: str = Field(min_length=1, max_length=100)
+    month: str = Field(pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+    snapshot_revision: int = Field(ge=1)
+    blockers: tuple[Blocker, ...] = ()
+    proposals: tuple[ReconciliationProposal, ...] = ()
+    suspense: tuple[SuspenseProjection, ...] = ()
+    posted_amount_minor: ReadMoneyMinor
+    currency: Literal["CNY"] = "CNY"
+
+
+class LedgerSummary(_FrozenModel):
+    entity_ref: UUID
+    business_unit_ref: str = Field(min_length=1, max_length=100)
+    from_month: str = Field(pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+    to_month: str = Field(pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+    posting_status: Literal["POSTED"] = "POSTED"
+    currency: Literal["CNY"] = "CNY"
+    totals_minor: dict[str, ReadMoneyMinor]
+
+
+class EntityGrant(_FrozenModel):
+    entity_ref: UUID
+    business_unit_refs: frozenset[BusinessUnitRef] = Field(min_length=1)
+
+
+class WorkloadPrincipal(_FrozenModel):
+    principal_ref: str = Field(min_length=1, max_length=200)
+    san_uri: str = Field(pattern=r"^spiffe://ledgerbridge\.test/[a-z0-9/_-]+$")
+    policy_generation: int = Field(ge=1)
+    capabilities: frozenset[Capability]
+    grants: tuple[EntityGrant, ...] = ()
+
+
+class SyntheticPeerEvidence(_FrozenModel):
+    """Synthetic verifier output; never a certificate or a production credential."""
+
+    san_uri: str
+    chain_verified: bool
+    within_validity: bool
+    client_auth_eku: bool
+    revoked: bool
+    policy_generation: int = Field(ge=1)
+
+
+class AuthenticationDenied(RuntimeError):
+    """The synthetic peer did not satisfy every mTLS identity predicate."""
+
+
+class AuthorizationDenied(RuntimeError):
+    """The principal lacks the required capability."""
+
+
+class ResourceNotVisible(RuntimeError):
+    """An object is absent or outside entity/business-unit scope (HTTP 404)."""
+
+
+def resolve_synthetic_peer(
+    peer: SyntheticPeerEvidence,
+    *,
+    policy: Mapping[str, WorkloadPrincipal],
+    current_policy_generation: int,
+) -> WorkloadPrincipal:
+    """Resolve an already transport-verified synthetic peer through fixed SAN policy."""
+
+    if not (
+        peer.chain_verified
+        and peer.within_validity
+        and peer.client_auth_eku
+        and not peer.revoked
+        and peer.policy_generation == current_policy_generation
+    ):
+        raise AuthenticationDenied("synthetic mTLS peer failed closed")
+    principal = policy.get(peer.san_uri)
+    if (
+        principal is None
+        or principal.san_uri != peer.san_uri
+        or principal.policy_generation != current_policy_generation
+    ):
+        raise AuthenticationDenied("synthetic mTLS SAN is not mapped by current policy")
+    return principal
+
+
+def require_capability(principal: WorkloadPrincipal, capability: Capability) -> None:
+    if capability not in principal.capabilities:
+        raise AuthorizationDenied("required capability is not granted")
+
+
+def require_visible_scope(
+    principal: WorkloadPrincipal,
+    *,
+    entity_ref: UUID,
+    business_unit_ref: str,
+) -> None:
+    if not any(
+        grant.entity_ref == entity_ref and business_unit_ref in grant.business_unit_refs
+        for grant in principal.grants
+    ):
+        raise ResourceNotVisible("resource was not found")
+
+
+def authorize_read(
+    principal: WorkloadPrincipal,
+    capability: Capability,
+    *,
+    entity_ref: UUID | None = None,
+    business_unit_ref: str | None = None,
+) -> None:
+    require_capability(principal, capability)
+    if capability == Capability.SYSTEM_READ:
+        if entity_ref is not None or business_unit_ref is not None:
+            raise ResourceNotVisible("resource was not found")
+        return
+    if entity_ref is None or business_unit_ref is None:
+        raise ResourceNotVisible("resource was not found")
+    require_visible_scope(
+        principal,
+        entity_ref=entity_ref,
+        business_unit_ref=business_unit_ref,
+    )
+
+
+def authorize_collection_read(
+    principal: WorkloadPrincipal,
+    capability: Capability,
+) -> None:
+    """Authorize a collection whose query must union only the principal's grants."""
+
+    if capability != Capability.CANDIDATE_READ:
+        raise AuthorizationDenied("capability has no collection read contract")
+    require_capability(principal, capability)
+    if not principal.grants:
+        raise ResourceNotVisible("resource was not found")
+
+
+def require_candidate_workload_scope(
+    principal: WorkloadPrincipal,
+    action: CandidateAction,
+    *,
+    entity_ref: UUID,
+    business_unit_ref: str,
+) -> None:
+    """Check only the workload half of a future D1 command authorization.
+
+    This function is deliberately not a complete authorization decision. D1 must
+    additionally verify a fresh, method/path/body-bound human assertion before any
+    command route may exist.
+    """
+
+    require_capability(principal, CANDIDATE_ACTION_CAPABILITIES[action])
+    require_visible_scope(
+        principal,
+        entity_ref=entity_ref,
+        business_unit_ref=business_unit_ref,
+    )
+
+
+def filter_visible_scopes(
+    principal: WorkloadPrincipal,
+    values: Iterable[tuple[UUID, str]],
+) -> tuple[tuple[UUID, str], ...]:
+    """Model the mandatory query predicate used before object materialization."""
+
+    allowed = {
+        (grant.entity_ref, unit) for grant in principal.grants for unit in grant.business_unit_refs
+    }
+    return tuple(value for value in values if value in allowed)

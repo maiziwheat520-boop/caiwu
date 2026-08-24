@@ -1,0 +1,568 @@
+openapi: 3.1.0
+info:
+  title: LedgerBridge Core Internal Read Contract
+  version: ledgerbridge.internal-read.v1
+  description: >-
+    R0 synthetic contract only. This document does not enable routes, production
+    data, CORS, browser cookies, database access, or artifact storage.
+servers:
+  - url: https://ledgerbridge-core.invalid
+    description: Non-routable contract placeholder
+security:
+  - workloadMtls: []
+paths:
+  /internal/v1/capabilities:
+    get:
+      operationId: getInternalCapabilities
+      x-ledgerbridge-capability: system:read
+      responses:
+        "200":
+          description: Redacted version and module capabilities
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Capabilities"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /internal/v1/candidates:
+    get:
+      operationId: listInternalCandidates
+      x-ledgerbridge-capability: candidate:read
+      x-ledgerbridge-reject-unknown-query: true
+      description: >-
+        Results use a stable created_at + candidate_ref order. The opaque cursor
+        is bound to normalized filters, principal, entity/business-unit grants,
+        policy generation, and a snapshot horizon; cross-scope or tampered reuse
+        fails closed.
+      parameters:
+        - $ref: "#/components/parameters/Month"
+        - $ref: "#/components/parameters/Status"
+        - $ref: "#/components/parameters/BusinessUnit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Stable, bounded candidate page already restricted by principal scope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 100
+                    items:
+                      $ref: "#/components/schemas/CandidateProjection"
+                  next_cursor:
+                    type: [string, "null"]
+                    maxLength: 512
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /internal/v1/candidates/{id}:
+    get:
+      operationId: getInternalCandidate
+      x-ledgerbridge-capability: candidate:read
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: One authorized, allowlisted candidate projection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateProjection"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /internal/v1/evidence/{id}/content:
+    get:
+      operationId: downloadInternalEvidence
+      x-ledgerbridge-capability: evidence:read
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Authorized synthetic bytes after digest verification
+          headers:
+            Cache-Control:
+              required: true
+              schema:
+                type: string
+                const: no-store
+            X-Content-Type-Options:
+              required: true
+              schema:
+                type: string
+                const: nosniff
+            Content-Disposition:
+              required: true
+              schema:
+                type: string
+                pattern: '^attachment; filename="[A-Za-z0-9._-]+"$'
+            Content-Digest:
+              required: true
+              schema:
+                type: string
+                pattern: '^sha-256=:[A-Za-z0-9+/]+=*:$'
+          content:
+            text/plain:
+              schema:
+                type: string
+                format: binary
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /internal/v1/reconciliations/{month}:
+    get:
+      operationId: getInternalReconciliation
+      x-ledgerbridge-capability: reconciliation:read
+      parameters:
+        - $ref: "#/components/parameters/MonthPath"
+        - $ref: "#/components/parameters/EntityRef"
+        - $ref: "#/components/parameters/RequiredBusinessUnit"
+      responses:
+        "200":
+          description: Synthetic proposal, Suspense, blockers, snapshot revision and POSTED summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReconciliationProjection"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /internal/v1/ledger-summary:
+    get:
+      operationId: getInternalLedgerSummary
+      x-ledgerbridge-capability: ledger:read
+      parameters:
+        - $ref: "#/components/parameters/EntityRef"
+        - $ref: "#/components/parameters/RequiredBusinessUnit"
+        - name: from_month
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/AccountingMonth"
+        - name: to_month
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/AccountingMonth"
+      responses:
+        "200":
+          description: Integer-minor CNY totals from POSTED entries only
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LedgerSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+components:
+  securitySchemes:
+    workloadMtls:
+      type: mutualTLS
+      description: >-
+        Workload identity is derived only from a trusted certificate verifier and
+        fixed SAN policy; request headers cannot assert a principal.
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Month:
+      name: month
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/AccountingMonth"
+    MonthPath:
+      name: month
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/AccountingMonth"
+    Status:
+      name: status
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/CandidateStatus"
+    BusinessUnit:
+      name: business_unit
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 100
+    RequiredBusinessUnit:
+      name: business_unit
+      in: query
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 100
+    EntityRef:
+      name: entity_ref
+      in: query
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 512
+      description: Opaque, integrity-protected continuation bound to query and authorization scope.
+  responses:
+    BadRequest:
+      description: Query does not match the closed parameter contract
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unauthorized:
+      description: A trusted workload identity was not established
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Forbidden:
+      description: The authenticated workload lacks the route capability
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: Object is absent or outside the principal entity scope
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    AccountingMonth:
+      type: string
+      pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$'
+    CandidateStatus:
+      type: string
+      enum: [INCOMPLETE, CONFLICTED, PENDING, CONFIRMED, IGNORED, SUPERSEDED]
+    Capabilities:
+      type: object
+      additionalProperties: false
+      required: [contract_version, candidate_contract_version, state_graph_version, data_mode, enabled_modules]
+      properties:
+        contract_version:
+          const: ledgerbridge.internal-read.v1
+        candidate_contract_version:
+          const: ledgerbridge.candidate.v1
+        state_graph_version:
+          const: ledgerbridge.candidate-state.v1
+        data_mode:
+          const: synthetic
+        enabled_modules:
+          type: array
+          uniqueItems: true
+          items:
+            enum: [candidates, evidence, reconciliations, ledger-summary]
+    CandidateProjection:
+      type: object
+      additionalProperties: false
+      required:
+        - contract_version
+        - candidate_ref
+        - short_id
+        - revision
+        - status
+        - entity_ref
+        - currency
+        - summary
+        - confidence_basis_points
+        - source
+        - evidence
+        - blockers
+        - review_summary
+        - created_at
+        - updated_at
+      properties:
+        contract_version:
+          const: ledgerbridge.candidate.v1
+        candidate_ref:
+          type: string
+          format: uuid
+        short_id:
+          type: string
+          pattern: '^C-[A-Z0-9]{4,8}$'
+        revision:
+          type: integer
+          minimum: 1
+        status:
+          $ref: "#/components/schemas/CandidateStatus"
+        entity_ref:
+          type: string
+          format: uuid
+        business_unit_ref:
+          type: [string, "null"]
+          maxLength: 100
+        business_unit_label:
+          type: [string, "null"]
+          maxLength: 200
+        category_code:
+          type: [string, "null"]
+          maxLength: 100
+        category_label:
+          type: [string, "null"]
+          maxLength: 200
+        amount_minor:
+          type: [integer, "null"]
+          minimum: -9007199254740991
+          maximum: 9007199254740991
+        currency:
+          const: CNY
+        accounting_month:
+          oneOf:
+            - $ref: "#/components/schemas/AccountingMonth"
+            - type: "null"
+        summary:
+          type: string
+          maxLength: 500
+        confidence_basis_points:
+          type: integer
+          minimum: 0
+          maximum: 10000
+        source:
+          $ref: "#/components/schemas/SourceProjection"
+        evidence:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/EvidenceReference"
+        blockers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Blocker"
+        review_summary:
+          $ref: "#/components/schemas/ReviewSummary"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        supersedes_candidate_ref:
+          type: [string, "null"]
+          format: uuid
+        superseded_by_candidate_ref:
+          type: [string, "null"]
+          format: uuid
+    SourceProjection:
+      type: object
+      additionalProperties: false
+      required: [ingest_channel, source_system, source_event_ref, display_label]
+      properties:
+        ingest_channel:
+          enum: [HERMES, OUTLOOK, SYNTHETIC]
+        source_system:
+          type: string
+          maxLength: 100
+        source_event_ref:
+          type: string
+          format: uuid
+        display_label:
+          type: string
+          maxLength: 100
+    EvidenceReference:
+      type: object
+      additionalProperties: false
+      required: [evidence_ref, kind, media_type, display_name, download_available]
+      properties:
+        evidence_ref:
+          type: string
+          format: uuid
+        kind:
+          enum: [MESSAGE_ENVELOPE, MAIL_ENVELOPE, ATTACHMENT]
+        media_type:
+          type: string
+          maxLength: 200
+        display_name:
+          type: [string, "null"]
+          maxLength: 200
+        download_available:
+          type: boolean
+    Blocker:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+          maxLength: 300
+        field:
+          type: [string, "null"]
+        conflict_ref:
+          type: [string, "null"]
+          format: uuid
+        evidence_ref:
+          type: [string, "null"]
+          format: uuid
+    ReviewSummary:
+      type: object
+      additionalProperties: false
+      required: [event_count, last_action, last_decided_at, current_revision]
+      properties:
+        event_count:
+          type: integer
+          minimum: 0
+        last_action:
+          type: [string, "null"]
+        last_decided_at:
+          type: [string, "null"]
+          format: date-time
+        current_revision:
+          type: integer
+          minimum: 1
+    ReconciliationProjection:
+      type: object
+      additionalProperties: false
+      required: [entity_ref, business_unit_ref, month, snapshot_revision, blockers, proposals, suspense, posted_amount_minor, currency]
+      properties:
+        entity_ref:
+          type: string
+          format: uuid
+        business_unit_ref:
+          type: string
+          minLength: 1
+          maxLength: 100
+        month:
+          $ref: "#/components/schemas/AccountingMonth"
+        snapshot_revision:
+          type: integer
+          minimum: 1
+        blockers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Blocker"
+        proposals:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReconciliationProposal"
+        suspense:
+          type: array
+          items:
+            $ref: "#/components/schemas/SuspenseProjection"
+        posted_amount_minor:
+          type: integer
+          minimum: -9007199254740991
+          maximum: 9007199254740991
+        currency:
+          const: CNY
+    ReconciliationProposal:
+      type: object
+      additionalProperties: false
+      required: [proposal_ref, relation, status, amount_minor, currency]
+      properties:
+        proposal_ref:
+          type: string
+          format: uuid
+        relation:
+          enum: ["1:1", "1:N", "N:1"]
+        status:
+          enum: [PROPOSED, CONFIRMED, REJECTED]
+        amount_minor:
+          type: integer
+          minimum: -9007199254740991
+          maximum: 9007199254740991
+        currency:
+          const: CNY
+    SuspenseProjection:
+      type: object
+      additionalProperties: false
+      required: [suspense_ref, status, reason, amount_minor, currency]
+      properties:
+        suspense_ref:
+          type: string
+          format: uuid
+        status:
+          enum: [OPEN, RESOLVED]
+        reason:
+          enum: [UNKNOWN_COUNTERPARTY, UNMATCHED_TRANSFER, BALANCE_GAP, LOAN_BREAKDOWN]
+        amount_minor:
+          type: integer
+          minimum: -9007199254740991
+          maximum: 9007199254740991
+        currency:
+          const: CNY
+    LedgerSummary:
+      type: object
+      additionalProperties: false
+      required: [entity_ref, business_unit_ref, from_month, to_month, posting_status, currency, totals_minor]
+      properties:
+        entity_ref:
+          type: string
+          format: uuid
+        business_unit_ref:
+          type: string
+          minLength: 1
+          maxLength: 100
+        from_month:
+          $ref: "#/components/schemas/AccountingMonth"
+        to_month:
+          $ref: "#/components/schemas/AccountingMonth"
+        posting_status:
+          const: POSTED
+        currency:
+          const: CNY
+        totals_minor:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: -9007199254740991
+            maximum: 9007199254740991
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+        code:
+          type: string

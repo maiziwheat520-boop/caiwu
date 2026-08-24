@@ -5,7 +5,7 @@ Updated: 2026-08-24
 ## Current phase
 
 R0 synthetic Core contract is implemented on the Codex task branch
-`ai/chatgpt/r0-synthetic-contract`. It freezes a versioned CandidateProjection,
+`ai/chatgpt/r0-synthetic-contract-v2`. It freezes a versioned CandidateProjection,
 append-only candidate state graph, deny-by-default test authorization matrix,
 six-GET internal OpenAPI, and fixed synthetic fixtures. The contract is not
 wired into FastAPI, PostgreSQL, ArtifactStore, Connector registration, Web, or
@@ -246,10 +246,10 @@ separate enablement gates, not silently inferred from this code closure.
 
 ## Ownership checkpoint
 
-- Recorded: 2026-08-22
+- Recorded: 2026-08-24
 - Deployment revision: `e426b488b2abb02f10ef02a61aae7ebe24c3283f`
 - Codex implementation clone: `G:\我的云端硬盘\AI\LedgerBridge-Codex`
-- Codex implementation branch: `ai/chatgpt/phase-3-connector-runner`
+- Codex implementation branch: `ai/chatgpt/r0-synthetic-contract-v2`
 - Codex identity: `Codex <codex@ledgerbridge.local>`
 - Claude review-only clone: `G:\我的云端硬盘\AI\LedgerBridge-Claude`
 - Claude identity when explicitly authorized to commit:
@@ -258,10 +258,9 @@ separate enablement gates, not silently inferred from this code closure.
 
 ## Active implementation owner
 
-Codex is the single writer on `ai/chatgpt/phase-3-connector-runner` for Slice B
-and the Slice C adapter prerequisite.
-Claude remains read-only and is reserved for a later narrow audit. No production
-runner or real Connector is enabled.
+Codex is the single writer for the offline R0 synthetic contract on
+`ai/chatgpt/r0-synthetic-contract-v2`. Independent agents are review-only.
+No production route, migration, runner, real Connector, or real data is enabled.
 
 ## Review owner
 
@@ -308,7 +307,8 @@ in an isolated Hermes project; no evidence was ingested.
 ## Next task
 
 Audit the Phase 4 mailbox/provider and Phase 5 dedup/reconciliation/Suspense
-contracts, then add concurrent candidate matching at the importer boundary.
+contracts, then connect the concurrent candidate admission boundary to a persisted
+candidate/Review API slice.
 The default manifest and registry stay empty. Next gates are signed-manifest/key
 custody, trusted OAuth, provider/source ownership, concurrent candidate matching,
 real parser samples, and a narrow Claude audit.
