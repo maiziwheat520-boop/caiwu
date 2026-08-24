@@ -215,6 +215,28 @@ class SecretStreamCipher:
         parsed = _parse_envelope(envelope)
         return self._decrypt_parsed(parsed, purpose=purpose, aad=aad)
 
+    def decrypt_verified_metadata(
+        self,
+        envelope: bytes,
+        *,
+        purpose: str,
+        aad: bytes = b"",
+        expected_chunk_size: int,
+        expected_stream_header: bytes,
+        expected_wrapped_key: WrappedKey,
+    ) -> bytes:
+        """Decrypt only when the authenticated envelope header matches storage metadata."""
+
+        _validate_context(purpose, aad)
+        parsed = _parse_envelope(envelope)
+        if (
+            parsed.header.chunk_size != expected_chunk_size
+            or parsed.header.stream_header != expected_stream_header
+            or parsed.header.wrapped_key != expected_wrapped_key
+        ):
+            raise EnvelopeFormatError("envelope metadata does not match its descriptor")
+        return self._decrypt_parsed(parsed, purpose=purpose, aad=aad)
+
     def rewrap(self, envelope: bytes, *, purpose: str, aad: bytes = b"") -> bytes:
         """Rewrap only the DEK; the payload is never decrypted or rewritten."""
 

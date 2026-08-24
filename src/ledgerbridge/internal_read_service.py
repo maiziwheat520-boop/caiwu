@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import date
 from importlib import resources
 from typing import Annotated, Literal, cast
@@ -20,7 +21,14 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from ledgerbridge.artifacts import ArtifactStoreError, PublishedArtifact, storage_key_for_digest
 from ledgerbridge.candidate_contract import CandidateProjection, CandidateStatus
+from ledgerbridge.encrypted_artifacts import (
+    EncryptedArtifactError,
+    EncryptedArtifactStore,
+    EncryptedEnvelopeMetadata,
+    EncryptedPublishedArtifact,
+)
 from ledgerbridge.internal_read_contract import (
     CandidatePage,
     CapabilitiesResponse,
@@ -37,6 +45,7 @@ from ledgerbridge.internal_read_contract import (
     require_capability,
 )
 from ledgerbridge.internal_read_cursor import CursorInvalid, ReadCursorSigner
+from ledgerbridge.keyring import KeyProviderError, WrappedKey
 
 _RESOURCE_PACKAGE = "ledgerbridge.synthetic_read_data"
 _FIXTURE_NAME = "r0_contract_fixture.json"
@@ -76,6 +85,22 @@ class EvidenceContent(_FrozenModel):
         if hashlib.sha256(self.content).hexdigest() != self.sha256:
             raise ValueError("evidence sha256 does not match content")
         return self
+
+
+@dataclass(frozen=True, slots=True)
+class _DatabaseEvidenceMetadata:
+    evidence_ref: UUID
+    entity_ref: UUID
+    business_unit_id: UUID
+    business_unit_ref: str
+    object_ref: str
+    filename: str
+    plaintext_sha256: bytes
+    plaintext_size: int
+    ciphertext_sha256: bytes
+    ciphertext_size: int
+    storage_key: str
+    envelope_metadata: EncryptedEnvelopeMetadata
 
 
 class _Provenance(_FrozenModel):
@@ -391,9 +416,11 @@ class DatabaseInternalReadService:
         self,
         session_factory: Callable[[], Session],
         cursor_signer: ReadCursorSigner | None = None,
+        encrypted_artifact_store: EncryptedArtifactStore | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._cursor_signer = cursor_signer
+        self._encrypted_artifact_store = encrypted_artifact_store
 
     def capabilities(self, principal: WorkloadPrincipal) -> CapabilitiesResponse:
         authorize_read(principal, Capability.SYSTEM_READ)
@@ -585,11 +612,86 @@ class DatabaseInternalReadService:
         principal: WorkloadPrincipal,
         evidence_ref: UUID,
     ) -> EvidenceContent:
-        _ = evidence_ref
         require_capability(principal, Capability.EVIDENCE_READ)
-        raise InternalReadBackendUnavailable(
-            "database evidence retrieval requires the reviewed S1 decryptor boundary"
-        )
+        store = self._encrypted_artifact_store
+        if store is None:
+            raise InternalReadBackendUnavailable(
+                "database evidence retrieval requires the reviewed S1 decryptor boundary"
+            )
+        try:
+            with self._session_factory() as session:
+                row = (
+                    session.execute(
+                        text(
+                            """
+                            SELECT * FROM internal_read.resolve_active_evidence_blob(
+                                :evidence_ref
+                            )
+                            """
+                        ),
+                        {"evidence_ref": evidence_ref},
+                    )
+                    .mappings()
+                    .first()
+                )
+        except (SQLAlchemyError, ValueError, TypeError, KeyError) as exc:
+            raise InternalReadBackendUnavailable("database evidence read failed") from exc
+        if row is None:
+            raise ResourceNotVisible("resource was not found")
+
+        try:
+            metadata = self._evidence_metadata(cast(Mapping[str, object], row))
+            if metadata.evidence_ref != evidence_ref:
+                raise InternalReadBackendUnavailable("database evidence identity is invalid")
+            authorize_read(
+                principal,
+                Capability.EVIDENCE_READ,
+                entity_ref=metadata.entity_ref,
+                business_unit_ref=metadata.business_unit_ref,
+            )
+            if (
+                self._business_unit_id(principal, metadata.entity_ref, metadata.business_unit_ref)
+                != metadata.business_unit_id
+            ):
+                raise InternalReadBackendUnavailable("database evidence scope binding is invalid")
+            artifact = EncryptedPublishedArtifact(
+                object_ref=metadata.object_ref,
+                plaintext_sha256=metadata.plaintext_sha256,
+                plaintext_size=metadata.plaintext_size,
+                ciphertext=PublishedArtifact(
+                    sha256=metadata.ciphertext_sha256,
+                    byte_size=metadata.ciphertext_size,
+                    storage_key=metadata.storage_key,
+                    created=False,
+                ),
+            )
+            with store.open_verified(
+                artifact, envelope_metadata=metadata.envelope_metadata
+            ) as stream:
+                content = stream.read()
+            digest = hashlib.sha256(content).digest()
+            if len(content) != metadata.plaintext_size or digest != metadata.plaintext_sha256:
+                raise InternalReadBackendUnavailable("database evidence plaintext is invalid")
+            return EvidenceContent(
+                content=content,
+                entity_ref=metadata.entity_ref,
+                business_unit_ref=metadata.business_unit_ref,
+                media_type="application/octet-stream",
+                filename=metadata.filename,
+                sha256=digest.hex(),
+                byte_size=len(content),
+            )
+        except ResourceNotVisible:
+            raise
+        except (
+            ValueError,
+            TypeError,
+            KeyError,
+            ArtifactStoreError,
+            EncryptedArtifactError,
+            KeyProviderError,
+        ) as exc:
+            raise InternalReadBackendUnavailable("database evidence payload is invalid") from exc
 
     def get_reconciliation(
         self,
@@ -670,8 +772,178 @@ class DatabaseInternalReadService:
             entity_ref=entity_ref,
             business_unit_ref=business_unit_ref,
         )
-        raise InternalReadBackendUnavailable(
-            "database ledger summary requires the reviewed scoped aggregate function"
+        business_unit_id = self._business_unit_id(principal, entity_ref, business_unit_ref)
+        try:
+            with self._session_factory() as session:
+                sequence, horizon_hash = self._audit_horizon(session)
+                rows = list(
+                    session.execute(
+                        text(
+                            """
+                            SELECT * FROM internal_read.get_ledger_summary_as_of(
+                                :entity_id, :business_unit_id, :from_month, :to_month,
+                                :horizon_sequence, :horizon_hash
+                            )
+                            """
+                        ),
+                        {
+                            "entity_id": entity_ref,
+                            "business_unit_id": business_unit_id,
+                            "from_month": date.fromisoformat(f"{from_month}-01"),
+                            "to_month": date.fromisoformat(f"{to_month}-01"),
+                            "horizon_sequence": sequence,
+                            "horizon_hash": horizon_hash,
+                        },
+                    ).mappings()
+                )
+        except (SQLAlchemyError, ValueError, TypeError, KeyError) as exc:
+            raise InternalReadBackendUnavailable("database ledger summary read failed") from exc
+
+        totals: dict[str, int] = {}
+        for raw in rows:
+            try:
+                row = dict(raw)
+                if (
+                    row["entity_ref"] != entity_ref
+                    or row["business_unit_ref"] != business_unit_ref
+                    or row["from_month"] != from_month
+                    or row["to_month"] != to_month
+                    or row["posting_status"] != "POSTED"
+                    or row["currency"] != "CNY"
+                ):
+                    raise InternalReadBackendUnavailable(
+                        "database ledger summary projection is out of scope"
+                    )
+                category = row["category_code"]
+                amount = row["amount_minor"]
+                if not isinstance(category, str) or not category or type(amount) is not int:
+                    raise InternalReadBackendUnavailable(
+                        "database ledger summary projection is invalid"
+                    )
+                totals[category] = totals.get(category, 0) + amount
+            except InternalReadBackendUnavailable:
+                raise
+            except (KeyError, TypeError, ValueError) as exc:
+                raise InternalReadBackendUnavailable(
+                    "database ledger summary projection is invalid"
+                ) from exc
+        try:
+            return LedgerSummary.model_validate(
+                {
+                    "entity_ref": entity_ref,
+                    "business_unit_ref": business_unit_ref,
+                    "from_month": from_month,
+                    "to_month": to_month,
+                    "posting_status": "POSTED",
+                    "currency": "CNY",
+                    "totals_minor": totals,
+                },
+                strict=True,
+            )
+        except (ValueError, TypeError) as exc:
+            raise InternalReadBackendUnavailable("database ledger summary is invalid") from exc
+
+    @staticmethod
+    def _evidence_metadata(row: Mapping[str, object]) -> _DatabaseEvidenceMetadata:
+        def require_uuid(name: str) -> UUID:
+            value = row.get(name)
+            if not isinstance(value, UUID):
+                raise ValueError(f"evidence metadata {name} is invalid")
+            return value
+
+        def require_bytes(name: str, length: int) -> bytes:
+            value = row.get(name)
+            if not isinstance(value, (bytes, bytearray)) or len(value) != length:
+                raise ValueError(f"evidence metadata {name} is invalid")
+            return bytes(value)
+
+        def require_text(name: str, pattern: re.Pattern[str], max_length: int) -> str:
+            value = row.get(name)
+            if not isinstance(value, str) or not 1 <= len(value) <= max_length:
+                raise ValueError(f"evidence metadata {name} is invalid")
+            if pattern.fullmatch(value) is None:
+                raise ValueError(f"evidence metadata {name} is invalid")
+            return value
+
+        entity_ref = require_uuid("entity_id")
+        business_unit_id = require_uuid("business_unit_id")
+        business_unit_ref_value = row.get("business_unit_ref")
+        if not isinstance(business_unit_ref_value, str) or not (
+            1 <= len(business_unit_ref_value) <= 100
+        ):
+            raise ValueError("evidence metadata business_unit_ref is invalid")
+        business_unit_ref = business_unit_ref_value
+        object_ref = require_text("object_ref", re.compile(r"[0-9a-f]{64}\Z"), 64)
+        storage_key = require_text(
+            "storage_key", re.compile(r"sha256/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{64}\Z"), 77
+        )
+        media_type = row.get("media_type")
+        if media_type != "application/octet-stream":
+            raise ValueError("evidence media type is not allowlisted")
+        filename_value = row.get("display_name")
+        if filename_value is None:
+            filename = f"evidence-{require_uuid('evidence_ref').hex}.bin"
+        elif (
+            isinstance(filename_value, str) and _RESOURCE_NAME.fullmatch(filename_value) is not None
+        ):
+            filename = filename_value
+        else:
+            raise ValueError("evidence display name is invalid")
+        plaintext_size = row.get("plaintext_size")
+        ciphertext_size = row.get("ciphertext_size")
+        if (
+            type(plaintext_size) is not int
+            or not 0 <= plaintext_size <= 134217728
+            or type(ciphertext_size) is not int
+            or not 0 <= ciphertext_size <= 268435456
+        ):
+            raise ValueError("evidence size metadata is invalid")
+        ciphertext_sha256 = require_bytes("ciphertext_sha256", 32)
+        if storage_key != storage_key_for_digest(ciphertext_sha256):
+            raise ValueError("evidence storage key is not canonical")
+        if row.get("envelope_schema") != "ledgerbridge.secretstream.v1":
+            raise ValueError("evidence envelope schema is invalid")
+        if row.get("algorithm") != "xchacha20poly1305-secretstream":
+            raise ValueError("evidence envelope algorithm is invalid")
+        chunk_size = row.get("chunk_size")
+        if type(chunk_size) is not int or not 1 <= chunk_size <= 1_048_576:
+            raise ValueError("evidence chunk size is invalid")
+        if len(require_bytes("stream_header", 24)) != 24:
+            raise ValueError("evidence stream header is invalid")
+        wrapped_generation = row.get("wrapped_key_generation")
+        if (
+            not isinstance(wrapped_generation, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", wrapped_generation) is None
+        ):
+            raise ValueError("evidence wrapped key generation is invalid")
+        require_bytes("wrapped_key_nonce", 24)
+        require_bytes("wrapped_key_ciphertext", 48)
+        if row.get("purpose") != "ledgerbridge-artifact-v2":
+            raise ValueError("evidence purpose is invalid")
+        if row.get("aad_scheme") != "ledgerbridge.artifact.object.v2":
+            raise ValueError("evidence AAD scheme is invalid")
+        envelope_metadata = EncryptedEnvelopeMetadata(
+            chunk_size=chunk_size,
+            stream_header=require_bytes("stream_header", 24),
+            wrapped_key=WrappedKey(
+                generation=wrapped_generation,
+                nonce=require_bytes("wrapped_key_nonce", 24),
+                ciphertext=require_bytes("wrapped_key_ciphertext", 48),
+            ),
+        )
+        return _DatabaseEvidenceMetadata(
+            evidence_ref=require_uuid("evidence_ref"),
+            entity_ref=entity_ref,
+            business_unit_id=business_unit_id,
+            business_unit_ref=business_unit_ref,
+            object_ref=object_ref,
+            filename=filename,
+            plaintext_sha256=require_bytes("plaintext_sha256", 32),
+            plaintext_size=plaintext_size,
+            ciphertext_sha256=ciphertext_sha256,
+            ciphertext_size=ciphertext_size,
+            storage_key=storage_key,
+            envelope_metadata=envelope_metadata,
         )
 
     @staticmethod

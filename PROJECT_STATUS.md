@@ -9,9 +9,11 @@ The default-disabled Core route now has an explicit database reader backend on
 `LEDGERBRIDGE_READER_DATABASE_URL` and uses only Migration C's scoped
 `internal_read` functions for candidate and reconciliation projections. The
 synthetic backend remains the default; production enablement is still rejected.
-Evidence decryption and LedgerSummary remain fixed 503 gates until the reviewed
-S1 decryptor and scoped aggregate function exist. No reader credential, real
-data, Hermes production change, merge, or deployment was performed. See
+The S1 application decryptor and scoped LedgerSummary aggregate are now implemented
+behind explicit injection and Migration 0015's exact reader function surface;
+descriptor-to-envelope binding and unknown-object normalization are covered. The
+default route still returns 503 without an injected decryptor/reader bootstrap. No
+reader credential, real data, Hermes production change, merge, or deployment was performed. See
 `docs/tasks/2026-08-24-r1-database-core-read-adapter.md`.
 The adapter also now has a compressed, HMAC-signed keyset cursor bound to the
 principal/grant digest, normalized filters, and immutable audit horizon; the
@@ -488,13 +490,17 @@ ingestion require their later explicit gates.
   head→base→head passed; focused R1/backup/reader tests **59 passed / 40
   skipped**. Ruff format/check, strict mypy, Bandit, sensitive-path checks,
   pip-audit, and diff-check passed.
-- PG18.6 is not PG15. No latest-HEAD Hosted PG15 result is claimed; prior
-  hosted runs remained green for secrets/compose but failed only the coverage
-  step. No coverage threshold, skip/omit rule, or pragma bypass was added.
-  Production reader bootstrap, mTLS, S1 decryptor, scoped ledger aggregate,
-  recovery rehearsal, merge, deployment, and real-data access remain closed.
-- Hosted PG15 preparation confirms the workflow uses a pinned `postgres:15-alpine`
-  service and runs `secrets`, `quality`, and `compose` on `push`/`pull_request`.
-  The local tree is clean and ahead of the cached origin ref by 21 commits, but
-  `git ls-remote` and `git push --dry-run` could not reach GitHub `:443`; no
-  push or Hosted run was created for `b9e3446`.
+- PG18.6 is not PG15. Hosted run `32751756532` verified the pushed
+  implementation/workflow head `d0f0cf2` on PostgreSQL 15: `secrets`, `quality`,
+  and `compose` all completed successfully, including the unchanged coverage
+  floor, migration replay, Bandit, and pip-audit. No coverage threshold,
+  skip/omit rule, or pragma bypass was added.
+  Production reader bootstrap, mTLS, production KeyProvider/durable receipt
+  wiring, recovery rehearsal, merge, deployment, and real-data access remain
+  closed; the application S1 decryptor and scoped aggregate are implemented
+  only behind explicit injection and the reviewed migration function surface.
+- The workflow uses a pinned `postgres:15-alpine` service and runs the three
+  jobs on `push`/`pull_request`. The run covers the clean pushed SHA only; the
+  current worktree now contains uncommitted parallel edits to `0015`,
+  `internal_read_service`, and its test, which were not staged or pushed and
+  require a separate review/run.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -9,6 +10,9 @@ import pytest
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from ledgerbridge.artifacts import ArtifactStore
+from ledgerbridge.crypto import SecretStreamCipher, _parse_envelope
+from ledgerbridge.encrypted_artifacts import EncryptedArtifactStore
 from ledgerbridge.internal_read_contract import (
     CandidatePage,
     Capability,
@@ -48,11 +52,15 @@ class _Session:
         *,
         candidate_rows: list[dict[str, Any]] | None = None,
         reconciliation_row: dict[str, Any] | None = None,
+        ledger_rows: list[dict[str, Any]] | None = None,
+        evidence_row: dict[str, Any] | None = None,
         fail: bool = False,
     ) -> None:
         self.candidate_row = candidate_row
         self.candidate_rows = candidate_rows or [candidate_row]
         self.reconciliation_row = reconciliation_row
+        self.ledger_rows = ledger_rows or []
+        self.evidence_row = evidence_row
         self.fail = fail
         self.statements: list[str] = []
 
@@ -73,6 +81,10 @@ class _Session:
             return _Result(self.candidate_rows)
         if "get_reconciliation_as_of" in sql:
             return _Result([] if self.reconciliation_row is None else [self.reconciliation_row])
+        if "get_ledger_summary_as_of" in sql:
+            return _Result(self.ledger_rows)
+        if "resolve_active_evidence_blob" in sql:
+            return _Result([] if self.evidence_row is None else [self.evidence_row])
         raise AssertionError(f"unexpected SQL: {sql} / {params}")
 
 
@@ -154,24 +166,163 @@ def test_database_reader_rejects_ref_only_grants_before_querying_facts() -> None
     assert session.statements == []
 
 
-def test_database_reader_exposes_no_unreviewed_evidence_or_ledger_boundary() -> None:
+def test_database_reader_keeps_evidence_closed_without_decryptor() -> None:
     service = _service(_Session({}))
     principal = _principal()
 
     with pytest.raises(InternalReadBackendUnavailable, match="S1 decryptor"):
         service.get_evidence(principal, UUID("20000000-0000-4000-8000-000000000001"))
 
-    ledger_principal = principal.model_copy(
+
+def test_database_ledger_summary_projects_posted_category_totals() -> None:
+    ledger_principal = _principal().model_copy(
         update={"capabilities": frozenset({Capability.LEDGER_READ})}
     )
-    with pytest.raises(InternalReadBackendUnavailable, match="scoped aggregate"):
-        service.get_ledger_summary(
-            ledger_principal,
-            entity_ref=ENTITY,
-            business_unit_ref="unit-demo-a",
-            from_month="2026-08",
-            to_month="2026-08",
-        )
+    session = _Session(
+        {},
+        ledger_rows=[
+            {
+                "entity_ref": ENTITY,
+                "business_unit_ref": "unit-demo-a",
+                "from_month": "2026-08",
+                "to_month": "2026-08",
+                "posting_status": "POSTED",
+                "currency": "CNY",
+                "category_code": "SUPPLIES",
+                "amount_minor": -12345,
+            }
+        ],
+    )
+    summary = _service(session).get_ledger_summary(
+        ledger_principal,
+        entity_ref=ENTITY,
+        business_unit_ref="unit-demo-a",
+        from_month="2026-08",
+        to_month="2026-08",
+    )
+    assert summary.totals_minor == {"SUPPLIES": -12345}
+    assert any("get_ledger_summary_as_of" in statement for statement in session.statements)
+
+
+def test_database_evidence_decryptor_returns_verified_content(tmp_path: Any) -> None:
+    from ledgerbridge.keyring import SyntheticKeyProvider
+
+    provider = SyntheticKeyProvider({"test": b"k" * 32}, active_generation="test")
+    cipher = SecretStreamCipher(provider, chunk_size=17)
+    durable = ArtifactStore(tmp_path.resolve(), max_bytes=1_000_000)
+    encrypted = EncryptedArtifactStore(durable, cipher, max_plaintext_bytes=1_000)
+    published = encrypted.publish(io.BytesIO(b"verified-evidence"))
+    with durable.open_verified(published.ciphertext) as ciphertext_stream:
+        envelope = _parse_envelope(ciphertext_stream.read())
+    evidence_ref = UUID("20000000-0000-4000-8000-000000000001")
+    session = _Session(
+        {},
+        evidence_row={
+            "evidence_ref": evidence_ref,
+            "entity_id": ENTITY,
+            "business_unit_id": BUSINESS_UNIT,
+            "business_unit_ref": "unit-demo-a",
+            "media_type": "application/octet-stream",
+            "display_name": "receipt.bin",
+            "object_ref": published.object_ref,
+            "plaintext_sha256": published.plaintext_sha256,
+            "plaintext_size": published.plaintext_size,
+            "ciphertext_sha256": published.ciphertext.sha256,
+            "ciphertext_size": published.ciphertext.byte_size,
+            "storage_key": published.ciphertext.storage_key,
+            "envelope_schema": "ledgerbridge.secretstream.v1",
+            "algorithm": "xchacha20poly1305-secretstream",
+            "chunk_size": envelope.header.chunk_size,
+            "stream_header": envelope.header.stream_header,
+            "wrapped_key_generation": envelope.header.wrapped_key.generation,
+            "wrapped_key_nonce": envelope.header.wrapped_key.nonce,
+            "wrapped_key_ciphertext": envelope.header.wrapped_key.ciphertext,
+            "purpose": "ledgerbridge-artifact-v2",
+            "aad_scheme": "ledgerbridge.artifact.object.v2",
+        },
+    )
+    service = DatabaseInternalReadService(
+        lambda: cast(Session, session), encrypted_artifact_store=encrypted
+    )
+    result = service.get_evidence(_principal(), evidence_ref)
+    assert result.content == b"verified-evidence"
+    assert result.filename == "receipt.bin"
+
+
+def test_database_evidence_rejects_envelope_descriptor_drift(tmp_path: Any) -> None:
+    from ledgerbridge.keyring import SyntheticKeyProvider
+
+    provider = SyntheticKeyProvider({"test": b"k" * 32}, active_generation="test")
+    cipher = SecretStreamCipher(provider, chunk_size=17)
+    durable = ArtifactStore(tmp_path.resolve(), max_bytes=1_000_000)
+    encrypted = EncryptedArtifactStore(durable, cipher, max_plaintext_bytes=1_000)
+    published = encrypted.publish(io.BytesIO(b"verified-evidence"))
+    with durable.open_verified(published.ciphertext) as ciphertext_stream:
+        envelope = _parse_envelope(ciphertext_stream.read())
+    session = _Session(
+        {},
+        evidence_row={
+            "evidence_ref": UUID("20000000-0000-4000-8000-000000000001"),
+            "entity_id": ENTITY,
+            "business_unit_id": BUSINESS_UNIT,
+            "business_unit_ref": "unit-demo-a",
+            "media_type": "application/octet-stream",
+            "display_name": "receipt.bin",
+            "object_ref": published.object_ref,
+            "plaintext_sha256": published.plaintext_sha256,
+            "plaintext_size": published.plaintext_size,
+            "ciphertext_sha256": published.ciphertext.sha256,
+            "ciphertext_size": published.ciphertext.byte_size,
+            "storage_key": published.ciphertext.storage_key,
+            "envelope_schema": "ledgerbridge.secretstream.v1",
+            "algorithm": "xchacha20poly1305-secretstream",
+            "chunk_size": envelope.header.chunk_size,
+            "stream_header": b"x" * 24,
+            "wrapped_key_generation": envelope.header.wrapped_key.generation,
+            "wrapped_key_nonce": envelope.header.wrapped_key.nonce,
+            "wrapped_key_ciphertext": envelope.header.wrapped_key.ciphertext,
+            "purpose": "ledgerbridge-artifact-v2",
+            "aad_scheme": "ledgerbridge.artifact.object.v2",
+        },
+    )
+    service = DatabaseInternalReadService(
+        lambda: cast(Session, session), encrypted_artifact_store=encrypted
+    )
+    with pytest.raises(InternalReadBackendUnavailable, match="payload is invalid"):
+        service.get_evidence(_principal(), UUID("20000000-0000-4000-8000-000000000001"))
+
+
+def test_database_evidence_rejects_noncanonical_storage_key(tmp_path: Any) -> None:
+    from ledgerbridge.keyring import SyntheticKeyProvider
+
+    provider = SyntheticKeyProvider({"test": b"k" * 32}, active_generation="test")
+    encrypted = EncryptedArtifactStore(
+        ArtifactStore(tmp_path.resolve(), max_bytes=1_000_000),
+        SecretStreamCipher(provider),
+        max_plaintext_bytes=1_000,
+    )
+    session = _Session(
+        {},
+        evidence_row={
+            "evidence_ref": UUID("20000000-0000-4000-8000-000000000001"),
+            "entity_id": ENTITY,
+            "business_unit_id": BUSINESS_UNIT,
+            "business_unit_ref": "unit-demo-a",
+            "media_type": "application/octet-stream",
+            "display_name": "receipt.bin",
+            "object_ref": "a" * 64,
+            "plaintext_sha256": b"p" * 32,
+            "plaintext_size": 1,
+            "ciphertext_sha256": b"c" * 32,
+            "ciphertext_size": 1,
+            "storage_key": "sha256/cc/cc/" + "c" * 64,
+        },
+    )
+    service = DatabaseInternalReadService(
+        lambda: cast(Session, session), encrypted_artifact_store=encrypted
+    )
+    with pytest.raises(InternalReadBackendUnavailable, match="payload is invalid"):
+        service.get_evidence(_principal(), UUID("20000000-0000-4000-8000-000000000001"))
 
 
 def test_database_candidate_reader_issues_and_verifies_a_keyset_cursor() -> None:

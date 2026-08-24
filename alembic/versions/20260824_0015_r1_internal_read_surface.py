@@ -559,6 +559,7 @@ def _grant_exact_surface() -> None:
                 uuid, uuid, varchar(16), bigint, bytea, timestamptz, uuid, integer
             ),
             internal_read.get_reconciliation_as_of(uuid, uuid, date, bigint, bytea),
+            internal_read.get_ledger_summary_as_of(uuid, uuid, date, date, bigint, bytea),
             internal_read.resolve_active_evidence_blob(uuid),
             internal_read.append_internal_evidence_read_audit(
                 uuid, varchar(200), varchar(200), varchar(128), uuid, uuid, uuid, uuid, bigint, bytea
@@ -1210,6 +1211,8 @@ def upgrade() -> None:
         CREATE FUNCTION internal_read.resolve_active_evidence_blob(p_evidence_ref uuid)
         RETURNS TABLE (
             blob_ref uuid, evidence_ref uuid, predecessor_blob_ref uuid,
+            entity_id uuid, business_unit_id uuid, business_unit_ref varchar(100),
+            media_type varchar(200), display_name varchar(200),
             object_ref varchar(64), plaintext_sha256 bytea, plaintext_size bigint,
             ciphertext_sha256 bytea, ciphertext_size bigint, storage_key varchar(77),
             envelope_schema varchar(28), algorithm varchar(40), chunk_size integer,
@@ -1222,6 +1225,15 @@ def upgrade() -> None:
         BEGIN
             IF p_evidence_ref IS NULL THEN
                 RAISE EXCEPTION 'evidence reference is required' USING ERRCODE = '22023';
+            END IF;
+            -- Unknown references are intentionally indistinguishable from an
+            -- out-of-scope object at the reader boundary.  Integrity checks
+            -- below apply only after the immutable evidence row exists.
+            IF NOT EXISTS (
+                SELECT 1 FROM public.evidence_object AS e
+                 WHERE e.evidence_ref = p_evidence_ref
+            ) THEN
+                RETURN;
             END IF;
             SELECT count(*) INTO v_tip_count
               FROM public.encrypted_blob_version AS b
@@ -1288,7 +1300,9 @@ def upgrade() -> None:
               FROM public.evidence_object AS e
              WHERE e.evidence_ref = p_evidence_ref;
             RETURN QUERY
-            SELECT b.blob_ref, b.evidence_ref, b.predecessor_blob_ref, b.object_ref,
+            SELECT b.blob_ref, b.evidence_ref, b.predecessor_blob_ref,
+                   v_evidence.entity_id, v_evidence.business_unit_id, bu.ref,
+                   v_evidence.media_type, v_evidence.display_name, b.object_ref,
                    v_evidence.plaintext_sha256, v_evidence.plaintext_size,
                    b.ciphertext_sha256, b.ciphertext_size, b.storage_key,
                    b.envelope_schema, b.algorithm, b.chunk_size, b.stream_header,
@@ -1296,6 +1310,9 @@ def upgrade() -> None:
                    b.wrapped_key_ciphertext, b.purpose,
                    'ledgerbridge.artifact.object.v2'::varchar(40), b.created_at
               FROM public.encrypted_blob_version AS b
+              JOIN public.business_unit AS bu
+                ON bu.id = v_evidence.business_unit_id
+               AND bu.entity_id = v_evidence.entity_id
              WHERE b.evidence_ref = p_evidence_ref
                AND NOT EXISTS (
                    SELECT 1 FROM public.encrypted_blob_version AS child
@@ -1303,6 +1320,84 @@ def upgrade() -> None:
                )
              ORDER BY b.created_at DESC, b.blob_ref DESC
              LIMIT 1;
+        END
+        $function$;
+
+        CREATE FUNCTION internal_read.get_ledger_summary_as_of(
+            p_entity_id uuid, p_business_unit_id uuid,
+            p_from_month date, p_to_month date,
+            p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea
+        )
+        RETURNS TABLE (
+            entity_ref uuid, business_unit_ref varchar(100),
+            from_month varchar(7), to_month varchar(7),
+            posting_status varchar(6), currency varchar(3),
+            category_code varchar(100), amount_minor bigint
+        ) LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
+        AS $function$
+        BEGIN
+            IF p_entity_id IS NULL OR p_business_unit_id IS NULL
+               OR p_from_month IS NULL OR p_to_month IS NULL
+               OR p_from_month <> date_trunc('month', p_from_month)::date
+               OR p_to_month <> date_trunc('month', p_to_month)::date
+               OR p_from_month > p_to_month
+               OR p_audit_horizon_sequence IS NULL
+               OR p_audit_horizon_sequence <= 0
+               OR p_audit_horizon_hash IS NULL
+               OR octet_length(p_audit_horizon_hash) <> 32 THEN
+                RAISE EXCEPTION 'invalid ledger summary parameters'
+                    USING ERRCODE = '22023';
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM public.audit_event AS horizon
+                 WHERE horizon.sequence = p_audit_horizon_sequence
+                   AND horizon.hash = p_audit_horizon_hash
+                   AND octet_length(horizon.hash) = 32
+            ) THEN
+                RAISE EXCEPTION 'audit horizon is not an exact chain row'
+                    USING ERRCODE = '22023';
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM public.business_unit AS bu
+                 WHERE bu.id = p_business_unit_id
+                   AND bu.entity_id = p_entity_id
+            ) THEN
+                RAISE EXCEPTION 'business unit does not belong to entity'
+                    USING ERRCODE = '22023';
+            END IF;
+
+            -- Never let an inner join silently omit a legacy or malformed
+            -- POSTED fact.  The owner-only guard raises before aggregation.
+            PERFORM public.r1_assert_posted_total_integrity();
+
+            RETURN QUERY
+            SELECT je.entity_id, bu.ref,
+                   to_char(p_from_month, 'YYYY-MM')::varchar(7),
+                   to_char(p_to_month, 'YYYY-MM')::varchar(7),
+                   'POSTED'::varchar(6), p.currency,
+                   pa.category_code_snapshot,
+                   sum(p.amount_minor)::bigint
+              FROM public.journal_entry AS je
+              JOIN public.audit_event AS posted_audit
+                ON posted_audit.id = je.posted_audit_event_id
+               AND posted_audit.sequence <= p_audit_horizon_sequence
+              JOIN public.journal_entry_attribution AS ja
+                ON ja.entry_id = je.id
+              JOIN public.business_unit AS bu
+                ON bu.id = ja.business_unit_id
+               AND bu.entity_id = ja.entity_id
+              JOIN public.posting AS p
+                ON p.entry_id = je.id
+               AND p.account_id = je.primary_account_id
+              JOIN public.posting_attribution AS pa
+                ON pa.posting_id = p.id
+             WHERE je.status = 'POSTED'
+               AND ja.entity_id = p_entity_id
+               AND ja.business_unit_id = p_business_unit_id
+               AND ja.accounting_month BETWEEN p_from_month AND p_to_month
+             GROUP BY je.entity_id, bu.ref, p.currency,
+                      pa.category_code_snapshot
+             ORDER BY pa.category_code_snapshot;
         END
         $function$;
 
@@ -1452,6 +1547,9 @@ def downgrade() -> None:
         DROP FUNCTION IF EXISTS public.r1_evidence_read_receipt_append_only();
         DROP TABLE IF EXISTS internal_read.evidence_read_receipt;
         DROP FUNCTION IF EXISTS internal_read.resolve_active_evidence_blob(uuid);
+        DROP FUNCTION IF EXISTS internal_read.get_ledger_summary_as_of(
+            uuid, uuid, date, date, bigint, bytea
+        );
         DROP FUNCTION IF EXISTS internal_read.get_reconciliation_as_of(
             uuid, uuid, date, bigint, bytea
         );

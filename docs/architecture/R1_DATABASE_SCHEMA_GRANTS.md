@@ -1509,9 +1509,16 @@ the CI/bootstrap delta found
 no validated BLOCKER/HIGH/MEDIUM. Local disposable WSL PostgreSQL **18.6**
 passed the R1 migration suite (**49 passed**) and a CI-like full run (**696
 passed / 1 warning**, **91.36%** coverage) with the unchanged 90% floor; full
-Alembic head→base→head also passed. PG18.6 is not PG15, and no latest-HEAD
-Hosted PG15 result is claimed. Reader scope/cursor/horizon bindings,
+Alembic head→base→head also passed. PG18.6 is not PG15. Hosted run
+`32751756532` verified pushed SHA `d0f0cf2` on PostgreSQL 15 with
+`secrets`, `quality`, and `compose` all successful, including the quality
+coverage and migration gates. Reader scope/cursor/horizon bindings,
 candidate/reconciliation revalidation, restore role/ACL checks, and the
 template-schema owner bootstrap are implemented and tested, while mTLS,
 reader bootstrap, decryptor/aggregate, fresh-host recovery, merge, deployment,
-and real-data access remain separate closed gates.
+and real-data access remain separate closed gates. The application S1 decryptor
+and scoped LedgerSummary aggregate now consume this surface only through an
+explicitly injected EncryptedArtifactStore and the allowlisted aggregate
+function; default route wiring remains fail-closed. Uncommitted parallel edits
+appearing after that run are outside its verification scope and require a new
+review/run before they are considered covered.

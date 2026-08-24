@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from ledgerbridge.artifacts import ArtifactStore, BinarySource, PublishedArtifact
 from ledgerbridge.crypto import CryptoError, SecretStreamCipher
-from ledgerbridge.keyring import KeyProviderError
+from ledgerbridge.keyring import KeyProviderError, WrappedKey
 from ledgerbridge.secure_spool import EncryptedSpool
 
 _ARTIFACT_PURPOSE = "ledgerbridge-artifact-v2"
@@ -57,6 +57,21 @@ class EncryptedPublishedArtifact:
     @property
     def created(self) -> bool:
         return self.ciphertext.created
+
+
+@dataclass(frozen=True, slots=True)
+class EncryptedEnvelopeMetadata:
+    """Immutable envelope header fields recorded beside a ciphertext blob."""
+
+    chunk_size: int
+    stream_header: bytes
+    wrapped_key: WrappedKey
+
+    def __post_init__(self) -> None:
+        if type(self.chunk_size) is not int or not 1 <= self.chunk_size <= 1_048_576:
+            raise ValueError("encrypted envelope chunk size is invalid")
+        if type(self.stream_header) is not bytes or len(self.stream_header) != 24:
+            raise ValueError("encrypted envelope stream header is invalid")
 
 
 class EncryptedArtifactHandoff:
@@ -181,16 +196,31 @@ class EncryptedArtifactStore:
         )
 
     @contextmanager
-    def open_verified(self, artifact: EncryptedPublishedArtifact) -> Iterator[io.BytesIO]:
+    def open_verified(
+        self,
+        artifact: EncryptedPublishedArtifact,
+        *,
+        envelope_metadata: EncryptedEnvelopeMetadata | None = None,
+    ) -> Iterator[io.BytesIO]:
         _require_artifact(artifact)
         with self._durable.open_verified(artifact.ciphertext) as ciphertext_stream:
             ciphertext = ciphertext_stream.read()
         try:
-            plaintext = self._cipher.decrypt(
-                ciphertext,
-                purpose=_ARTIFACT_PURPOSE,
-                aad=_artifact_aad(artifact.object_ref),
-            )
+            if envelope_metadata is None:
+                plaintext = self._cipher.decrypt(
+                    ciphertext,
+                    purpose=_ARTIFACT_PURPOSE,
+                    aad=_artifact_aad(artifact.object_ref),
+                )
+            else:
+                plaintext = self._cipher.decrypt_verified_metadata(
+                    ciphertext,
+                    purpose=_ARTIFACT_PURPOSE,
+                    aad=_artifact_aad(artifact.object_ref),
+                    expected_chunk_size=envelope_metadata.chunk_size,
+                    expected_stream_header=envelope_metadata.stream_header,
+                    expected_wrapped_key=envelope_metadata.wrapped_key,
+                )
         except (CryptoError, KeyProviderError) as exc:
             raise EncryptedArtifactIntegrityError(
                 "encrypted artifact authentication failed"
