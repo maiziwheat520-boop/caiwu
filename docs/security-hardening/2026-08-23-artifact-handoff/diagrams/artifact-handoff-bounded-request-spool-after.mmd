@@ -1,0 +1,14 @@
+flowchart LR
+    C[Authenticated upload client]
+    P[Bounded multipart parser]
+    R[(Route-owned bounded\nrequest staging)]
+    E[Explicit parser Complete]
+    A[ArtifactStore.publish\nexisting quota lock + staging]
+    D[(Content-addressed artifact)]
+    X[Abort + unlink request staging]
+
+    C --> P --> R
+    P --> E
+    E --> A --> D
+    P -. "malformed / disconnect / timeout" .-> X
+    X -. "no publish" .-> D

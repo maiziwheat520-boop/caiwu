@@ -1,6 +1,6 @@
 # Task: Phase 3 Platform Security Foundation
 
-- Status: Slice A implemented, remediated, merged into protected main, and deployed to Hermes
+- Status: Slice A implemented, remediated, merged into protected main, and deployed to Hermes; Slice B implemented and independently rechecked, not merged or deployed
 - Preflight date: 2026-08-22
 - Implementation owner: Codex
 - Review owner: Codex fixed-SHA self-audit; preserve a narrow Claude recheck entry point
@@ -415,3 +415,134 @@ inode identity issue is explicitly deferred to Slice B. The final scan of the
 base-to-remediation range is complete with no unclosed Slice A finding. Claude
 capacity is preserved; a later narrow audit can focus on the five closure claims
 and the eventual runner isolation/IPC framing.
+
+## Slice B implementation evidence (Codex, 2026-08-22)
+
+Slice B is implemented on the pushed branch `ai/chatgpt/phase-3-connector-runner`
+in commits `23412d2`, `3f468ec`, `cb8f6d2`, `ebf5a42`, `6c1b6c4`, `ebc2974`,
+`991e617`, `5dab33e`, and `b65581e`. The implementation adds the versioned framed
+Unix-socket protocol, bounded supervisor/client, importer error mapping, explicit
+`execution_mode=runner` validation, and a distinct no-network `connector-runner`
+Compose service. The protocol rejects duplicate JSON keys, binds every response
+to a request ID and verified digest, and never exposes partial records after a
+terminal failure. Production manifests still contain no real Connector.
+
+Local gates pass Ruff, formatting, strict mypy, Bandit, offline lock validation,
+and full pytest (`99 passed, 111 skipped`). The exact Linux/PostgreSQL replay
+passes **210 tests** with **95.85%** coverage at the unchanged 95% threshold. A
+disposable Hermes image built from `cb8f6d2` passed the synthetic IPC smoke and hostile network/filesystem probe;
+its container was not attached to the production Compose project. Slice B has
+not been deployed and no real evidence was imported.
+
+An earlier temporary cleanup accidentally used the production Compose project
+name with `down --volumes`, stopping production and removing its named volumes.
+Services and schema were immediately recreated from the unchanged deployed tree.
+Post-recovery health, migration, manifest, grants, trigger/function, empty-data,
+and artifact-root checks passed. A new encrypted backup
+`/srv/ai-center/backups/ledgerbridge/20260822T121526Z-e426b488b2ab` and isolated
+rehearsal `restore-rehearsal-20260822T121556Z.json` also passed. This incident is
+kept as explicit operational evidence; future temporary Compose projects must
+use a unique `-p` name and never target the production tree.
+
+The full implementation report is
+`docs/reviews/2026-08-22-phase-3-runner-codex.md`. Claude's first narrow audit
+found P3-H1 plus four medium findings; the follow-up found P3-H2, P3-M1R,
+P3-M3R, P3-M5, and P3-M6. Codex remediated the first set in `5dab33e` and the
+follow-up set in `b65581e`, recording both responses in
+`docs/reviews/2026-08-23-phase-3-connector-runner-claude-remediation-codex.md`.
+Hermes disposable PostgreSQL 16 replay now passes 222 tests at 95.47% coverage;
+hosted run `32593102155` for branch head `65b15df` passed `secrets`,
+`quality`, and `compose`. A final hardening pass also bounds outbound runner
+frame sends by the same deadline and adds public-path unsafe-record tests.
+Claude's final narrow recheck is APPROVED in report commit
+`a19fa640247a98adacdb31741f6172b722f14f03` with no BLOCKER/HIGH/MEDIUM findings;
+the ten LOW notes are tracked for the upload endpoint/Slice C and deployment
+hardening. The remaining gates are protected PR review and separate
+authorization for merge or production deployment.
+After approval, Codex independently applied `e296b0d` to share the text safety
+predicate, reject unsafe upload metadata, assert the worker composition-root
+call, and stream-test the full 50 MiB artifact limit; local verification is
+`109 passed / 118 skipped` with strict mypy and Ruff green. Hosted run
+`32595863205` for head `8c43ffa` also passed `secrets`, `quality`, and `compose`.
+Protected PR #18 is open; pull-request run `32598723413` and push run
+`32598721520` passed all three jobs. The approved Slice C upload-boundary
+design is documented separately; no upload route is enabled.
+
+## Slice C bounded multipart prerequisite (2026-08-23)
+
+The pure bounded multipart adapter is now implemented in
+`src/ledgerbridge/upload.py` and covered by 46 focused tests in
+`tests/test_upload.py`. It has no FastAPI, database, filesystem, Connector, or
+production-data dependency. The parser enforces bounded body/file/header/
+field sizes, a single `ingest_channel` before a single file, safe filename and
+media-type metadata, UTF-8/control-text checks, fragmented boundary handling,
+and a complete closing boundary before success. It is not yet connected to
+`ArtifactStore` or an HTTP route; the future route must use bounded temporary
+handoff and only publish after parser success.
+
+The adapter and coverage/security-lint fixes are commits `1765356`, `15b0b80`,
+and `99e4085` on PR #18. Hosted push run `32601095055` and pull-request run
+`32601097122` passed `secrets`, `quality`, and `compose`; quality coverage was
+95.92%. Merge, route enablement, authentication integration, Connector
+registration, and production deployment remain separately gated.
+
+## Worker-async dispatch foundation (Codex, 2026-08-23)
+
+The user-authorized schema/grants and dispatch-service slice is implemented on
+`ai/chatgpt/phase-3-connector-runner` through `5fbb5fb`. Migration
+`20260823_0005` adds the durable `evidence_import_dispatch` state machine with
+manifest identity, acceptance-audit binding, claim leases, retry/recovery, and
+non-destructive downgrade protection. `DispatchService` provides audited
+enqueue, principal-scoped status, SKIP-LOCKED claim, lease renewal, bounded
+retry, and terminal completion/failure; PostgreSQL tests cover duplicate
+convergence, claim races, expiry, exhaustion, invalid transitions, and failed
+outcome mapping.
+
+Local Windows validation passed 183 tests with 128 skips plus Ruff, strict
+mypy, offline lock, and sensitive-path checks. The disposable Hermes replay
+passed 313 Linux/PostgreSQL tests at 95.03% coverage, migration round-trip, and
+runtime TEMP/public-shadow/grant probes. Temporary Compose resources were
+removed and production stayed on `e426b488b2abb02f10ef02a61aae7ebe24c3283f` /
+`20260822_0004`; no real evidence or Connector was used.
+
+The async HTTP endpoint, worker claim loop, runner composition, and API/worker
+role split are implemented on the Codex branch and remain disabled behind the
+review/enablement gates. Signed manifest loading and key custody remain
+unimplemented by design. The evidence report is
+`docs/reviews/2026-08-23-worker-async-dispatch-implementation-codex.md`.
+
+## Deferred boundary remediation (2026-08-24)
+
+Commit `bb3eee4` closes the four foundation controls from the independent
+security audit: context-local RunnerConnector state, a hard-capped runner
+executor whose slots survive cancelled waits, upload read deadlines with
+loop-independent concurrency admission, and migration-time reassertion of
+least-privilege API/worker role attributes and membership boundaries. Local
+validation is recorded in the release closure report; Hermes disposable
+PostgreSQL 15 replay completed migrations `0001` through `0009` in production
+mode and confirmed the role/TEMP/enqueue probes. The detailed evidence is in
+`docs/reviews/2026-08-24-deferred-boundary-remediation-codex.md` and
+`docs/reviews/2026-08-24-release-audit-final-remediation-codex.md`.
+
+## Release-readiness closure (Codex, 2026-08-24)
+
+The release-readiness findings are closed on the review branch through
+`e2c31be`: `0006` removes pre-existing API/worker role memberships, the runner
+now applies global connection/spool backpressure and maps transient capacity
+loss to retryable `RUNNER_UNAVAILABLE`, heartbeat writes use an exclusive
+random temporary inode, and forward migration `20260824_0009` permanently
+pins all fourteen security functions to `pg_catalog` while preserving a safe
+no-op downgrade to `0008`. The final evidence report is
+`docs/reviews/2026-08-24-release-audit-final-remediation-codex.md`.
+
+Windows validation is `245 passed, 147 skipped, 1 warning`; Hermes Linux /
+PostgreSQL validation is `391 passed` at `95.23%` coverage, followed by
+`upgrade head → downgrade base → upgrade head`, Ruff, strict mypy, Bandit,
+pip-audit, and sensitive-path checks. Temporary Hermes resources were removed;
+production remains unchanged at revision
+`e426b488b2abb02f10ef02a61aae7ebe24c3283f` / migration `20260822_0004`.
+
+This remains a review-only branch. True killable process isolation for hostile
+Connectors, signed manifest/key custody, trusted authentication, merge,
+production migration, feature enablement, role-password rollout, and real
+evidence import remain separately authorized gates.

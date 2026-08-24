@@ -48,6 +48,7 @@ from ledgerbridge.models import (
     Posting,
     SourceRecord,
 )
+from ledgerbridge.runner_client import RunnerClientError, RunnerConnector
 
 
 def _run_alembic(database_url: str, revision: str, *, downgrade: bool = False) -> None:
@@ -274,6 +275,30 @@ def _ingest(
     )
 
 
+def test_ingest_published_continues_from_an_artifact_store_commit(
+    importer: EvidenceImporter,
+) -> None:
+    content = b"already committed evidence"
+    published = importer._store.publish(io.BytesIO(content))
+    connector = SyntheticConnector(records=[_record("row:published")])
+
+    outcome = importer.ingest_published(
+        published,
+        IngestMetadata(
+            source="synthetic_upload",
+            original_filename="committed.txt",
+            media_type="text/plain",
+        ),
+        [connector],
+        actor="pytest",
+        reason="published handoff test",
+    )
+
+    assert outcome.status is ImportJobStatus.SUCCEEDED
+    assert outcome.parsed_count == 1
+    assert connector.parsed_bytes == content
+
+
 def test_importer_and_connector_batch_guardrails(
     runtime_engine: Engine,
     admin_engine: Engine,
@@ -319,6 +344,23 @@ def test_importer_and_connector_batch_guardrails(
     with admin_engine.connect() as connection:
         assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
         assert connection.execute(text("SELECT count(*) FROM journal_entry")).scalar_one() == 0
+
+
+def test_production_importer_rejects_in_process_connectors(
+    runtime_engine: Engine,
+    admin_engine: Engine,
+    tmp_path: Path,
+) -> None:
+    subject = EvidenceImporter(
+        sessionmaker(bind=runtime_engine, expire_on_commit=False),
+        ArtifactStore(tmp_path / "production-mode", max_bytes=1_000),
+        production=True,
+    )
+    outcome = _ingest(subject, b"production mode", [SyntheticConnector()])
+    assert outcome.status is ImportJobStatus.FAILED
+    assert outcome.error_code == "CONNECTOR_CONTRACT"
+    with admin_engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
 
 
 def test_canonical_source_registries_are_append_only_and_runtime_read_only(
@@ -550,6 +592,212 @@ def test_detection_exception_is_sanitized(
         assert summary == "connector detection failed"
         assert "987654" not in summary
         assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
+
+
+def test_untrusted_runner_error_code_is_terminalized_and_audited(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+) -> None:
+    class MaliciousRunnerClient:
+        def detect(self, request: object, stream: ReadableBinary) -> DetectionResult:
+            del request, stream
+            raise RunnerClientError("RUNNER_ERROR", "\x00")
+
+        def parse(self, request: object, stream: ReadableBinary) -> tuple[ParsedSourceRecord, ...]:
+            del request, stream
+            return ()
+
+    connector = RunnerConnector(
+        "synthetic",
+        "1",
+        "synthetic",
+        MaliciousRunnerClient(),  # type: ignore[arg-type]
+    )
+    outcome = importer.ingest_and_import(
+        io.BytesIO(b"malicious runner error"),
+        IngestMetadata(
+            source="synthetic_upload",
+            original_filename="runner.txt",
+            media_type="text/plain",
+        ),
+        [connector],  # type: ignore[list-item]
+        actor="pytest",
+        reason="runner error normalization",
+    )
+
+    assert outcome.status is ImportJobStatus.FAILED
+    assert outcome.error_code == "RUNNER_ERROR"
+    with admin_engine.connect() as connection:
+        job = connection.execute(
+            text(
+                "SELECT status, error_code, diagnostic_summary, terminal_audit_event_id "
+                "FROM import_job"
+            )
+        ).one()
+        assert job.status == "FAILED"
+        assert job.error_code == "RUNNER_ERROR"
+        assert job.diagnostic_summary == "connector runner failed"
+        assert job.terminal_audit_event_id is not None
+        assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM audit_event WHERE action = 'import.complete'")
+            ).scalar_one()
+            == 1
+        )
+
+
+def test_runner_capacity_failure_bubbles_for_dispatch_retry(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+) -> None:
+    class UnavailableRunnerClient:
+        def detect(self, request: object, stream: ReadableBinary) -> DetectionResult:
+            del request, stream
+            raise RunnerClientError("RUNNER_UNAVAILABLE", "runner capacity is unavailable")
+
+        def parse(self, request: object, stream: ReadableBinary) -> tuple[ParsedSourceRecord, ...]:
+            del request, stream
+            return ()
+
+    connector = RunnerConnector(
+        "synthetic",
+        "1",
+        "synthetic",
+        UnavailableRunnerClient(),  # type: ignore[arg-type]
+    )
+    with pytest.raises(EvidenceIngestionError) as error:
+        importer.ingest_and_import(
+            io.BytesIO(b"temporary runner capacity failure"),
+            IngestMetadata(
+                source="synthetic_upload",
+                original_filename="runner.txt",
+                media_type="text/plain",
+            ),
+            [connector],  # type: ignore[list-item]
+            actor="pytest",
+            reason="runner capacity retry",
+        )
+
+    assert error.value.error_code == "RUNNER_UNAVAILABLE"
+    with admin_engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM import_job")).scalar_one() == 0
+
+
+def test_runner_capacity_during_parse_keeps_job_retryable(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+) -> None:
+    class UnavailableRunnerClient:
+        def detect(self, request: object, stream: ReadableBinary) -> DetectionResult:
+            del request, stream
+            return DetectionResult.MATCH
+
+        def parse(self, request: object, stream: ReadableBinary) -> tuple[ParsedSourceRecord, ...]:
+            del request, stream
+            raise RunnerClientError("RUNNER_UNAVAILABLE", "runner capacity is unavailable")
+
+    connector = RunnerConnector(
+        "synthetic",
+        "1",
+        "synthetic",
+        UnavailableRunnerClient(),  # type: ignore[arg-type]
+    )
+    with admin_engine.connect() as connection:
+        audit_events_before = connection.execute(
+            text("SELECT count(*) FROM audit_event")
+        ).scalar_one()
+    with pytest.raises(EvidenceIngestionError) as error:
+        importer.ingest_and_import(
+            io.BytesIO(b"temporary parse capacity failure"),
+            IngestMetadata(
+                source="synthetic_upload",
+                original_filename="runner.txt",
+                media_type="text/plain",
+            ),
+            [connector],  # type: ignore[list-item]
+            actor="pytest",
+            reason="runner parse capacity retry",
+        )
+
+    assert error.value.error_code == "RUNNER_UNAVAILABLE"
+    with admin_engine.connect() as connection:
+        assert connection.execute(text("SELECT status FROM import_job")).scalar_one() == "RUNNING"
+        assert (
+            connection.execute(text("SELECT count(*) FROM audit_event")).scalar_one()
+            == audit_events_before + 1
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_text"),
+    [
+        ("record_locator", "\x00"),
+        ("record_locator", "\ud800"),
+        ("raw_fields", "\x00"),
+        ("raw_fields", "\ud800"),
+    ],
+)
+def test_untrusted_runner_record_text_is_terminalized_and_audited(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+    field: str,
+    bad_text: str,
+) -> None:
+    record = object.__new__(ParsedSourceRecord)
+    object.__setattr__(record, "record_locator", "row:1")
+    object.__setattr__(record, "source", "synthetic")
+    object.__setattr__(record, "parser_version", "1")
+    object.__setattr__(record, "raw_fields", {"memo": "safe"})
+    object.__setattr__(record, "normalized_fields", {})
+    object.__setattr__(record, "external_transaction_id", None)
+    if field == "record_locator":
+        object.__setattr__(record, field, bad_text)
+    else:
+        object.__setattr__(record, field, {"memo": bad_text})
+
+    class MaliciousRunnerClient:
+        def detect(self, request: object, stream: ReadableBinary) -> DetectionResult:
+            del request, stream
+            return DetectionResult.MATCH
+
+        def parse(self, request: object, stream: ReadableBinary) -> tuple[ParsedSourceRecord, ...]:
+            del request, stream
+            return (record,)
+
+    connector = RunnerConnector(
+        "synthetic",
+        "1",
+        "synthetic",
+        MaliciousRunnerClient(),  # type: ignore[arg-type]
+    )
+    outcome = importer.ingest_and_import(
+        io.BytesIO(b"malicious runner record"),
+        IngestMetadata(
+            source="synthetic_upload",
+            original_filename="runner-record.txt",
+            media_type="text/plain",
+        ),
+        [connector],  # type: ignore[list-item]
+        actor="pytest",
+        reason="runner record normalization",
+    )
+
+    assert outcome.status is ImportJobStatus.FAILED
+    assert outcome.error_code == "CONNECTOR_CONTRACT"
+    with admin_engine.connect() as connection:
+        job = connection.execute(
+            text("SELECT status, terminal_audit_event_id FROM import_job")
+        ).one()
+        assert job.status == "FAILED"
+        assert job.terminal_audit_event_id is not None
+        assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM audit_event WHERE action = 'import.complete'")
+            ).scalar_one()
+            == 1
+        )
 
 
 def test_mutated_float_output_is_revalidated_before_publication(
@@ -1823,7 +2071,7 @@ def test_phase2_downgrade_refuses_to_delete_evidence(
         with temporary_engine.connect() as connection:
             assert (
                 connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                == "20260822_0004"
+                == "20260824_0011"
             )
             assert connection.execute(text("SELECT count(*) FROM raw_artifact")).scalar_one() == 1
             assert connection.execute(text("SELECT count(*) FROM ingest_channel")).scalar_one() == 2

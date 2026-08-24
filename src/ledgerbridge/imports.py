@@ -46,11 +46,16 @@ from ledgerbridge.models import (
     SourceRecord,
     SourceSystem,
 )
+from ledgerbridge.runner_client import RunnerClientError
+from ledgerbridge.text import contains_unstorable_text
 
 ROUTER_NAME = "ledgerbridge.router"
 ROUTER_VERSION = "1"
 PROVENANCE_NAME = "ledgerbridge.provenance"
 PROVENANCE_VERSION = "1"
+# Transport/capacity loss is transient and must bubble to the dispatch worker
+# so it can retry the operation.  Connector/protocol errors remain terminal.
+RETRYABLE_RUNNER_ERROR_CODES = frozenset({"RUNNER_UNAVAILABLE"})
 logger = logging.getLogger(__name__)
 
 
@@ -120,6 +125,7 @@ class EvidenceImporter:
         *,
         detection_prefix_bytes: int = 64 * 1024,
         max_records: int = 100_000,
+        production: bool = False,
     ) -> None:
         if detection_prefix_bytes <= 0 or max_records <= 0:
             raise ValueError("import limits must be positive")
@@ -127,6 +133,7 @@ class EvidenceImporter:
         self._store = artifact_store
         self._detection_prefix_bytes = detection_prefix_bytes
         self._max_records = max_records
+        self._production = production
 
     def ingest_and_import(
         self,
@@ -158,22 +165,181 @@ class EvidenceImporter:
                 "evidence import state could not be recorded",
             ) from exc
 
-    def _ingest_and_import(
+    def validate_ingest_channel(self, source: str) -> None:
+        if not self._ingest_channel_is_registered(source):
+            raise EvidenceIngestionError(
+                "INGEST_CHANNEL_UNKNOWN",
+                "evidence ingestion channel is not registered",
+            )
+
+    def ingest_published(
         self,
-        stream: BinaryIO,
+        published: PublishedArtifact,
         metadata: IngestMetadata,
         connectors: Sequence[Connector],
         *,
         actor: str,
         reason: str,
     ) -> ImportOutcome:
-        if not self._ingest_channel_is_registered(metadata.source):
+        """Continue import from an already committed ArtifactStore result."""
+
+        try:
+            return self._ingest_and_import(
+                None,
+                metadata,
+                connectors,
+                actor=actor,
+                reason=reason,
+                published=published,
+            )
+        except EvidenceIngestionError:
+            raise
+        except ArtifactIntegrityError as exc:
             raise EvidenceIngestionError(
-                "INGEST_CHANNEL_UNKNOWN",
-                "evidence ingestion channel is not registered",
+                "EVIDENCE_INTEGRITY",
+                "evidence integrity validation failed",
+            ) from exc
+        except SQLAlchemyError as exc:
+            raise EvidenceIngestionError(
+                "IMPORT_DATABASE",
+                "evidence import state could not be recorded",
+            ) from exc
+
+    def _ingest_and_import(
+        self,
+        stream: BinaryIO | None,
+        metadata: IngestMetadata,
+        connectors: Sequence[Connector],
+        *,
+        actor: str,
+        reason: str,
+        published: PublishedArtifact | None = None,
+    ) -> ImportOutcome:
+        self.validate_ingest_channel(metadata.source)
+        if published is None:
+            if stream is None:
+                raise ValueError("an evidence stream is required before publication")
+            published = self._publish_stream(
+                stream,
+                metadata,
+                actor=actor,
+                reason=reason,
+            )
+
+        artifact = self._ensure_artifact(published, metadata, actor=actor, reason=reason)
+        if artifact.provenance_conflict:
+            return self._route_terminal(
+                artifact,
+                ImportJobStatus.NEEDS_REVIEW,
+                "PROVENANCE_CONFLICT",
+                "evidence provenance requires review",
+                actor=actor,
+                reason=reason,
+                connector_name=PROVENANCE_NAME,
+                connector_version=PROVENANCE_VERSION,
             )
         try:
-            published = self._store.publish(stream)
+            connector_bindings = self._validate_connector_set(
+                connectors,
+                production=self._production,
+            )
+            prefix = self._store.read_prefix(artifact.published, self._detection_prefix_bytes)
+            artifact_metadata = ArtifactMetadata(
+                source=artifact.source,
+                original_filename=artifact.original_filename,
+                media_type=artifact.media_type,
+                byte_size=artifact.published.byte_size,
+                sha256_hex=artifact.published.sha256_hex,
+            )
+            matches, ambiguous = self._detect(
+                connector_bindings,
+                artifact_metadata,
+                prefix,
+                verified_artifact=artifact.published,
+            )
+        except ArtifactIntegrityError:
+            return self._route_terminal(
+                artifact,
+                ImportJobStatus.FAILED,
+                "EVIDENCE_INTEGRITY",
+                "evidence integrity validation failed",
+                actor=actor,
+                reason=reason,
+            )
+        except OSError:
+            return self._route_terminal(
+                artifact,
+                ImportJobStatus.FAILED,
+                "EVIDENCE_IO",
+                "evidence could not be read",
+                actor=actor,
+                reason=reason,
+            )
+        except ConnectorContractError:
+            return self._route_terminal(
+                artifact,
+                ImportJobStatus.FAILED,
+                "CONNECTOR_CONTRACT",
+                "connector contract validation failed",
+                actor=actor,
+                reason=reason,
+            )
+        except RunnerClientError as exc:
+            if exc.error_code in RETRYABLE_RUNNER_ERROR_CODES:
+                raise EvidenceIngestionError(exc.error_code, exc.summary) from exc
+            return self._route_terminal(
+                artifact,
+                ImportJobStatus.FAILED,
+                exc.error_code,
+                exc.summary,
+                actor=actor,
+                reason=reason,
+            )
+        except Exception:
+            return self._route_terminal(
+                artifact,
+                ImportJobStatus.FAILED,
+                "DETECTION_ERROR",
+                "connector detection failed",
+                actor=actor,
+                reason=reason,
+            )
+
+        if ambiguous or len(matches) > 1:
+            return self._route_terminal(
+                artifact,
+                ImportJobStatus.NEEDS_REVIEW,
+                "AMBIGUOUS_CONNECTOR",
+                "connector selection requires review",
+                actor=actor,
+                reason=reason,
+            )
+        if not matches:
+            return self._route_terminal(
+                artifact,
+                ImportJobStatus.NEEDS_REVIEW,
+                "NO_CONNECTOR",
+                "no connector matched the evidence",
+                actor=actor,
+                reason=reason,
+            )
+        return self._run_connector(
+            artifact,
+            matches[0],
+            actor=actor,
+            reason=reason,
+        )
+
+    def _publish_stream(
+        self,
+        stream: BinaryIO,
+        metadata: IngestMetadata,
+        *,
+        actor: str,
+        reason: str,
+    ) -> PublishedArtifact:
+        try:
+            return self._store.publish(stream)
         except ArtifactPublishedQuotaError as exc:
             self._raise_quota_rejection(
                 exc,
@@ -216,82 +382,6 @@ class EvidenceImporter:
                 "EVIDENCE_STORAGE",
                 "evidence could not be durably published",
             ) from exc
-
-        artifact = self._ensure_artifact(published, metadata, actor=actor, reason=reason)
-        if artifact.provenance_conflict:
-            return self._route_terminal(
-                artifact,
-                ImportJobStatus.NEEDS_REVIEW,
-                "PROVENANCE_CONFLICT",
-                "evidence provenance requires review",
-                actor=actor,
-                reason=reason,
-                connector_name=PROVENANCE_NAME,
-                connector_version=PROVENANCE_VERSION,
-            )
-        try:
-            connector_bindings = self._validate_connector_set(connectors)
-            prefix = self._store.read_prefix(artifact.published, self._detection_prefix_bytes)
-            artifact_metadata = ArtifactMetadata(
-                source=artifact.source,
-                original_filename=artifact.original_filename,
-                media_type=artifact.media_type,
-                byte_size=artifact.published.byte_size,
-                sha256_hex=artifact.published.sha256_hex,
-            )
-            matches, ambiguous = self._detect(connector_bindings, artifact_metadata, prefix)
-        except ArtifactIntegrityError:
-            return self._route_terminal(
-                artifact,
-                ImportJobStatus.FAILED,
-                "EVIDENCE_INTEGRITY",
-                "evidence integrity validation failed",
-                actor=actor,
-                reason=reason,
-            )
-        except OSError:
-            return self._route_terminal(
-                artifact,
-                ImportJobStatus.FAILED,
-                "EVIDENCE_IO",
-                "evidence could not be read",
-                actor=actor,
-                reason=reason,
-            )
-        except Exception:
-            return self._route_terminal(
-                artifact,
-                ImportJobStatus.FAILED,
-                "DETECTION_ERROR",
-                "connector detection failed",
-                actor=actor,
-                reason=reason,
-            )
-
-        if ambiguous or len(matches) > 1:
-            return self._route_terminal(
-                artifact,
-                ImportJobStatus.NEEDS_REVIEW,
-                "AMBIGUOUS_CONNECTOR",
-                "connector selection requires review",
-                actor=actor,
-                reason=reason,
-            )
-        if not matches:
-            return self._route_terminal(
-                artifact,
-                ImportJobStatus.NEEDS_REVIEW,
-                "NO_CONNECTOR",
-                "no connector matched the evidence",
-                actor=actor,
-                reason=reason,
-            )
-        return self._run_connector(
-            artifact,
-            matches[0],
-            actor=actor,
-            reason=reason,
-        )
 
     def _raise_quota_rejection(
         self,
@@ -432,11 +522,20 @@ class EvidenceImporter:
         connectors: Iterable[_ConnectorBinding],
         metadata: ArtifactMetadata,
         prefix: bytes,
+        *,
+        verified_artifact: PublishedArtifact | None = None,
     ) -> tuple[list[_ConnectorBinding], bool]:
         matches: list[_ConnectorBinding] = []
         ambiguous = False
         for binding in connectors:
-            result = binding.connector.detect(metadata, prefix)
+            detect_verified = getattr(binding.connector, "detect_verified", None)
+            if callable(detect_verified):
+                if verified_artifact is None:
+                    raise ConnectorContractError("runner detection requires a verified artifact")
+                with self._store.open_verified(verified_artifact) as verified_stream:
+                    result = detect_verified(metadata, verified_stream)
+            else:
+                result = binding.connector.detect(metadata, prefix)
             if not isinstance(result, DetectionResult):
                 raise ConnectorContractError("detect() must return DetectionResult")
             if result is DetectionResult.MATCH:
@@ -445,11 +544,21 @@ class EvidenceImporter:
                 ambiguous = True
         return matches, ambiguous
 
-    def _validate_connector_set(self, connectors: Sequence[Connector]) -> list[_ConnectorBinding]:
+    def _validate_connector_set(
+        self,
+        connectors: Sequence[Connector],
+        *,
+        production: bool | None = None,
+    ) -> list[_ConnectorBinding]:
         identities: set[tuple[str, str]] = set()
         bindings: list[_ConnectorBinding] = []
+        if production is None:
+            production = self._production
         for connector in connectors:
-            name, version, source_system = validate_connector(connector)
+            name, version, source_system = validate_connector(
+                connector,
+                production=production,
+            )
             identity = (name, version)
             if identity in identities:
                 raise ConnectorContractError("connector identity must be unique")
@@ -570,6 +679,21 @@ class EvidenceImporter:
                 ImportJobStatus.FAILED,
                 error_code="CONNECTOR_CONTRACT",
                 summary="connector parse failed validation",
+                parsed_count=0,
+                created_count=0,
+                duplicate_count=0,
+                actor=actor,
+                reason=reason,
+            )
+        except RunnerClientError as exc:
+            if exc.error_code in RETRYABLE_RUNNER_ERROR_CODES:
+                raise EvidenceIngestionError(exc.error_code, exc.summary) from exc
+            return self._terminalize(
+                artifact,
+                job_id,
+                ImportJobStatus.FAILED,
+                error_code=exc.error_code,
+                summary=exc.summary,
                 parsed_count=0,
                 created_count=0,
                 duplicate_count=0,
@@ -876,7 +1000,12 @@ class EvidenceImporter:
 
 
 def _validate_text(field: str, value: str, maximum: int) -> None:
-    if not isinstance(value, str) or not value.strip() or len(value) > maximum:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > maximum
+        or contains_unstorable_text(value)
+    ):
         raise ValueError(f"{field} must be non-blank and at most {maximum} characters")
 
 

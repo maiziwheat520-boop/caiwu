@@ -35,6 +35,6 @@ def get_session_factory(database_url: str) -> sessionmaker[Session]:
 
 def get_session() -> Iterator[Session]:
     settings = get_settings()
-    session_factory = get_session_factory(settings.database_url)
+    session_factory = get_session_factory(settings.resolved_api_database_url())
     with session_factory() as session:
         yield session

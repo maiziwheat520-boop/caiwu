@@ -1,0 +1,6 @@
+flowchart LR
+    U[Upload request] --> API[API: auth + bounded spool]
+    API --> IMP[EvidenceImporter]
+    IMP --> RC[RunnerConnector]
+    RC -->|API-mounted Unix socket| RUN[Runner: no network / no DB]
+    IMP --> DB[(PostgreSQL)]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -303,7 +304,7 @@ def test_security_functions_pin_their_search_path(admin_engine: Engine) -> None:
     assert all(value == ["search_path=pg_catalog"] for value in configurations.values())
 
 
-def test_phase1_invariants_ignore_pg_temp_shadow_tables(
+def _assert_phase1_invariants_ignore_pg_temp_shadow_tables(
     admin_engine: Engine,
     runtime_engine: Engine,
 ) -> None:
@@ -696,6 +697,13 @@ def test_phase1_invariants_ignore_pg_temp_shadow_tables(
                     """
                 )
             )
+
+
+def test_phase1_invariants_ignore_pg_temp_shadow_tables(
+    admin_engine: Engine,
+    runtime_engine: Engine,
+) -> None:
+    _assert_phase1_invariants_ignore_pg_temp_shadow_tables(admin_engine, runtime_engine)
 
 
 def test_entity_safe_account_identifier_uniqueness(runtime_engine: Engine) -> None:
@@ -1475,6 +1483,475 @@ def test_phase1_migration_real_round_trip(migration_database_url: str) -> None:
         if temporary_engine is not None:
             temporary_engine.dispose()
         with maintenance_engine.connect() as connection:
+            connection.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :database_name"
+                ),
+                {"database_name": database_name},
+            )
+            connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+        maintenance_engine.dispose()
+
+
+def _restore_historical_security_function_definitions(
+    connection: Connection,
+    table_reading_functions: tuple[str, ...],
+) -> None:
+    for signature in table_reading_functions:
+        definition = connection.execute(
+            text("SELECT pg_get_functiondef(to_regprocedure(:signature))"),
+            {"signature": signature},
+        ).scalar_one()
+        historical_definition = re.sub(
+            r"(?m)^\s*SET search_path TO 'pg_catalog'\s*$",
+            "",
+            definition,
+        )
+        for qualified, unqualified in (
+            ("FROM public.posting", "FROM posting"),
+            ("JOIN public.journal_entry", "JOIN journal_entry"),
+            ("FROM public.journal_entry", "FROM journal_entry"),
+            ("FROM public.account", "FROM account"),
+            ("JOIN public.account", "JOIN account"),
+            ("public.journal_status", "journal_status"),
+        ):
+            historical_definition = historical_definition.replace(qualified, unqualified)
+        connection.execute(text(historical_definition))
+
+    connection.exec_driver_sql(
+        "ALTER FUNCTION public.append_audit_event(text,text,text,text,jsonb) "
+        "SET search_path = pg_catalog, public"
+    )
+    for signature in (
+        "public.audit_event_block_mutation()",
+        "public.import_job_enforce_transition()",
+        "public.journal_entry_block_posted_mutation()",
+        "public.raw_artifact_block_mutation()",
+        "public.source_record_block_mutation()",
+    ):
+        connection.exec_driver_sql(f"ALTER FUNCTION {signature} RESET search_path")
+
+
+def _assert_historical_search_path_bypass_is_exploitable(
+    admin_engine: Engine,
+    runtime_engine: Engine,
+) -> None:
+    with Session(runtime_engine, expire_on_commit=False) as session:
+        entity_id, accounts = _create_accounts(session)
+        session.commit()
+
+    with admin_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                DO $do$
+                BEGIN
+                    EXECUTE format(
+                        'GRANT TEMPORARY ON DATABASE %I TO ledgerbridge_app',
+                        current_database()
+                    );
+                END
+                $do$;
+                """
+            )
+        )
+
+    try:
+        runtime_engine.dispose()
+        with runtime_engine.connect() as connection:
+            connection.execute(
+                text(
+                    """
+                    CREATE TEMP TABLE journal_entry (
+                        id uuid PRIMARY KEY,
+                        entity_id uuid NOT NULL,
+                        status public.journal_status NOT NULL
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE TEMP TABLE account (
+                        id uuid PRIMARY KEY,
+                        entity_id uuid NOT NULL,
+                        account_class public.account_class NOT NULL
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE TEMP TABLE posting (
+                        id uuid PRIMARY KEY,
+                        entry_id uuid NOT NULL,
+                        account_id uuid NOT NULL,
+                        amount_minor bigint NOT NULL,
+                        currency text NOT NULL
+                    )
+                    """
+                )
+            )
+
+            entry_id = uuid4()
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO pg_temp.journal_entry (id, entity_id, status)
+                    VALUES (:entry_id, :entity_id, 'DRAFT')
+                    """
+                ),
+                {"entry_id": entry_id, "entity_id": entity_id},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO pg_temp.account (id, entity_id, account_class)
+                    VALUES
+                        (:bank_id, :entity_id, 'ASSET'),
+                        (:wallet_id, :entity_id, 'ASSET')
+                    """
+                ),
+                {
+                    "bank_id": accounts["bank"],
+                    "wallet_id": accounts["wallet"],
+                    "entity_id": entity_id,
+                },
+            )
+            audit_event_id = connection.execute(
+                text(
+                    """
+                    SELECT public.append_audit_event(
+                        'pytest',
+                        'journal.create',
+                        'historical pg_temp exploit control',
+                        NULL,
+                        CAST(:payload AS jsonb)
+                    )
+                    """
+                ),
+                {
+                    "payload": json.dumps(
+                        {"journal_entry_id": str(entry_id)},
+                        sort_keys=True,
+                    )
+                },
+            ).scalar_one()
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO public.journal_entry (
+                        id, entity_id, occurred_at, origin, status,
+                        primary_account_id, audit_event_id
+                    ) VALUES (
+                        :entry_id, :entity_id, clock_timestamp(),
+                        'pytest', 'DRAFT', :bank_id, :audit_event_id
+                    )
+                    """
+                ),
+                {
+                    "entry_id": entry_id,
+                    "entity_id": entity_id,
+                    "bank_id": accounts["bank"],
+                    "audit_event_id": audit_event_id,
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO public.posting (
+                        entry_id, account_id, amount_minor, currency
+                    ) VALUES
+                        (:entry_id, :bank_id, 500, 'CNY'),
+                        (:entry_id, :wallet_id, -599, 'CNY')
+                    """
+                ),
+                {
+                    "entry_id": entry_id,
+                    "bank_id": accounts["bank"],
+                    "wallet_id": accounts["wallet"],
+                },
+            )
+            connection.commit()
+
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT SUM(amount_minor) FROM public.posting "
+                        "WHERE entry_id = :entry_id AND currency = 'CNY'"
+                    ),
+                    {"entry_id": entry_id},
+                ).scalar_one()
+                == -99
+            )
+    finally:
+        runtime_engine.dispose()
+        with admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    DO $do$
+                    BEGIN
+                        EXECUTE format(
+                            'REVOKE TEMPORARY ON DATABASE %I FROM ledgerbridge_app',
+                            current_database()
+                        );
+                    END
+                    $do$;
+                    """
+                )
+            )
+
+
+def test_security_function_forward_migration_repairs_historical_definitions(
+    migration_database_url: str,
+    database_url: str,
+) -> None:
+    owner_source = create_engine(migration_database_url)
+    runtime_source = create_engine(database_url)
+    owner_url = owner_source.url
+    runtime_url = runtime_source.url
+    owner_source.dispose()
+    runtime_source.dispose()
+
+    database_name = f"ledgerbridge_search_path_{uuid4().hex[:10]}"
+    control_database_name = f"ledgerbridge_search_path_control_{uuid4().hex[:10]}"
+    maintenance_engine = create_engine(
+        owner_url.set(database="postgres"),
+        isolation_level="AUTOCOMMIT",
+    )
+    temporary_owner_url = owner_url.set(database=database_name)
+    temporary_runtime_url = runtime_url.set(database=database_name)
+    control_owner_url = owner_url.set(database=control_database_name)
+    control_runtime_url = runtime_url.set(database=control_database_name)
+    temporary_admin_engine: Engine | None = None
+    temporary_runtime_engine: Engine | None = None
+    control_admin_engine: Engine | None = None
+    control_runtime_engine: Engine | None = None
+
+    table_reading_functions = (
+        "public.account_block_protected_dimension_change()",
+        "public.journal_entry_validate_relationships()",
+        "public.posting_enforce_entity()",
+        "public.posting_block_posted_mutation()",
+        "public.posting_assert_balanced()",
+        "public.journal_entry_assert_posted_complete()",
+    )
+    fixed_search_path_functions = (
+        *table_reading_functions,
+        "public.append_audit_event(text,text,text,text,jsonb)",
+        "public.audit_event_block_mutation()",
+        "public.import_job_enforce_transition()",
+        "public.journal_entry_block_posted_mutation()",
+        "public.journal_entry_validate_post_audit()",
+        "public.raw_artifact_block_mutation()",
+        "public.raw_artifact_validate_audit()",
+        "public.source_record_block_mutation()",
+    )
+
+    try:
+        with maintenance_engine.connect() as connection:
+            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(text(f'CREATE DATABASE "{control_database_name}"'))
+
+        control_rendered = control_owner_url.render_as_string(hide_password=False)
+        _run_alembic(control_rendered, "20260823_0008")
+        control_admin_engine = create_engine(control_owner_url)
+        with control_admin_engine.begin() as connection:
+            _restore_historical_security_function_definitions(
+                connection,
+                table_reading_functions,
+            )
+        control_runtime_engine = create_engine(control_runtime_url)
+        _assert_historical_search_path_bypass_is_exploitable(
+            control_admin_engine,
+            control_runtime_engine,
+        )
+        control_runtime_engine = None
+        control_admin_engine.dispose()
+        control_admin_engine = None
+
+        rendered = temporary_owner_url.render_as_string(hide_password=False)
+        _run_alembic(rendered, "20260823_0008")
+        temporary_admin_engine = create_engine(temporary_owner_url)
+        with temporary_admin_engine.begin() as connection:
+            _restore_historical_security_function_definitions(
+                connection,
+                table_reading_functions,
+            )
+
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT proconfig FROM pg_proc "
+                        "WHERE oid = to_regprocedure("
+                        "'public.posting_assert_balanced()')"
+                    )
+                ).scalar_one()
+                is None
+            )
+            assert (
+                "FROM posting"
+                in connection.execute(
+                    text(
+                        "SELECT pg_get_functiondef("
+                        "to_regprocedure('public.posting_assert_balanced()'))"
+                    )
+                ).scalar_one()
+            )
+
+        temporary_admin_engine.dispose()
+        temporary_admin_engine = None
+        _run_alembic(rendered, "head")
+
+        temporary_admin_engine = create_engine(temporary_owner_url)
+        temporary_runtime_engine = create_engine(temporary_runtime_url)
+        with temporary_admin_engine.connect() as connection:
+            configurations = connection.execute(
+                text(
+                    "SELECT to_regprocedure(signature)::text, function_definition.proconfig "
+                    "FROM unnest(CAST(:signatures AS text[])) AS required(signature) "
+                    "JOIN pg_proc AS function_definition "
+                    "ON function_definition.oid = to_regprocedure(signature) "
+                    "ORDER BY signature"
+                ),
+                {"signatures": list(fixed_search_path_functions)},
+            ).all()
+            hardened_definitions = [
+                connection.execute(
+                    text("SELECT pg_get_functiondef(to_regprocedure(:signature))"),
+                    {"signature": signature},
+                ).scalar_one()
+                for signature in table_reading_functions
+            ]
+        assert len(configurations) == len(fixed_search_path_functions)
+        assert all(
+            configuration == ["search_path=pg_catalog"] for _, configuration in configurations
+        )
+        for definition in hardened_definitions:
+            assert "SET search_path TO 'pg_catalog'" in definition
+            for relation in ("posting", "journal_entry", "account"):
+                assert re.search(rf"\b(?:FROM|JOIN)\s+{relation}\b", definition) is None
+
+        _assert_phase1_invariants_ignore_pg_temp_shadow_tables(
+            temporary_admin_engine,
+            temporary_runtime_engine,
+        )
+
+        temporary_runtime_engine.dispose()
+        temporary_runtime_engine = None
+        temporary_admin_engine.dispose()
+        temporary_admin_engine = None
+        _run_alembic(rendered, "20260823_0008", downgrade=True)
+
+        temporary_admin_engine = create_engine(temporary_owner_url)
+        with temporary_admin_engine.connect() as connection:
+            assert (
+                connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+                == "20260823_0008"
+            )
+            assert connection.execute(
+                text(
+                    "SELECT proconfig FROM pg_proc "
+                    "WHERE oid = to_regprocedure("
+                    "'public.posting_assert_balanced()')"
+                )
+            ).scalar_one() == ["search_path=pg_catalog"]
+    finally:
+        if control_runtime_engine is not None:
+            control_runtime_engine.dispose()
+        if control_admin_engine is not None:
+            control_admin_engine.dispose()
+        if temporary_runtime_engine is not None:
+            temporary_runtime_engine.dispose()
+        if temporary_admin_engine is not None:
+            temporary_admin_engine.dispose()
+        with maintenance_engine.connect() as connection:
+            for name in (database_name, control_database_name):
+                connection.execute(
+                    text(
+                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                        "WHERE datname = :database_name"
+                    ),
+                    {"database_name": name},
+                )
+                connection.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
+        maintenance_engine.dispose()
+
+
+def test_runtime_role_split_removes_preexisting_owner_membership(
+    migration_database_url: str,
+) -> None:
+    url = create_engine(migration_database_url).url
+    database_name = f"ledgerbridge_role_split_{uuid4().hex[:12]}"
+    maintenance_url = url.set(database="postgres")
+    temporary_url = url.set(database=database_name)
+    maintenance_engine = create_engine(maintenance_url, isolation_level="AUTOCOMMIT")
+    temporary_engine: Engine | None = None
+
+    try:
+        with maintenance_engine.connect() as connection:
+            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+
+        rendered = temporary_url.render_as_string(hide_password=False)
+        _run_alembic(rendered, "20260823_0005")
+        temporary_engine = create_engine(temporary_url)
+        with temporary_engine.begin() as connection:
+            assert (
+                connection.execute(
+                    text(
+                        """
+                    SELECT count(*)
+                    FROM pg_auth_members AS membership
+                    JOIN pg_roles AS member_role ON member_role.oid = membership.member
+                    WHERE member_role.rolname IN ('ledgerbridge_api', 'ledgerbridge_worker')
+                      AND membership.roleid = 'ledgerbridge_owner'::regrole
+                    """
+                    )
+                ).scalar_one()
+                == 0
+            )
+            connection.execute(
+                text("GRANT ledgerbridge_owner TO ledgerbridge_api, ledgerbridge_worker")
+            )
+        temporary_engine.dispose()
+        temporary_engine = None
+
+        _run_alembic(rendered, "20260823_0006")
+        temporary_engine = create_engine(temporary_url)
+        with temporary_engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text(
+                        """
+                    SELECT count(*)
+                    FROM pg_auth_members AS membership
+                    JOIN pg_roles AS member_role ON member_role.oid = membership.member
+                    WHERE member_role.rolname IN ('ledgerbridge_api', 'ledgerbridge_worker')
+                    """
+                    )
+                ).scalar_one()
+                == 0
+            )
+
+            # The migration owner is a superuser in the disposable CI database;
+            # SET SESSION AUTHORIZATION models an API login without storing
+            # another password, so the following SET ROLE check is evaluated
+            # against ledgerbridge_api rather than the owner session.
+            connection.execute(text("SET SESSION AUTHORIZATION ledgerbridge_api"))
+            with pytest.raises(DBAPIError):
+                connection.execute(text("SET ROLE ledgerbridge_owner"))
+            connection.rollback()
+    finally:
+        if temporary_engine is not None:
+            temporary_engine.dispose()
+        with maintenance_engine.connect() as connection:
+            connection.execute(
+                text("REVOKE ledgerbridge_owner FROM ledgerbridge_api, ledgerbridge_worker")
+            )
             connection.execute(
                 text(
                     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "

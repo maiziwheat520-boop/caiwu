@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 
 class BinarySource(Protocol):
@@ -76,6 +76,236 @@ class PublishedArtifact:
         return self.sha256.hex()
 
 
+HandoffState = Literal["open", "sealed", "committed", "aborted"]
+
+
+class ArtifactHandoff:
+    """One bounded, store-owned upload staging session.
+
+    The caller writes validated file bytes and must pass an explicit parser
+    completion signal to :meth:`complete`.  The session never exposes its
+    temporary path or descriptor; ArtifactStore remains the only publication
+    authority.
+    """
+
+    __slots__ = (
+        "__byte_size",
+        "__descriptor",
+        "__hasher",
+        "__state",
+        "__store",
+        "__temporary",
+        "__temporary_identity",
+    )
+
+    def __init__(
+        self,
+        store: ArtifactStore,
+        descriptor: int,
+        temporary: Path,
+        temporary_identity: tuple[int, int],
+    ) -> None:
+        self.__store = store
+        self.__descriptor: int | None = descriptor
+        self.__temporary = temporary
+        self.__temporary_identity = temporary_identity
+        self.__hasher = hashlib.sha256()
+        self.__byte_size = 0
+        self.__state: HandoffState = "open"
+
+    @property
+    def state(self) -> HandoffState:
+        return self.__state
+
+    @property
+    def byte_size(self) -> int:
+        return self.__byte_size
+
+    def write(self, chunk: bytes) -> None:
+        self.__require_state("open")
+        if not isinstance(chunk, bytes):
+            raise ArtifactStoreError("artifact handoff chunks must be bytes")
+        if not chunk:
+            return
+        if self.__byte_size + len(chunk) > self.__store.max_bytes:
+            raise ArtifactTooLargeError("artifact exceeds configured byte limit")
+        try:
+            with self.__store._quota_lock(
+                timeout_seconds=self.__store.handoff_lock_timeout_seconds
+            ):
+                self.__store._validate_root_entries()
+                staging_bytes = self.__store._staging_usage(clean_stale=False)
+                if staging_bytes + len(chunk) > self.__store.staging_max_bytes:
+                    raise ArtifactStagingQuotaError(
+                        "artifact staging area would exceed its configured byte limit",
+                        limit=self.__store.staging_max_bytes,
+                        observed=staging_bytes,
+                        requested=len(chunk),
+                    )
+                descriptor = self.__require_descriptor()
+                before = os.fstat(descriptor)
+                if not stat.S_ISREG(before.st_mode) or before.st_size != self.__byte_size:
+                    raise ArtifactIntegrityError("artifact handoff descriptor changed")
+                self.__write_all(descriptor, chunk)
+                after = os.fstat(descriptor)
+                if after.st_size != self.__byte_size + len(chunk):
+                    raise ArtifactIntegrityError("artifact handoff size changed")
+        except BaseException:
+            self.abort()
+            raise
+        self.__hasher.update(chunk)
+        self.__byte_size += len(chunk)
+
+    def complete(self, *, parser_complete: bool) -> PublishedArtifact:
+        self.__require_state("open")
+        if not parser_complete:
+            raise ArtifactStoreError("artifact handoff requires parser completion")
+        try:
+            with self.__store._quota_lock(
+                timeout_seconds=self.__store.handoff_lock_timeout_seconds
+            ):
+                self.__store._validate_root_entries()
+                descriptor = self.__require_descriptor()
+                os.fsync(descriptor)
+                if os.name != "nt":
+                    fchmod = getattr(os, "fchmod", None)
+                    if fchmod is None:
+                        raise ArtifactIntegrityError("artifact handoff cannot set private mode")
+                    fchmod(descriptor, stat.S_IRUSR | stat.S_IRGRP)
+                digest = self.__hasher.digest()
+                self.__store._verify_descriptor(descriptor, digest, self.__byte_size)
+                self.__verify_temporary_path()
+                storage_key = storage_key_for_digest(digest)
+                destination = self.__store._destination(digest)
+                self.__store._ensure_private_directory(destination.parent)
+                try:
+                    destination_metadata = destination.lstat()
+                except FileNotFoundError:
+                    published_bytes = self.__store._published_usage()
+                    if published_bytes + self.__byte_size > self.__store.total_max_bytes:
+                        raise ArtifactPublishedQuotaError(
+                            "published artifacts would exceed their configured byte limit",
+                            limit=self.__store.total_max_bytes,
+                            observed=published_bytes,
+                            requested=self.__byte_size,
+                        ) from None
+                    try:
+                        os.link(self.__temporary, destination, follow_symlinks=False)
+                    except FileExistsError:
+                        self.__store._verify_path(destination, digest, self.__byte_size)
+                        created = False
+                    else:
+                        linked_metadata = destination.lstat()
+                        try:
+                            self.__store._verify_path(destination, digest, self.__byte_size)
+                        except BaseException:
+                            self.__unlink_owned_destination(
+                                destination,
+                                (linked_metadata.st_dev, linked_metadata.st_ino),
+                            )
+                            raise
+                        self.__store._fsync_directory(destination.parent)
+                        created = True
+                else:
+                    if not stat.S_ISREG(destination_metadata.st_mode):
+                        raise ArtifactIntegrityError("published artifact must be a regular file")
+                    self.__store._verify_path(destination, digest, self.__byte_size)
+                    created = False
+                self.__state = "committed"
+                result = PublishedArtifact(
+                    sha256=digest,
+                    byte_size=self.__byte_size,
+                    storage_key=storage_key,
+                    created=created,
+                )
+            self.__close_descriptor()
+            with suppress(FileNotFoundError):
+                self.__temporary.unlink()
+            return result
+        except BaseException:
+            self.abort()
+            raise
+
+    def abort(self) -> None:
+        if self.__state in {"committed", "aborted"}:
+            return
+        try:
+            try:
+                with self.__store._quota_lock(
+                    timeout_seconds=self.__store.handoff_lock_timeout_seconds
+                ):
+                    self.__cleanup()
+            except ArtifactQuotaStateError:
+                # Cleanup must still be attempted if a lock holder is wedged;
+                # the private handoff inode is safe to unlink by identity.
+                self.__cleanup()
+        finally:
+            self.__state = "aborted"
+
+    def __enter__(self) -> ArtifactHandoff:
+        self.__require_state("open")
+        return self
+
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        if self.__state in {"open", "sealed"}:
+            self.abort()
+
+    def __require_state(self, expected: HandoffState) -> None:
+        if self.__state != expected:
+            raise ArtifactStoreError(f"artifact handoff is {self.__state}; expected {expected}")
+
+    def __require_descriptor(self) -> int:
+        if self.__descriptor is None:
+            raise ArtifactIntegrityError("artifact handoff descriptor is closed")
+        return self.__descriptor
+
+    @staticmethod
+    def __write_all(descriptor: int, chunk: bytes) -> None:
+        view = memoryview(chunk)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise ArtifactStoreError("artifact handoff write made no progress")
+            view = view[written:]
+
+    def __close_descriptor(self) -> None:
+        if self.__descriptor is not None:
+            os.close(self.__descriptor)
+            self.__descriptor = None
+
+    def __cleanup(self) -> None:
+        self.__close_descriptor()
+        if self.__temporary_matches_identity():
+            with suppress(FileNotFoundError):
+                self.__temporary.unlink()
+        self.__store._fsync_directory(self.__temporary.parent)
+
+    def __temporary_matches_identity(self) -> bool:
+        try:
+            metadata = self.__temporary.lstat()
+        except FileNotFoundError:
+            return False
+        return (
+            stat.S_ISREG(metadata.st_mode)
+            and metadata.st_dev == self.__temporary_identity[0]
+            and metadata.st_ino == self.__temporary_identity[1]
+        )
+
+    def __verify_temporary_path(self) -> None:
+        if not self.__temporary_matches_identity():
+            raise ArtifactIntegrityError("artifact handoff staging path was replaced")
+
+    @staticmethod
+    def __unlink_owned_destination(destination: Path, expected_identity: tuple[int, int]) -> None:
+        try:
+            metadata = destination.lstat()
+        except FileNotFoundError:
+            return
+        if metadata.st_dev == expected_identity[0] and metadata.st_ino == expected_identity[1]:
+            with suppress(FileNotFoundError):
+                destination.unlink()
+
+
 class ReadOnlyArtifactStream:
     """Minimal connector-facing reader over one already-verified descriptor."""
 
@@ -118,6 +348,7 @@ class ArtifactStore:
         staging_max_bytes: int = 512 * 1024 * 1024,
         staging_ttl_seconds: int = 60 * 60,
         chunk_size: int = 64 * 1024,
+        handoff_lock_timeout_seconds: float = 5.0,
     ) -> None:
         if not root.is_absolute():
             raise ValueError("artifact root must be absolute")
@@ -127,6 +358,7 @@ class ArtifactStore:
             or staging_max_bytes <= 0
             or staging_ttl_seconds <= 0
             or chunk_size <= 0
+            or handoff_lock_timeout_seconds <= 0
         ):
             raise ValueError("artifact limits must be positive")
         self.root = root
@@ -135,6 +367,35 @@ class ArtifactStore:
         self.staging_max_bytes = staging_max_bytes
         self.staging_ttl_seconds = staging_ttl_seconds
         self.chunk_size = chunk_size
+        self.handoff_lock_timeout_seconds = handoff_lock_timeout_seconds
+
+    def begin_handoff(self) -> ArtifactHandoff:
+        """Create one bounded, store-owned staging session."""
+
+        self._ensure_private_directory(self.root)
+        staging_root = self.root / ".staging"
+        self._ensure_private_directory(staging_root)
+        with self._quota_lock(timeout_seconds=self.handoff_lock_timeout_seconds):
+            self._validate_root_entries()
+            staging_bytes = self._staging_usage(clean_stale=True)
+            if staging_bytes > self.staging_max_bytes:
+                raise ArtifactStagingQuotaError(
+                    "artifact staging area exceeds its configured byte limit",
+                    limit=self.staging_max_bytes,
+                    observed=staging_bytes,
+                    requested=0,
+                )
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix="artifact-handoff-", dir=staging_root
+            )
+        temporary = Path(temporary_name)
+        metadata = os.fstat(descriptor)
+        return ArtifactHandoff(
+            self,
+            descriptor,
+            temporary,
+            (metadata.st_dev, metadata.st_ino),
+        )
 
     def publish(self, stream: BinarySource) -> PublishedArtifact:
         self._ensure_private_directory(self.root)
@@ -332,7 +593,9 @@ class ArtifactStore:
         os.lseek(descriptor, 0, os.SEEK_SET)
 
     @contextmanager
-    def _quota_lock(self) -> Iterator[None]:
+    def _quota_lock(self, *, timeout_seconds: float | None = None) -> Iterator[None]:
+        if timeout_seconds is not None and timeout_seconds <= 0:
+            raise ValueError("quota lock timeout must be positive")
         path = self.root / ".quota.lock"
         flags = (
             os.O_RDWR
@@ -345,6 +608,7 @@ class ArtifactStore:
             descriptor = os.open(path, flags, stat.S_IRUSR | stat.S_IWUSR)
         except OSError as exc:
             raise ArtifactQuotaStateError("artifact quota lock is unavailable") from exc
+        deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
         try:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise ArtifactQuotaStateError("artifact quota lock must be a regular file")
@@ -356,14 +620,38 @@ class ArtifactStore:
                     os.fsync(descriptor)
                 os.lseek(descriptor, 0, os.SEEK_SET)
                 locking = getattr(msvcrt, "lock" + "ing")
-                lock_lock = getattr(msvcrt, "LK_" + "LOCK")
-                locking(descriptor, lock_lock, 1)
+                lock_mode = getattr(
+                    msvcrt,
+                    "LK_" + ("LOCK" if timeout_seconds is None else "NBLCK"),
+                )
+                while True:
+                    try:
+                        locking(descriptor, lock_mode, 1)
+                        break
+                    except OSError as exc:
+                        if deadline is None or time.monotonic() >= deadline:
+                            raise ArtifactQuotaStateError(
+                                "artifact quota lock acquisition timed out"
+                            ) from exc
+                        time.sleep(min(0.01, max(0.001, deadline - time.monotonic())))
             else:
                 import fcntl
 
                 flock = getattr(fcntl, "fl" + "ock")
                 lock_ex = getattr(fcntl, "LOCK_" + "EX")
-                flock(descriptor, lock_ex)
+                lock_mode = (
+                    lock_ex if timeout_seconds is None else lock_ex | getattr(fcntl, "LOCK_" + "NB")
+                )
+                while True:
+                    try:
+                        flock(descriptor, lock_mode)
+                        break
+                    except BlockingIOError as exc:
+                        if deadline is None or time.monotonic() >= deadline:
+                            raise ArtifactQuotaStateError(
+                                "artifact quota lock acquisition timed out"
+                            ) from exc
+                        time.sleep(min(0.01, max(0.001, deadline - time.monotonic())))
             try:
                 yield
             finally:
@@ -410,7 +698,7 @@ class ArtifactStore:
         for entry in entries:
             path = Path(entry.path)
             try:
-                metadata = entry.stat(follow_symlinks=False)
+                metadata = path.lstat()
             except OSError as exc:
                 raise ArtifactQuotaStateError("artifact quota entry is unreadable") from exc
             if stat.S_ISLNK(metadata.st_mode):

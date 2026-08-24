@@ -1,9 +1,12 @@
+import os
+import stat
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 
 class Settings(BaseSettings):
@@ -19,12 +22,36 @@ class Settings(BaseSettings):
 
     env: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
-    database_url: str = Field(min_length=1)
+    runtime_role: Literal["api", "worker", "migrate"] = "migrate"
+    database_url: str | None = Field(default=None, min_length=1)
+    api_database_url: str | None = Field(default=None, min_length=1)
+    worker_database_url: str | None = Field(default=None, min_length=1)
     artifact_root: Path = Path("/var/lib/ledgerbridge/artifacts")
     artifact_max_bytes: int = Field(default=50 * 1024 * 1024, gt=0, le=2**63 - 1)
     artifact_total_max_bytes: int = Field(default=10 * 1024 * 1024 * 1024, gt=0, le=2**63 - 1)
     artifact_staging_max_bytes: int = Field(default=512 * 1024 * 1024, gt=0, le=2**63 - 1)
     artifact_staging_ttl_seconds: int = Field(default=60 * 60, gt=0, le=2**31 - 1)
+    upload_read_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
+    upload_concurrency: int = Field(default=2, gt=0, le=64)
+    enable_internal_upload: bool = False
+    enable_internal_async_dispatch: bool = False
+    enable_review_api: bool = False
+    dispatch_lease_seconds: int = Field(default=120, gt=0, le=3600)
+    dispatch_max_attempts: int = Field(default=5, gt=0, le=16)
+    dispatch_poll_seconds: float = Field(default=1.0, gt=0, le=60)
+    runner_socket_path: str = "/run/ledgerbridge-connector/runner.sock"
+    runner_manifest_path: Path | None = None
+    runner_verification_keys_path: Path | None = None
+    runner_manifest_generation: str | None = Field(default=None, min_length=1, max_length=100)
+    auth_provider: Literal["disabled", "trusted_gateway", "test"] = "disabled"
+    auth_policy_generation: str | None = Field(default=None, min_length=1, max_length=100)
+    auth_clock_skew_seconds: int = Field(default=30, ge=0, le=300)
+    mail_provider: Literal["disabled", "microsoft_graph"] = "disabled"
+    mailbox_id: str | None = Field(default=None, min_length=1, max_length=500)
+    mail_folder: str = Field(default="inbox", min_length=1, max_length=500)
+    mail_max_messages: int = Field(default=100, gt=0, le=100)
+    mail_graph_page_size: int = Field(default=20, gt=0, le=50)
+    mail_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
 
     @field_validator("artifact_root")
     @classmethod
@@ -33,11 +60,158 @@ class Settings(BaseSettings):
             raise ValueError("artifact_root must be an absolute path")
         return value
 
+    @model_validator(mode="after")
+    def production_requires_split_database_roles(self) -> "Settings":
+        if self.mail_provider == "microsoft_graph" and not self.mailbox_id:
+            raise ValueError("mailbox_id is required when mail_provider=microsoft_graph")
+
+        if (self.runner_manifest_path is None) != (self.runner_verification_keys_path is None):
+            raise ValueError(
+                "runner_manifest_path and runner_verification_keys_path must be configured together"
+            )
+        for field_name in ("runner_manifest_path", "runner_verification_keys_path"):
+            value = getattr(self, field_name)
+            if value is not None and not value.is_absolute():
+                raise ValueError(f"{field_name} must be an absolute path")
+        if self.runner_manifest_path is not None and self.runner_verification_keys_path is not None:
+            manifest_path = self.runner_manifest_path.resolve()
+            keys_path = self.runner_verification_keys_path.resolve()
+            manifest_root = manifest_path.parent
+            keys_root = keys_path.parent
+            try:
+                common_root = Path(os.path.commonpath((manifest_root, keys_root)))
+            except ValueError:
+                common_root = None
+            if (
+                manifest_path == keys_path
+                or manifest_root == keys_root
+                or manifest_root.is_relative_to(keys_root)
+                or keys_root.is_relative_to(manifest_root)
+                or (common_root is not None and common_root != Path(manifest_path.anchor))
+            ):
+                raise ValueError(
+                    "runner manifest and verification keys must use separate trust roots"
+                )
+            # Keep the canonical, resolved paths for the later worker load. This
+            # prevents validation of one spelling followed by use of an
+            # attacker-controlled parent-symlink spelling.
+            self.runner_manifest_path = manifest_path
+            self.runner_verification_keys_path = keys_path
+            if self.env == "production":
+                _require_immutable_verification_key_path(keys_path)
+        if (
+            self.env == "production"
+            and self.runner_manifest_path is not None
+            and self.runner_manifest_generation is None
+        ):
+            raise ValueError("production runner manifest generation must be explicit")
+        if self.auth_provider != "disabled" and self.auth_policy_generation is None:
+            raise ValueError("auth_policy_generation is required when authentication is enabled")
+
+        if self.runtime_role == "migrate":
+            if not self.database_url:
+                raise ValueError("database_url is required for the migrate runtime role")
+        elif self.runtime_role == "api" and not self.api_database_url:
+            raise ValueError("api_database_url is required for the api runtime role")
+        elif self.runtime_role == "worker" and not self.worker_database_url:
+            raise ValueError("worker_database_url is required for the worker runtime role")
+
+        if (
+            self.api_database_url
+            and self.worker_database_url
+            and self.api_database_url == self.worker_database_url
+        ):
+            raise ValueError("production API and worker database URLs must differ")
+
+        if self.env == "production":
+            if self.mail_provider != "disabled":
+                raise ValueError(
+                    "production mail provider remains disabled until auth and manifest gates"
+                )
+            if "runtime_role" not in self.model_fields_set:
+                raise ValueError("production runtime_role must be explicit")
+            role_urls: list[tuple[str, str | None]] = []
+            if self.runtime_role == "api":
+                role_urls.append(("ledgerbridge_api", self.api_database_url))
+            elif self.runtime_role == "worker":
+                role_urls.append(("ledgerbridge_worker", self.worker_database_url))
+            else:
+                role_urls.append(("ledgerbridge_owner", self.database_url))
+                role_urls.extend(
+                    [
+                        ("ledgerbridge_api", self.api_database_url),
+                        ("ledgerbridge_worker", self.worker_database_url),
+                    ]
+                )
+            for expected_user, value in role_urls:
+                if value is None:
+                    continue
+                try:
+                    username = make_url(value).username
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("production runtime database URL must be valid") from exc
+                if username != expected_user:
+                    raise ValueError(
+                        "production runtime database URL must use dedicated runtime roles: "
+                        f"{expected_user}"
+                    )
+        return self
+
+    def resolved_api_database_url(self) -> str:
+        if self.env == "production" and self.runtime_role != "api":
+            raise ValueError("production API requires runtime_role=api")
+        value = self.api_database_url or self.database_url
+        if value is None:
+            raise ValueError("an API database URL is required")
+        return value
+
+    def resolved_worker_database_url(self) -> str:
+        if self.env == "production" and self.runtime_role != "worker":
+            raise ValueError("production worker requires runtime_role=worker")
+        value = self.worker_database_url or self.database_url
+        if value is None:
+            raise ValueError("a worker database URL is required")
+        return value
+
 
 def escape_alembic_ini_value(value: str) -> str:
     return value.replace("%", "%%")
 
 
+def _require_immutable_verification_key_path(path: Path) -> None:
+    """Require a POSIX production key bundle and parent chain to be root-owned."""
+
+    if os.name != "posix":
+        return
+    try:
+        key_stat = path.stat()
+    except OSError as exc:
+        raise ValueError("production runner verification keys must exist") from exc
+    if not stat.S_ISREG(key_stat.st_mode):
+        raise ValueError("production runner verification keys must be a regular file")
+    current = path
+    allowed_owners = {0}
+    while True:
+        try:
+            current_stat = current.lstat()
+        except OSError as exc:
+            raise ValueError("production runner verification key path is unavailable") from exc
+        if current.is_symlink():
+            raise ValueError("production runner verification key path must not use symlinks")
+        if current != path and not stat.S_ISDIR(current_stat.st_mode):
+            raise ValueError("production runner verification key parents must be directories")
+        if current_stat.st_mode & 0o022:
+            raise ValueError(
+                "production runner verification key path is writable by group or others"
+            )
+        if current_stat.st_uid not in allowed_owners:
+            raise ValueError("production runner verification key path has an untrusted owner")
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]
+    return Settings()

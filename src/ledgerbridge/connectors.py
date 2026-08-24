@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from ledgerbridge.text import contains_unstorable_text
+
 MAX_JSON_BYTES = 1_000_000
 MAX_JSON_DEPTH = 64
 MIN_MINOR_UNITS = -(2**63)
@@ -24,6 +26,13 @@ class DetectionResult(StrEnum):
     MATCH = "MATCH"
     NO_MATCH = "NO_MATCH"
     AMBIGUOUS = "AMBIGUOUS"
+
+
+class ConnectorExecutionMode(StrEnum):
+    """The only execution modes understood by the Connector registry."""
+
+    IN_PROCESS = "in_process"
+    RUNNER = "runner"
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +87,12 @@ class Connector(Protocol):
     def parse(self, stream: ReadableBinary) -> Iterable[ParsedSourceRecord]: ...
 
 
-def validate_connector(connector: Connector) -> tuple[str, str, str]:
+def validate_connector(
+    connector: Connector,
+    *,
+    production: bool = False,
+) -> tuple[str, str, str]:
+    validate_connector_execution_mode(connector, production=production)
     name = connector.name
     version = connector.version
     _require_text("connector.name", name, 100)
@@ -92,8 +106,35 @@ def validate_connector(connector: Connector) -> tuple[str, str, str]:
     return name, version, source_system
 
 
+def validate_connector_execution_mode(
+    connector: object,
+    *,
+    production: bool = False,
+) -> ConnectorExecutionMode:
+    """Reject unknown modes and forbid in-process production manifests.
+
+    Existing synthetic Phase 2 fixtures omit ``execution_mode`` and therefore
+    remain explicitly in-process.  A production manifest must opt into the
+    isolated runner; registering one is intentionally a later reviewed change.
+    """
+
+    value = getattr(connector, "execution_mode", ConnectorExecutionMode.IN_PROCESS.value)
+    try:
+        mode = ConnectorExecutionMode(value)
+    except (TypeError, ValueError) as exc:
+        raise ConnectorContractError("connector.execution_mode is invalid") from exc
+    if production and mode is not ConnectorExecutionMode.RUNNER:
+        raise ConnectorContractError("production connectors must use execution_mode=runner")
+    return mode
+
+
 def _require_text(field: str, value: str, maximum: int) -> None:
-    if not isinstance(value, str) or not value.strip() or len(value) > maximum:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > maximum
+        or contains_unstorable_text(value)
+    ):
         raise ConnectorContractError(f"{field} must be non-blank and at most {maximum} characters")
 
 
@@ -132,7 +173,11 @@ def _walk_json(value: object, *, field: str, reject_floats: bool) -> None:
         current, depth = stack.pop()
         if depth > MAX_JSON_DEPTH:
             raise ConnectorContractError(f"{field} must not exceed {MAX_JSON_DEPTH} nested levels")
-        if current is None or isinstance(current, (str, bool, int)):
+        if current is None or isinstance(current, (bool, int)):
+            continue
+        if isinstance(current, str):
+            if contains_unstorable_text(current):
+                raise ConnectorContractError(f"{field} contains non-storable text")
             continue
         if isinstance(current, float):
             if reject_floats:
@@ -142,6 +187,8 @@ def _walk_json(value: object, *, field: str, reject_floats: bool) -> None:
             for key, child in current.items():
                 if not isinstance(key, str):
                     raise ConnectorContractError(f"{field} object keys must be strings")
+                if contains_unstorable_text(key):
+                    raise ConnectorContractError(f"{field} contains non-storable text")
                 stack.append((child, depth + 1))
             continue
         if isinstance(current, (list, tuple)):

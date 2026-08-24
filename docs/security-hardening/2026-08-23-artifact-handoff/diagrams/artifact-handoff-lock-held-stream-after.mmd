@@ -1,0 +1,11 @@
+flowchart LR
+    C[Authenticated upload client]
+    P[Completion-aware parser stream]
+    A[ArtifactStore.publish\nquota lock held for request]
+    S[(ArtifactStore staging)]
+    D[(Content-addressed artifact)]
+    X[Abort + cleanup]
+
+    C --> P --> A --> S --> D
+    P -. "EOF only after closing boundary" .-> A
+    P -. "timeout / malformed" .-> X

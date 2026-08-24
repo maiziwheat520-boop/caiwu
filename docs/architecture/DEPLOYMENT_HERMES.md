@@ -19,20 +19,59 @@ API binding: `127.0.0.1:8650` only
   never copied back, and never committed.
 - No public/LAN port is opened. Hermes integrations call the local API endpoint.
 
+## Isolated Connector runner
+
+The `connector-runner` service is an opt-in `connector-runner` Compose profile;
+it is not started by the default production profile and it does not register a
+real Connector. Its distinct image is built from
+`docker/connector-runner.Dockerfile`. The service uses `network_mode: none`, a
+read-only root filesystem, UID/GID 10001, `no-new-privileges`, all capabilities
+dropped, 128 MiB/64-PID/0.50-CPU limits, and only the named
+`connector-socket` volume. It receives no database, artifact, OAuth, mail, or
+provider environment values or mounts. The worker alone mounts the socket
+volume; API and PostgreSQL do not.
+
+The socket protocol is versioned and length-delimited. Control metadata,
+streamed artifact chunks, parsed-record frames, and terminal responses have
+independent hard limits. A request carries an explicit request ID, operation,
+Connector identity, registered source system, declared byte count, and verified
+SHA-256. The runner recomputes the streamed digest and reconstructs typed
+`ParsedSourceRecord` values before returning them. Errors, timeouts, malformed
+frames, stale request IDs, response overflow, or runner restarts are bounded
+failures; the worker maps them to a terminal ImportJob result without partial
+SourceRecords.
+
+Start only the foundation runner for a disposable acceptance probe:
+
+```bash
+docker compose --profile connector-runner up -d connector-runner
+docker compose --profile connector-runner ps
+```
+
+Do not enable `mail-collector`, register a real Connector, or pass production
+evidence through the runner without a separate reviewed change and deployment
+authorization.
+
 ## Database identities
 
 Use distinct generated passwords in the protected `.env`. For new volumes:
 
 - `POSTGRES_USER=ledgerbridge_owner` and `POSTGRES_PASSWORD` bootstrap the cluster
   and own migrations. The API and worker never receive these credentials.
-- `ledgerbridge_app` is an unprivileged LOGIN role. Its password is supplied as
-  `LEDGERBRIDGE_APP_DB_PASSWORD`, and its URL is `LEDGERBRIDGE_DATABASE_URL`.
+- `ledgerbridge_api` and `ledgerbridge_worker` are separate unprivileged LOGIN
+  roles. Their URLs are `LEDGERBRIDGE_API_DATABASE_URL` and
+  `LEDGERBRIDGE_WORKER_DATABASE_URL`; production settings reject any other role
+  name and require the URLs to differ.
+- `ledgerbridge_app` is retained only as a non-production compatibility role.
+  Production migration `20260823_0007` sets it `NOLOGIN` and revokes its runtime
+  grants. The generic `LEDGERBRIDGE_DATABASE_URL` is for local tooling/tests,
+  not an API or worker service environment.
 - `LEDGERBRIDGE_MIGRATION_DATABASE_URL` is provided only to the one-shot `migrate`
   service. It must use the volume's existing owner role.
 
 The production volume created before Phase 1 uses `ledgerbridge` as its Phase 0
 bootstrap owner. Keep that existing role as the migration owner during an in-place
-upgrade, while API and worker switch to `ledgerbridge_app`. Do not rename the
+upgrade, while API and worker switch to their dedicated roles. Do not rename the
 cluster role or transfer object ownership solely to match the new-volume example.
 
 On a new database volume, `docker/postgres-init-runtime-role.sh` creates the
@@ -46,8 +85,8 @@ docker compose exec -T postgres sh \
   /docker-entrypoint-initdb.d/10-ledgerbridge-runtime-role.sh
 ```
 
-The Phase 1 migration fails closed if `ledgerbridge_app` is missing, cannot log
-in, or has superuser/database/role/replication/RLS-bypass privileges. PostgreSQL
+The bootstrap creates all three runtime roles and requires distinct passwords.
+Production migration `20260823_0007` retires `ledgerbridge_app`; PostgreSQL
 roles are cluster objects and are not dropped by Alembic downgrade. Include a
 protected `pg_dumpall --roles-only` artifact in backup/restore work and re-check
 role attributes plus grants during the F-4 restore rehearsal.
@@ -164,7 +203,8 @@ The rehearsal decrypts into a private `/dev/shm` directory, validates every
 component hash, restores roles before the database into a new PostgreSQL 15
 checksummed volume on an internal-only network, verifies the migration head,
 owners, row counts, functions, triggers, runtime grants, audit/schema
-restrictions, direct `ledgerbridge_app` identity, artifact digest, and
+restrictions, dedicated API/worker identities and retired compatibility role,
+artifact digest, and
 deployment manifest. It never points `pg_restore` or artifact extraction at a
 production resource. Passing evidence is written as a non-secret
 `restore-rehearsal-*.json` file beside the ciphertext after all disposable

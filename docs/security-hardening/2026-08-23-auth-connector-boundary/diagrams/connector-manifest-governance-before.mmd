@@ -1,0 +1,9 @@
+flowchart LR
+    U[Upload request] --> R[FastAPI route]
+    R --> E[get_internal_connectors = empty]
+    E --> I[EvidenceImporter]
+    I --> V[Object-level validate_connector]
+    V --> D[Detect across caller-supplied sequence]
+    D --> RC[Optional RunnerConnector]
+    RC --> S[Unix socket runner]
+    S --> X[ConnectorSupervisor = empty]

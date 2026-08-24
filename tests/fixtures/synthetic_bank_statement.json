@@ -1,0 +1,26 @@
+{
+  "schema": "ledgerbridge.synthetic.bank.v1",
+  "account_key": "demo-bank",
+  "records": [
+    {
+      "record_locator": "statement:2026-08:0001",
+      "external_transaction_id": "demo-tx-0001",
+      "occurred_on": "2026-08-24",
+      "amount_minor": -12345,
+      "currency": "CNY",
+      "counterparty": "Demo Hotel",
+      "description": "Synthetic supplies",
+      "balance_minor": 987655
+    },
+    {
+      "record_locator": "statement:2026-08:0002",
+      "external_transaction_id": "demo-tx-0002",
+      "occurred_on": "2026-08-24",
+      "amount_minor": 50000,
+      "currency": "CNY",
+      "counterparty": "Demo Guest",
+      "description": "Synthetic settlement",
+      "balance_minor": 1037655
+    }
+  ]
+}
