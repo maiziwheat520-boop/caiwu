@@ -6,6 +6,8 @@ LedgerBridge Web 是部署在 Hermes 上的单用户财务工作台。浏览器�
 
 当前数据仍全部为合成数据。BFF 提供无认证内存模式，以及通过固定 HTTPS origin 使用 Passkey 和本地 SQLite 的持久化模式；真实数据路径尚未启用。
 
+真实数据的权威归属、Hermes/Outlook 增量入口、Core 内部 API、模型与工作簿边界已在 [REAL_DATA_BOUNDARY.md](./REAL_DATA_BOUNDARY.md) 中冻结；任何真实来源仍需逐项授权。
+
 ## 已验证的现状
 
 - 旧程序 `auto/app.py` 已有成熟的 `build_reconciliation()` 内存预览和 `save_reconciliation()` 人工确认保存边界。

@@ -36,6 +36,8 @@ Hermes 合成数据预览的容器部署方式见 [DEPLOYMENT.md](./DEPLOYMENT.m
 
 旧 Tkinter 对账规则的渐进提取方案见 [工作簿适配边界](./docs/WORKBOOK_ADAPTER.md)。
 
+已经确认的 Hermes、Outlook.com、LedgerBridge Core、模型提取和旧程序真实数据边界见 [真实数据接入边界](./docs/REAL_DATA_BOUNDARY.md)。该文档只冻结设计与授权闸门，不表示已经启用真实数据。
+
 ## 验证
 
 ```bash
