@@ -133,6 +133,19 @@ def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
                 "memberships": [],
             }
             for role in observed_roles
+        ]
+        + [
+            {
+                "role": "ledgerbridge_owner",
+                "login": True,
+                "superuser": False,
+                "create_database": False,
+                "create_role": False,
+                "inherit": False,
+                "replication": False,
+                "bypass_rls": False,
+                "memberships": [],
+            }
         ],
         "r1_database_acl": [
             {"grantee": role, "privilege": "CONNECT", "grantable": "NO"}
@@ -141,9 +154,45 @@ def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
         "r1_schema_acl": [
             {"schema": "public", "grantee": "PUBLIC", "privilege": "USAGE", "grantable": "NO"},
             {
+                "schema": "public",
+                "grantee": "pg_database_owner",
+                "privilege": "USAGE",
+                "grantable": "NO",
+            },
+            {
+                "schema": "public",
+                "grantee": "pg_database_owner",
+                "privilege": "CREATE",
+                "grantable": "NO",
+            },
+            {
+                "schema": "public",
+                "grantee": "ledgerbridge_owner",
+                "privilege": "USAGE",
+                "grantable": "NO",
+            },
+            {
+                "schema": "public",
+                "grantee": "ledgerbridge_owner",
+                "privilege": "CREATE",
+                "grantable": "NO",
+            },
+            {
                 "schema": "internal_read",
                 "grantee": "ledgerbridge_reader",
                 "privilege": "USAGE",
+                "grantable": "NO",
+            },
+            {
+                "schema": "internal_read",
+                "grantee": "ledgerbridge_owner",
+                "privilege": "USAGE",
+                "grantable": "NO",
+            },
+            {
+                "schema": "internal_read",
+                "grantee": "ledgerbridge_owner",
+                "privilege": "CREATE",
                 "grantable": "NO",
             },
         ],
@@ -519,6 +568,16 @@ def test_r1_database_metadata_verifies_role_acl_catalog_and_effective_privileges
 
 def test_r1_security_sql_and_verifier_cover_optional_backup_role() -> None:
     assert "ledgerbridge_backup" in R1_SECURITY_SQL
+    assert "FROM pg_database" in R1_SECURITY_SQL
+    assert (
+        "observed_roles(role_name) AS (\n"
+        "    SELECT role_name FROM expected_roles\n"
+        "    UNION\n"
+        "    SELECT role_name FROM database_owner\n"
+        ")"
+    ) in R1_SECURITY_SQL
+    assert "FROM expected_roles AS e\n      JOIN pg_roles AS r" in R1_SECURITY_SQL
+    assert "FROM observed_roles AS e\n      JOIN pg_roles AS r" in R1_SECURITY_SQL
     expected = _r1_database_metadata(include_backup=True)
     _validate_restored_database(expected, expected.copy())
 
@@ -547,6 +606,46 @@ def test_r1_security_sql_and_verifier_cover_optional_backup_role() -> None:
     }
     with pytest.raises(BackupError, match="fact table"):
         _validate_restored_database(backup_fact_grant, backup_fact_grant.copy())
+
+
+@pytest.mark.parametrize("direction", ["member", "granted"])
+def test_r1_database_metadata_rejects_database_owner_membership_drift(direction: str) -> None:
+    expected = _r1_database_metadata()
+    drifted = {
+        **expected,
+        "r1_role_matrix": [
+            {
+                **item,
+                "memberships": [
+                    {
+                        "direction": direction,
+                        "role": "stale_login",
+                        "admin_option": False,
+                        "inherit_option": False,
+                        "set_option": False,
+                    }
+                ],
+            }
+            if item.get("role") == "ledgerbridge_owner"
+            else item
+            for item in cast(list[dict[str, object]], expected["r1_role_matrix"])
+        ],
+    }
+    with pytest.raises(BackupError, match="role matrix is privileged or non-isolated"):
+        _validate_restored_database(drifted, drifted.copy())
+
+
+def test_r1_database_metadata_accepts_legacy_matrix_without_owner_observation() -> None:
+    expected = _r1_database_metadata()
+    legacy = {
+        **expected,
+        "r1_role_matrix": [
+            item
+            for item in cast(list[dict[str, object]], expected["r1_role_matrix"])
+            if item.get("role") != "ledgerbridge_owner"
+        ],
+    }
+    _validate_restored_database(legacy, legacy.copy())
 
 
 @pytest.mark.parametrize(

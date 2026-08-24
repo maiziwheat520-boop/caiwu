@@ -632,11 +632,20 @@ class DatabaseInternalReadService:
         if row is None:
             raise ResourceNotVisible("resource was not found")
         try:
-            return ReconciliationProjection.model_validate(dict(row), strict=True)
+            projection = ReconciliationProjection.model_validate(dict(row), strict=True)
         except (ValueError, TypeError) as exc:
             raise InternalReadBackendUnavailable(
                 "database reconciliation projection is invalid"
             ) from exc
+        if (
+            projection.entity_ref != entity_ref
+            or projection.business_unit_ref != business_unit_ref
+            or projection.month != month
+        ):
+            raise InternalReadBackendUnavailable(
+                "database reconciliation projection is out of scope"
+            )
+        return projection
 
     def get_ledger_summary(
         self,

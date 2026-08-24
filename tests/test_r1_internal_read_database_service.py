@@ -219,6 +219,34 @@ def test_database_reconciliation_reader_projects_rows_and_hides_missing() -> Non
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("entity_ref", UUID("10000000-0000-4000-8000-000000000002")),
+        ("business_unit_ref", "unit-demo-b"),
+        ("month", "2026-07"),
+    ],
+)
+def test_database_reconciliation_reader_rejects_scope_drift(field: str, value: object) -> None:
+    row = {
+        "entity_ref": ENTITY,
+        "business_unit_ref": "unit-demo-a",
+        "month": "2026-08",
+        "snapshot_revision": 1,
+        "blockers": (),
+        "proposals": (),
+        "suspense": (),
+        "posted_amount_minor": 123,
+        "currency": "CNY",
+    }
+    row[field] = value
+
+    with pytest.raises(InternalReadBackendUnavailable, match="out of scope"):
+        _service(_Session({}, reconciliation_row=row)).get_reconciliation(
+            _principal(), month="2026-08", entity_ref=ENTITY, business_unit_ref="unit-demo-a"
+        )
+
+
 def test_database_reader_translates_driver_and_projection_failures() -> None:
     failing = _service(_Session({}, fail=True))
     with pytest.raises(InternalReadBackendUnavailable, match="candidate read failed"):

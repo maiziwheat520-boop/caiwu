@@ -331,6 +331,14 @@ R1_SECURITY_SQL = (
     """
 WITH expected_roles(role_name) AS (
     VALUES __R1_ROLE_SQL__
+), database_owner AS (
+    SELECT pg_get_userbyid(datdba) AS role_name
+      FROM pg_database
+     WHERE datname = current_database()
+), observed_roles(role_name) AS (
+    SELECT role_name FROM expected_roles
+    UNION
+    SELECT role_name FROM database_owner
 ), present_roles(role_name) AS (
     SELECT e.role_name
       FROM expected_roles AS e
@@ -367,7 +375,7 @@ WITH expected_roles(role_name) AS (
              WHERE m.member = r.oid OR m.roleid = r.oid
         ), '[]'::json)
     ) ORDER BY r.rolname), '[]'::json) AS value
-      FROM expected_roles AS e
+      FROM observed_roles AS e
       JOIN pg_roles AS r ON r.rolname = e.role_name
 ), database_acl AS (
     SELECT COALESCE(json_agg(json_build_object(
@@ -1728,6 +1736,10 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
     def _is_not_grantable(value: Any) -> bool:
         return value is False or value == "NO"
 
+    database_owner = metadata.get("database_owner")
+    if not isinstance(database_owner, str) or database_owner in R1_CONTROLLED_ROLES:
+        raise BackupError("restored R1 database owner is invalid")
+
     roles = _list("r1_role_matrix")
     role_names = [item.get("role") for item in roles]
     if any(not isinstance(role, str) for role in role_names):
@@ -1736,30 +1748,33 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
     if (
         len(role_name_set) != len(roles)
         or not set(R1_ROLES).issubset(role_name_set)
-        or not role_name_set.issubset(set(R1_CONTROLLED_ROLES))
+        or not role_name_set.issubset({*R1_CONTROLLED_ROLES, database_owner})
     ):
         raise BackupError("restored R1 role matrix is incomplete")
     active_roles = tuple(role for role in R1_CONTROLLED_ROLES if role in role_name_set)
     for item in roles:
         role = item.get("role")
+        is_database_owner = role == database_owner
         if (
             not isinstance(role, str)
             or not isinstance(item.get("login"), bool)
-            or (role != "ledgerbridge_backup" and item.get("login") is not True)
-            or item.get("superuser") is not False
-            or item.get("create_database") is not False
-            or item.get("create_role") is not False
-            or item.get("inherit") is not False
-            or item.get("replication") is not False
-            or item.get("bypass_rls") is not False
+            or (
+                not is_database_owner
+                and (
+                    (role != "ledgerbridge_backup" and item.get("login") is not True)
+                    or item.get("superuser") is not False
+                    or item.get("create_database") is not False
+                    or item.get("create_role") is not False
+                    or item.get("inherit") is not False
+                    or item.get("replication") is not False
+                    or item.get("bypass_rls") is not False
+                )
+            )
             or item.get("memberships") != []
         ):
             raise BackupError(f"restored R1 role matrix is privileged or non-isolated: {role}")
 
     database_acl = _list("r1_database_acl")
-    database_owner = metadata.get("database_owner")
-    if not isinstance(database_owner, str) or database_owner in R1_CONTROLLED_ROLES:
-        raise BackupError("restored R1 database owner is invalid")
     database_principals = {
         "PUBLIC",
         "pg_database_owner",
@@ -1839,9 +1854,9 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
             if privilege == "CREATE":
                 raise BackupError("restored R1 schema CREATE privilege is over-broad")
             raise BackupError("restored R1 schema ACL contains an excess grant")
-        if privilege == "CREATE" and grantee in database_principals:
-            raise BackupError("restored R1 schema CREATE privilege is over-broad")
         if privilege not in allowed_privileges:
+            if privilege == "CREATE":
+                raise BackupError("restored R1 schema CREATE privilege is over-broad")
             raise BackupError("restored R1 schema ACL contains an excess grant")
         if grantee not in {database_owner, "pg_database_owner"} and not _is_not_grantable(
             item.get("grantable")
