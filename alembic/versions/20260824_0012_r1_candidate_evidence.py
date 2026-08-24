@@ -491,7 +491,7 @@ def upgrade() -> None:
         RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
         AS $function$
         DECLARE
-            entity_id uuid;
+            candidate_entity_id uuid;
             unit_entity uuid;
             category_entity uuid;
             unit_ref text;
@@ -499,11 +499,13 @@ def upgrade() -> None:
             category_code text;
             category_label text;
         BEGIN
-            SELECT c.entity_id INTO entity_id FROM public.candidate AS c WHERE c.id = NEW.candidate_id;
+            SELECT c.entity_id INTO candidate_entity_id
+              FROM public.candidate AS c
+             WHERE c.id = NEW.candidate_id;
             IF NEW.business_unit_id IS NOT NULL THEN
                 SELECT b.entity_id, b.ref, b.label INTO unit_entity, unit_ref, unit_label
                   FROM public.business_unit AS b WHERE b.id = NEW.business_unit_id;
-                IF unit_entity IS NULL OR unit_entity <> entity_id OR unit_ref <> NEW.business_unit_ref_snapshot OR unit_label <> NEW.business_unit_label_snapshot THEN
+                IF unit_entity IS NULL OR unit_entity <> candidate_entity_id OR unit_ref <> NEW.business_unit_ref_snapshot OR unit_label <> NEW.business_unit_label_snapshot THEN
                     RAISE EXCEPTION 'candidate business unit scope or snapshot is invalid'
                         USING ERRCODE = 'integrity_constraint_violation';
                 END IF;
@@ -511,10 +513,22 @@ def upgrade() -> None:
             IF NEW.category_id IS NOT NULL THEN
                 SELECT r.entity_id, r.code, r.label INTO category_entity, category_code, category_label
                   FROM public.reporting_category AS r WHERE r.id = NEW.category_id;
-                IF category_entity IS NULL OR category_entity <> entity_id OR category_code <> NEW.category_code_snapshot OR category_label <> NEW.category_label_snapshot THEN
+                IF category_entity IS NULL OR category_entity <> candidate_entity_id OR category_code <> NEW.category_code_snapshot OR category_label <> NEW.category_label_snapshot THEN
                     RAISE EXCEPTION 'candidate reporting category scope or snapshot is invalid'
                         USING ERRCODE = 'integrity_constraint_violation';
                 END IF;
+            END IF;
+            IF EXISTS (
+                SELECT 1
+                FROM public.candidate_evidence AS ce
+                JOIN public.evidence_object AS eo ON eo.evidence_ref = ce.evidence_ref
+                WHERE ce.candidate_id = NEW.candidate_id
+                  AND (eo.entity_id <> candidate_entity_id
+                       OR (NEW.business_unit_id IS NOT NULL
+                           AND eo.business_unit_id <> NEW.business_unit_id))
+            ) THEN
+                RAISE EXCEPTION 'candidate revision conflicts with linked evidence scope'
+                    USING ERRCODE = 'integrity_constraint_violation';
             END IF;
             RETURN NEW;
         END
