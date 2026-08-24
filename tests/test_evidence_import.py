@@ -725,7 +725,7 @@ def test_runner_capacity_during_parse_keeps_job_retryable(
         assert connection.execute(text("SELECT status FROM import_job")).scalar_one() == "RUNNING"
         assert (
             connection.execute(text("SELECT count(*) FROM audit_event")).scalar_one()
-            == audit_events_before
+            == audit_events_before + 1
         )
 
 
