@@ -110,6 +110,7 @@ class TrustedPrincipalMiddleware:
             state = scope.get("state")
             state_map = dict(state) if isinstance(state, Mapping) else {}
             state_map.pop("authenticated_principal", None)
+            scope["state"] = state_map
             try:
                 principal = self.resolver(scope)
             except Exception:

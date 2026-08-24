@@ -386,3 +386,143 @@ Before requesting a follow-up narrow audit:
    an isolated Hermes/container verification without installing any real key,
    manifest, gateway, Connector, or credential.
 
+## Re-review of remediation commit `7a73933`
+
+Re-review date: 2026-08-24
+
+Range: `9d4403d..7a739336cc030861abe353adb2ac1fc00f608bd1`
+
+Final re-review verdict: **CHANGES REQUIRED**
+
+The remediation closes `SOL-A1`, but `SOL-A2` remains bypassable through the
+resolver's unsanitized view of the original scope and `SOL-M1` still separates
+path topology rather than filesystem authority. Closure evidence is also
+incomplete, and both hosted CI runs for the exact commit failed their quality
+job.
+
+### SOL-A1 — CLOSED
+
+Exact evidence:
+
+- `src/ledgerbridge/auth.py:41-56` validates provider, subject, and policy text,
+  rejects `/` in both actor components, and rejects a combined actor over 200
+  characters during `AuthenticatedPrincipal` construction.
+- `src/ledgerbridge/auth.py:123-132` rejects leading/trailing whitespace and
+  every non-printable character before the route dependency can accept the
+  principal.
+- `tests/test_auth.py:95-117` covers delimiter, NUL/newline, whitespace, and the
+  exact 200/201 actor boundary.
+
+This removes the collision and accepted-but-unsinkable actor paths. Because a
+201-character principal can no longer be constructed, it cannot reach either
+manual body reader or artifact publication. No residual `SOL-A1` exploit was
+found in the reviewed diff.
+
+One requested defense-in-depth test is still absent: the remediation does not
+add a receive-stream sentinel that proves zero body bytes and zero staging
+activity for each typed-principal rejection on both upload routes. Static route
+ordering remains correct, so this is recorded as a closure-evidence gap rather
+than reopening `SOL-A1`.
+
+### SOL-A2 — NOT CLOSED (LOW)
+
+Exact source: `src/ledgerbridge/auth.py:110-119`.
+
+The middleware copies state and removes `authenticated_principal` from the
+copy, but calls `self.resolver(scope)` before assigning that sanitized copy back
+to `scope["state"]`. The resolver therefore still sees the original stale
+principal and can return it. The subsequent `isinstance` check accepts that
+same typed object and reinstalls it.
+
+Executed minimal reproducer against `7a73933`:
+
+```python
+p = valid_typed_principal
+scope = {"type": "http", "state": {"authenticated_principal": p}}
+resolver = lambda supplied: supplied["state"]["authenticated_principal"]
+await TrustedPrincipalMiddleware(app, resolver)(scope, receive, send)
+assert scope["state"]["authenticated_principal"] is p
+```
+
+The assertion evaluated `True`. Existing tests cover resolver `None`, an
+exception, and an invalid return, but none makes the resolver inspect the stale
+scope value, so all tests pass while this attack path remains.
+
+Exploit precondition and impact are unchanged from the original LOW finding: a
+faulty or compromised in-process component must prepopulate scope state and the
+resolver must consult that slot. This is not a raw remote-header bypass, but it
+violates the stated resolver-owned invariant.
+
+Required fail-closed correction: install the sanitized state into the scope
+before invoking the resolver, or pass the resolver a sanitized scope copy. Add
+a regression resolver that attempts to echo the old typed principal and prove
+the request remains unauthenticated.
+
+### SOL-M1 — NOT CLOSED (MEDIUM)
+
+Exact source: `src/ledgerbridge/config.py:70-82`.
+
+The new validator rejects the same file, equal parent directories, and ancestor
+or descendant directories. It does not establish different trust domains:
+sibling directories owned or writable by the same manifest-delivery identity
+are explicitly accepted. No changed deployment checker, mount declaration,
+owner/mode check, or immutable trust-root setting proves that the keys directory
+has a different write authority.
+
+Executed acceptance reproducer against `7a73933`:
+
+```python
+root = temporary_path / "attacker-controlled-delivery"
+settings = Settings(
+    database_url="sqlite+pysqlite:///:memory:",
+    artifact_root=temporary_path,
+    runner_manifest_path=root / "manifest" / "manifest.json",
+    runner_verification_keys_path=root / "keys" / "keys.json",
+)
+assert settings.runner_manifest_path.parent.parent == (
+    settings.runner_verification_keys_path.parent.parent
+)
+```
+
+Construction succeeded and the assertion evaluated `True`. A writer controlling
+that common delivery root can still replace both the key bundle and the
+manifest and self-sign the configured generation. Path siblinghood is not an
+authorization boundary.
+
+There is also a validation/use gap: the validator compares `Path.resolve()`
+results but retains the original configured paths, while the later file opener
+only applies `O_NOFOLLOW` to the final component. A writable parent-directory
+symlink can therefore be redirected after settings validation and before
+`build_worker_manifest` reads the files.
+
+Required fail-closed correction: bind the key bundle to a separately configured
+deployment-owned trust root and verify the actual deployment authority—at
+minimum immutable/read-only mount topology plus approved POSIX owner and
+non-group/world-writable directory chain. The deployment checker must reject a
+manifest delivery identity that can write either the key file or any parent in
+its resolution path. Add a test that models the same writer controlling two
+sibling directories; same/nested-directory tests alone do not close `SOL-M1`.
+
+### Closure evidence observed
+
+- Focused frozen tests independently rerun:
+  `tests/test_auth.py`, `tests/test_config.py`, `tests/test_upload_route.py`, and
+  `tests/test_signed_manifest.py` — **87 passed, 1 warning**.
+- Those green tests do not cover the two residual reproducers above.
+- The remediation report claims a full local Windows suite of 314 passed / 149
+  skipped, but this re-review did not rerun the entire suite.
+- No exact-commit disposable Hermes replay is claimed in the remediation
+  report.
+- Hosted push run `32702484291` and pull-request run `32702487780` for
+  `7a739336cc030861abe353adb2ac1fc00f608bd1` both completed **failure**.
+  `secrets` and `compose` succeeded; `quality` failed at
+  `uv run --frozen --extra dev ruff format --check .`.
+
+### Final release decision
+
+`7a73933` must not be treated as a passing auth/manifest gate. Keep the real
+generation, gateway, Connector/OAuth integration, merge, and production
+enablement disabled. A follow-up review should use a new exact commit that
+sanitizes scope before resolver execution, proves key-custody authority rather
+than directory shape, adds the missing attack-path tests, and has green hosted
+quality/secrets/compose evidence.

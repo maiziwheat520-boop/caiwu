@@ -169,7 +169,7 @@ def test_runner_manifest_and_verification_keys_need_separate_trust_domains(
     manifest_dir.mkdir()
     keys_dir.mkdir()
 
-    with pytest.raises(ValidationError, match="separate deployment directories"):
+    with pytest.raises(ValidationError, match="separate trust roots"):
         Settings(
             database_url="sqlite+pysqlite:///:memory:",
             artifact_root=tmp_path.resolve(),
@@ -177,7 +177,7 @@ def test_runner_manifest_and_verification_keys_need_separate_trust_domains(
             runner_verification_keys_path=manifest_dir / "keys.json",
         )
 
-    with pytest.raises(ValidationError, match="separate deployment directories"):
+    with pytest.raises(ValidationError, match="separate trust roots"):
         Settings(
             database_url="sqlite+pysqlite:///:memory:",
             artifact_root=tmp_path.resolve(),
@@ -185,11 +185,20 @@ def test_runner_manifest_and_verification_keys_need_separate_trust_domains(
             runner_verification_keys_path=manifest_dir / "nested" / "keys.json",
         )
 
+    with pytest.raises(ValidationError, match="separate trust roots"):
+        Settings(
+            database_url="sqlite+pysqlite:///:memory:",
+            artifact_root=tmp_path.resolve(),
+            runner_manifest_path=manifest_dir / "manifest.json",
+            runner_verification_keys_path=keys_dir / "keys.json",
+        )
+
+    anchor = Path(tmp_path.anchor)
     settings = Settings(
         database_url="sqlite+pysqlite:///:memory:",
         artifact_root=tmp_path.resolve(),
-        runner_manifest_path=manifest_dir / "manifest.json",
-        runner_verification_keys_path=keys_dir / "keys.json",
+        runner_manifest_path=anchor / "ledgerbridge-manifest" / "manifest.json",
+        runner_verification_keys_path=anchor / "ledgerbridge-keys" / "keys.json",
     )
-    assert settings.runner_manifest_path == manifest_dir / "manifest.json"
-    assert settings.runner_verification_keys_path == keys_dir / "keys.json"
+    assert settings.runner_manifest_path == anchor / "ledgerbridge-manifest" / "manifest.json"
+    assert settings.runner_verification_keys_path == anchor / "ledgerbridge-keys" / "keys.json"

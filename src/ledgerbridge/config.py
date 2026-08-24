@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -72,15 +73,25 @@ class Settings(BaseSettings):
             keys_path = self.runner_verification_keys_path.resolve()
             manifest_root = manifest_path.parent
             keys_root = keys_path.parent
+            try:
+                common_root = Path(os.path.commonpath((manifest_root, keys_root)))
+            except ValueError:
+                common_root = None
             if (
                 manifest_path == keys_path
                 or manifest_root == keys_root
                 or manifest_root.is_relative_to(keys_root)
                 or keys_root.is_relative_to(manifest_root)
+                or (common_root is not None and common_root != Path(manifest_path.anchor))
             ):
                 raise ValueError(
-                    "runner manifest and verification keys must use separate deployment directories"
+                    "runner manifest and verification keys must use separate trust roots"
                 )
+            # Keep the canonical, resolved paths for the later worker load. This
+            # prevents validation of one spelling followed by use of an
+            # attacker-controlled parent-symlink spelling.
+            self.runner_manifest_path = manifest_path
+            self.runner_verification_keys_path = keys_path
         for field_name in ("runner_manifest_path", "runner_verification_keys_path"):
             value = getattr(self, field_name)
             if value is not None and not value.is_absolute():

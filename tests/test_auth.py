@@ -159,10 +159,31 @@ async def test_trusted_middleware_fails_closed_on_resolver_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_trusted_middleware_resolver_cannot_read_stale_principal() -> None:
+    seen: dict[str, object] = {}
+    resolver_state: dict[str, object] = {}
+
+    async def app(scope: dict[str, object], _receive: object, _send: object) -> None:
+        seen.update(scope)
+
+    def resolver(scope: Mapping[str, object]) -> None:
+        state = scope.get("state")
+        if isinstance(state, Mapping):
+            resolver_state.update(state)
+        return None
+
+    await TrustedPrincipalMiddleware(app, resolver)(
+        {"type": "http", "state": {"authenticated_principal": _principal()}},
+        object(),
+        object(),
+    )
+    assert "authenticated_principal" not in resolver_state
+    assert seen["state"] == {}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("resolver_result", [None])
-async def test_trusted_middleware_removes_stale_raw_principal(
-    resolver_result: None,
-) -> None:
+async def test_trusted_middleware_removes_stale_raw_principal(resolver_result: None) -> None:
     seen: dict[str, object] = {}
 
     async def app(scope: dict[str, object], _receive: object, _send: object) -> None:
