@@ -50,3 +50,10 @@ constraint trigger、OPEN→terminal 状态机和固定 `search_path = pg_catalo
 定位符、显式确认/拒绝、Suspense 金额守恒和输入安全边界；
 `tests/test_phase5_persistence_boundary.py` 覆盖模型注册、迁移链、固定 search_path、
 constraint trigger 和最小权限静态契约。
+
+本轮本地验证为 Windows `271 passed, 147 skipped, 1 warning`，并通过 ruff、mypy、
+Bandit、compileall、敏感路径检查和 `git diff --check`。Hermes 隔离 PostgreSQL
+已从 `20260824_0001` 重放到 `20260824_0010`，验证 `0010 → 0009 → head` 的
+降级/升级路径、所有 Phase 5 函数的 `search_path=pg_catalog`，以及 API/worker
+角色的读写和无 DELETE 权限。隔离容器、卷、临时凭据和归档均已清理；生产数据库
+未连接、未迁移、未启用。

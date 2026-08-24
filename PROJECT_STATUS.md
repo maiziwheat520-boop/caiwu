@@ -61,7 +61,8 @@ are green. No real OAuth, mailbox, parser, financial evidence, or production
 behavior was added. The task card and contract evidence are in
 `docs/tasks/2026-08-24-phase-4-mail-connector-framework.md`.
 
-Phase 5's first framework slice is implemented in the working review branch:
+Phase 5's first framework slice is implemented in commit `6b8fb19`, with the
+persistence boundary in `540e44e`:
 `src/ledgerbridge/reconciliation.py` defines side-effect-free external-ID and
 fingerprint dedup decisions, explicit zero-sum 1:1/1:N/N:1 reconciliation
 proposals, and an auditable Suspense open/resolve contract. Migration
@@ -73,7 +74,9 @@ switches remain closed. The task card is
 real parser integration remain separately gated.
 
 The preceding implementation head `b453874` passed push run `32648931938` and
-pull-request run `32648934569` across `secrets`, `quality`, and `compose`.
+pull-request run `32648934569` across `secrets`, `quality`, and `compose`; the
+Phase 5 persistence commit has also passed the local and isolated Hermes gates
+recorded in the task card.
 The migration's two controlled-role B608 reports were removed by using fixed
 deployment-contract role literals; the final Bandit scan reports no issues.
 
@@ -296,8 +299,8 @@ in an isolated Hermes project; no evidence was ingested.
 Audit the Phase 4 mailbox/provider and Phase 5 dedup/reconciliation/Suspense
 contracts, then design the first synthetic connector fixtures. The default
 manifest and registry stay empty. Next gates are signed-manifest/key custody,
-trusted OAuth, provider/source ownership, persistent review tables, real parser
-samples, and a narrow Claude audit.
+trusted OAuth, provider/source ownership, Review API/worker integration, real
+parser samples, and a narrow Claude audit.
 Merge, production role migration, feature-flag enablement, real Connector
 registration, evidence ingestion, and mail collection each require distinct
 later authorization.
