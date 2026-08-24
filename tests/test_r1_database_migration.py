@@ -46,14 +46,23 @@ INTERNAL_READ_FUNCTIONS = (
 INTERNAL_READ_FUNCTION_IDENTITIES = {
     "current_audit_horizon": "",
     "list_candidates_as_of": (
-        "uuid, uuid, character varying, bigint, bytea, timestamp with time zone, uuid, integer"
+        "p_entity_id uuid, p_business_unit_id uuid, p_status character varying, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea, "
+        "p_last_created_at timestamp with time zone, p_last_candidate_id uuid, p_limit integer"
     ),
-    "get_reconciliation_as_of": "uuid, uuid, date, bigint, bytea",
-    "resolve_active_evidence_blob": "uuid",
-    "get_ledger_summary_as_of": "uuid, uuid, date, date, bigint, bytea",
+    "get_reconciliation_as_of": (
+        "p_entity_id uuid, p_business_unit_id uuid, p_accounting_month date, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
+    "resolve_active_evidence_blob": "p_evidence_ref uuid",
+    "get_ledger_summary_as_of": (
+        "p_entity_id uuid, p_business_unit_id uuid, p_from_month date, p_to_month date, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
     "append_internal_evidence_read_audit": (
-        "uuid, character varying, character varying, character varying, "
-        "uuid, uuid, uuid, uuid, bigint, bytea"
+        "p_operation_id uuid, p_principal_ref character varying, p_verified_san character varying, "
+        "p_policy_generation character varying, p_evidence_ref uuid, p_entity_id uuid, "
+        "p_business_unit_id uuid, p_blob_ref uuid, p_byte_size bigint, p_plaintext_sha256 bytea"
     ),
 }
 RECEIPT_FUNCTION = "append_internal_evidence_read_audit"
