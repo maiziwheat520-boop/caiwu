@@ -505,9 +505,10 @@ runtime TEMP/public-shadow/grant probes. Temporary Compose resources were
 removed and production stayed on `e426b488b2abb02f10ef02a61aae7ebe24c3283f` /
 `20260822_0004`; no real evidence or Connector was used.
 
-The async HTTP endpoint, worker claim loop, runner composition, signed
-manifest, and API/worker role split remain unimplemented and disabled pending
-separate review gates. The evidence report is
+The async HTTP endpoint, worker claim loop, runner composition, and API/worker
+role split are implemented on the Codex branch and remain disabled behind the
+review/enablement gates. Signed manifest loading and key custody remain
+unimplemented by design. The evidence report is
 `docs/reviews/2026-08-23-worker-async-dispatch-implementation-codex.md`.
 
 ## Deferred boundary remediation (2026-08-24)
@@ -517,10 +518,29 @@ security audit: context-local RunnerConnector state, a hard-capped runner
 executor whose slots survive cancelled waits, upload read deadlines with
 loop-independent concurrency admission, and migration-time reassertion of
 least-privilege API/worker role attributes and membership boundaries. Local
-validation is `241 passed, 139 skipped, 1 warning`; Hermes disposable
-PostgreSQL 15 replay completed migrations `0001` through `0008` in production
+validation is recorded in the release closure report; Hermes disposable
+PostgreSQL 15 replay completed migrations `0001` through `0009` in production
 mode and confirmed the role/TEMP/enqueue probes. The detailed evidence is in
-`docs/reviews/2026-08-24-deferred-boundary-remediation-codex.md`.
+`docs/reviews/2026-08-24-deferred-boundary-remediation-codex.md` and
+`docs/reviews/2026-08-24-release-audit-final-remediation-codex.md`.
+
+## Release-readiness closure (Codex, 2026-08-24)
+
+The release-readiness findings are closed on the review branch through
+`e2c31be`: `0006` removes pre-existing API/worker role memberships, the runner
+now applies global connection/spool backpressure and maps transient capacity
+loss to retryable `RUNNER_UNAVAILABLE`, heartbeat writes use an exclusive
+random temporary inode, and forward migration `20260824_0009` permanently
+pins all fourteen security functions to `pg_catalog` while preserving a safe
+no-op downgrade to `0008`. The final evidence report is
+`docs/reviews/2026-08-24-release-audit-final-remediation-codex.md`.
+
+Windows validation is `245 passed, 147 skipped, 1 warning`; Hermes Linux /
+PostgreSQL validation is `391 passed` at `95.23%` coverage, followed by
+`upgrade head → downgrade base → upgrade head`, Ruff, strict mypy, Bandit,
+pip-audit, and sensitive-path checks. Temporary Hermes resources were removed;
+production remains unchanged at revision
+`e426b488b2abb02f10ef02a61aae7ebe24c3283f` / migration `20260822_0004`.
 
 This remains a review-only branch. True killable process isolation for hostile
 Connectors, signed manifest/key custody, trusted authentication, merge,

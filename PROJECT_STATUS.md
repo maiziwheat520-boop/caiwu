@@ -22,39 +22,32 @@ explicit Slice B boundary. Real parsers, OAuth, mailbox collection, real
 evidence, and ledger automation remain out of scope. Slice B is implemented and
 the Slice C bounded multipart adapter, ArtifactStore-owned transactional handoff,
 and default-disabled internal upload route are pushed on the Codex branch
-`ai/chatgpt/phase-3-connector-runner` at implementation head `1d816a2` (the
+`ai/chatgpt/phase-3-connector-runner` at implementation head `e2c31be` (the
 runner composition and API/worker role split are included in the current head;
 the current design/plan head is `cdecbdb`; the prior runner audit baseline remains
 `bd2ba4a2513597e83764a56215c72b61c99a8c1e`. The isolated runner
 image and the handoff replay were tested only as disposable Hermes workloads and
 are not deployed.
 
-The current follow-up hardening implementation head is `bb3eee4`; the latest
-branch head before the release-readiness audit was `350e415`, and the
-documentation-inclusive audit head is `8d990ca` (dispatch provenance trigger,
-fail-closed migration environment, bounded runner response materialization,
-bounded runner execution slots, per-context RunnerConnector state, upload
-read/admission limits, and legacy role-drift reassertion). The deferred-boundary
-remediation report is
+The current release-readiness hardening head is `e2c31be`; it includes the
+deferred-boundary controls, role-membership cleanup, runner global
+connection/spool admission and retry classification, heartbeat exclusive-temp
+write, and forward migration `20260824_0009` for permanent function
+`search_path` hardening. The deferred-boundary remediation report is
 `docs/reviews/2026-08-24-deferred-boundary-remediation-codex.md`.
 The prior independent security audit report is
 `docs/reviews/2026-08-24-independent-security-audit-codex.md`; its canonical
 contract artifacts are retained in the terminal scan directory. The subsequent
 release-readiness audit report is
-`docs/reviews/2026-08-24-release-readiness-independent-audit-codex.md`; it found
-one HIGH (0006 leaves arbitrary API/worker role memberships active), one MEDIUM
-(runner has no global pre-receipt connection/spool admission), and one LOW
-(shared-host heartbeat symlink hardening). The branch is therefore CHANGES
-REQUIRED for release. The HIGH is now remediated at `54b0f2e`; the remediation
-and Hermes drift replay are recorded in
-`docs/reviews/2026-08-24-role-membership-remediation-codex.md`. Do not enable a
-hostile/real Connector until the MEDIUM is closed.
-The four previously deferred availability/role-drift controls are implemented
-in `bb3eee4`; real Connector registration and production enablement remain
-separately gated.
-Hosted CI for the prior documentation head was green across `secrets`,
-`quality`, and `compose`; push run `32655932217` and pull-request run
-`32655929294` for `6760725` are green across all three jobs.
+`docs/reviews/2026-08-24-release-readiness-independent-audit-codex.md`. Its
+HIGH, MEDIUM, and LOW findings are closed by `54b0f2e`, `5019964`, `c7cbeea`,
+`989df3b`, `43433dc`, and `e2c31be`; the complete response and evidence are in
+`docs/reviews/2026-08-24-release-audit-final-remediation-codex.md`. Real
+Connector registration, hostile-process isolation, trusted authentication,
+signed manifest/key custody, and production enablement remain separately
+gated.
+Hosted CI for the prior documentation heads was green across `secrets`,
+`quality`, and `compose`; those run IDs remain historical evidence.
 
 The preceding implementation head `b453874` passed push run `32648931938` and
 pull-request run `32648934569` across `secrets`, `quality`, and `compose`.
@@ -87,6 +80,28 @@ and production API/worker resolution requires an explicit service role. These
 changes are included through head `1d816a2`; Hosted CI push run `32653235633` and
 pull-request run `32653238132` are green across `secrets`, `quality`, and
 `compose`.
+
+## Release-readiness closure (2026-08-24)
+
+The release-readiness findings are closed on the review branch through
+`e2c31be18ce77cbcecc2dec7be3aea2f195367b8`. The final response is
+`docs/reviews/2026-08-24-release-audit-final-remediation-codex.md`.
+
+- Windows: `244 passed / 147 skipped / 1 warning`; Ruff, strict mypy, Bandit,
+  offline lock, sensitive-path scan, and diff check passed.
+- Hermes disposable Linux/PostgreSQL: `391 passed` at `95.23%` coverage;
+  migration `upgrade head → downgrade base → upgrade head`, runner capacity /
+  retry regressions, and the historical `pg_temp` exploit control all passed.
+- Hosted CI push `32679541438` and pull-request `32679543455` for `e2c31be`
+  passed `secrets`, `quality`, and `compose`.
+- Production Hermes remains read-only verified at revision
+  `e426b488b2abb02f10ef02a61aae7ebe24c3283f` / migration `20260822_0004`;
+  no async dispatch, Connector, or real financial evidence was created.
+
+The branch remains review-only. Killable hostile-Connector process isolation,
+trusted authentication, signed manifest/key custody, production password
+rollout, protected merge/deployment, and real parser/provider credentials are
+separate enablement gates, not silently inferred from this code closure.
 
 ## Completed
 

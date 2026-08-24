@@ -17,15 +17,14 @@ account. It must not invent financial facts.
 
 ## Repository status
 
-Phase 2 Evidence and Import plus the Claude-audit remediation are merged and
-deployed on Hermes at `c56b6ffdde9f723efe1792ae1312ec8795bba165`. Phase 3
-Slice A is merged in protected main at `06725c3561d92630c4d15631076ba81f68371779`
-after PR #14 passed all required CI checks. It adds fail-closed aggregate
-artifact quotas, canonical ingest/source registries, and backward-compatible
-restore evidence v2. The
-deployment includes database-enforced ledger invariants, split runtime/migration
-identities, immutable evidence provenance, deterministic import orchestration,
-and hardened runtime TEMP/search-path boundaries. No real evidence is ingested.
+Phase 3 Slice A is deployed on Hermes at revision
+`e426b488b2abb02f10ef02a61aae7ebe24c3283f` with migration `20260822_0004`.
+The review-only branch `ai/chatgpt/phase-3-connector-runner` contains the
+subsequent async dispatch, isolated runner, bounded upload adapter, role split,
+and release-readiness hardening through `e2c31be`, including forward migration
+`20260824_0009`. Those changes are not deployed, and no real evidence or
+Connector is registered. The deployed service remains on Slice A with no real
+evidence imported.
 See [PROJECT_STATUS.md](PROJECT_STATUS.md) and
 [docs/architecture/IMPLEMENTATION_BASELINE.md](docs/architecture/IMPLEMENTATION_BASELINE.md).
 

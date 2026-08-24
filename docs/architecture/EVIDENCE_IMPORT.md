@@ -152,6 +152,10 @@ state; worker can update bounded dispatch lease/result columns but cannot insert
 dispatch rows. Both roles are non-owner logins without TEMPORARY privilege. The
 owner-only migrate service uses an explicit non-production profile in CI, while
 production API and worker settings require distinct dedicated role URLs.
+Forward migration `20260824_0009` repairs the historical Phase 1/2 function
+definitions by fixing `search_path=pg_catalog` and schema-qualifying all
+business-table references; its downgrade to `0008` intentionally preserves
+those hardened definitions.
 
 The Codex branch now also contains the separately named async operation
 profile: `POST /v1/evidence/import-requests` returns `202` only after the
