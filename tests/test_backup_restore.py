@@ -23,8 +23,10 @@ from scripts.backup_restore import (
     PHASE_3_FUNCTIONS,
     PHASE_3_TABLE_PRIVILEGES,
     PHASE_3_TRIGGERS,
+    R1_INTERNAL_READ_API_FUNCTIONS,
     R1_INTERNAL_READ_FUNCTION_SIGNATURES,
     R1_INTERNAL_READ_FUNCTIONS,
+    R1_INTERNAL_READ_READER_FUNCTIONS,
     R1_INTERNAL_READ_VIEWS,
     R1_OPTIONAL_ROLES,
     R1_PUBLIC_TABLES,
@@ -186,6 +188,12 @@ def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
             },
             {
                 "schema": "internal_read",
+                "grantee": "ledgerbridge_api",
+                "privilege": "USAGE",
+                "grantable": "NO",
+            },
+            {
+                "schema": "internal_read",
                 "grantee": "ledgerbridge_owner",
                 "privilege": "USAGE",
                 "grantable": "NO",
@@ -312,7 +320,17 @@ def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
                     "name": function["name"],
                     "identity_arguments": function["identity_arguments"],
                     "execute": (
-                        role == "ledgerbridge_reader" and function["schema"] == "internal_read"
+                        function["schema"] == "internal_read"
+                        and (
+                            (
+                                role == "ledgerbridge_reader"
+                                and function["name"] in R1_INTERNAL_READ_READER_FUNCTIONS
+                            )
+                            or (
+                                role == "ledgerbridge_api"
+                                and function["name"] in R1_INTERNAL_READ_API_FUNCTIONS
+                            )
+                        )
                     ),
                 }
             )
@@ -324,7 +342,7 @@ def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
                 {
                     "role": role,
                     "schema": "internal_read",
-                    "usage": role == "ledgerbridge_reader",
+                    "usage": role in {"ledgerbridge_reader", "ledgerbridge_api"},
                     "create": False,
                 },
             ]
@@ -565,6 +583,102 @@ def test_r1_database_metadata_verifies_role_acl_catalog_and_effective_privileges
     }
     with pytest.raises(BackupError, match="public validator"):
         _validate_restored_database(public_function_execute, public_function_execute.copy())
+
+
+def test_r1_database_metadata_matches_receipt_writer_acl_matrix() -> None:
+    expected = _r1_database_metadata()
+    function_privileges = cast(
+        list[dict[str, object]], expected["r1_effective_function_privileges"]
+    )
+    internal_function_rows = [
+        row for row in function_privileges if row.get("schema") == "internal_read"
+    ]
+    assert internal_function_rows
+    for row in internal_function_rows:
+        role = row["role"]
+        name = row["name"]
+        assert row["execute"] is (
+            (role == "ledgerbridge_reader" and name in R1_INTERNAL_READ_READER_FUNCTIONS)
+            or (role == "ledgerbridge_api" and name in R1_INTERNAL_READ_API_FUNCTIONS)
+        )
+
+    schema_privileges = cast(list[dict[str, object]], expected["r1_effective_schema_privileges"])
+    internal_schema_rows = [
+        row for row in schema_privileges if row.get("schema") == "internal_read"
+    ]
+    assert internal_schema_rows
+    for row in internal_schema_rows:
+        assert row["usage"] is (row["role"] in {"ledgerbridge_reader", "ledgerbridge_api"})
+
+    api_receipt_execute_drift = {
+        **expected,
+        "r1_effective_function_privileges": [
+            {**row, "execute": False}
+            if row.get("role") == "ledgerbridge_api"
+            and row.get("schema") == "internal_read"
+            and row.get("name") == "append_internal_evidence_read_audit"
+            else row
+            for row in function_privileges
+        ],
+    }
+    with pytest.raises(BackupError, match="function privilege matrix"):
+        _validate_restored_database(api_receipt_execute_drift, api_receipt_execute_drift.copy())
+
+    reader_receipt_execute_drift = {
+        **expected,
+        "r1_effective_function_privileges": [
+            {**row, "execute": True}
+            if row.get("role") == "ledgerbridge_reader"
+            and row.get("schema") == "internal_read"
+            and row.get("name") == "append_internal_evidence_read_audit"
+            else row
+            for row in function_privileges
+        ],
+    }
+    with pytest.raises(BackupError, match="function privilege matrix"):
+        _validate_restored_database(
+            reader_receipt_execute_drift, reader_receipt_execute_drift.copy()
+        )
+
+    api_read_execute_drift = {
+        **expected,
+        "r1_effective_function_privileges": [
+            {**row, "execute": True}
+            if row.get("role") == "ledgerbridge_api"
+            and row.get("schema") == "internal_read"
+            and row.get("name") == "get_ledger_summary_as_of"
+            else row
+            for row in function_privileges
+        ],
+    }
+    with pytest.raises(BackupError, match="function privilege matrix"):
+        _validate_restored_database(api_read_execute_drift, api_read_execute_drift.copy())
+
+    api_schema_usage_drift = {
+        **expected,
+        "r1_effective_schema_privileges": [
+            {**row, "usage": False}
+            if row.get("role") == "ledgerbridge_api" and row.get("schema") == "internal_read"
+            else row
+            for row in schema_privileges
+        ],
+    }
+    with pytest.raises(BackupError, match="schema privilege matrix"):
+        _validate_restored_database(api_schema_usage_drift, api_schema_usage_drift.copy())
+
+    api_receipt_write_drift = {
+        **expected,
+        "r1_effective_table_privileges": [
+            {**row, "insert": True}
+            if row.get("role") == "ledgerbridge_api"
+            and row.get("schema") == "internal_read"
+            and row.get("object") == "evidence_read_receipt"
+            else row
+            for row in cast(list[dict[str, object]], expected["r1_effective_table_privileges"])
+        ],
+    }
+    with pytest.raises(BackupError, match="fact table"):
+        _validate_restored_database(api_receipt_write_drift, api_receipt_write_drift.copy())
 
 
 def test_r1_security_sql_and_verifier_cover_optional_backup_role() -> None:
@@ -841,7 +955,10 @@ def test_r1_database_metadata_requires_ledger_summary_reader_execute() -> None:
         for item in functions
         if item.get("schema") == "internal_read" and item.get("name") == "get_ledger_summary_as_of"
     )
-    assert summary["identity_arguments"] == "uuid, uuid, date, date, bigint, bytea"
+    assert (
+        summary["identity_arguments"]
+        == R1_INTERNAL_READ_FUNCTION_SIGNATURES["get_ledger_summary_as_of"]
+    )
     assert summary["owner"] == "ledgerbridge_owner"
     assert summary["security_definer"] is True
     assert summary["proconfig"] == ["search_path=pg_catalog"]

@@ -289,21 +289,40 @@ R1_INTERNAL_READ_FUNCTIONS = (
     "get_ledger_summary_as_of",
     "append_internal_evidence_read_audit",
 )
+R1_INTERNAL_READ_READER_FUNCTIONS = frozenset(
+    {
+        "current_audit_horizon",
+        "list_candidates_as_of",
+        "get_reconciliation_as_of",
+        "resolve_active_evidence_blob",
+        "get_ledger_summary_as_of",
+    }
+)
+R1_INTERNAL_READ_RECEIPT_FUNCTION = "append_internal_evidence_read_audit"
+R1_INTERNAL_READ_API_FUNCTIONS = frozenset({R1_INTERNAL_READ_RECEIPT_FUNCTION})
 # These are the exact strings emitted by PostgreSQL's
-# pg_get_function_identity_arguments().  Function identity does not include
-# varchar typmods, so the allowlist intentionally uses "character varying"
-# rather than the migration's varchar(N) declarations.
+# pg_get_function_identity_arguments().  PostgreSQL preserves the declared
+# argument names in this identity representation; varchar typmods are omitted.
 R1_INTERNAL_READ_FUNCTION_SIGNATURES = {
     "current_audit_horizon": "",
     "list_candidates_as_of": (
-        "uuid, uuid, character varying, bigint, bytea, timestamp with time zone, uuid, integer"
+        "p_entity_id uuid, p_business_unit_id uuid, p_status character varying, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea, "
+        "p_last_created_at timestamp with time zone, p_last_candidate_id uuid, p_limit integer"
     ),
-    "get_reconciliation_as_of": "uuid, uuid, date, bigint, bytea",
-    "resolve_active_evidence_blob": "uuid",
-    "get_ledger_summary_as_of": "uuid, uuid, date, date, bigint, bytea",
+    "get_reconciliation_as_of": (
+        "p_entity_id uuid, p_business_unit_id uuid, p_accounting_month date, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
+    "resolve_active_evidence_blob": "p_evidence_ref uuid",
+    "get_ledger_summary_as_of": (
+        "p_entity_id uuid, p_business_unit_id uuid, p_from_month date, p_to_month date, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
     "append_internal_evidence_read_audit": (
-        "uuid, character varying, character varying, character varying, "
-        "uuid, uuid, uuid, uuid, bigint, bytea"
+        "p_operation_id uuid, p_principal_ref character varying, p_verified_san character varying, "
+        "p_policy_generation character varying, p_evidence_ref uuid, p_entity_id uuid, "
+        "p_business_unit_id uuid, p_blob_ref uuid, p_byte_size bigint, p_plaintext_sha256 bytea"
     ),
 }
 R1_SECURITY_REVISION = "20260824_0015"
@@ -1898,6 +1917,7 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
         "internal_read": {
             database_owner: {"USAGE", "CREATE"},
             "ledgerbridge_reader": {"USAGE"},
+            "ledgerbridge_api": {"USAGE"},
         },
     }
     schema_acl_keys: set[tuple[str, str, str]] = set()
@@ -2110,10 +2130,15 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
     for item in function_privileges:
         role = item.get("role")
         schema = item.get("schema")
+        name = item.get("name")
         if not isinstance(item.get("execute"), bool):
             raise BackupError("restored R1 effective function privilege metadata is invalid")
-        if schema == "internal_read" and item["execute"] != (role == "ledgerbridge_reader"):
-            raise BackupError("restored R1 internal_read function privilege matrix is invalid")
+        if schema == "internal_read":
+            expected_execute = (
+                role == "ledgerbridge_reader" and name in R1_INTERNAL_READ_READER_FUNCTIONS
+            ) or (role == "ledgerbridge_api" and name in R1_INTERNAL_READ_API_FUNCTIONS)
+            if item["execute"] != expected_execute:
+                raise BackupError("restored R1 internal_read function privilege matrix is invalid")
         if schema == "public" and item["execute"]:
             raise BackupError("restored R1 public validator is executable by a runtime role")
 
@@ -2133,7 +2158,8 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
         if not isinstance(item.get("usage"), bool) or not isinstance(item.get("create"), bool):
             raise BackupError("restored R1 effective schema privilege metadata is invalid")
         if item["create"] or (
-            schema == "internal_read" and item["usage"] != (role == "ledgerbridge_reader")
+            schema == "internal_read"
+            and item["usage"] != (role in {"ledgerbridge_reader", "ledgerbridge_api"})
         ):
             raise BackupError("restored R1 schema privilege matrix is invalid")
 
