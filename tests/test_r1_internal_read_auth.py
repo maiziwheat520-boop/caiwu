@@ -259,7 +259,7 @@ def test_fastapi_dependency_uses_scope_only_and_fails_closed() -> None:
     settings = Settings(
         database_url="postgresql+psycopg://ledgerbridge_owner@localhost/ledgerbridge",
         internal_read_policy_generation=POLICY_GENERATION,
-        artifact_root=Path("C:/ledgerbridge-test-artifacts"),
+        artifact_root=Path.cwd().resolve(),
     )
     assert get_internal_read_principal(request, settings) == verified.principal
 
