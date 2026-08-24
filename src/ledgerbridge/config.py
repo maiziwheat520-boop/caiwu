@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     runner_manifest_path: Path | None = None
     runner_verification_keys_path: Path | None = None
     runner_manifest_generation: str | None = Field(default=None, min_length=1, max_length=100)
+    auth_provider: Literal["disabled", "trusted_gateway", "test"] = "disabled"
+    auth_policy_generation: str | None = Field(default=None, min_length=1, max_length=100)
+    auth_clock_skew_seconds: int = Field(default=30, ge=0, le=300)
     mail_provider: Literal["disabled", "microsoft_graph"] = "disabled"
     mailbox_id: str | None = Field(default=None, min_length=1, max_length=500)
     mail_folder: str = Field(default="inbox", min_length=1, max_length=500)
@@ -79,6 +82,8 @@ class Settings(BaseSettings):
             and self.runner_manifest_generation is None
         ):
             raise ValueError("production runner manifest generation must be explicit")
+        if self.auth_provider != "disabled" and self.auth_policy_generation is None:
+            raise ValueError("auth_policy_generation is required when authentication is enabled")
 
         if self.runtime_role == "migrate":
             if not self.database_url:

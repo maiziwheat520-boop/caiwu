@@ -108,6 +108,15 @@ OAuth, or production deployment was added. Trusted principal middleware,
 key rotation/custody, and a real signed generation remain separate gates; see
 `docs/tasks/2026-08-24-signed-manifest-verifier.md`.
 
+The trusted-principal admission seam is now implemented in the working branch:
+`src/ledgerbridge/auth.py` defines bounded immutable principals, capability and
+policy-generation checks, and a resolver-only ASGI middleware that never trusts
+client actor/reason headers. The upload/async route dependency accepts the typed
+principal before body reads and rejects raw state when `trusted_gateway` is
+configured. It remains disabled by default; certificate/token verification,
+gateway deployment, rotation, and production enablement are not included. See
+`docs/tasks/2026-08-24-trusted-principal-middleware.md`.
+
 The preceding implementation head `b453874` passed push run `32648931938` and
 pull-request run `32648934569` across `secrets`, `quality`, and `compose`; the
 Phase 5 persistence commit has also passed the local and isolated Hermes gates
