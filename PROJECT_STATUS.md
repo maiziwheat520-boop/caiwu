@@ -4,16 +4,20 @@ Updated: 2026-08-24
 
 ## Current phase
 
-R1 synthetic Core read API code foundation is implemented on
+R1 synthetic Core read API code foundation and the next audit slice are implemented on
 `ai/chatgpt/r1-synthetic-core-read-api`. The six frozen `/internal/v1` GET
 routes use only integrity-checked packaged fixtures, an exact typed mTLS
 principal injection seam, per-capability and entity/business-unit authorization,
 explicit unassigned-candidate grants, strict query parsing, fixed error bodies,
-and an injected append-only evidence-audit seam. The feature is disabled by
-default and production enablement is rejected. No database schema or grants,
-production verifier/audit sink, real evidence, deployment, Hermes, Outlook,
-OneDrive, or Web adapter was added, so the operational R1 gate remains open. See
-`docs/tasks/2026-08-24-r1-synthetic-core-read-api.md`.
+and an injected append-only evidence-audit seam. The optional
+`DatabaseInternalReadAuditSink` now maps the allowlisted event into the existing
+append-only `audit_event` hash chain with an explicit transaction commit and
+fail-closed error handling; it is disabled by default and production enablement
+is rejected. No new database schema or grants, production verifier, real
+evidence, deployment, Hermes, Outlook, OneDrive, or Web adapter was added, so
+the operational R1 gate remains open. See
+`docs/tasks/2026-08-24-r1-synthetic-core-read-api.md` and
+`docs/tasks/2026-08-24-r1-persistent-audit-sink.md`.
 
 S1 synthetic online-encryption application foundation is complete on
 `ai/chatgpt/s1-online-encryption`. The branch adds test-only external-key

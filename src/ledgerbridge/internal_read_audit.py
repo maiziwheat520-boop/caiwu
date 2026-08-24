@@ -8,11 +8,18 @@ audit record.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Literal, Protocol
+from typing import Annotated, Literal, Protocol
 from uuid import UUID
 
+from fastapi import Depends
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.orm import Session
+
+from ledgerbridge.audit import append_audit_event
+from ledgerbridge.config import Settings, get_settings
+from ledgerbridge.db import get_session_factory
 
 
 class EvidenceReadAuditEvent(BaseModel):
@@ -55,7 +62,47 @@ class UnavailableInternalReadAuditSink:
         raise AuditSinkUnavailable("internal read audit sink is unavailable")
 
 
-def get_internal_read_audit_sink() -> InternalReadAuditSink:
-    """FastAPI dependency seam; evidence reads must override this in R1 tests/runtime."""
+class DatabaseInternalReadAuditSink:
+    """Append evidence-read events through the existing database hash chain."""
 
-    return UnavailableInternalReadAuditSink()
+    def __init__(self, session_factory: Callable[[], Session]) -> None:
+        self._session_factory = session_factory
+
+    def append(self, event: EvidenceReadAuditEvent) -> None:
+        try:
+            with self._session_factory() as session:
+                append_audit_event(
+                    session,
+                    actor=event.principal_ref,
+                    action="internal.read.evidence.content",
+                    reason="internal evidence content read",
+                    rule_version=event.event_version,
+                    payload={
+                        "event_type": event.event_type,
+                        "principal_san_uri": event.principal_san_uri,
+                        "policy_generation": event.policy_generation,
+                        "evidence_ref": str(event.evidence_ref),
+                        "entity_ref": str(event.entity_ref),
+                        "business_unit_ref": event.business_unit_ref,
+                        "byte_size": event.byte_size,
+                        "sha256": event.sha256,
+                        "outcome": event.outcome,
+                    },
+                )
+                session.commit()
+        except Exception as exc:
+            raise AuditSinkUnavailable("internal read audit append failed") from exc
+
+
+def get_internal_read_audit_sink(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> InternalReadAuditSink:
+    """Resolve the durable sink only for an explicit non-production test profile."""
+
+    if settings.env == "production" or not settings.enable_internal_read_persistent_audit:
+        return UnavailableInternalReadAuditSink()
+    try:
+        session_factory = get_session_factory(settings.resolved_api_database_url())
+    except Exception:
+        return UnavailableInternalReadAuditSink()
+    return DatabaseInternalReadAuditSink(session_factory)

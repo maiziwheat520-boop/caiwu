@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     enable_internal_upload: bool = False
     enable_internal_async_dispatch: bool = False
     enable_internal_read_api: bool = False
+    enable_internal_read_persistent_audit: bool = False
     enable_review_api: bool = False
     enable_real_ingest: bool = False
     internal_read_policy_generation: int | None = Field(default=None, ge=1)
@@ -77,6 +78,14 @@ class Settings(BaseSettings):
                     "internal_read_policy_generation is required when the internal "
                     "read API is enabled"
                 )
+        if self.enable_internal_read_persistent_audit:
+            if self.env == "production":
+                raise ValueError(
+                    "production internal read persistent audit remains unavailable "
+                    "until the R1 operational gate"
+                )
+            if not self.enable_internal_read_api:
+                raise ValueError("persistent internal read audit requires the internal read API")
         if self.mail_provider == "microsoft_graph" and not self.mailbox_id:
             raise ValueError("mailbox_id is required when mail_provider=microsoft_graph")
 
