@@ -84,6 +84,17 @@ default-disabled; see
 `docs/tasks/2026-08-24-phase-5-review-api-worker.md`. Service and real parser
 integration remain separately gated.
 
+The signed-manifest gate now has a fail-closed implementation in commit
+`0bf5fea`: `src/ledgerbridge/signed_manifest.py` verifies canonical Ed25519
+envelopes, external key ids, generation pins, connector allowlists, and stable
+file reads before producing `VerifiedRunnerManifest`. Worker startup loads it
+only from explicitly mounted deployment paths; missing or invalid inputs leave
+the registry empty. Five signature/tamper/canonicalization tests and the
+worker/composition regression pass. No signing key, real manifest, Connector,
+OAuth, or production deployment was added. Trusted principal middleware,
+key rotation/custody, and a real signed generation remain separate gates; see
+`docs/tasks/2026-08-24-signed-manifest-verifier.md`.
+
 The preceding implementation head `b453874` passed push run `32648931938` and
 pull-request run `32648934569` across `secrets`, `quality`, and `compose`; the
 Phase 5 persistence commit has also passed the local and isolated Hermes gates

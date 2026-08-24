@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     dispatch_max_attempts: int = Field(default=5, gt=0, le=16)
     dispatch_poll_seconds: float = Field(default=1.0, gt=0, le=60)
     runner_socket_path: str = "/run/ledgerbridge-connector/runner.sock"
+    runner_manifest_path: Path | None = None
+    runner_verification_keys_path: Path | None = None
+    runner_manifest_generation: str | None = Field(default=None, min_length=1, max_length=100)
     mail_provider: Literal["disabled", "microsoft_graph"] = "disabled"
     mailbox_id: str | None = Field(default=None, min_length=1, max_length=500)
     mail_folder: str = Field(default="inbox", min_length=1, max_length=500)
@@ -56,6 +59,21 @@ class Settings(BaseSettings):
     def production_requires_split_database_roles(self) -> "Settings":
         if self.mail_provider == "microsoft_graph" and not self.mailbox_id:
             raise ValueError("mailbox_id is required when mail_provider=microsoft_graph")
+
+        if (self.runner_manifest_path is None) != (self.runner_verification_keys_path is None):
+            raise ValueError(
+                "runner_manifest_path and runner_verification_keys_path must be configured together"
+            )
+        for field_name in ("runner_manifest_path", "runner_verification_keys_path"):
+            value = getattr(self, field_name)
+            if value is not None and not value.is_absolute():
+                raise ValueError(f"{field_name} must be an absolute path")
+        if (
+            self.env == "production"
+            and self.runner_manifest_path is not None
+            and self.runner_manifest_generation is None
+        ):
+            raise ValueError("production runner manifest generation must be explicit")
 
         if self.runtime_role == "migrate":
             if not self.database_url:

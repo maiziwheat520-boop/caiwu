@@ -29,6 +29,11 @@ from ledgerbridge.runner_composition import (
     VerifiedRunnerManifest,
     build_worker_runner_connectors,
 )
+from ledgerbridge.signed_manifest import (
+    ManifestVerificationError,
+    load_signed_runner_manifest,
+    load_verification_keys,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -135,9 +140,29 @@ def build_worker_connectors(
 
 
 def build_worker_manifest() -> VerifiedRunnerManifest | None:
-    """Return a verified manifest; no manifest is shipped by default."""
+    """Load the deployment-owned signed manifest, or remain fail-closed."""
 
-    return None
+    try:
+        settings = get_settings()
+    except Exception:
+        # A malformed deployment configuration must not start a worker with a
+        # guessed or partially loaded manifest.
+        logger.exception("runner manifest settings are unavailable")
+        return None
+    manifest_path = getattr(settings, "runner_manifest_path", None)
+    keys_path = getattr(settings, "runner_verification_keys_path", None)
+    if manifest_path is None or keys_path is None:
+        return None
+    try:
+        return load_signed_runner_manifest(
+            manifest_path,
+            load_verification_keys(keys_path),
+            expected_generation=getattr(settings, "runner_manifest_generation", None),
+            production=getattr(settings, "env", "development") == "production",
+        )
+    except ManifestVerificationError:
+        logger.exception("runner manifest verification failed")
+        return None
 
 
 def worker_id() -> str:
