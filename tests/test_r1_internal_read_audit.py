@@ -63,7 +63,7 @@ def _receipt() -> EvidenceReadReceipt:
     return EvidenceReadReceipt(
         principal_ref="workload:r1-audit-test",
         principal_san_uri="spiffe://ledgerbridge.test/r1-audit-test",
-        key_generation="generation-1",
+        policy_generation="policy-11",
         evidence_ref=UUID("20000000-0000-4000-8000-000000000001"),
         entity_ref=UUID("10000000-0000-4000-8000-000000000001"),
         business_unit_id=UUID("11000000-0000-4000-8000-000000000001"),
@@ -124,7 +124,7 @@ def test_database_receipt_sink_calls_allowlisted_function_and_commits() -> None:
 
     assert session.committed is True
     assert session.params["principal_ref"] == "workload:r1-audit-test"
-    assert session.params["key_generation"] == "generation-1"
+    assert session.params["policy_generation"] == "policy-11"
     assert session.params["blob_ref"] == UUID("30000000-0000-4000-8000-000000000001")
     assert session.params["sha256"] == bytes.fromhex("aa" * 32)
 
