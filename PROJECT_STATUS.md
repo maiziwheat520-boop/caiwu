@@ -4,6 +4,16 @@ Updated: 2026-08-24
 
 ## Current phase
 
+R0 synthetic Core contract is implemented on the Codex task branch
+`ai/chatgpt/r0-synthetic-contract`. It freezes a versioned CandidateProjection,
+append-only candidate state graph, deny-by-default test authorization matrix,
+six-GET internal OpenAPI, and fixed synthetic fixtures. The contract is not
+wired into FastAPI, PostgreSQL, ArtifactStore, Connector registration, Web, or
+deployment. No production feature flag, migration, real evidence, OAuth, mail,
+Hermes, OneDrive, or workbook behavior was added. See
+`docs/tasks/2026-08-24-r0-synthetic-contract.md`.
+
+
 Phase 3 Platform Security Slice A is merged into protected `main` and deployed
 on Hermes at merge commit `e426b488b2abb02f10ef02a61aae7ebe24c3283f` as
 `ledgerbridge-app:e426b48`, with Alembic `20260822_0004` at head. The deployment
@@ -298,7 +308,7 @@ in an isolated Hermes project; no evidence was ingested.
 ## Next task
 
 Audit the Phase 4 mailbox/provider and Phase 5 dedup/reconciliation/Suspense
-contracts, then replay the Phase 6 synthetic connector through the importer.
+contracts, then add concurrent candidate matching at the importer boundary.
 The default manifest and registry stay empty. Next gates are signed-manifest/key
 custody, trusted OAuth, provider/source ownership, concurrent candidate matching,
 real parser samples, and a narrow Claude audit.
