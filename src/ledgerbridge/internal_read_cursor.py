@@ -114,7 +114,7 @@ class ReadCursorSigner:
                 "last_created_at": created_at,
                 "last_candidate_id": candidate_ref,
             }
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, zlib.error) as exc:
             raise CursorInvalid("cursor claims are invalid") from exc
 
     def _validate_claims(

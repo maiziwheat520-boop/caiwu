@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ledgerbridge.internal_read_contract import (
     Capability,
     EntityGrant,
+    ResourceNotVisible,
     WorkloadPrincipal,
 )
+from ledgerbridge.internal_read_cursor import ReadCursorSigner
 from ledgerbridge.internal_read_service import (
     DatabaseInternalReadService,
     InternalReadBackendUnavailable,
@@ -37,8 +41,18 @@ class _Result:
 
 
 class _Session:
-    def __init__(self, candidate_row: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        candidate_row: dict[str, Any],
+        *,
+        candidate_rows: list[dict[str, Any]] | None = None,
+        reconciliation_row: dict[str, Any] | None = None,
+        fail: bool = False,
+    ) -> None:
         self.candidate_row = candidate_row
+        self.candidate_rows = candidate_rows or [candidate_row]
+        self.reconciliation_row = reconciliation_row
+        self.fail = fail
         self.statements: list[str] = []
 
     def __enter__(self) -> _Session:
@@ -50,10 +64,14 @@ class _Session:
     def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Result:
         sql = str(statement)
         self.statements.append(sql)
+        if self.fail:
+            raise SQLAlchemyError("synthetic database failure")
         if "current_audit_horizon" in sql:
             return _Result([{"sequence": 7, "hash": b"h" * 32}])
         if "list_candidates_as_of" in sql:
-            return _Result([self.candidate_row])
+            return _Result(self.candidate_rows)
+        if "get_reconciliation_as_of" in sql:
+            return _Result([] if self.reconciliation_row is None else [self.reconciliation_row])
         raise AssertionError(f"unexpected SQL: {sql} / {params}")
 
 
@@ -63,7 +81,12 @@ def _principal() -> WorkloadPrincipal:
         san_uri="spiffe://ledgerbridge.test/database-test",
         policy_generation=1,
         capabilities=frozenset(
-            {Capability.CANDIDATE_READ, Capability.SYSTEM_READ, Capability.EVIDENCE_READ}
+            {
+                Capability.CANDIDATE_READ,
+                Capability.SYSTEM_READ,
+                Capability.EVIDENCE_READ,
+                Capability.RECONCILIATION_READ,
+            }
         ),
         grants=(
             EntityGrant(
@@ -137,4 +160,100 @@ def test_database_reader_exposes_no_unreviewed_evidence_or_ledger_boundary() -> 
             business_unit_ref="unit-demo-a",
             from_month="2026-08",
             to_month="2026-08",
+        )
+
+
+def test_database_candidate_reader_issues_and_verifies_a_keyset_cursor() -> None:
+    template = SyntheticInternalReadService()._fixture.candidates[1].model_dump()
+    rows: list[dict[str, Any]] = []
+    for index in range(101):
+        row = dict(template)
+        row["candidate_ref"] = UUID(f"30000000-0000-4000-8000-{index + 100:012d}")
+        row["short_id"] = f"C-{index:05d}"
+        row["created_at"] = datetime(2026, 8, 24, tzinfo=UTC) + timedelta(seconds=index)
+        row["updated_at"] = row["created_at"]
+        rows.append(row)
+    session = _Session(rows[0], candidate_rows=rows)
+    signer_key = "k" * 32
+    service = DatabaseInternalReadService(
+        lambda: cast(Session, session),
+        cursor_signer=ReadCursorSigner(signer_key),
+    )
+
+    page = service.list_candidates(_principal())
+
+    assert len(page.items) == 100
+    assert page.next_cursor is not None
+    claims = ReadCursorSigner(signer_key).verify(
+        page.next_cursor, _principal(), month=None, status=None, business_unit=None
+    )
+    assert claims["horizon_sequence"] == 7
+    assert claims["last_candidate_id"] == page.items[-1].candidate_ref
+
+
+def test_database_reconciliation_reader_projects_rows_and_hides_missing() -> None:
+    row = {
+        "entity_ref": ENTITY,
+        "business_unit_ref": "unit-demo-a",
+        "month": "2026-08",
+        "snapshot_revision": 1,
+        "blockers": (),
+        "proposals": (),
+        "suspense": (),
+        "posted_amount_minor": 123,
+        "currency": "CNY",
+    }
+    session = _Session({}, reconciliation_row=row)
+    service = _service(session)
+
+    projection = service.get_reconciliation(
+        _principal(), month="2026-08", entity_ref=ENTITY, business_unit_ref="unit-demo-a"
+    )
+    assert projection.posted_amount_minor == 123
+
+    missing = _service(_Session({}))
+    with pytest.raises(ResourceNotVisible, match="resource was not found"):
+        missing.get_reconciliation(
+            _principal(), month="2026-08", entity_ref=ENTITY, business_unit_ref="unit-demo-a"
+        )
+
+
+def test_database_reader_translates_driver_and_projection_failures() -> None:
+    failing = _service(_Session({}, fail=True))
+    with pytest.raises(InternalReadBackendUnavailable, match="candidate read failed"):
+        failing.list_candidates(_principal())
+
+    malformed = _Session({}, reconciliation_row={"entity_ref": ENTITY})
+    with pytest.raises(InternalReadBackendUnavailable, match="projection is invalid"):
+        _service(malformed).get_reconciliation(
+            _principal(), month="2026-08", entity_ref=ENTITY, business_unit_ref="unit-demo-a"
+        )
+
+
+def test_database_reader_rejects_malformed_horizon_and_unbound_business_unit() -> None:
+    class BadHorizon(_Session):
+        def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Result:
+            if "current_audit_horizon" in str(statement):
+                return _Result([{"sequence": 0, "hash": b"h" * 31}])
+            return super().execute(statement, params)
+
+    with pytest.raises(InternalReadBackendUnavailable, match="audit horizon"):
+        _service(BadHorizon({})).list_candidates(_principal())
+
+    unbound = _principal().model_copy(
+        update={
+            "grants": (
+                EntityGrant(
+                    entity_ref=ENTITY,
+                    business_unit_refs=frozenset({"unit-demo-a", "unit-demo-b"}),
+                    business_unit_ids=frozenset(
+                        {BUSINESS_UNIT, UUID("11000000-0000-4000-8000-000000000002")}
+                    ),
+                ),
+            )
+        }
+    )
+    with pytest.raises(InternalReadBackendUnavailable, match="exactly one UUID"):
+        _service(_Session({})).get_reconciliation(
+            unbound, month="2026-08", entity_ref=ENTITY, business_unit_ref="unit-demo-a"
         )
