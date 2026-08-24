@@ -130,6 +130,16 @@ The output keeps only an eligible primary-profile private message for later
 triage, ignores pre-activation history, and tombstones group/assistant traffic.
 It does not classify financial intent or delete anything itself.
 
+The following triage seam demonstrates the fail-closed fallback when no
+reviewed classifier is available:
+
+```bash
+uv run --frozen --extra dev python scripts/r1_synthetic_hermes_triage_demo.py
+```
+
+The synthetic keyword classifier marks the fixture as a candidate; the
+unavailable classifier keeps the same message as `AMBIGUOUS_RETAIN`.
+
 Quality gate:
 
 ```bash
