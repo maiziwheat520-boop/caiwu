@@ -4,6 +4,17 @@ Updated: 2026-08-24
 
 ## Current phase
 
+R1 synthetic Core read API code foundation is implemented on
+`ai/chatgpt/r1-synthetic-core-read-api`. The six frozen `/internal/v1` GET
+routes use only integrity-checked packaged fixtures, an exact typed mTLS
+principal injection seam, per-capability and entity/business-unit authorization,
+explicit unassigned-candidate grants, strict query parsing, fixed error bodies,
+and an injected append-only evidence-audit seam. The feature is disabled by
+default and production enablement is rejected. No database schema or grants,
+production verifier/audit sink, real evidence, deployment, Hermes, Outlook,
+OneDrive, or Web adapter was added, so the operational R1 gate remains open. See
+`docs/tasks/2026-08-24-r1-synthetic-core-read-api.md`.
+
 S1 synthetic online-encryption application foundation is complete on
 `ai/chatgpt/s1-online-encryption`. The branch adds test-only external-key
 contracts, XChaCha20-Poly1305 secretstream envelopes, encrypted artifact/state/
@@ -282,7 +293,7 @@ separate enablement gates, not silently inferred from this code closure.
 - Recorded: 2026-08-24
 - Deployment revision: `e426b488b2abb02f10ef02a61aae7ebe24c3283f`
 - Codex implementation clone: `G:\我的云端硬盘\AI\LedgerBridge-Codex`
-- Codex implementation branch: `ai/chatgpt/r0-synthetic-contract-v2`
+- Codex implementation branch: `ai/chatgpt/r1-synthetic-core-read-api`
 - Codex identity: `Codex <codex@ledgerbridge.local>`
 - Claude review-only clone: `G:\我的云端硬盘\AI\LedgerBridge-Claude`
 - Claude identity when explicitly authorized to commit:
@@ -291,9 +302,10 @@ separate enablement gates, not silently inferred from this code closure.
 
 ## Active implementation owner
 
-Codex is the single writer for the offline R0 synthetic contract on
-`ai/chatgpt/r0-synthetic-contract-v2`. Independent agents are review-only.
-No production route, migration, runner, real Connector, or real data is enabled.
+Codex is the single writer for the R1 synthetic Core read API foundation on
+`ai/chatgpt/r1-synthetic-core-read-api`. Independent agents are review-only.
+No production route enablement, migration, runner, real Connector, or real data
+is enabled.
 
 ## Review owner
 

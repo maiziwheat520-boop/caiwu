@@ -3,8 +3,10 @@ info:
   title: LedgerBridge Core Internal Read Contract
   version: ledgerbridge.internal-read.v1
   description: >-
-    R0 synthetic contract only. This document does not enable routes, production
-    data, CORS, browser cookies, database access, or artifact storage.
+    R1 synthetic implementation contract. Routes remain disabled by default and
+    unavailable in production. This document does not enable real data, CORS,
+    browser cookies, database access, or production artifact storage. Every
+    application response is emitted with Cache-Control: no-store.
 servers:
   - url: https://ledgerbridge-core.invalid
     description: Non-routable contract placeholder
@@ -18,32 +20,42 @@ paths:
       responses:
         "200":
           description: Redacted version and module capabilities
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Capabilities"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /internal/v1/candidates:
     get:
       operationId: listInternalCandidates
       x-ledgerbridge-capability: candidate:read
       x-ledgerbridge-reject-unknown-query: true
       description: >-
-        Results use a stable created_at + candidate_ref order. The opaque cursor
-        is bound to normalized filters, principal, entity/business-unit grants,
-        policy generation, and a snapshot horizon; cross-scope or tampered reuse
-        fails closed.
+        Results use a stable created_at + candidate_ref order. The bounded R1
+        synthetic snapshot returns at most 100 items and neither accepts nor
+        issues a cursor; an unknown cursor query fails with 400.
       parameters:
         - $ref: "#/components/parameters/Month"
         - $ref: "#/components/parameters/Status"
         - $ref: "#/components/parameters/BusinessUnit"
-        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: Stable, bounded candidate page already restricted by principal scope
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
           content:
             application/json:
               schema:
@@ -65,6 +77,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /internal/v1/candidates/{id}:
     get:
       operationId: getInternalCandidate
@@ -74,16 +90,23 @@ paths:
       responses:
         "200":
           description: One authorized, allowlisted candidate projection
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/CandidateProjection"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /internal/v1/evidence/{id}/content:
     get:
       operationId: downloadInternalEvidence
@@ -92,13 +115,12 @@ paths:
         - $ref: "#/components/parameters/Id"
       responses:
         "200":
-          description: Authorized synthetic bytes after digest verification
+          description: >-
+            Authorized synthetic bytes after complete digest verification and
+            a successful durable append to the injected audit sink
           headers:
             Cache-Control:
-              required: true
-              schema:
-                type: string
-                const: no-store
+              $ref: "#/components/headers/NoStore"
             X-Content-Type-Options:
               required: true
               schema:
@@ -115,20 +137,20 @@ paths:
                 type: string
                 pattern: '^sha-256=:[A-Za-z0-9+/]+=*:$'
           content:
-            text/plain:
-              schema:
-                type: string
-                format: binary
             application/octet-stream:
               schema:
                 type: string
                 format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /internal/v1/reconciliations/{month}:
     get:
       operationId: getInternalReconciliation
@@ -140,16 +162,23 @@ paths:
       responses:
         "200":
           description: Synthetic proposal, Suspense, blockers, snapshot revision and POSTED summary
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReconciliationProjection"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /internal/v1/ledger-summary:
     get:
       operationId: getInternalLedgerSummary
@@ -171,6 +200,9 @@ paths:
       responses:
         "200":
           description: Integer-minor CNY totals from POSTED entries only
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
           content:
             application/json:
               schema:
@@ -183,6 +215,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   securitySchemes:
     workloadMtls:
@@ -239,36 +273,54 @@ components:
       schema:
         type: string
         format: uuid
-    Cursor:
-      name: cursor
-      in: query
-      required: false
+  headers:
+    NoStore:
+      required: true
       schema:
         type: string
-        minLength: 1
-        maxLength: 512
-      description: Opaque, integrity-protected continuation bound to query and authorization scope.
+        const: no-store
   responses:
     BadRequest:
       description: Query does not match the closed parameter contract
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
       content:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
     Unauthorized:
       description: A trusted workload identity was not established
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
       content:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
     Forbidden:
       description: The authenticated workload lacks the route capability
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
       content:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
     NotFound:
       description: Object is absent or outside the principal entity scope
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ServiceUnavailable:
+      description: Synthetic resource integrity or the required audit sink is unavailable
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
       content:
         application/problem+json:
           schema:
@@ -337,6 +389,9 @@ components:
         business_unit_ref:
           type: [string, "null"]
           maxLength: 100
+          description: >-
+            Null is visible only through an explicit unassigned-candidate grant
+            for the same entity; ordinary business-unit grants do not imply it.
         business_unit_label:
           type: [string, "null"]
           maxLength: 200

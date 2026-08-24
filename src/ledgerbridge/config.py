@@ -33,8 +33,10 @@ class Settings(BaseSettings):
     upload_concurrency: int = Field(default=2, gt=0, le=64)
     enable_internal_upload: bool = False
     enable_internal_async_dispatch: bool = False
+    enable_internal_read_api: bool = False
     enable_review_api: bool = False
     enable_real_ingest: bool = False
+    internal_read_policy_generation: int | None = Field(default=None, ge=1)
     dispatch_lease_seconds: int = Field(default=120, gt=0, le=3600)
     dispatch_max_attempts: int = Field(default=5, gt=0, le=16)
     dispatch_poll_seconds: float = Field(default=1.0, gt=0, le=60)
@@ -65,6 +67,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "real ingest remains unavailable until the S1 operational and I1 gates pass"
             )
+        if self.enable_internal_read_api:
+            if self.env == "production":
+                raise ValueError(
+                    "production internal read API remains unavailable until the R1 operational gate"
+                )
+            if self.internal_read_policy_generation is None:
+                raise ValueError(
+                    "internal_read_policy_generation is required when the internal "
+                    "read API is enabled"
+                )
         if self.mail_provider == "microsoft_graph" and not self.mailbox_id:
             raise ValueError("mailbox_id is required when mail_provider=microsoft_graph")
 

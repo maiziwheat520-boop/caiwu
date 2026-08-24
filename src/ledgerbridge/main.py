@@ -37,6 +37,12 @@ from ledgerbridge.dispatch import (
     DispatchService,
 )
 from ledgerbridge.imports import EvidenceImporter, EvidenceIngestionError, IngestMetadata
+from ledgerbridge.internal_read_routes import (
+    InternalReadNoStoreMiddleware,
+)
+from ledgerbridge.internal_read_routes import (
+    router as internal_read_router,
+)
 from ledgerbridge.models import DispatchState, ImportJobStatus, ReviewItemKind
 from ledgerbridge.review_service import ReviewConflict, ReviewNotFound, ReviewService
 from ledgerbridge.secure_spool import EncryptedSpool
@@ -60,6 +66,8 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+app.add_middleware(InternalReadNoStoreMiddleware)
+app.include_router(internal_read_router)
 
 
 class UploadReadTimeoutError(TimeoutError):

@@ -32,6 +32,7 @@ def test_artifact_quota_defaults_are_production_safe(tmp_path: Path) -> None:
     assert settings.artifact_staging_max_bytes == 512 * 1024 * 1024
     assert settings.artifact_staging_ttl_seconds == 60 * 60
     assert settings.enable_internal_upload is False
+    assert settings.enable_internal_read_api is False
     assert settings.enable_real_ingest is False
 
     with pytest.raises(ValidationError, match="less than or equal"):
@@ -48,6 +49,33 @@ def test_real_ingest_is_unconditionally_unavailable_during_s1(tmp_path: Path) ->
             database_url="sqlite+pysqlite:///:memory:",
             artifact_root=tmp_path.resolve(),
             enable_real_ingest=True,
+        )
+
+
+def test_internal_read_api_is_synthetic_only_and_generation_bound(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="internal_read_policy_generation"):
+        Settings(
+            database_url="sqlite+pysqlite:///:memory:",
+            artifact_root=tmp_path.resolve(),
+            enable_internal_read_api=True,
+        )
+
+    enabled = Settings(
+        database_url="sqlite+pysqlite:///:memory:",
+        artifact_root=tmp_path.resolve(),
+        enable_internal_read_api=True,
+        internal_read_policy_generation=7,
+    )
+    assert enabled.internal_read_policy_generation == 7
+
+    with pytest.raises(ValidationError, match="R1 operational gate"):
+        Settings(
+            env="production",
+            runtime_role="api",
+            api_database_url="postgresql://ledgerbridge_api@db/app",
+            artifact_root=tmp_path.resolve(),
+            enable_internal_read_api=True,
+            internal_read_policy_generation=7,
         )
 
 

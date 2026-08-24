@@ -158,7 +158,14 @@ class LedgerSummary(_FrozenModel):
 
 class EntityGrant(_FrozenModel):
     entity_ref: UUID
-    business_unit_refs: frozenset[BusinessUnitRef] = Field(min_length=1)
+    business_unit_refs: frozenset[BusinessUnitRef] = frozenset()
+    allow_unassigned_candidates: bool = False
+
+    @model_validator(mode="after")
+    def has_at_least_one_scope(self) -> EntityGrant:
+        if not self.business_unit_refs and not self.allow_unassigned_candidates:
+            raise ValueError("entity grant must include a business unit or unassigned candidates")
+        return self
 
 
 class WorkloadPrincipal(_FrozenModel):
@@ -236,6 +243,49 @@ def require_visible_scope(
         raise ResourceNotVisible("resource was not found")
 
 
+def require_candidate_visible_scope(
+    principal: WorkloadPrincipal,
+    *,
+    entity_ref: UUID,
+    business_unit_ref: str | None,
+) -> None:
+    """Require candidate visibility without inferring an unassigned-unit grant.
+
+    A normal business-unit grant covers only the units named by that grant. A
+    candidate whose business unit is still unknown is visible only through the
+    separate, explicit ``allow_unassigned_candidates`` permission for its entity.
+    """
+
+    if business_unit_ref is not None:
+        require_visible_scope(
+            principal,
+            entity_ref=entity_ref,
+            business_unit_ref=business_unit_ref,
+        )
+        return
+    if not any(
+        grant.entity_ref == entity_ref and grant.allow_unassigned_candidates
+        for grant in principal.grants
+    ):
+        raise ResourceNotVisible("resource was not found")
+
+
+def authorize_candidate_read(
+    principal: WorkloadPrincipal,
+    *,
+    entity_ref: UUID,
+    business_unit_ref: str | None,
+) -> None:
+    """Authorize one candidate, including an explicitly granted unassigned candidate."""
+
+    require_capability(principal, Capability.CANDIDATE_READ)
+    require_candidate_visible_scope(
+        principal,
+        entity_ref=entity_ref,
+        business_unit_ref=business_unit_ref,
+    )
+
+
 def authorize_read(
     principal: WorkloadPrincipal,
     capability: Capability,
@@ -249,6 +299,13 @@ def authorize_read(
             raise ResourceNotVisible("resource was not found")
         return
     if entity_ref is None or business_unit_ref is None:
+        if capability == Capability.CANDIDATE_READ and entity_ref is not None:
+            authorize_candidate_read(
+                principal,
+                entity_ref=entity_ref,
+                business_unit_ref=business_unit_ref,
+            )
+            return
         raise ResourceNotVisible("resource was not found")
     require_visible_scope(
         principal,
@@ -294,11 +351,14 @@ def require_candidate_workload_scope(
 
 def filter_visible_scopes(
     principal: WorkloadPrincipal,
-    values: Iterable[tuple[UUID, str]],
-) -> tuple[tuple[UUID, str], ...]:
-    """Model the mandatory query predicate used before object materialization."""
+    values: Iterable[tuple[UUID, str | None]],
+) -> tuple[tuple[UUID, str | None], ...]:
+    """Model candidate query predicates applied before object materialization."""
 
-    allowed = {
+    allowed: set[tuple[UUID, str | None]] = {
         (grant.entity_ref, unit) for grant in principal.grants for unit in grant.business_unit_refs
     }
+    allowed.update(
+        (grant.entity_ref, None) for grant in principal.grants if grant.allow_unassigned_candidates
+    )
     return tuple(value for value in values if value in allowed)

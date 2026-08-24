@@ -96,8 +96,17 @@ def test_openapi_is_a_separate_read_only_mutual_tls_contract() -> None:
         "Month",
         "Status",
         "BusinessUnit",
-        "Cursor",
     }
+    assert "Cursor" not in document["components"]["parameters"]
+    expected_statuses = {"200", "400", "401", "403", "404", "503"}
+    for operations in document["paths"].values():
+        responses = operations["get"]["responses"]
+        assert set(responses) == expected_statuses
+        assert responses["200"]["headers"]["Cache-Control"] == {
+            "$ref": "#/components/headers/NoStore"
+        }
+    for response in document["components"]["responses"].values():
+        assert response["headers"]["Cache-Control"] == {"$ref": "#/components/headers/NoStore"}
     wire = OPENAPI.read_text(encoding="utf-8").lower()
     for forbidden in (
         "sessioncookie",
@@ -111,11 +120,16 @@ def test_openapi_is_a_separate_read_only_mutual_tls_contract() -> None:
     ):
         assert forbidden not in wire
 
-    # R0 publishes a static contract but does not install any production/test route.
-    assert not any(
-        isinstance(path := getattr(route, "path", None), str) and path.startswith("/internal/v1")
-        for route in app.routes
-    )
+    # R1 installs exactly the six frozen GET routes behind a default-off gate.
+    installed: dict[str, set[str]] = {}
+    for route in app.routes:
+        nested = getattr(getattr(route, "original_router", None), "routes", (route,))
+        for candidate in nested:
+            path = getattr(candidate, "path", None)
+            methods = getattr(candidate, "methods", None)
+            if isinstance(path, str) and path.startswith("/internal/v1"):
+                installed[path] = set(methods or ())
+    assert installed == {path: {"GET"} for path in document["paths"]}
 
 
 def test_route_capability_matrix_is_exact_and_non_transitive() -> None:
@@ -305,9 +319,12 @@ def test_fixture_supports_object_scope_and_posted_only_summary() -> None:
     evidence_content = document["paths"]["/internal/v1/evidence/{id}/content"]["get"]["responses"][
         "200"
     ]["content"]
-    assert set(evidence_content) == {"text/plain", "application/octet-stream"}
-    for item in fixture["evidence_objects"]:
-        assert item["served_media_type"] in evidence_content
+    assert set(evidence_content) == {"application/octet-stream"}
+    # R1 normalizes every legacy fixture media type to a download-only binary response.
+    assert {item["served_media_type"] for item in fixture["evidence_objects"]} == {
+        "text/plain",
+        "application/octet-stream",
+    }
 
     schemas = document["components"]["schemas"]
     assert schemas["ReconciliationProposal"]["additionalProperties"] is False

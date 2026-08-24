@@ -1,9 +1,12 @@
 # LedgerBridge
 
-The versioned R0 synthetic Core read/state contract is documented in
-`docs/tasks/2026-08-24-r0-synthetic-contract.md`. It is an offline contract and
-test fixture only: `/internal/v1` is not installed, production remains unchanged,
-and no real-data source is enabled.
+The R1 synthetic Core read API foundation is documented in
+`docs/tasks/2026-08-24-r1-synthetic-core-read-api.md`. It installs the six
+versioned `/internal/v1` GET routes over an integrity-checked packaged fixture,
+but keeps them disabled by default and rejects production enablement. It has no
+database, production mTLS verifier, durable audit backend, or real-data source,
+so it is not an operational R1 deployment. The frozen R0 contract remains in
+`docs/tasks/2026-08-24-r0-synthetic-contract.md`.
 
 The S1 synthetic online-encryption foundation is documented in
 `docs/tasks/2026-08-24-s1-online-encryption.md` and
