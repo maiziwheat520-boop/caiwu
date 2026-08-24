@@ -571,3 +571,13 @@ ingestion require their later explicit gates.
   real evidence was read. Focused audit/database-reader/migration-source tests
   pass **58**; 41 PostgreSQL integration cases remain skipped without the
   disposable database URL.
+- Final durable-receipt hardening chain through `a82928c` was independently
+  re-reviewed by Sol with **0 BLOCKER / 0 HIGH / 0 MEDIUM / 1 LOW / 1 INFO**.
+  The restore verifier now records and rejects `TRUNCATE` privilege drift,
+  matching Migration 0015's `REVOKE ALL` table-privilege contract.
+- Final local closure evidence is backup/restore **42 passed**, audit/reader/
+  config **57 passed**, plus compileall, Ruff, mypy, and diff-check. PostgreSQL
+  15 was not run locally; disposable-DB verification of deferred-trigger
+  commit/rollback, duplicate `operation_id`, exact ACL/function identity, and
+  `TRUNCATE` behavior remains a manual gate. No production connection,
+  credential, reader bootstrap, or receipt enablement was used.
