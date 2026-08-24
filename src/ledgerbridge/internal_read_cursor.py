@@ -148,6 +148,9 @@ def grant_digest(principal: WorkloadPrincipal) -> str:
             "entity_ref": str(grant.entity_ref),
             "business_unit_refs": sorted(grant.business_unit_refs),
             "business_unit_ids": sorted(str(value) for value in grant.business_unit_ids),
+            "business_unit_bindings": sorted(
+                (ref, str(value)) for ref, value in grant.business_unit_bindings
+            ),
             "allow_unassigned_candidates": grant.allow_unassigned_candidates,
         }
         for grant in principal.grants
@@ -173,4 +176,7 @@ def _encode(value: bytes) -> str:
 def _decode(value: str) -> bytes:
     if not value:
         raise ValueError("empty base64 value")
-    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    decoded = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    if _encode(decoded) != value:
+        raise ValueError("non-canonical base64 value")
+    return decoded

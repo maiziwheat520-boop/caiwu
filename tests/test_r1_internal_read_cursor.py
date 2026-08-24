@@ -29,6 +29,12 @@ def _principal() -> WorkloadPrincipal:
                 entity_ref=UUID("10000000-0000-4000-8000-000000000001"),
                 business_unit_refs=frozenset({"unit-demo-a"}),
                 business_unit_ids=frozenset({UUID("11000000-0000-4000-8000-000000000001")}),
+                business_unit_bindings=(
+                    (
+                        "unit-demo-a",
+                        UUID("11000000-0000-4000-8000-000000000001"),
+                    ),
+                ),
             ),
         ),
     )
@@ -80,7 +86,7 @@ def test_cursor_rejects_tampering_and_changed_grants() -> None:
         last_candidate_id=UUID("30000000-0000-4000-8000-000000000002"),
     )
     body, mac = token.split(".")
-    tampered = body[:-1] + ("A" if body[-1] != "A" else "B") + "." + mac
+    tampered = ("A" if body[0] != "A" else "B") + body[1:] + "." + mac
 
     with pytest.raises(CursorInvalid):
         signer.verify(tampered, principal, month=None, status=None, business_unit=None)

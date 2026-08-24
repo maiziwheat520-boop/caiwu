@@ -164,6 +164,10 @@ class EntityGrant(_FrozenModel):
     # keeping both prevents the database layer from resolving policy through a
     # broad business_unit lookup.
     business_unit_ids: frozenset[UUID] = frozenset()
+    # Database readers require an explicit, immutable ref-to-UUID binding;
+    # two independent sets cannot prove that a human ref maps to the UUID
+    # queried by a SECURITY DEFINER function.
+    business_unit_bindings: tuple[tuple[BusinessUnitRef, UUID], ...] = ()
     allow_unassigned_candidates: bool = False
 
     @model_validator(mode="after")
@@ -174,6 +178,12 @@ class EntityGrant(_FrozenModel):
             and not self.allow_unassigned_candidates
         ):
             raise ValueError("entity grant must include a business unit or unassigned candidates")
+        binding_refs = frozenset(ref for ref, _ in self.business_unit_bindings)
+        binding_ids = frozenset(value for _, value in self.business_unit_bindings)
+        if self.business_unit_bindings and (
+            binding_refs != self.business_unit_refs or binding_ids != self.business_unit_ids
+        ):
+            raise ValueError("business-unit bindings must cover refs and immutable IDs exactly")
         return self
 
 

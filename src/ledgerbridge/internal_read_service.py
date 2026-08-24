@@ -25,6 +25,7 @@ from ledgerbridge.internal_read_contract import (
     CandidatePage,
     CapabilitiesResponse,
     Capability,
+    EntityGrant,
     LedgerSummary,
     ReconciliationProjection,
     ResourceNotVisible,
@@ -415,11 +416,25 @@ class DatabaseInternalReadService:
             _validate_month(month)
         if business_unit is not None and not (1 <= len(business_unit) <= 100):
             raise ValueError("business_unit must contain 1 to 100 characters")
+        scopes_by_grant: list[tuple[EntityGrant, UUID | None]] = []
         for grant in principal.grants:
-            if not grant.business_unit_ids and grant.business_unit_refs:
+            if (grant.business_unit_refs or grant.business_unit_ids) and not (
+                grant.business_unit_bindings
+            ):
                 raise InternalReadBackendUnavailable(
-                    "database grants must include immutable business-unit UUIDs"
+                    "database grants require explicit business-unit ref/UUID bindings"
                 )
+            if len(grant.business_unit_bindings) > 1:
+                raise InternalReadBackendUnavailable(
+                    "database candidate pagination requires one bound business unit"
+                )
+            scopes_by_grant.extend((grant, value) for _, value in grant.business_unit_bindings)
+            if grant.allow_unassigned_candidates:
+                scopes_by_grant.append((grant, None))
+        if len(scopes_by_grant) > 1:
+            raise InternalReadBackendUnavailable(
+                "database candidate pagination does not yet support multiple scopes"
+            )
 
         if cursor is not None and self._cursor_signer is None:
             raise InternalReadBackendUnavailable("signed cursor key is unavailable")
@@ -446,21 +461,21 @@ class DatabaseInternalReadService:
                     last_candidate_id = cursor_claims["last_candidate_id"]
                 rows: list[Mapping[str, object]] = []
                 seen: set[UUID] = set()
-                for grant in principal.grants:
-                    scopes: list[UUID | None] = list(grant.business_unit_ids)
-                    if grant.allow_unassigned_candidates:
-                        scopes.append(None)
-                    for business_unit_id in scopes:
-                        if business_unit is not None and business_unit_id is None:
-                            continue
+                raw_has_more = False
+                for grant, business_unit_id in scopes_by_grant:
+                    if business_unit is not None and business_unit_id is None:
+                        continue
+                    query_last_created_at = last_created_at
+                    query_last_candidate_id = last_candidate_id
+                    while True:
                         params = {
                             "entity_id": grant.entity_ref,
                             "business_unit_id": business_unit_id,
                             "status": status.value if status is not None else None,
                             "horizon_sequence": sequence,
                             "horizon_hash": horizon_hash,
-                            "last_created_at": last_created_at,
-                            "last_candidate_id": last_candidate_id,
+                            "last_created_at": query_last_created_at,
+                            "last_candidate_id": query_last_candidate_id,
                             "limit": 100,
                         }
                         result = session.execute(
@@ -475,9 +490,27 @@ class DatabaseInternalReadService:
                             ),
                             params,
                         )
-                        for row in result.mappings():
-                            row_map = cast(Mapping[str, object], dict(row))
+                        raw_rows = [
+                            cast(Mapping[str, object], dict(row)) for row in result.mappings()
+                        ]
+                        raw_has_more = len(raw_rows) > 100
+                        for row_map in raw_rows:
                             candidate = self._candidate(row_map)
+                            if business_unit_id is None:
+                                if candidate.business_unit_ref is not None:
+                                    raise InternalReadBackendUnavailable(
+                                        "database candidate scope binding is invalid"
+                                    )
+                            else:
+                                expected_ref = next(
+                                    ref
+                                    for ref, value in grant.business_unit_bindings
+                                    if value == business_unit_id
+                                )
+                                if candidate.business_unit_ref != expected_ref:
+                                    raise InternalReadBackendUnavailable(
+                                        "database candidate scope binding is invalid"
+                                    )
                             if candidate.candidate_ref in seen:
                                 continue
                             if (
@@ -489,6 +522,11 @@ class DatabaseInternalReadService:
                                 continue
                             seen.add(candidate.candidate_ref)
                             rows.append(row_map)
+                        if not (month is not None and raw_has_more and len(rows) < 100):
+                            break
+                        boundary = self._candidate(raw_rows[99])
+                        query_last_created_at = boundary.created_at
+                        query_last_candidate_id = boundary.candidate_ref
                 candidates = [self._candidate(row) for row in rows]
         except (InternalReadBackendUnavailable, CursorInvalid):
             raise
@@ -496,7 +534,7 @@ class DatabaseInternalReadService:
             raise InternalReadBackendUnavailable("database candidate read failed") from exc
 
         candidates.sort(key=lambda item: (item.created_at, item.candidate_ref.int))
-        has_more = len(candidates) > 100
+        has_more = len(candidates) > 100 or raw_has_more
         page_items = tuple(candidates[:100])
         next_cursor = None
         if has_more:
@@ -527,10 +565,15 @@ class DatabaseInternalReadService:
         # Migration C intentionally exposes a bounded list function rather than
         # a broad candidate SELECT.  Resolve a single object through that same
         # allowlisted path, then apply object scope before returning it.
-        page = self.list_candidates(principal)
-        for candidate in page.items:
-            if candidate.candidate_ref == candidate_ref:
-                return candidate
+        cursor: str | None = None
+        while True:
+            page = self.list_candidates(principal, cursor=cursor)
+            for candidate in page.items:
+                if candidate.candidate_ref == candidate_ref:
+                    return candidate
+            if page.next_cursor is None:
+                break
+            cursor = page.next_cursor
         raise ResourceNotVisible("resource was not found")
 
     def get_evidence(
@@ -643,13 +686,11 @@ class DatabaseInternalReadService:
         for grant in principal.grants:
             if grant.entity_ref != entity_ref:
                 continue
-            if business_unit_ref not in grant.business_unit_refs:
-                continue
-            if len(grant.business_unit_ids) != 1:
-                break
-            return next(iter(grant.business_unit_ids))
+            for ref, business_unit_id in grant.business_unit_bindings:
+                if ref == business_unit_ref:
+                    return business_unit_id
         raise InternalReadBackendUnavailable(
-            "database grants must bind a business-unit ref to exactly one UUID"
+            "database grants must bind the requested business-unit ref to an immutable UUID"
         )
 
     @staticmethod

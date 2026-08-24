@@ -93,7 +93,7 @@ def _principal() -> WorkloadPrincipal:
                 entity_ref=ENTITY,
                 business_unit_refs=frozenset({"unit-demo-a"}),
                 business_unit_ids=frozenset({BUSINESS_UNIT}),
-                allow_unassigned_candidates=True,
+                business_unit_bindings=(("unit-demo-a", BUSINESS_UNIT),),
             ),
         ),
     )
@@ -138,7 +138,7 @@ def test_database_reader_rejects_ref_only_grants_before_querying_facts() -> None
     )
     session = _Session({})
 
-    with pytest.raises(InternalReadBackendUnavailable, match="immutable business-unit UUIDs"):
+    with pytest.raises(InternalReadBackendUnavailable, match="explicit business-unit"):
         _service(session).list_candidates(principal)
     assert session.statements == []
 
@@ -249,11 +249,15 @@ def test_database_reader_rejects_malformed_horizon_and_unbound_business_unit() -
                     business_unit_ids=frozenset(
                         {BUSINESS_UNIT, UUID("11000000-0000-4000-8000-000000000002")}
                     ),
+                    business_unit_bindings=(
+                        ("unit-demo-a", BUSINESS_UNIT),
+                        ("unit-demo-b", UUID("11000000-0000-4000-8000-000000000002")),
+                    ),
                 ),
             )
         }
     )
-    with pytest.raises(InternalReadBackendUnavailable, match="exactly one UUID"):
+    with pytest.raises(ResourceNotVisible, match="resource was not found"):
         _service(_Session({})).get_reconciliation(
             unbound, month="2026-08", entity_ref=ENTITY, business_unit_ref="unit-demo-a"
         )
