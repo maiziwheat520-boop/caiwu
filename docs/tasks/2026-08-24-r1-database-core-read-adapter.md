@@ -45,7 +45,8 @@
 
 ## 2026-08-25 final local verification
 
-- Fixed implementation head is `c61825e`. Sol's independent short recheck of
+- Current reviewed head is `b9e3446` (implementation/test base `c61825e`).
+  Sol's independent short recheck of
   `0014`, `0015`, the migration chain, and the CI/bootstrap delta found no
   validated BLOCKER/HIGH/MEDIUM. The recheck does not authorize merge,
   production role migration, reader bootstrap, or real-data access.
@@ -66,6 +67,11 @@
   coverage bypass was added. Production mTLS, reader bootstrap, S1 decryptor,
   scoped ledger aggregate, Hermes/real-data replay, and enablement remain
   explicitly closed.
+- Hosted validation preparation confirms the pinned PostgreSQL 15 service,
+  `secrets`/`quality`/`compose` triggers, and the unchanged 90% floor. The
+  local tree is clean at `b9e3446`, but GitHub `:443` was unreachable for both
+  read-only remote inspection and push dry-run; no Hosted run exists for this
+  head yet.
 
 ## 未闭环 gate
 

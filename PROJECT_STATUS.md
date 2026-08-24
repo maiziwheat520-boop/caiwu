@@ -467,8 +467,9 @@ ingestion require their later explicit gates.
 
 ## R1 database hardening final local gate (2026-08-25)
 
-- Fixed implementation head is `c61825e` on the local
-  `ai/chatgpt/r1-db-schema-grants-design` branch. Sol's independent short
+- Current reviewed head is `b9e3446` on the local
+  `ai/chatgpt/r1-db-schema-grants-design` branch (implementation/test base
+  `c61825e`). Sol's independent short
   recheck of `0014`, `0015`, the complete migration chain, and the CI/bootstrap
   change found no validated BLOCKER/HIGH/MEDIUM. This is not merge or production
   authorization.
@@ -492,3 +493,8 @@ ingestion require their later explicit gates.
   step. No coverage threshold, skip/omit rule, or pragma bypass was added.
   Production reader bootstrap, mTLS, S1 decryptor, scoped ledger aggregate,
   recovery rehearsal, merge, deployment, and real-data access remain closed.
+- Hosted PG15 preparation confirms the workflow uses a pinned `postgres:15-alpine`
+  service and runs `secrets`, `quality`, and `compose` on `push`/`pull_request`.
+  The local tree is clean and ahead of the cached origin ref by 21 commits, but
+  `git ls-remote` and `git push --dry-run` could not reach GitHub `:443`; no
+  push or Hosted run was created for `b9e3446`.
