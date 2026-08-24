@@ -1264,6 +1264,7 @@ runtime GUC.
 `SECURITY DEFINER`, owned by the migration owner, with
 `SET search_path = pg_catalog`. It accepts only:
 
+- a caller-supplied operation id, unique in the receipt table;
 - principal ref and verified SAN;
 - policy generation;
 - evidence/entity/business-unit refs and the Core-selected `blob_ref`;

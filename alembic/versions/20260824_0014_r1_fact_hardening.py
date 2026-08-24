@@ -219,16 +219,13 @@ def upgrade() -> None:
                   FROM public.candidate_evidence AS ce
                   JOIN public.candidate AS c ON c.id = ce.candidate_id
                   JOIN public.evidence_object AS e ON e.evidence_ref = ce.evidence_ref
-                  LEFT JOIN LATERAL (
+                 LEFT JOIN LATERAL (
                       SELECT cr.business_unit_id
                         FROM public.candidate_revision AS cr
                        WHERE cr.candidate_id = c.id
                        ORDER BY cr.revision DESC LIMIT 1
                   ) AS tip ON TRUE
-                 WHERE ce.candidate_entity_id IS DISTINCT FROM c.entity_id
-                    OR ce.evidence_entity_id IS DISTINCT FROM e.entity_id
-                    OR ce.evidence_business_unit_id IS DISTINCT FROM e.business_unit_id
-                    OR c.entity_id IS DISTINCT FROM e.entity_id
+                 WHERE c.entity_id IS DISTINCT FROM e.entity_id
                     OR (tip.business_unit_id IS NOT NULL
                         AND tip.business_unit_id IS DISTINCT FROM e.business_unit_id)
             ) THEN
@@ -391,36 +388,6 @@ def upgrade() -> None:
 
             IF EXISTS (
                 SELECT 1
-                  FROM public.reconciliation_snapshot AS s
-                  LEFT JOIN public.audit_event AS a ON a.id = s.audit_event_id
-                 WHERE a.id IS NULL
-                    OR a.action IS DISTINCT FROM 'reconciliation.snapshot'
-                    OR a.payload IS DISTINCT FROM jsonb_build_object(
-                        'snapshot_ref', s.snapshot_ref::text,
-                        'entity_id', s.entity_id::text,
-                        'business_unit_id', s.business_unit_id::text,
-                        'accounting_month', to_char(s.accounting_month, 'YYYY-MM-DD'),
-                        'snapshot_revision', s.snapshot_revision,
-                        'ledger_audit_sequence', s.ledger_audit_sequence,
-                        'ledger_audit_hash', encode(s.ledger_audit_hash, 'hex'),
-                        'posted_amount_minor', s.posted_amount_minor,
-                        'currency', s.currency,
-                        'blocker_count', (SELECT count(*) FROM public.reconciliation_snapshot_blocker b WHERE b.snapshot_ref = s.snapshot_ref),
-                        'proposal_count', (SELECT count(*) FROM public.reconciliation_snapshot_proposal p WHERE p.snapshot_ref = s.snapshot_ref),
-                        'suspense_count', (SELECT count(*) FROM public.reconciliation_snapshot_suspense x WHERE x.snapshot_ref = s.snapshot_ref)
-                    )
-                    OR NOT EXISTS (
-                        SELECT 1 FROM public.audit_event AS watermark
-                         WHERE watermark.sequence = s.ledger_audit_sequence
-                           AND watermark.hash = s.ledger_audit_hash
-                    )
-            ) THEN
-                RAISE EXCEPTION 'existing reconciliation snapshot audit binding is invalid'
-                    USING ERRCODE = 'integrity_constraint_violation';
-            END IF;
-
-            IF EXISTS (
-                SELECT 1
                   FROM public.journal_entry AS je
                   LEFT JOIN public.journal_entry_attribution AS ja ON ja.entry_id = je.id
                  WHERE je.status = 'POSTED'
@@ -486,6 +453,13 @@ def upgrade() -> None:
     # resolves that unqualified reference as ambiguous.  Replace the trigger
     # body with an explicitly named local so existing revision inserts remain
     # valid under the hardened schema.
+    op.alter_column(
+        "candidate",
+        "contract_version",
+        existing_type=sa.String(24),
+        type_=sa.String(32),
+        schema="public",
+    )
     op.execute(
         """
         CREATE OR REPLACE FUNCTION public.r1_validate_revision_dimensions()
@@ -679,6 +653,39 @@ def upgrade() -> None:
     op.alter_column("candidate_evidence", "candidate_entity_id", nullable=False)
     op.alter_column("candidate_evidence", "evidence_entity_id", nullable=False)
     op.alter_column("candidate_evidence", "evidence_business_unit_id", nullable=False)
+    # The scope columns now exist and have been deterministically backfilled.
+    # Re-check both the copied values and the legacy parent relationship before
+    # installing the deferred composite FKs; a bad legacy row must abort rather
+    # than be hidden by a partial join or by the later constraint definition.
+    op.execute(
+        """
+        DO $candidate_evidence_scope_preflight$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                  FROM public.candidate_evidence AS ce
+                  JOIN public.candidate AS c ON c.id = ce.candidate_id
+                  JOIN public.evidence_object AS e ON e.evidence_ref = ce.evidence_ref
+                  LEFT JOIN LATERAL (
+                      SELECT cr.business_unit_id
+                        FROM public.candidate_revision AS cr
+                       WHERE cr.candidate_id = c.id
+                       ORDER BY cr.revision DESC LIMIT 1
+                  ) AS tip ON TRUE
+                 WHERE ce.candidate_entity_id IS DISTINCT FROM c.entity_id
+                    OR ce.evidence_entity_id IS DISTINCT FROM e.entity_id
+                    OR ce.evidence_business_unit_id IS DISTINCT FROM e.business_unit_id
+                    OR c.entity_id IS DISTINCT FROM e.entity_id
+                    OR (tip.business_unit_id IS NOT NULL
+                        AND tip.business_unit_id IS DISTINCT FROM e.business_unit_id)
+            ) THEN
+                RAISE EXCEPTION 'existing candidate evidence scope is invalid'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+        END
+        $candidate_evidence_scope_preflight$;
+        """
+    )
     op.create_foreign_key(
         "fk_candidate_evidence_candidate_scope",
         "candidate_evidence",
@@ -923,6 +930,61 @@ def upgrade() -> None:
         "ix_snapshot_blocker_snapshot",
         "reconciliation_snapshot_blocker",
         ["snapshot_ref", "ordinal"],
+    )
+    # The blocker child table is available only after the preceding DDL.  Run
+    # the complete snapshot/audit preflight here, before the deferred audit
+    # uniqueness and trigger surface is installed.  This keeps the migration
+    # fail-closed without referring to a future table from the early legacy
+    # preflight above.
+    op.execute(
+        """
+        DO $snapshot_audit_preflight$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                  FROM public.reconciliation_snapshot AS s
+                  LEFT JOIN public.audit_event AS a ON a.id = s.audit_event_id
+                 WHERE a.id IS NULL
+                    OR a.action IS DISTINCT FROM 'reconciliation.snapshot'
+                    OR a.payload IS DISTINCT FROM jsonb_build_object(
+                        'snapshot_ref', s.snapshot_ref::text,
+                        'entity_id', s.entity_id::text,
+                        'business_unit_id', s.business_unit_id::text,
+                        'accounting_month', to_char(s.accounting_month, 'YYYY-MM-DD'),
+                        'snapshot_revision', s.snapshot_revision,
+                        'ledger_audit_sequence', s.ledger_audit_sequence,
+                        'ledger_audit_hash', encode(s.ledger_audit_hash, 'hex'),
+                        'posted_amount_minor', s.posted_amount_minor,
+                        'currency', s.currency,
+                        'blocker_count', (
+                            SELECT count(*)
+                              FROM public.reconciliation_snapshot_blocker AS b
+                             WHERE b.snapshot_ref = s.snapshot_ref
+                        ),
+                        'proposal_count', (
+                            SELECT count(*)
+                              FROM public.reconciliation_snapshot_proposal AS p
+                             WHERE p.snapshot_ref = s.snapshot_ref
+                        ),
+                        'suspense_count', (
+                            SELECT count(*)
+                              FROM public.reconciliation_snapshot_suspense AS x
+                             WHERE x.snapshot_ref = s.snapshot_ref
+                        )
+                    )
+                    OR NOT EXISTS (
+                        SELECT 1
+                          FROM public.audit_event AS watermark
+                         WHERE watermark.sequence = s.ledger_audit_sequence
+                           AND watermark.hash = s.ledger_audit_hash
+                    )
+            ) THEN
+                RAISE EXCEPTION 'existing reconciliation snapshot audit binding is invalid'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+        END
+        $snapshot_audit_preflight$;
+        """
     )
 
     op.drop_constraint("uq_snapshot_audit_event", "reconciliation_snapshot", type_="unique")
@@ -1722,7 +1784,14 @@ def downgrade() -> None:
         """
         REVOKE ALL ON TABLE
             public.encrypted_object_identity, public.reconciliation_snapshot_blocker
-        FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
+        FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker;
+        DO $downgrade_fact_acl$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_app') THEN
+                EXECUTE 'REVOKE ALL ON TABLE public.encrypted_object_identity, public.reconciliation_snapshot_blocker FROM ledgerbridge_app';
+            END IF;
+        END
+        $downgrade_fact_acl$;
         DROP TRIGGER IF EXISTS r1_snapshot_audit_binding ON public.reconciliation_snapshot;
         DROP FUNCTION IF EXISTS public.r1_validate_snapshot_audit();
         DROP TRIGGER IF EXISTS r1_posted_posting_attribution_complete ON public.posting_attribution;
@@ -1839,3 +1908,10 @@ def downgrade() -> None:
         "uq_encrypted_blob_object_ref", "encrypted_blob_version", ["object_ref"]
     )
     op.drop_table("encrypted_object_identity")
+    op.alter_column(
+        "candidate",
+        "contract_version",
+        existing_type=sa.String(32),
+        type_=sa.String(24),
+        schema="public",
+    )

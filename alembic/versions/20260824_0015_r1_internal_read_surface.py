@@ -264,6 +264,15 @@ def _grant_exact_surface() -> None:
             END LOOP;
         END
         $function_acl$;
+        REVOKE ALL ON ALL TABLES IN SCHEMA internal_read
+            FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker;
+        DO $table_acl$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_app') THEN
+                EXECUTE 'REVOKE ALL ON ALL TABLES IN SCHEMA internal_read FROM ledgerbridge_app';
+            END IF;
+        END
+        $table_acl$;
         GRANT SELECT ON internal_read.candidate_current_v,
             internal_read.candidate_evidence_v, internal_read.evidence_metadata_v,
             internal_read.reconciliation_current_v,
@@ -278,7 +287,7 @@ def _grant_exact_surface() -> None:
             internal_read.get_reconciliation_as_of(uuid, uuid, date, bigint, bytea),
             internal_read.resolve_active_evidence_blob(uuid),
             internal_read.append_internal_evidence_read_audit(
-                varchar(200), varchar(200), varchar(128), uuid, uuid, uuid, uuid, bigint, bytea
+                uuid, varchar(200), varchar(200), varchar(128), uuid, uuid, uuid, uuid, bigint, bytea
             ) TO ledgerbridge_reader;
         """
     )
@@ -331,7 +340,7 @@ def upgrade() -> None:
             CONSTRAINT fk_evidence_read_receipt_blob
                 FOREIGN KEY (blob_ref) REFERENCES public.encrypted_blob_version(blob_ref)
         );
-        CREATE FUNCTION internal_read.evidence_read_receipt_append_only()
+        CREATE FUNCTION public.r1_evidence_read_receipt_append_only()
         RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
         AS $function$
         BEGIN
@@ -339,9 +348,54 @@ def upgrade() -> None:
                 USING ERRCODE = 'integrity_constraint_violation';
         END
         $function$;
+        CREATE FUNCTION public.r1_validate_evidence_read_receipt()
+        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        AS $function$
+        DECLARE
+            v_xid xid;
+            v_action text;
+            v_payload jsonb;
+            v_business_unit_ref varchar(100);
+            v_expected jsonb;
+        BEGIN
+            SELECT a.xmin, a.action, a.payload
+              INTO v_xid, v_action, v_payload
+              FROM public.audit_event AS a
+             WHERE a.id = NEW.audit_event_id;
+            SELECT ref INTO STRICT v_business_unit_ref
+              FROM public.business_unit
+             WHERE id = NEW.business_unit_id AND entity_id = NEW.entity_id;
+            v_expected := jsonb_build_object(
+                'receipt_type', 'ledgerbridge.evidence_read_receipt.v1',
+                'operation_id', NEW.operation_id::text,
+                'event_type', 'EVIDENCE_CONTENT_READ',
+                'principal_san_uri', NEW.verified_san,
+                'policy_generation', NEW.policy_generation,
+                'evidence_ref', NEW.evidence_ref::text,
+                'entity_ref', NEW.entity_id::text,
+                'business_unit_ref', v_business_unit_ref,
+                'blob_ref', NEW.blob_ref::text,
+                'byte_size', NEW.byte_size,
+                'sha256', encode(NEW.plaintext_sha256, 'hex'),
+                'outcome', 'SUCCEEDED'
+            );
+            IF v_xid IS NULL
+               OR pg_xact_status(v_xid::text::xid8) IS DISTINCT FROM 'in progress'
+               OR v_action IS DISTINCT FROM 'internal.read.evidence.content'
+               OR v_payload IS DISTINCT FROM v_expected THEN
+                RAISE EXCEPTION 'evidence read receipt audit binding is invalid'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+            RETURN NEW;
+        END
+        $function$;
+        CREATE CONSTRAINT TRIGGER evidence_read_receipt_audit_binding
+        AFTER INSERT ON internal_read.evidence_read_receipt
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW EXECUTE FUNCTION public.r1_validate_evidence_read_receipt();
         CREATE TRIGGER evidence_read_receipt_append_only
         BEFORE UPDATE OR DELETE ON internal_read.evidence_read_receipt
-        FOR EACH ROW EXECUTE FUNCTION internal_read.evidence_read_receipt_append_only();
+        FOR EACH ROW EXECUTE FUNCTION public.r1_evidence_read_receipt_append_only();
 
         CREATE VIEW internal_read.candidate_current_v
         WITH (security_barrier = true, security_invoker = false) AS
@@ -365,14 +419,35 @@ def upgrade() -> None:
                c.supersedes_candidate_id AS supersedes_candidate_ref
           FROM public.candidate AS c
           JOIN LATERAL (
-              SELECT cr.revision, cr.status, cr.business_unit_ref_snapshot,
-                     cr.business_unit_label_snapshot, cr.category_code_snapshot,
-                     cr.category_label_snapshot, cr.amount_minor, cr.currency,
-                     cr.accounting_month, cr.summary, cr.confidence_basis_points,
-                     cr.updated_at
-                FROM public.candidate_revision AS cr
-               WHERE cr.candidate_id = c.id
-               ORDER BY cr.revision DESC
+               SELECT cr.revision, cr.status, cr.business_unit_ref_snapshot,
+                      cr.business_unit_label_snapshot, cr.category_code_snapshot,
+                      cr.category_label_snapshot, cr.amount_minor, cr.currency,
+                      cr.accounting_month, cr.summary, cr.confidence_basis_points,
+                      cr.updated_at
+                 FROM public.candidate_revision AS cr
+                 JOIN public.candidate_event AS ce
+                   ON ce.candidate_id = cr.candidate_id
+                  AND ce.to_revision = cr.revision
+                  AND ce.to_status = cr.status
+                 JOIN public.audit_event AS ae ON ae.id = ce.audit_event_id
+                WHERE cr.candidate_id = c.id
+                  AND ae.action = CASE WHEN ce.event_type = 'CREATE'
+                                       THEN 'candidate.create'
+                                       ELSE 'candidate.transition' END
+                  AND EXISTS (
+                      SELECT 1
+                        FROM public.candidate_revision AS cr0
+                        JOIN public.candidate_event AS ce0
+                          ON ce0.candidate_id = cr0.candidate_id
+                         AND ce0.to_revision = cr0.revision
+                         AND ce0.to_status = cr0.status
+                        JOIN public.audit_event AS ae0 ON ae0.id = ce0.audit_event_id
+                       WHERE cr0.candidate_id = c.id
+                         AND cr0.revision = 1
+                         AND ce0.event_type = 'CREATE'
+                         AND ae0.action = 'candidate.create'
+                  )
+                ORDER BY cr.revision DESC
                LIMIT 1
           ) AS r ON TRUE;
 
@@ -432,10 +507,11 @@ def upgrade() -> None:
                p.currency,
                sum(p.amount_minor)::bigint AS posted_amount_minor
           FROM public.journal_entry AS je
-          JOIN public.journal_entry_attribution AS ja ON ja.entry_id = je.id
+         JOIN public.journal_entry_attribution AS ja ON ja.entry_id = je.id
           JOIN public.posting AS p ON p.entry_id = je.id
           JOIN public.posting_attribution AS pa ON pa.posting_id = p.id
          WHERE je.status = 'POSTED'
+           AND p.account_id = je.primary_account_id
          GROUP BY je.entity_id, ja.business_unit_id, ja.accounting_month,
                   pa.category_code_snapshot, pa.category_label_snapshot, p.currency;
         """
@@ -472,7 +548,7 @@ def upgrade() -> None:
             p_limit integer
         )
         RETURNS TABLE (
-            contract_version varchar(25), candidate_ref uuid, short_id varchar(10),
+            contract_version varchar(32), candidate_ref uuid, short_id varchar(10),
             revision integer, status varchar(16), entity_ref uuid,
             business_unit_ref varchar(100), business_unit_label varchar(200),
             category_code varchar(100), category_label varchar(200), amount_minor bigint,
@@ -512,10 +588,39 @@ def upgrade() -> None:
                     USING ERRCODE = '22023';
             END IF;
             IF p_last_created_at IS NOT NULL AND NOT EXISTS (
-                SELECT 1 FROM public.candidate AS cursor_candidate
+                SELECT 1
+                  FROM public.candidate AS cursor_candidate
+                  JOIN LATERAL (
+                      SELECT cr.revision, cr.status, cr.business_unit_id
+                        FROM public.candidate_revision AS cr
+                        JOIN public.candidate_event AS ce
+                         ON ce.candidate_id = cr.candidate_id
+                         AND ce.to_revision = cr.revision
+                         AND ce.to_status = cr.status
+                        JOIN public.audit_event AS ae ON ae.id = ce.audit_event_id
+                       WHERE cr.candidate_id = cursor_candidate.id
+                         AND ae.sequence <= p_audit_horizon_sequence
+                         AND EXISTS (
+                             SELECT 1
+                               FROM public.candidate_revision AS cr0
+                               JOIN public.candidate_event AS ce0
+                                 ON ce0.candidate_id = cr0.candidate_id
+                                AND ce0.to_revision = cr0.revision
+                                AND ce0.to_status = cr0.status
+                               JOIN public.audit_event AS ae0 ON ae0.id = ce0.audit_event_id
+                              WHERE cr0.candidate_id = cursor_candidate.id
+                                AND cr0.revision = 1
+                                AND ce0.event_type = 'CREATE'
+                                AND ae0.sequence <= p_audit_horizon_sequence
+                         )
+                       ORDER BY cr.revision DESC LIMIT 1
+                  ) AS cursor_tip ON TRUE
                  WHERE cursor_candidate.id = p_last_candidate_id
                    AND cursor_candidate.entity_id = p_entity_id
                    AND cursor_candidate.created_at = p_last_created_at
+                   AND ((p_business_unit_id IS NULL AND cursor_tip.business_unit_id IS NULL)
+                        OR cursor_tip.business_unit_id = p_business_unit_id)
+                   AND (p_status IS NULL OR cursor_tip.status = p_status)
             ) THEN
                 RAISE EXCEPTION 'candidate cursor is outside requested scope'
                     USING ERRCODE = '22023';
@@ -533,7 +638,7 @@ def upgrade() -> None:
                        'source_event_ref', cs.source_event_ref,
                        'display_label', cs.display_label
                    ),
-                   coalesce((
+                   CASE WHEN r.business_unit_id IS NULL THEN '[]'::jsonb ELSE coalesce((
                        SELECT jsonb_agg(jsonb_build_object(
                            'evidence_ref', ce.evidence_ref,
                            'kind', ce.kind,
@@ -543,7 +648,9 @@ def upgrade() -> None:
                        ) ORDER BY ce.ordinal)
                        FROM public.candidate_evidence AS ce
                        WHERE ce.candidate_id = c.id
-                   ), '[]'::jsonb),
+                         AND ce.evidence_entity_id = c.entity_id
+                         AND ce.evidence_business_unit_id = r.business_unit_id
+                   ), '[]'::jsonb) END,
                    coalesce((
                        SELECT jsonb_agg(jsonb_build_object(
                            'code', b.code, 'message', b.message, 'field', b.field,
@@ -736,6 +843,56 @@ def upgrade() -> None:
             SELECT count(*) INTO v_tip_count
               FROM public.encrypted_blob_version AS b
              WHERE b.evidence_ref = p_evidence_ref
+               AND b.predecessor_blob_ref IS NULL;
+            IF v_tip_count <> 1 THEN
+                RAISE EXCEPTION 'active blob chain has no unique genesis'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+            IF EXISTS (
+                SELECT 1
+                  FROM public.encrypted_blob_version AS b
+                  LEFT JOIN public.encrypted_object_identity AS oi
+                    ON oi.object_ref = b.object_ref
+                   AND oi.evidence_ref = b.evidence_ref
+                 WHERE b.evidence_ref = p_evidence_ref
+                   AND oi.object_ref IS NULL
+            ) THEN
+                RAISE EXCEPTION 'active blob identity binding is invalid'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+            IF EXISTS (
+                SELECT 1
+                  FROM public.encrypted_blob_version AS b
+                 WHERE b.evidence_ref = p_evidence_ref
+                   AND b.predecessor_blob_ref IS NOT NULL
+                 GROUP BY b.predecessor_blob_ref
+                HAVING count(*) > 1
+            ) THEN
+                RAISE EXCEPTION 'active blob chain branches'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+            IF EXISTS (
+                WITH RECURSIVE walk(node_ref, path, cycle) AS (
+                    SELECT b.predecessor_blob_ref, ARRAY[b.blob_ref], false
+                      FROM public.encrypted_blob_version AS b
+                     WHERE b.evidence_ref = p_evidence_ref
+                       AND b.predecessor_blob_ref IS NOT NULL
+                    UNION ALL
+                    SELECT b.predecessor_blob_ref, w.path || b.blob_ref,
+                           b.blob_ref = ANY(w.path)
+                      FROM walk AS w
+                      JOIN public.encrypted_blob_version AS b
+                        ON b.blob_ref = w.node_ref
+                     WHERE w.node_ref IS NOT NULL AND NOT w.cycle
+                )
+                SELECT 1 FROM walk WHERE cycle
+            ) THEN
+                RAISE EXCEPTION 'active blob chain contains a cycle'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+            SELECT count(*) INTO v_tip_count
+              FROM public.encrypted_blob_version AS b
+             WHERE b.evidence_ref = p_evidence_ref
                AND NOT EXISTS (
                    SELECT 1 FROM public.encrypted_blob_version AS child
                     WHERE child.predecessor_blob_ref = b.blob_ref
@@ -767,7 +924,7 @@ def upgrade() -> None:
         $function$;
 
         CREATE FUNCTION internal_read.append_internal_evidence_read_audit(
-            p_principal_ref varchar(200), p_verified_san varchar(200),
+            p_operation_id uuid, p_principal_ref varchar(200), p_verified_san varchar(200),
             p_policy_generation varchar(128), p_evidence_ref uuid, p_entity_id uuid,
             p_business_unit_id uuid, p_blob_ref uuid, p_byte_size bigint,
             p_plaintext_sha256 bytea
@@ -778,11 +935,11 @@ def upgrade() -> None:
             v_evidence public.evidence_object%ROWTYPE;
             v_blob public.encrypted_blob_version%ROWTYPE;
             v_audit uuid;
-            v_operation_id uuid := gen_random_uuid();
             v_tip_count bigint;
             v_business_unit_ref varchar(100);
         BEGIN
-            IF p_principal_ref IS NULL OR btrim(p_principal_ref) = ''
+            IF p_operation_id IS NULL
+               OR p_principal_ref IS NULL OR btrim(p_principal_ref) = ''
                OR p_verified_san IS NULL
                OR p_verified_san !~ '^spiffe://ledgerbridge(\\.test)?/[a-z0-9/_-]+$'
                OR p_policy_generation IS NULL
@@ -798,6 +955,8 @@ def upgrade() -> None:
              WHERE e.evidence_ref = p_evidence_ref
                AND e.entity_id = p_entity_id
                AND e.business_unit_id = p_business_unit_id;
+            PERFORM 1
+              FROM internal_read.resolve_active_evidence_blob(p_evidence_ref);
             SELECT count(*) INTO v_tip_count
               FROM public.encrypted_blob_version AS b
              WHERE b.evidence_ref = p_evidence_ref
@@ -825,8 +984,6 @@ def upgrade() -> None:
             SELECT ref INTO STRICT v_business_unit_ref
               FROM public.business_unit
              WHERE id = p_business_unit_id AND entity_id = p_entity_id;
-            -- The audit_event UUID is the UNIQUE receipt identity; operation_id
-            -- is included in the typed evidence_read_receipt payload.
             v_audit := public.append_audit_event(
                 p_principal_ref,
                 'internal.read.evidence.content',
@@ -834,7 +991,7 @@ def upgrade() -> None:
                 'ledgerbridge.internal-read-audit.v1',
                 jsonb_build_object(
                     'receipt_type', 'ledgerbridge.evidence_read_receipt.v1',
-                    'operation_id', v_operation_id::text,
+                    'operation_id', p_operation_id::text,
                     'event_type', 'EVIDENCE_CONTENT_READ',
                     'principal_san_uri', p_verified_san,
                     'policy_generation', p_policy_generation,
@@ -846,6 +1003,15 @@ def upgrade() -> None:
                     'sha256', encode(p_plaintext_sha256, 'hex'),
                     'outcome', 'SUCCEEDED'
                 )
+            );
+            INSERT INTO internal_read.evidence_read_receipt (
+                operation_id, audit_event_id, principal_ref, verified_san,
+                policy_generation, evidence_ref, entity_id, business_unit_id,
+                blob_ref, byte_size, plaintext_sha256
+            ) VALUES (
+                p_operation_id, v_audit, p_principal_ref, p_verified_san,
+                p_policy_generation, p_evidence_ref, p_entity_id, p_business_unit_id,
+                v_blob.blob_ref, p_byte_size, p_plaintext_sha256
             );
             RETURN v_audit;
         END
@@ -870,6 +1036,7 @@ def downgrade() -> None:
             OR EXISTS (SELECT 1 FROM public.evidence_object)
             OR EXISTS (SELECT 1 FROM public.candidate)
             OR EXISTS (SELECT 1 FROM public.reconciliation_snapshot)
+            OR EXISTS (SELECT 1 FROM internal_read.evidence_read_receipt)
             """
         )
     ).scalar_one():
@@ -877,14 +1044,27 @@ def downgrade() -> None:
     op.execute(
         """
         REVOKE ALL ON ALL FUNCTIONS IN SCHEMA internal_read
-            FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api,
-                 ledgerbridge_worker, ledgerbridge_app;
+            FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker;
         REVOKE ALL ON ALL TABLES IN SCHEMA internal_read
-            FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api,
-                 ledgerbridge_worker, ledgerbridge_app;
+            FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker;
+        DO $downgrade_acl$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_app') THEN
+                EXECUTE 'REVOKE ALL ON ALL FUNCTIONS IN SCHEMA internal_read FROM ledgerbridge_app';
+                EXECUTE 'REVOKE ALL ON ALL TABLES IN SCHEMA internal_read FROM ledgerbridge_app';
+            END IF;
+        END
+        $downgrade_acl$;
         DROP FUNCTION IF EXISTS internal_read.append_internal_evidence_read_audit(
-            varchar(200), varchar(200), varchar(128), uuid, uuid, uuid, uuid, bigint, bytea
+            uuid, varchar(200), varchar(200), varchar(128), uuid, uuid, uuid, uuid, bigint, bytea
         );
+        DROP TRIGGER IF EXISTS evidence_read_receipt_append_only
+            ON internal_read.evidence_read_receipt;
+        DROP TRIGGER IF EXISTS evidence_read_receipt_audit_binding
+            ON internal_read.evidence_read_receipt;
+        DROP FUNCTION IF EXISTS public.r1_validate_evidence_read_receipt();
+        DROP FUNCTION IF EXISTS public.r1_evidence_read_receipt_append_only();
+        DROP TABLE IF EXISTS internal_read.evidence_read_receipt;
         DROP FUNCTION IF EXISTS internal_read.resolve_active_evidence_blob(uuid);
         DROP FUNCTION IF EXISTS internal_read.get_reconciliation_as_of(
             uuid, uuid, date, bigint, bytea

@@ -226,7 +226,14 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
             "ciphertext_sha256": old_digest.hex(),
             "ciphertext_size": 7,
             "storage_key": old_storage_key,
+            "envelope_schema": "ledgerbridge.secretstream.v1",
+            "algorithm": "xchacha20poly1305-secretstream",
+            "chunk_size": 65536,
+            "stream_header": (bytes.fromhex("44" * 24)).hex(),
             "wrapped_key_generation": "generation-1",
+            "wrapped_key_nonce": (bytes.fromhex("55" * 24)).hex(),
+            "wrapped_key_ciphertext": (bytes.fromhex("66" * 48)).hex(),
+            "purpose": "ledgerbridge-artifact-v2",
         },
     )
     connection.execute(
@@ -271,7 +278,14 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
             "ciphertext_sha256": active_digest.hex(),
             "ciphertext_size": 8,
             "storage_key": active_storage_key,
+            "envelope_schema": "ledgerbridge.secretstream.v1",
+            "algorithm": "xchacha20poly1305-secretstream",
+            "chunk_size": 65536,
+            "stream_header": (bytes.fromhex("77" * 24)).hex(),
             "wrapped_key_generation": "generation-1",
+            "wrapped_key_nonce": (bytes.fromhex("88" * 24)).hex(),
+            "wrapped_key_ciphertext": (bytes.fromhex("99" * 48)).hex(),
+            "purpose": "ledgerbridge-artifact-v2",
         },
     )
     connection.execute(
@@ -306,6 +320,7 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
         {
             "event_ref": str(candidate_event_ref),
             "candidate_id": str(candidate_id),
+            "candidate_ref": str(candidate_id),
             "operation_id": str(operation_id),
             "command_fingerprint": (operation_id.bytes * 2).hex(),
             "event_type": "CREATE",
@@ -314,6 +329,8 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
             "to_revision": 1,
             "from_status": None,
             "to_status": "INCOMPLETE",
+            "field_changes": [],
+            "conflict_resolutions": [],
             "actor_ref": "r1-test",
             "reason": "fixture candidate",
             "derived_candidate_id": None,
@@ -879,9 +896,10 @@ def test_r1_reader_horizon_as_of_scope_resolver_and_audit_wrapper_fail_closed(
         receipt = connection.execute(
             text(
                 "SELECT internal_read.append_internal_evidence_read_audit("
-                ":principal, :san, :generation, :evidence, :entity, :unit, :blob, :size, :sha)"
+                ":operation, :principal, :san, :generation, :evidence, :entity, :unit, :blob, :size, :sha)"
             ),
             {
+                "operation": uuid4(),
                 "principal": "principal-r1",
                 "san": "spiffe://ledgerbridge/r1-reader",
                 "generation": "generation-1",
@@ -911,9 +929,10 @@ def test_r1_reader_horizon_as_of_scope_resolver_and_audit_wrapper_fail_closed(
             connection.execute(
                 text(
                     "SELECT internal_read.append_internal_evidence_read_audit("
-                    ":principal, :san, :generation, :evidence, :entity, :unit, :blob, :size, :sha)"
+                    ":operation, :principal, :san, :generation, :evidence, :entity, :unit, :blob, :size, :sha)"
                 ),
                 {
+                    "operation": uuid4(),
                     "principal": "principal-r1",
                     "san": "spiffe://ledgerbridge/r1-reader",
                     "generation": "generation-1",
