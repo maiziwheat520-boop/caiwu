@@ -448,3 +448,17 @@ ingestion require their later explicit gates.
 - Final evidence: Hermes PostgreSQL 15 **48 passed**; Windows **475 passed /
   189 skipped / 1 warning**. No production database, role, reader bootstrap,
   merge, or deployment was touched.
+
+## R1 Core reader cursor hardening (2026-08-24)
+
+- Safe branch `ai/chatgpt/r1-core-reader-cursor` now contains `f3c2a73`:
+  database grants require explicit immutable business-unit ref/UUID bindings,
+  returned rows are scope-revalidated, non-canonical cursor encodings fail
+  closed, and month-filtered / candidate-detail reads advance through bounded
+  keyset pages.
+- Windows full suite: **494 passed / 190 skipped / 1 warning**; targeted cursor
+  and database-reader tests pass; Ruff and strict mypy pass. Hosted CI for
+  `f3c2a73` is running; no merge or production enablement has occurred.
+- Database collection union across multiple scopes remains deliberately disabled
+  until a per-scope cursor contract is reviewed; such grants return a fixed
+  backend-unavailable response rather than risk cross-scope pagination leakage.

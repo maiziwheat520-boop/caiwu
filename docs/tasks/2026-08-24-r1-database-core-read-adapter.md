@@ -31,6 +31,18 @@
 - Ruff check、strict mypy、compileall 通过；未连接生产数据库、未创建 reader 凭据、
   未启用生产路由或真实数据读取。
 
+## 2026-08-24 security follow-up
+
+- Commit `f3c2a73` adds explicit immutable `(business_unit_ref, UUID)` bindings
+  to database grants and revalidates every returned candidate against that pair.
+  Grants containing independent ref/UUID sets, IDs without refs, or multiple
+  candidate scopes fail closed.
+- Cursor decoding now rejects non-canonical Base64URL aliases and malformed
+  compressed bodies; month-filtered reads continue bounded keyset pages before
+  issuing a cursor, and candidate detail lookup follows issued cursors.
+- Windows full suite is **494 passed / 190 skipped / 1 warning**. Safe branch
+  `ai/chatgpt/r1-core-reader-cursor` was pushed; hosted CI is the remaining gate.
+
 ## 未闭环 gate
 
 生产 mTLS verifier、签名 cursor key、reader bootstrap、S1 解密器、ledger scoped
