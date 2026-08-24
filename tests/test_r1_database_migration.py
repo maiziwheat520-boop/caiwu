@@ -40,6 +40,7 @@ INTERNAL_READ_FUNCTIONS = (
     "list_candidates_as_of",
     "get_reconciliation_as_of",
     "resolve_active_evidence_blob",
+    "get_ledger_summary_as_of",
     "append_internal_evidence_read_audit",
 )
 RUNTIME_ROLES = (
@@ -1360,6 +1361,7 @@ def test_r1_internal_read_surface_has_typed_receipt_and_dynamic_owner_contract()
         "list_candidates_as_of",
         "get_reconciliation_as_of",
         "resolve_active_evidence_blob",
+        "get_ledger_summary_as_of",
         "append_internal_evidence_read_audit",
         "R1 internal-read data prevents destructive downgrade",
     ):
@@ -1394,6 +1396,7 @@ def test_r1_migration_c_declares_closed_reader_surface_and_fail_closed_downgrade
         "list_candidates_as_of",
         "get_reconciliation_as_of",
         "resolve_active_evidence_blob",
+        "get_ledger_summary_as_of",
         "append_internal_evidence_read_audit",
         "REVOKE ALL ON DATABASE",
         "R1 internal-read data prevents destructive downgrade",
@@ -2963,6 +2966,23 @@ def _exercise_r1_reader_horizon_as_of_scope_resolver(isolated_r1_database: str) 
         assert reconciliation_row[6][0]["status"] == "OPEN"
         assert tuple(reconciliation_row[7:]) == (1234, "CNY")
 
+        ledger_summary = connection.execute(
+            text(
+                "SELECT * FROM internal_read.get_ledger_summary_as_of("
+                ":entity, :unit, DATE '2026-08-01', DATE '2026-08-01', :sequence, :hash)"
+            ),
+            {
+                "entity": facts["entity"],
+                "unit": facts["unit"],
+                "sequence": horizon.sequence,
+                "hash": horizon.hash,
+            },
+        ).all()
+        # The fixture has no POSTED journal entries; the scoped aggregate must
+        # therefore return an empty result rather than infer totals from the
+        # reconciliation snapshot.
+        assert ledger_summary == []
+
         active = connection.execute(
             text("SELECT blob_ref FROM internal_read.resolve_active_evidence_blob(:evidence)"),
             {"evidence": facts["evidence"]},
@@ -3038,6 +3058,24 @@ def _exercise_r1_reader_horizon_as_of_scope_resolver(isolated_r1_database: str) 
                 (
                     "SELECT * FROM internal_read.get_reconciliation_as_of("
                     ":entity, :unit, DATE '2026-08-01', :sequence, :hash)",
+                    {
+                        "entity": facts["other_entity"],
+                        "unit": facts["unit"],
+                        "sequence": horizon.sequence,
+                        "hash": horizon.hash,
+                    },
+                ),
+            ],
+            sqlstate="22023",
+            message="business unit does not belong to entity",
+        )
+        _assert_db_rejection(
+            engine,
+            [
+                ("SET ROLE ledgerbridge_reader", None),
+                (
+                    "SELECT * FROM internal_read.get_ledger_summary_as_of("
+                    ":entity, :unit, DATE '2026-08-01', DATE '2026-08-01', :sequence, :hash)",
                     {
                         "entity": facts["other_entity"],
                         "unit": facts["unit"],
