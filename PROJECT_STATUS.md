@@ -69,9 +69,10 @@ proposals, and an auditable Suspense open/resolve contract. Migration
 `20260824_0010` persists review items, reconciliation groups/legs and Suspense
 items with deferred zero-sum checks, terminal state triggers, fixed search paths
 and no DELETE grants. Automatic deletion, automatic posting and production
-switches remain closed. The task card is
-`docs/tasks/2026-08-24-phase-5-dedup-reconciliation-suspense.md`; service and
-real parser integration remain separately gated.
+switches remain closed. The Review API/worker boundary is implemented but
+default-disabled; see
+`docs/tasks/2026-08-24-phase-5-review-api-worker.md`. Service and real parser
+integration remain separately gated.
 
 The preceding implementation head `b453874` passed push run `32648931938` and
 pull-request run `32648934569` across `secrets`, `quality`, and `compose`; the
@@ -299,7 +300,7 @@ in an isolated Hermes project; no evidence was ingested.
 Audit the Phase 4 mailbox/provider and Phase 5 dedup/reconciliation/Suspense
 contracts, then design the first synthetic connector fixtures. The default
 manifest and registry stay empty. Next gates are signed-manifest/key custody,
-trusted OAuth, provider/source ownership, Review API/worker integration, real
+trusted OAuth, provider/source ownership, concurrent candidate matching, real
 parser samples, and a narrow Claude audit.
 Merge, production role migration, feature-flag enablement, real Connector
 registration, evidence ingestion, and mail collection each require distinct

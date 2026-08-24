@@ -24,6 +24,7 @@ from ledgerbridge.dispatch import (
 )
 from ledgerbridge.imports import EvidenceImporter, EvidenceIngestionError, IngestMetadata
 from ledgerbridge.models import ImportJobStatus
+from ledgerbridge.review_service import ReviewService
 from ledgerbridge.runner_composition import (
     VerifiedRunnerManifest,
     build_worker_runner_connectors,
@@ -109,6 +110,13 @@ def build_dispatch_service(settings: Settings | None = None) -> DispatchService:
         lease_seconds=current.dispatch_lease_seconds,
         max_attempts=current.dispatch_max_attempts,
     )
+
+
+def build_review_service(settings: Settings | None = None) -> ReviewService:
+    """Build the worker-owned Review writer using the dedicated worker role."""
+
+    current = settings if settings is not None else get_settings()
+    return ReviewService(get_session_factory(current.resolved_worker_database_url()))
 
 
 def build_worker_connectors(

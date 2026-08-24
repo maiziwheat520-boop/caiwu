@@ -41,7 +41,8 @@ constraint trigger、OPEN→terminal 状态机和固定 `search_path = pg_catalo
 ## 未包含
 
 本阶段没有自动转账发现、规则引擎、真实财务数据、自动 POST、或生产配置开关。
-持久化表仍需接入 append-only 审计服务、并发候选匹配和 Review API；任何真实数据
+持久化表已接入受控的 append-only 审计服务和默认关闭的 Review API/worker 边界；
+并发候选匹配仍未实现。任何真实数据
 或生产启用都要经过下一次独立授权。
 
 ## 验证

@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     upload_concurrency: int = Field(default=2, gt=0, le=64)
     enable_internal_upload: bool = False
     enable_internal_async_dispatch: bool = False
+    enable_review_api: bool = False
     dispatch_lease_seconds: int = Field(default=120, gt=0, le=3600)
     dispatch_max_attempts: int = Field(default=5, gt=0, le=16)
     dispatch_poll_seconds: float = Field(default=1.0, gt=0, le=60)

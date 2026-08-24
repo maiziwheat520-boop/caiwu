@@ -29,7 +29,9 @@ registry; it still has no OAuth client, manifest, real parser, or production
 switch. The current Phase 5 framework adds side-effect-free deduplication,
 zero-sum reconciliation proposals, explicit Suspense resolution contracts, and
 migration `20260824_0010` for their review-only persistence boundary; it still
-has no automatic posting or production switch. The deployed service remains on
+has no automatic posting or production switch. A default-disabled Review API
+and worker persistence boundary now expose only explicit human decisions; the
+deployed service remains on
 Slice A with no real evidence imported.
 See [PROJECT_STATUS.md](PROJECT_STATUS.md) and
 [docs/architecture/IMPLEMENTATION_BASELINE.md](docs/architecture/IMPLEMENTATION_BASELINE.md).

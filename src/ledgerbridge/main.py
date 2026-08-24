@@ -2,7 +2,8 @@ import asyncio
 import tempfile
 import threading
 from collections.abc import Callable, Sequence
-from typing import Annotated, BinaryIO, cast
+from datetime import datetime
+from typing import Annotated, BinaryIO, Literal, cast
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
@@ -32,7 +33,8 @@ from ledgerbridge.dispatch import (
     DispatchService,
 )
 from ledgerbridge.imports import EvidenceImporter, EvidenceIngestionError, IngestMetadata
-from ledgerbridge.models import DispatchState, ImportJobStatus
+from ledgerbridge.models import DispatchState, ImportJobStatus, ReviewItemKind
+from ledgerbridge.review_service import ReviewConflict, ReviewNotFound, ReviewService
 from ledgerbridge.text import contains_unstorable_text
 from ledgerbridge.upload import (
     MAX_MULTIPART_FIELD_BYTES,
@@ -163,6 +165,29 @@ class AsyncDispatchStatusResponse(AsyncDispatchResponse):
     error_code: str | None
 
 
+class ReviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: UUID
+    kind: ReviewItemKind
+    status: str
+    source_record_id: UUID | None
+    summary: str
+    payload: dict[str, object]
+    created_at: datetime
+    decided_at: datetime | None
+    decision_actor: str | None
+    decision_reason: str | None
+
+
+class ReviewDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["RESOLVED", "REJECTED"]
+    reason: str
+    resolution_account_id: UUID | None = None
+
+
 def get_artifact_store(settings: Annotated[Settings, Depends(get_settings)]) -> ArtifactStore:
     return ArtifactStore(
         settings.artifact_root,
@@ -194,6 +219,12 @@ def get_dispatch_service(
     )
 
 
+def get_review_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ReviewService:
+    return ReviewService(get_session_factory(settings.resolved_api_database_url()))
+
+
 def get_internal_connectors() -> Sequence[Connector]:
     """Return the reviewed internal connector manifest, empty until one exists."""
 
@@ -212,6 +243,15 @@ def require_internal_async_dispatch(
 ) -> None:
     if settings.env == "production" or not settings.enable_internal_async_dispatch:
         raise _route_error("ASYNC_DISPATCH_DISABLED", status.HTTP_404_NOT_FOUND)
+
+
+def require_review_api(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> None:
+    """Keep Review operations explicitly disabled until their auth gate is enabled."""
+
+    if settings.env == "production" or not settings.enable_review_api:
+        raise _route_error("REVIEW_API_DISABLED", status.HTTP_404_NOT_FOUND)
 
 
 def get_async_dispatch_manifest() -> tuple[str, bytes] | None:
@@ -457,6 +497,57 @@ def get_evidence_import_status(
         result_status=snapshot.result_status,
         error_code=snapshot.error_code,
     )
+
+
+@app.get(
+    "/v1/reviews",
+    response_model=list[ReviewResponse],
+    tags=["review"],
+    dependencies=[Depends(require_review_api)],
+)
+def list_reviews(
+    principal: Annotated[str, Depends(get_authenticated_principal)],
+    review_service: Annotated[ReviewService, Depends(get_review_service)],
+    review_status: str | None = None,
+    kind: ReviewItemKind | None = None,
+) -> list[ReviewResponse]:
+    _ = principal
+    items = review_service.list_items(
+        status=review_status,
+        kind=kind.value if kind is not None else None,
+    )
+    return [ReviewResponse.model_validate(item) for item in items]
+
+
+@app.post(
+    "/v1/reviews/{review_id}/decision",
+    response_model=ReviewResponse,
+    tags=["review"],
+    dependencies=[Depends(require_review_api)],
+)
+def decide_review(
+    review_id: UUID,
+    body: ReviewDecisionRequest,
+    principal: Annotated[str, Depends(get_authenticated_principal)],
+    review_service: Annotated[ReviewService, Depends(get_review_service)],
+) -> ReviewResponse:
+    try:
+        item = review_service.decide(
+            review_id,
+            actor=principal,
+            decision=body.decision,
+            reason=body.reason,
+            resolution_account_id=body.resolution_account_id,
+        )
+    except ReviewNotFound as exc:
+        raise _route_error("REVIEW_NOT_FOUND", status.HTTP_404_NOT_FOUND) from exc
+    except ReviewConflict as exc:
+        raise _route_error("REVIEW_CONFLICT", status.HTTP_409_CONFLICT) from exc
+    except ValueError as exc:
+        raise _route_error(
+            "INVALID_REVIEW_DECISION", status.HTTP_422_UNPROCESSABLE_CONTENT
+        ) from exc
+    return ReviewResponse.model_validate(item)
 
 
 async def _receive_handoff(
