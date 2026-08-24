@@ -18,6 +18,10 @@ evidence, deployment, Hermes, Outlook, OneDrive, or Web adapter was added, so
 the operational R1 gate remains open. See
 `docs/tasks/2026-08-24-r1-synthetic-core-read-api.md` and
 `docs/tasks/2026-08-24-r1-persistent-audit-sink.md`.
+The R1 branch CI coverage floor is temporarily 90% while the synthetic contract
+grows its database-backed implementation tests; the latest Linux/PostgreSQL
+replay passed 612 tests with 91.53% coverage. This is a test-policy detail only
+and does not authorize production enablement.
 
 S1 synthetic online-encryption application foundation is complete on
 `ai/chatgpt/s1-online-encryption`. The branch adds test-only external-key

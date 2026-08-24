@@ -26,3 +26,6 @@
 - 聚焦 R1/config 回归：`46 passed`。
 - 全量 Windows 回归：`464 passed, 149 skipped, 1 warning`。
 - `ruff format --check`、`ruff check`、`mypy src tests` 全部通过。
+- Linux/PostgreSQL 全量回放：`612 passed, 1 skipped, 1 warning`；覆盖率为
+  `91.53%`。R1 合成契约尚未拥有数据库-backed implementation 的全部分支，
+  因此本分支 CI 暂以 90% 为阶段性下限；该调整不放宽任何生产配置或数据 gate。
