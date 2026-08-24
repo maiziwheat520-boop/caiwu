@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -14,6 +15,8 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import SQLAlchemyError
 
 from alembic import command
+
+# ruff: noqa: E501
 
 MIGRATION = Path("alembic/versions/20260824_0012_r1_candidate_evidence.py")
 MIGRATION_B = Path("alembic/versions/20260824_0013_r1_ledger_reconciliation.py")
@@ -123,9 +126,7 @@ def _has_db_privilege(connection: Connection, role: str, privilege: str) -> bool
     )
 
 
-def _append_audit_event(
-    connection: Connection, action: str, payload: dict[str, object]
-) -> UUID:
+def _append_audit_event(connection: Connection, action: str, payload: dict[str, object]) -> UUID:
     value = connection.execute(
         text(
             "SELECT public.append_audit_event(:actor, :action, :reason, :rule_version, "
@@ -199,7 +200,35 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
     active_digest = active_blob_ref.bytes * 2
     old_object_ref = old_blob_ref.hex * 2
     active_object_ref = active_blob_ref.hex * 2
-    old_event = _append_audit_event(connection, "r1.blob.create")
+    connection.execute(
+        text(
+            "INSERT INTO public.encrypted_object_identity (object_ref, evidence_ref) "
+            "VALUES (:old_object, :evidence), (:active_object, :evidence)"
+        ),
+        {
+            "old_object": old_object_ref,
+            "active_object": active_object_ref,
+            "evidence": evidence_ref,
+        },
+    )
+    old_storage_key = (
+        "sha256/" + old_digest.hex()[:2] + "/" + old_digest.hex()[2:4] + "/" + old_digest.hex()
+    )
+    old_event = _append_audit_event(
+        connection,
+        "evidence.blob.version",
+        {
+            "rotation_mode": "GENESIS",
+            "blob_ref": str(old_blob_ref),
+            "evidence_ref": str(evidence_ref),
+            "predecessor_blob_ref": None,
+            "object_ref": old_object_ref,
+            "ciphertext_sha256": old_digest.hex(),
+            "ciphertext_size": 7,
+            "storage_key": old_storage_key,
+            "wrapped_key_generation": "generation-1",
+        },
+    )
     connection.execute(
         text(
             "INSERT INTO public.encrypted_blob_version "
@@ -215,19 +244,36 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
             "evidence": evidence_ref,
             "object_ref": old_object_ref,
             "digest": old_digest,
-            "storage_key": "sha256/"
-            + old_digest.hex()[:2]
-            + "/"
-            + old_digest.hex()[2:4]
-            + "/"
-            + old_digest.hex(),
+            "storage_key": old_storage_key,
             "stream_header": bytes.fromhex("44" * 24),
             "nonce": bytes.fromhex("55" * 24),
             "wrapped": bytes.fromhex("66" * 48),
             "audit": old_event,
         },
     )
-    active_event = _append_audit_event(connection, "r1.blob.rotate")
+    active_storage_key = (
+        "sha256/"
+        + active_digest.hex()[:2]
+        + "/"
+        + active_digest.hex()[2:4]
+        + "/"
+        + active_digest.hex()
+    )
+    active_event = _append_audit_event(
+        connection,
+        "evidence.blob.version",
+        {
+            "rotation_mode": "REENCRYPT",
+            "blob_ref": str(active_blob_ref),
+            "evidence_ref": str(evidence_ref),
+            "predecessor_blob_ref": str(old_blob_ref),
+            "object_ref": active_object_ref,
+            "ciphertext_sha256": active_digest.hex(),
+            "ciphertext_size": 8,
+            "storage_key": active_storage_key,
+            "wrapped_key_generation": "generation-1",
+        },
+    )
     connection.execute(
         text(
             "INSERT INTO public.encrypted_blob_version "
@@ -246,30 +292,33 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
             "predecessor": old_blob_ref,
             "object_ref": active_object_ref,
             "digest": active_digest,
-            "storage_key": "sha256/"
-            + active_digest.hex()[:2]
-            + "/"
-            + active_digest.hex()[2:4]
-            + "/"
-            + active_digest.hex(),
+            "storage_key": active_storage_key,
             "stream_header": bytes.fromhex("77" * 24),
             "nonce": bytes.fromhex("88" * 24),
             "wrapped": bytes.fromhex("99" * 48),
             "audit": active_event,
         },
     )
-    connection.execute(
-        text(
-            "INSERT INTO public.encrypted_object_identity (object_ref, evidence_ref) "
-            "VALUES (:old_object, :evidence), (:active_object, :evidence)"
-        ),
+    candidate_event_ref = uuid4()
+    candidate_event = _append_audit_event(
+        connection,
+        "candidate.create",
         {
-            "old_object": old_object_ref,
-            "active_object": active_object_ref,
-            "evidence": evidence_ref,
+            "event_ref": str(candidate_event_ref),
+            "candidate_id": str(candidate_id),
+            "operation_id": str(operation_id),
+            "command_fingerprint": (operation_id.bytes * 2).hex(),
+            "event_type": "CREATE",
+            "action": None,
+            "from_revision": None,
+            "to_revision": 1,
+            "from_status": None,
+            "to_status": "INCOMPLETE",
+            "actor_ref": "r1-test",
+            "reason": "fixture candidate",
+            "derived_candidate_id": None,
         },
     )
-    candidate_event = _append_audit_event(connection, "r1.candidate.create")
     connection.execute(
         text(
             "INSERT INTO public.candidate (id, short_id, entity_id, contract_version, created_at) "
@@ -301,14 +350,31 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
     )
     connection.execute(
         text(
+            "INSERT INTO public.candidate_evidence "
+            "(candidate_id, ordinal, evidence_ref, kind, media_type_snapshot, "
+            "display_name_snapshot, download_available, candidate_entity_id, "
+            "evidence_entity_id, evidence_business_unit_id) VALUES "
+            "(:candidate, 0, :evidence, 'ATTACHMENT', 'application/pdf', "
+            "'fixture.pdf', true, :entity, :entity, :unit)"
+        ),
+        {
+            "candidate": candidate_id,
+            "evidence": evidence_ref,
+            "entity": entity_id,
+            "unit": business_unit_id,
+        },
+    )
+    connection.execute(
+        text(
             "INSERT INTO public.candidate_event "
-            "(candidate_id, operation_id, command_fingerprint, event_type, to_revision, "
+            "(event_ref, candidate_id, operation_id, command_fingerprint, event_type, to_revision, "
             "to_status, actor_ref, reason, occurred_at, audit_event_id) VALUES "
-            "(:candidate, :operation, :fingerprint, 'CREATE', 1, 'INCOMPLETE', 'r1-test', "
+            "(:event_ref, :candidate, :operation, :fingerprint, 'CREATE', 1, 'INCOMPLETE', 'r1-test', "
             "'fixture candidate', :now, :audit)"
         ),
         {
             "candidate": candidate_id,
+            "event_ref": candidate_event_ref,
             "operation": operation_id,
             "fingerprint": operation_id.bytes * 2,
             "now": now,
@@ -329,6 +395,58 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
         "sequence": int(horizon.sequence),
         "hash": bytes(horizon.hash),
     }
+
+
+def _seed_nonempty_downgrade_marker(connection: Connection) -> None:
+    entity_id = uuid4()
+    unit_id = uuid4()
+    evidence_ref = uuid4()
+    object_ref = uuid4().hex * 2
+    connection.execute(
+        text(
+            "INSERT INTO public.entity (id, entity_type, name) "
+            "VALUES (:id, 'COMPANY', 'downgrade marker entity')"
+        ),
+        {"id": entity_id},
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.business_unit (id, entity_id, ref, label) "
+            "VALUES (:id, :entity, 'downgrade-unit', 'Downgrade Unit')"
+        ),
+        {"id": unit_id, "entity": entity_id},
+    )
+    audit_id = _append_audit_event(
+        connection,
+        "evidence.object.create",
+        {
+            "evidence_ref": str(evidence_ref),
+            "entity_id": str(entity_id),
+            "business_unit_id": str(unit_id),
+        },
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.evidence_object "
+            "(evidence_ref, entity_id, business_unit_id, media_type, plaintext_sha256, "
+            "plaintext_size, audit_event_id) VALUES "
+            "(:evidence, :entity, :unit, 'application/pdf', :digest, 0, :audit)"
+        ),
+        {
+            "evidence": evidence_ref,
+            "entity": entity_id,
+            "unit": unit_id,
+            "digest": bytes.fromhex("aa" * 32),
+            "audit": audit_id,
+        },
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.encrypted_object_identity (object_ref, evidence_ref) "
+            "VALUES (:object_ref, :evidence)"
+        ),
+        {"object_ref": object_ref, "evidence": evidence_ref},
+    )
 
 
 def test_r1_candidate_evidence_migration_is_forward_only_and_owner_written() -> None:
@@ -680,7 +798,7 @@ def test_r1_internal_read_nonempty_downgrade_is_rejected(
 ) -> None:
     engine = create_engine(isolated_r1_database)
     with engine.begin() as connection:
-        _seed_read_facts(connection)
+        _seed_nonempty_downgrade_marker(connection)
     config = Config("alembic.ini")
     config.attributes["database_url"] = isolated_r1_database
     with pytest.raises(RuntimeError, match="R1 internal-read data"):

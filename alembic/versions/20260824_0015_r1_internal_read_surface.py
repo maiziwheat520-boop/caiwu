@@ -30,15 +30,20 @@ def _runtime_role_preflight() -> None:
         DECLARE
             v_reader oid;
             v_owner oid;
+            v_database_owner oid;
+            v_current_user oid;
         BEGIN
             SELECT oid INTO v_reader FROM pg_roles WHERE rolname = 'ledgerbridge_reader';
-            SELECT oid INTO v_owner FROM pg_roles WHERE rolname = 'ledgerbridge_owner';
+            SELECT oid INTO v_current_user FROM pg_roles WHERE rolname = current_user;
+            SELECT datdba INTO v_database_owner
+              FROM pg_database WHERE datname = current_database();
+            v_owner := v_current_user;
             IF v_reader IS NULL THEN
                 RAISE EXCEPTION 'required reader role ledgerbridge_reader is missing'
                     USING ERRCODE = 'invalid_authorization_specification';
             END IF;
-            IF v_owner IS NULL THEN
-                RAISE EXCEPTION 'fixed migration owner ledgerbridge_owner is missing'
+            IF v_owner IS NULL OR v_database_owner IS DISTINCT FROM v_owner THEN
+                RAISE EXCEPTION 'migration must run as the fixed current database owner'
                     USING ERRCODE = 'invalid_authorization_specification';
             END IF;
             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_api')
@@ -81,13 +86,33 @@ def _runtime_role_preflight() -> None:
                 RAISE EXCEPTION 'ledgerbridge_reader must not own database objects'
                     USING ERRCODE = 'invalid_authorization_specification';
             END IF;
-            IF v_owner IN (
-                'ledgerbridge_reader'::regrole,
-                'ledgerbridge_api'::regrole,
-                'ledgerbridge_worker'::regrole,
-                'ledgerbridge_app'::regrole
+            IF EXISTS (
+                SELECT 1
+                  FROM pg_roles AS r
+                 WHERE r.rolname IN ('ledgerbridge_reader', 'ledgerbridge_api',
+                                     'ledgerbridge_worker', 'ledgerbridge_app')
+                   AND (
+                       EXISTS (SELECT 1 FROM pg_database AS d WHERE d.datdba = r.oid)
+                       OR EXISTS (SELECT 1 FROM pg_namespace AS n WHERE n.nspowner = r.oid)
+                       OR EXISTS (SELECT 1 FROM pg_class AS c WHERE c.relowner = r.oid)
+                       OR EXISTS (SELECT 1 FROM pg_proc AS p WHERE p.proowner = r.oid)
+                   )
+            ) THEN
+                RAISE EXCEPTION 'runtime roles must not own database objects'
+                    USING ERRCODE = 'invalid_authorization_specification';
+            END IF;
+            IF EXISTS (
+                SELECT 1 FROM pg_roles
+                 WHERE oid = v_owner
+                   AND rolname IN ('ledgerbridge_reader', 'ledgerbridge_api',
+                                   'ledgerbridge_worker', 'ledgerbridge_app')
             ) THEN
                 RAISE EXCEPTION 'fixed migration owner collides with a runtime role'
+                    USING ERRCODE = 'invalid_authorization_specification';
+            END IF;
+            IF pg_get_userbyid(v_owner) IS DISTINCT FROM current_user
+               OR pg_get_userbyid(v_database_owner) IS DISTINCT FROM current_user THEN
+                RAISE EXCEPTION 'fixed migration owner identity is invalid'
                     USING ERRCODE = 'invalid_authorization_specification';
             END IF;
         END
@@ -100,37 +125,64 @@ def _database_acl() -> None:
     op.execute(
         """
         DO $acl$
-        DECLARE v_database text := current_database();
+        DECLARE
+            v_database text := current_database();
+            v_owner text := current_user;
+            role_name text;
         BEGIN
             -- REVOKE ALL ON DATABASE is deliberate: the following explicit
             -- GRANT CONNECT statements rebuild the allowlist.
             EXECUTE format('REVOKE ALL ON DATABASE %I FROM PUBLIC', v_database);
-            EXECUTE format('REVOKE ALL ON DATABASE %I FROM ledgerbridge_app', v_database);
-            EXECUTE format('REVOKE ALL ON DATABASE %I FROM ledgerbridge_api', v_database);
-            EXECUTE format('REVOKE ALL ON DATABASE %I FROM ledgerbridge_worker', v_database);
-            EXECUTE format('REVOKE ALL ON DATABASE %I FROM ledgerbridge_reader', v_database);
+            FOREACH role_name IN ARRAY ARRAY[
+                'ledgerbridge_app', 'ledgerbridge_api',
+                'ledgerbridge_worker', 'ledgerbridge_reader'
+            ] LOOP
+                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+                    EXECUTE format('REVOKE ALL ON DATABASE %I FROM %I', v_database, role_name);
+                END IF;
+            END LOOP;
             EXECUTE format(
-                'GRANT CONNECT ON DATABASE %I TO ledgerbridge_api, ledgerbridge_worker, ledgerbridge_reader, ledgerbridge_owner',
-                v_database
+                'GRANT CONNECT ON DATABASE %I TO ledgerbridge_api, ledgerbridge_worker, ledgerbridge_reader, %I',
+                v_database, v_owner
             );
             EXECUTE format(
                 'REVOKE TEMPORARY, CREATE ON DATABASE %I FROM ledgerbridge_api, ledgerbridge_worker, ledgerbridge_reader',
                 v_database
             );
+            EXECUTE format(
+                'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
+                'REVOKE ALL ON TABLES FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker',
+                v_owner
+            );
+            EXECUTE format(
+                'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
+                'REVOKE ALL ON SEQUENCES FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker',
+                v_owner
+            );
+            EXECUTE format(
+                'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
+                'REVOKE ALL ON FUNCTIONS FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker',
+                v_owner
+            );
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_app') THEN
+                EXECUTE format(
+                    'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
+                    'REVOKE ALL ON TABLES FROM ledgerbridge_app', v_owner
+                );
+                EXECUTE format(
+                    'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
+                    'REVOKE ALL ON SEQUENCES FROM ledgerbridge_app', v_owner
+                );
+                EXECUTE format(
+                    'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
+                    'REVOKE ALL ON FUNCTIONS FROM ledgerbridge_app', v_owner
+                );
+            END IF;
         END
         $acl$;
         -- PostgreSQL expresses this cleanup through ALTER DEFAULT PRIVILEGES;
         -- keep the explicit audit phrase here so restore review cannot miss it.
         -- REVOKE ALL ON DEFAULT PRIVILEGES FROM PUBLIC;
-        ALTER DEFAULT PRIVILEGES FOR ROLE ledgerbridge_owner IN SCHEMA public
-            REVOKE ALL ON TABLES FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api,
-                ledgerbridge_worker, ledgerbridge_app;
-        ALTER DEFAULT PRIVILEGES FOR ROLE ledgerbridge_owner IN SCHEMA public
-            REVOKE ALL ON SEQUENCES FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api,
-                ledgerbridge_worker, ledgerbridge_app;
-        ALTER DEFAULT PRIVILEGES FOR ROLE ledgerbridge_owner IN SCHEMA public
-            REVOKE ALL ON FUNCTIONS FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api,
-                ledgerbridge_worker, ledgerbridge_app;
         """
     )
 
@@ -382,7 +434,16 @@ def upgrade() -> None:
                 SELECT 1 FROM public.business_unit AS bu
                  WHERE bu.id = p_business_unit_id AND bu.entity_id = p_entity_id
             ) THEN
-                RAISE EXCEPTION 'business unit is outside entity scope'
+                RAISE EXCEPTION 'business unit does not belong to entity'
+                    USING ERRCODE = '22023';
+            END IF;
+            IF p_last_created_at IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM public.candidate AS cursor_candidate
+                 WHERE cursor_candidate.id = p_last_candidate_id
+                   AND cursor_candidate.entity_id = p_entity_id
+                   AND cursor_candidate.created_at = p_last_created_at
+            ) THEN
+                RAISE EXCEPTION 'candidate cursor is outside requested scope'
                     USING ERRCODE = '22023';
             END IF;
             RETURN QUERY
@@ -529,7 +590,7 @@ def upgrade() -> None:
                 SELECT 1 FROM public.business_unit AS bu
                  WHERE bu.id = p_business_unit_id AND bu.entity_id = p_entity_id
             ) THEN
-                RAISE EXCEPTION 'business unit is outside entity scope'
+                RAISE EXCEPTION 'business unit does not belong to entity'
                     USING ERRCODE = '22023';
             END IF;
             RETURN QUERY
@@ -643,6 +704,7 @@ def upgrade() -> None:
             v_evidence public.evidence_object%ROWTYPE;
             v_blob public.encrypted_blob_version%ROWTYPE;
             v_audit uuid;
+            v_operation_id uuid := gen_random_uuid();
             v_tip_count bigint;
             v_business_unit_ref varchar(100);
         BEGIN
@@ -670,7 +732,7 @@ def upgrade() -> None:
                     WHERE child.predecessor_blob_ref = b.blob_ref
                );
             IF v_tip_count <> 1 THEN
-                RAISE EXCEPTION 'evidence active encrypted blob tip is ambiguous'
+                RAISE EXCEPTION 'active blob tip is ambiguous'
                     USING ERRCODE = 'integrity_constraint_violation';
             END IF;
             SELECT * INTO STRICT v_blob
@@ -683,18 +745,22 @@ def upgrade() -> None:
                );
             IF v_evidence.plaintext_size <> p_byte_size
                OR v_evidence.plaintext_sha256 IS DISTINCT FROM p_plaintext_sha256 THEN
-                RAISE EXCEPTION 'evidence digest or size does not match immutable fact'
+                RAISE EXCEPTION 'plaintext digest or size does not match immutable evidence'
                     USING ERRCODE = 'integrity_constraint_violation';
             END IF;
             SELECT ref INTO STRICT v_business_unit_ref
               FROM public.business_unit
              WHERE id = p_business_unit_id AND entity_id = p_entity_id;
+            -- The audit_event UUID is the UNIQUE receipt identity; operation_id
+            -- is included in the typed evidence_read_receipt payload.
             v_audit := public.append_audit_event(
                 p_principal_ref,
                 'internal.read.evidence.content',
                 'internal evidence content read',
                 'ledgerbridge.internal-read-audit.v1',
                 jsonb_build_object(
+                    'receipt_type', 'ledgerbridge.evidence_read_receipt.v1',
+                    'operation_id', v_operation_id::text,
                     'event_type', 'EVIDENCE_CONTENT_READ',
                     'principal_san_uri', p_verified_san,
                     'policy_generation', p_policy_generation,
