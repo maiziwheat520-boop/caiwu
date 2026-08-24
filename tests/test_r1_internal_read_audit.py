@@ -18,7 +18,9 @@ from ledgerbridge.internal_read_audit import (
     EvidenceReadAuditEvent,
     EvidenceReadReceipt,
     UnavailableInternalReadAuditSink,
+    UnavailableInternalReadReceiptSink,
     get_internal_read_audit_sink,
+    get_internal_read_receipt_sink,
 )
 
 
@@ -125,10 +127,23 @@ def test_database_receipt_sink_calls_allowlisted_function_and_commits() -> None:
     DatabaseInternalReadReceiptSink(factory).append(_receipt())
 
     assert session.committed is True
+    statement = str(session.statement)
+    for parameter in (
+        "operation_id",
+        "principal_ref",
+        "principal_san_uri",
+        "policy_generation",
+        "evidence_ref",
+        "entity_ref",
+        "business_unit_id",
+        "blob_ref",
+        "byte_size",
+        "sha256",
+    ):
+        assert statement.count(f":{parameter}") == 1
+    assert ":key_generation" not in statement
     assert session.params["principal_ref"] == "workload:r1-audit-test"
     assert session.params["policy_generation"] == "policy-11"
-    assert ":policy_generation" in str(session.statement)
-    assert ":key_generation" not in str(session.statement)
     assert session.params["blob_ref"] == UUID("30000000-0000-4000-8000-000000000001")
     assert session.params["sha256"] == bytes.fromhex("aa" * 32)
 
@@ -170,3 +185,45 @@ def test_audit_dependency_stays_unavailable_without_explicit_test_gate(tmp_path:
             artifact_root=tmp_path.resolve(),
             enable_internal_read_persistent_audit=True,
         )
+
+
+def test_receipt_dependency_requires_explicit_database_writer_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    disabled = Settings(
+        env="test",
+        runtime_role="migrate",
+        database_url="sqlite+pysqlite:///:memory:",
+        artifact_root=tmp_path.resolve(),
+    )
+    assert get_internal_read_receipt_sink(disabled) is None
+
+    enabled = Settings(
+        env="test",
+        runtime_role="migrate",
+        database_url="postgresql+psycopg://ledgerbridge_owner@db/app",
+        api_database_url="postgresql+psycopg://ledgerbridge_api@db/app",
+        reader_database_url="postgresql+psycopg://ledgerbridge_reader@db/app",
+        artifact_root=tmp_path.resolve(),
+        enable_internal_read_api=True,
+        internal_read_backend="database",
+        internal_read_cursor_key="k" * 32,
+        internal_read_policy_generation=11,
+        enable_internal_read_persistent_receipt=True,
+    )
+    captured: list[str] = []
+
+    def capture_session_factory(url: str) -> Callable[[], Session]:
+        captured.append(url)
+        return cast(Callable[[], Session], lambda: _Session())
+
+    monkeypatch.setattr(
+        audit_module,
+        "get_session_factory",
+        capture_session_factory,
+    )
+    assert isinstance(get_internal_read_receipt_sink(enabled), DatabaseInternalReadReceiptSink)
+    assert captured == [enabled.api_database_url]
+
+    broken = enabled.model_copy(update={"api_database_url": None, "database_url": None})
+    assert isinstance(get_internal_read_receipt_sink(broken), UnavailableInternalReadReceiptSink)

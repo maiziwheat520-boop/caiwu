@@ -510,6 +510,11 @@ def _grant_exact_surface() -> None:
         $schema_acl$;
         REVOKE ALL ON SCHEMA internal_read FROM PUBLIC;
         GRANT USAGE ON SCHEMA internal_read TO ledgerbridge_reader;
+        -- The receipt function is a trusted-writer endpoint.  The API role
+        -- may append the already-verified application receipt through its
+        -- SECURITY DEFINER body, while the reader role must never be able to
+        -- manufacture principal/SAN/policy claims by calling it directly.
+        GRANT USAGE ON SCHEMA internal_read TO ledgerbridge_api;
         REVOKE ALL ON ALL FUNCTIONS IN SCHEMA internal_read FROM PUBLIC, ledgerbridge_reader;
         DO $function_acl$
         DECLARE role_name text;
@@ -560,10 +565,11 @@ def _grant_exact_surface() -> None:
             ),
             internal_read.get_reconciliation_as_of(uuid, uuid, date, bigint, bytea),
             internal_read.get_ledger_summary_as_of(uuid, uuid, date, date, bigint, bytea),
-            internal_read.resolve_active_evidence_blob(uuid),
-            internal_read.append_internal_evidence_read_audit(
+            internal_read.resolve_active_evidence_blob(uuid)
+            TO ledgerbridge_reader;
+        GRANT EXECUTE ON FUNCTION internal_read.append_internal_evidence_read_audit(
                 uuid, varchar(200), varchar(200), varchar(128), uuid, uuid, uuid, uuid, bigint, bytea
-            ) TO ledgerbridge_reader;
+            ) TO ledgerbridge_api;
         """
     )
 

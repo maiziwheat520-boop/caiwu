@@ -43,6 +43,43 @@ INTERNAL_READ_FUNCTIONS = (
     "get_ledger_summary_as_of",
     "append_internal_evidence_read_audit",
 )
+INTERNAL_READ_FUNCTION_IDENTITIES = {
+    "current_audit_horizon": "",
+    "list_candidates_as_of": (
+        "p_entity_id uuid, p_business_unit_id uuid, p_status character varying, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea, "
+        "p_last_created_at timestamp with time zone, p_last_candidate_id uuid, p_limit integer"
+    ),
+    "get_reconciliation_as_of": (
+        "p_entity_id uuid, p_business_unit_id uuid, p_accounting_month date, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
+    "resolve_active_evidence_blob": "p_evidence_ref uuid",
+    "get_ledger_summary_as_of": (
+        "p_entity_id uuid, p_business_unit_id uuid, p_from_month date, p_to_month date, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
+    "append_internal_evidence_read_audit": (
+        "p_operation_id uuid, p_principal_ref character varying, p_verified_san character varying, "
+        "p_policy_generation character varying, p_evidence_ref uuid, p_entity_id uuid, "
+        "p_business_unit_id uuid, p_blob_ref uuid, p_byte_size bigint, p_plaintext_sha256 bytea"
+    ),
+}
+RECEIPT_FUNCTION = "append_internal_evidence_read_audit"
+RECEIPT_CALL_SQL = """
+SELECT internal_read.append_internal_evidence_read_audit(
+    CAST(:operation_id AS uuid),
+    CAST(:principal_ref AS varchar),
+    CAST(:principal_san_uri AS varchar),
+    CAST(:policy_generation AS varchar),
+    CAST(:evidence_ref AS uuid),
+    CAST(:entity_ref AS uuid),
+    CAST(:business_unit_id AS uuid),
+    CAST(:blob_ref AS uuid),
+    CAST(:byte_size AS bigint),
+    CAST(:plaintext_sha256 AS bytea)
+)
+"""
 RUNTIME_ROLES = (
     "ledgerbridge_reader",
     "ledgerbridge_api",
@@ -1366,6 +1403,22 @@ def test_r1_internal_read_surface_has_typed_receipt_and_dynamic_owner_contract()
         "R1 internal-read data prevents destructive downgrade",
     ):
         assert literal in source
+    assert "GRANT USAGE ON SCHEMA internal_read TO ledgerbridge_api" in source
+    assert (
+        "internal_read.append_internal_evidence_read_audit(\n"
+        "                uuid, varchar(200), varchar(200), varchar(128), uuid, uuid, "
+        "uuid, uuid, bigint, bytea\n"
+        "            ) TO ledgerbridge_api;"
+    ) in source
+    reader_grant_start = source.index(
+        "GRANT EXECUTE ON FUNCTION internal_read.current_audit_horizon"
+    )
+    receipt_grant_start = source.index(
+        "GRANT EXECUTE ON FUNCTION internal_read.append_internal_evidence_read_audit"
+    )
+    assert (
+        "append_internal_evidence_read_audit" not in source[reader_grant_start:receipt_grant_start]
+    )
 
 
 def test_r1_reader_surface_explicitly_rejects_cross_scope_cursor_and_malformed_blob() -> None:
@@ -2720,14 +2773,17 @@ def test_r1_internal_read_objects_are_fixed_owner_security_definer_and_fail_clos
 
         functions = connection.execute(
             text(
-                "SELECT p.proname, pg_get_userbyid(p.proowner), p.prosecdef, "
+                "SELECT p.proname, pg_get_function_identity_arguments(p.oid), "
+                "pg_get_userbyid(p.proowner), p.prosecdef, "
                 "coalesce(p.proconfig, '{}') "
                 "FROM pg_proc AS p JOIN pg_namespace AS n ON n.oid = p.pronamespace "
                 "WHERE n.nspname = 'internal_read' ORDER BY p.proname"
             )
         ).all()
-        assert {row[0] for row in functions} == set(INTERNAL_READ_FUNCTIONS)
-        for _name, owner, security_definer, config in functions:
+        assert {(row[0], row[1]) for row in functions} == set(
+            INTERNAL_READ_FUNCTION_IDENTITIES.items()
+        )
+        for _name, _identity, owner, security_definer, config in functions:
             assert owner not in RUNTIME_ROLES
             assert security_definer is True
             assert any(str(setting) == "search_path=pg_catalog" for setting in config)
@@ -2735,8 +2791,10 @@ def test_r1_internal_read_objects_are_fixed_owner_security_definer_and_fail_clos
         assert connection.execute(
             text("SELECT has_schema_privilege('ledgerbridge_reader', 'internal_read', 'USAGE')")
         ).scalar_one()
+        assert connection.execute(
+            text("SELECT has_schema_privilege('ledgerbridge_api', 'internal_read', 'USAGE')")
+        ).scalar_one()
         for role_name in (
-            "ledgerbridge_api",
             "ledgerbridge_worker",
             "ledgerbridge_app",
             "ledgerbridge_backup",
@@ -2786,14 +2844,20 @@ def test_r1_internal_read_objects_are_fixed_owner_security_definer_and_fail_clos
                 text(
                     "SELECT p.oid FROM pg_proc AS p JOIN pg_namespace AS n "
                     "ON n.oid = p.pronamespace WHERE n.nspname = 'internal_read' "
-                    "AND p.proname = :name"
+                    "AND p.proname = :name "
+                    "AND pg_get_function_identity_arguments(p.oid) = :identity_arguments"
                 ),
-                {"name": function_name},
+                {
+                    "name": function_name,
+                    "identity_arguments": INTERNAL_READ_FUNCTION_IDENTITIES[function_name],
+                },
             ).scalar_one()
-            assert connection.execute(
-                text("SELECT has_function_privilege('ledgerbridge_reader', :oid, 'EXECUTE')"),
-                {"oid": function_oid},
-            ).scalar_one()
+            assert bool(
+                connection.execute(
+                    text("SELECT has_function_privilege('ledgerbridge_reader', :oid, 'EXECUTE')"),
+                    {"oid": function_oid},
+                ).scalar_one()
+            ) is (function_name != RECEIPT_FUNCTION)
             for role_name in (
                 "ledgerbridge_api",
                 "ledgerbridge_worker",
@@ -2808,10 +2872,12 @@ def test_r1_internal_read_objects_are_fixed_owner_security_definer_and_fail_clos
                     ).scalar_one()
                 ):
                     continue
-                assert not connection.execute(
-                    text("SELECT has_function_privilege(:role, :oid, 'EXECUTE')"),
-                    {"role": role_name, "oid": function_oid},
-                ).scalar_one()
+                assert bool(
+                    connection.execute(
+                        text("SELECT has_function_privilege(:role, :oid, 'EXECUTE')"),
+                        {"role": role_name, "oid": function_oid},
+                    ).scalar_one()
+                ) is (role_name == "ledgerbridge_api" and function_name == RECEIPT_FUNCTION)
             assert not connection.execute(
                 text(
                     "SELECT EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl, '{}'::aclitem[])) "
@@ -2839,6 +2905,14 @@ def test_r1_internal_read_objects_are_fixed_owner_security_definer_and_fail_clos
                 "'public.append_audit_event(text,text,text,text,jsonb)'::regprocedure, 'EXECUTE')"
             )
         ).scalar_one()
+        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+            assert not connection.execute(
+                text(
+                    "SELECT has_table_privilege('ledgerbridge_api', "
+                    "'internal_read.evidence_read_receipt', :privilege)"
+                ),
+                {"privilege": privilege},
+            ).scalar_one()
 
         for oid, _name in connection.execute(
             text(
@@ -2851,6 +2925,44 @@ def test_r1_internal_read_objects_are_fixed_owner_security_definer_and_fail_clos
                 text("SELECT has_sequence_privilege('ledgerbridge_reader', :oid, 'USAGE')"),
                 {"oid": oid},
             ).scalar_one()
+
+
+def test_r1_receipt_function_is_only_callable_by_trusted_api_writer(
+    isolated_r1_database: str,
+) -> None:
+    engine = create_engine(isolated_r1_database)
+    with engine.begin() as connection:
+        facts = _seed_read_facts(connection)
+    receipt_parameters = {
+        "operation_id": uuid4(),
+        "principal_ref": "principal-r1",
+        "principal_san_uri": "spiffe://ledgerbridge/r1-reader",
+        "policy_generation": "generation-1",
+        "evidence_ref": facts["evidence"],
+        "entity_ref": facts["entity"],
+        "business_unit_id": facts["unit"],
+        "blob_ref": facts["active_blob"],
+        "byte_size": 7,
+        "plaintext_sha256": bytes.fromhex("11" * 32),
+    }
+
+    with (
+        _temporarily_runtime_membership(isolated_r1_database, "ledgerbridge_reader"),
+        engine.connect() as connection,
+    ):
+        connection.execute(text("SET ROLE ledgerbridge_reader"))
+        with pytest.raises(SQLAlchemyError) as raised:
+            connection.execute(text(RECEIPT_CALL_SQL), receipt_parameters)
+        assert _sqlstate(raised.value) == "42501"
+        assert "permission denied" in str(getattr(raised.value, "orig", raised.value))
+
+    with (
+        _temporarily_runtime_membership(isolated_r1_database, "ledgerbridge_api"),
+        engine.connect() as connection,
+    ):
+        connection.execute(text("SET ROLE ledgerbridge_api"))
+        receipt = connection.execute(text(RECEIPT_CALL_SQL), receipt_parameters).scalar_one()
+        assert isinstance(receipt, UUID)
 
 
 def test_r1_internal_read_empty_database_downgrade_round_trips() -> None:
@@ -2990,26 +3102,6 @@ def _exercise_r1_reader_horizon_as_of_scope_resolver(isolated_r1_database: str) 
         assert active[0] == facts["active_blob"]
         assert active[0] != facts["old_blob"]
 
-        receipt = connection.execute(
-            text(
-                "SELECT internal_read.append_internal_evidence_read_audit("
-                ":operation, :principal, :san, :generation, :evidence, :entity, :unit, :blob, :size, :sha)"
-            ),
-            {
-                "operation": uuid4(),
-                "principal": "principal-r1",
-                "san": "spiffe://ledgerbridge/r1-reader",
-                "generation": "generation-1",
-                "evidence": facts["evidence"],
-                "entity": facts["entity"],
-                "unit": facts["unit"],
-                "blob": facts["active_blob"],
-                "size": 7,
-                "sha": bytes.fromhex("11" * 32),
-            },
-        ).scalar_one()
-        assert isinstance(receipt, UUID)
-
         _assert_db_rejection(
             engine,
             [
@@ -3026,30 +3118,6 @@ def _exercise_r1_reader_horizon_as_of_scope_resolver(isolated_r1_database: str) 
             ],
             sqlstate="22023",
             message="audit horizon is not an exact chain row",
-        )
-        _assert_db_rejection(
-            engine,
-            [
-                ("SET ROLE ledgerbridge_reader", None),
-                (
-                    "SELECT internal_read.append_internal_evidence_read_audit("
-                    ":operation, :principal, :san, :generation, :evidence, :entity, :unit, :blob, :size, :sha)",
-                    {
-                        "operation": uuid4(),
-                        "principal": "principal-r1",
-                        "san": "spiffe://ledgerbridge/r1-reader",
-                        "generation": "generation-1",
-                        "evidence": facts["evidence"],
-                        "entity": facts["entity"],
-                        "unit": facts["unit"],
-                        "blob": facts["old_blob"],
-                        "size": 7,
-                        "sha": bytes.fromhex("11" * 32),
-                    },
-                ),
-            ],
-            sqlstate="P0002",
-            message="query returned no rows",
         )
         _assert_db_rejection(
             engine,
