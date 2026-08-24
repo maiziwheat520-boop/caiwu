@@ -636,16 +636,72 @@ def test_r1_database_metadata_rejects_database_owner_membership_drift(direction:
 
 
 def test_r1_database_metadata_accepts_legacy_matrix_without_owner_observation() -> None:
-    expected = _r1_database_metadata()
-    legacy = {
-        **expected,
+    actual = _r1_database_metadata()
+    expected = {
+        **actual,
         "r1_role_matrix": [
             item
-            for item in cast(list[dict[str, object]], expected["r1_role_matrix"])
+            for item in cast(list[dict[str, object]], actual["r1_role_matrix"])
             if item.get("role") != "ledgerbridge_owner"
         ],
     }
-    _validate_restored_database(legacy, legacy.copy())
+    _validate_restored_database(expected, actual)
+
+
+def test_r1_owner_compatibility_does_not_hide_other_metadata_drift() -> None:
+    actual = _r1_database_metadata()
+    expected = {
+        **actual,
+        "r1_role_matrix": [
+            item
+            for item in cast(list[dict[str, object]], actual["r1_role_matrix"])
+            if item.get("role") != "ledgerbridge_owner"
+        ],
+    }
+    unknown_role = {
+        **actual,
+        "r1_role_matrix": [
+            *cast(list[dict[str, object]], actual["r1_role_matrix"]),
+            {"role": "stale_login"},
+        ],
+    }
+    extra_acl = {
+        **actual,
+        "r1_database_acl": [
+            *cast(list[dict[str, object]], actual["r1_database_acl"]),
+            {"grantee": "stale_login", "privilege": "CONNECT", "grantable": "NO"},
+        ],
+    }
+    owner_membership_drift = {
+        **actual,
+        "r1_role_matrix": [
+            {
+                **item,
+                "memberships": [{"direction": "granted", "role": "stale_login"}],
+            }
+            if item.get("role") == "ledgerbridge_owner"
+            else item
+            for item in cast(list[dict[str, object]], actual["r1_role_matrix"])
+        ],
+    }
+    owner_acl_drift = {
+        **actual,
+        "r1_schema_acl": [
+            item
+            for item in cast(list[dict[str, object]], actual["r1_schema_acl"])
+            if not (
+                item.get("schema") == "public"
+                and item.get("grantee") == "ledgerbridge_owner"
+                and item.get("privilege") == "CREATE"
+            )
+        ],
+    }
+    extra_field = {**actual, "unexpected": True}
+    for drifted in (unknown_role, extra_acl, owner_acl_drift, extra_field):
+        with pytest.raises(BackupError, match="metadata differs"):
+            _validate_restored_database(expected, drifted)
+    with pytest.raises(BackupError, match="role matrix is privileged"):
+        _validate_restored_database(expected, owner_membership_drift)
 
 
 @pytest.mark.parametrize(

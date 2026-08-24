@@ -126,6 +126,16 @@ def test_database_candidate_reader_uses_horizon_and_scoped_function() -> None:
     assert all("public." not in statement for statement in session.statements)
 
 
+def test_database_candidate_reader_rejects_entity_scope_drift() -> None:
+    candidate = SyntheticInternalReadService()._fixture.candidates[1]
+    row = candidate.model_dump()
+    row["entity_ref"] = UUID("10000000-0000-4000-8000-000000000002")
+    row["business_unit_ref"] = "unit-demo-a"
+
+    with pytest.raises(InternalReadBackendUnavailable, match="scope binding"):
+        _service(_Session(row)).list_candidates(_principal(), month=candidate.accounting_month)
+
+
 def test_database_reader_rejects_ref_only_grants_before_querying_facts() -> None:
     principal = _principal().model_copy(
         update={

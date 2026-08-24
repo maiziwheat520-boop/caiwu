@@ -1678,7 +1678,29 @@ def _database_name(metadata: dict[str, Any]) -> str:
 def _validate_restored_database(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
     is_v2 = expected.get("metadata_version") == 2
     compared_fields = sorted(expected)
-    comparison_actual = actual if is_v2 else {key: actual.get(key) for key in expected}
+    if is_v2:
+        comparison_actual = dict(actual)
+        expected_roles = expected.get("r1_role_matrix")
+        actual_roles = actual.get("r1_role_matrix")
+        database_owner = expected.get("database_owner")
+        if (
+            isinstance(database_owner, str)
+            and actual.get("database_owner") == database_owner
+            and isinstance(expected_roles, list)
+            and isinstance(actual_roles, list)
+            and all(isinstance(item, dict) for item in expected_roles)
+            and all(isinstance(item, dict) for item in actual_roles)
+            and all(item.get("role") != database_owner for item in expected_roles)
+            and sum(item.get("role") == database_owner for item in actual_roles) == 1
+        ):
+            # The first R1 v2 metadata shape did not observe the database
+            # owner in the role matrix.  Compare that one historical shape
+            # against current observations without weakening any other field.
+            comparison_actual["r1_role_matrix"] = [
+                item for item in actual_roles if item.get("role") != database_owner
+            ]
+    else:
+        comparison_actual = {key: actual.get(key) for key in expected}
     if comparison_actual != expected:
         differing = sorted(
             key

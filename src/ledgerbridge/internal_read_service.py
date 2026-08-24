@@ -496,6 +496,10 @@ class DatabaseInternalReadService:
                         raw_has_more = len(raw_rows) > 100
                         for row_map in raw_rows:
                             candidate = self._candidate(row_map)
+                            if candidate.entity_ref != grant.entity_ref:
+                                raise InternalReadBackendUnavailable(
+                                    "database candidate scope binding is invalid"
+                                )
                             if business_unit_id is None:
                                 if candidate.business_unit_ref is not None:
                                     raise InternalReadBackendUnavailable(
