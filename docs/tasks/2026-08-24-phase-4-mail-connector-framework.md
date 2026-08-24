@@ -38,4 +38,7 @@ EML/PDF/CSV parser、Connector manifest 签名/密钥保管、ArtifactStore 发�
 - 邮箱 provider、registry、Settings 回归测试覆盖禁用状态、令牌异常脱敏、URL
   编码、跨主机分页、危险文件名、Base64/size 校验、factory/identity 去重和
   生产 runner-only 规则。
-- 完整质量门禁仍需在本阶段提交前执行：ruff、mypy、pytest、Bandit、pip-audit。
+- Windows 完整回归：`260 passed / 147 skipped`；ruff、mypy、Bandit 和敏感路径
+  检查通过。Hosted CI push `32680886553` 与 PR `32680884286` 的 `quality`、
+  `secrets`、`compose` 全部成功。Windows 本地 pip-audit 受系统编码/外部漏洞源
+  网络限制，未将该环境异常宣称为通过；Hosted CI 仍是依赖审计门禁。

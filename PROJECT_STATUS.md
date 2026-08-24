@@ -49,14 +49,17 @@ gated.
 Hosted CI for the prior documentation heads was green across `secrets`,
 `quality`, and `compose`; those run IDs remain historical evidence.
 
-Phase 4 framework work is now implemented on the Codex review branch. The
+Phase 4 framework work is now implemented on the Codex review branch at
+`bbe776f` (Hosted CI push `32680886553`, PR `32680884286`). The
 mailbox provider is an injected, bounded Microsoft Graph adapter with no token
 storage or network client; the Connector registry accepts only an explicit
 factory tuple and remains empty by default. Settings keep the provider disabled
 and production rejects the provider until authentication and signed-manifest
-gates are separately approved. No real OAuth, mailbox, parser, financial
-evidence, or production behavior was added. The task card and contract evidence
-are in `docs/tasks/2026-08-24-phase-4-mail-connector-framework.md`.
+gates are separately approved. Windows verification is `260 passed / 147
+skipped`; Bandit, mypy, ruff, sensitive-path checks, and both Hosted CI workflows
+are green. No real OAuth, mailbox, parser, financial evidence, or production
+behavior was added. The task card and contract evidence are in
+`docs/tasks/2026-08-24-phase-4-mail-connector-framework.md`.
 
 The preceding implementation head `b453874` passed push run `32648931938` and
 pull-request run `32648934569` across `secrets`, `quality`, and `compose`.
