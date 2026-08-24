@@ -113,10 +113,11 @@ state, relative/canonical paths, same-delivery-root siblings, and POSIX root-onl
 key custody are all covered. Local verification is `316 passed / 150 skipped /
 1 warning`, with ruff, strict mypy, offline lock, and diff checks green. The
 response is recorded in
-`docs/reviews/2026-08-24-sol-max-auth-manifest-remediation-codex.md`; the final
-Linux/Hermes evidence and Hosted CI for the exact pushed commit remain release
-gates. Production Hermes, real gateway, signed generation, Connector, and OAuth
-remain disabled.
+`docs/reviews/2026-08-24-sol-max-auth-manifest-remediation-codex.md`; Hosted CI
+push `32704417929` and PR `32704422897` are green across `secrets`, `quality`,
+and `compose`. The positive POSIX root-owned mount and full Linux/Hermes replay
+remain release evidence gates. Production Hermes, real gateway, signed
+generation, Connector, and OAuth remain disabled.
 
 The preceding implementation head `b453874` passed push run `32648931938` and
 pull-request run `32648934569` across `secrets`, `quality`, and `compose`; the

@@ -9,10 +9,8 @@ Base audit: [`2026-08-24-sol-max-auth-manifest-audit.md`](2026-08-24-sol-max-aut
 The initial Sol Max verdict was **CHANGES REQUIRED**: two MEDIUM findings and
 one LOW finding. The first remediation pass closed `SOL-A1`; a follow-up found
 that resolver input state and sibling delivery directories still needed tighter
-controls. The current patch closes those follow-ups with fail-closed code and
-regression coverage. This report records the implementation and local
-evidence; a fresh Sol Max recheck and hosted Linux/PostgreSQL CI remain release
-gates. No
+controls. The final patch closes those follow-ups with fail-closed code and
+regression coverage. Sol Max's final exact-tree verdict is **PASS**. No
 production, Hermes production, real gateway, real Connector, OAuth credential,
 or signing key was enabled or created.
 
@@ -53,11 +51,13 @@ for the corresponding Linux/PostgreSQL gate. A disposable Hermes replay is not
 claimed by this report until it is run against this exact commit; no production
 Hermes resources were touched.
 
-## Remaining release gates
+## Release evidence and remaining gates
 
-1. Hosted `secrets`, `quality`, and `compose` workflows must pass for this
-   commit.
-2. Sol Max must re-read the post-fix tree and return `PASS` with exact evidence.
+1. Hosted `secrets`, `quality`, and `compose` all pass for pushed head `e0b50db`:
+   push run `32704417929` and pull-request run `32704422897`.
+2. Windows cannot exercise the positive POSIX root-owned key-mount case; an
+   exact-commit Linux/Hermes disposable run remains release evidence for that
+   mount topology and the full frozen Linux/PostgreSQL suite.
 3. Key custody, gateway certificate/OIDC mapping, rotation/revocation, a real
    signed generation, real Connector registration, and production enablement
    remain separate authorized tasks.
