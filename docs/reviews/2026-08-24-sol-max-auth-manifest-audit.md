@@ -526,3 +526,106 @@ enablement disabled. A follow-up review should use a new exact commit that
 sanitizes scope before resolver execution, proves key-custody authority rather
 than directory shape, adds the missing attack-path tests, and has green hosted
 quality/secrets/compose evidence.
+
+## Final re-review of remediation commit `f2e283f`
+
+Re-review date: 2026-08-24
+
+Exact implementation commit:
+`f2e283f4d26270ec7f6ff6e7503a9ae22fd7a613`
+
+Final narrow implementation verdict: **PASS**
+
+The second remediation closes the residual `SOL-A2` and `SOL-M1` attack paths.
+`SOL-A1` remains closed. No new blocker, high, medium, or low finding was found
+in the requested auth/manifest scope. This PASS is an implementation-gate
+decision, not authorization to install a real signing key, connect a real
+gateway or Connector/OAuth identity, merge, or enable production.
+
+### SOL-A1 — CLOSED
+
+- `src/ledgerbridge/auth.py:41-56` rejects invalid provider/subject text,
+  delimiter collisions, and a flattened actor longer than the database's
+  200-character sink.
+- `tests/test_auth.py:95-117` exercises the hostile text shapes and exact
+  200/201 boundary.
+- The earlier accepted-but-unsinkable actor and audit-actor collision
+  reproducers no longer construct an `AuthenticatedPrincipal`.
+
+### SOL-A2 — CLOSED
+
+- `src/ledgerbridge/auth.py:110-120` now removes
+  `authenticated_principal` and installs the sanitized state into the live
+  scope before calling the resolver.
+- `tests/test_auth.py:162-181` makes the resolver read the supplied scope and
+  proves it cannot recover the stale principal.
+- The original stale-echo reproducer was executed against the final tree. Its
+  observable result was:
+
+  ```text
+  {'resolver_saw': [None], 'principal_remains': False}
+  ```
+
+  A resolver therefore cannot echo the pre-middleware principal back into the
+  authenticated slot. Resolver `None`, exceptions, invalid returns, and raw
+  stale values remain fail-closed.
+
+### SOL-M1 — CLOSED
+
+- `src/ledgerbridge/config.py:72-75` rejects relative paths before resolution.
+- `src/ledgerbridge/config.py:77-99` compares resolved paths and retains those
+  canonical paths for later use, closing the validation/use discrepancy caused
+  by retaining an attacker-controlled parent-symlink spelling.
+- `src/ledgerbridge/config.py:81-94` requires manifest and key locations to
+  meet only at their filesystem anchor. Same-file, same-directory,
+  ancestor/descendant, and sibling locations beneath one delivery root are all
+  rejected.
+- `src/ledgerbridge/config.py:181-212` makes the production POSIX key bundle
+  and its complete parent chain regular/directory as appropriate, symlink-free,
+  root-owned, and not group/world-writable.
+- `docker/app.Dockerfile:14,29` runs the application as UID 10001, so that
+  root-owned trust chain is not writable by the runtime identity.
+- `tests/test_config.py:170-220` covers same/nested/sibling trust-domain
+  rejection, an anchor-only split, canonical paths, and rejection of relative
+  input. `tests/test_config.py:223-233` covers hostile POSIX custody.
+- The two exact structural reproducers returned:
+
+  ```text
+  {'same_delivery_siblings_rejected': True}
+  {'relative_paths_rejected': True}
+  ```
+
+The root operator remains capable of changing trust material; that is the
+explicit deployment trust boundary, not authority delegated to the manifest
+delivery identity or runtime UID.
+
+### Final closure evidence
+
+Independently rerun against the final implementation tree:
+
+```text
+uv run --frozen --extra dev pytest -q \
+  tests/test_auth.py tests/test_config.py tests/test_upload_route.py \
+  tests/test_signed_manifest.py
+89 passed, 1 skipped, 1 warning in 9.83s
+
+uv run --frozen --extra dev ruff check <reviewed files>
+All checks passed
+
+uv run --frozen --extra dev ruff format --check <reviewed files>
+4 files already formatted
+
+uv run --frozen --extra dev mypy src/ledgerbridge/auth.py \
+  src/ledgerbridge/config.py
+Success: no issues found in 2 source files
+
+git diff --check
+clean
+```
+
+The one skipped test is the expected Windows skip for the POSIX owner/mode
+custody check. A Linux/Hermes exact-commit run must still provide release
+evidence for the positive root-owned mount configuration and the full frozen
+suite. That outstanding platform evidence does not reopen the statically
+verified narrow implementation finding, but production enablement must remain
+disabled until it is green.
