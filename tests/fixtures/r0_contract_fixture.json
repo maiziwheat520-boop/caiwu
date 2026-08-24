@@ -1,0 +1,331 @@
+{
+  "provenance": {
+    "kind": "synthetic",
+    "contract_version": "ledgerbridge.candidate.v1",
+    "state_graph_version": "ledgerbridge.candidate-state.v1",
+    "contains_real_data": false
+  },
+  "entities": [
+    {
+      "entity_ref": "10000000-0000-4000-8000-000000000001",
+      "business_unit_refs": ["unit-demo-a"]
+    },
+    {
+      "entity_ref": "10000000-0000-4000-8000-000000000002",
+      "business_unit_refs": ["unit-demo-b"]
+    }
+  ],
+  "evidence_objects": [
+    {
+      "evidence_ref": "20000000-0000-4000-8000-000000000001",
+      "entity_ref": "10000000-0000-4000-8000-000000000001",
+      "business_unit_ref": "unit-demo-a",
+      "path": "r0_evidence_note.txt",
+      "sha256": "1606a8c45f9c9143ce1a3aa9512cb32af7ef3cdc70a56836df718f522b15a1be",
+      "byte_size": 55,
+      "declared_media_type": "text/plain",
+      "served_media_type": "text/plain"
+    },
+    {
+      "evidence_ref": "20000000-0000-4000-8000-000000000002",
+      "entity_ref": "10000000-0000-4000-8000-000000000002",
+      "business_unit_ref": "unit-demo-b",
+      "path": "r0_evidence_active.svg",
+      "sha256": "f3265dde7aeee3069a8d617ff038131efa220408ea19ca9ddf51dffb87acfe84",
+      "byte_size": 112,
+      "declared_media_type": "image/svg+xml",
+      "served_media_type": "application/octet-stream"
+    },
+    {
+      "evidence_ref": "20000000-0000-4000-8000-000000000003",
+      "entity_ref": "10000000-0000-4000-8000-000000000002",
+      "business_unit_ref": "unit-demo-b",
+      "path": "r0_evidence_mail.eml",
+      "sha256": "eace6c2d3acf463338ce886f049f52357c0ed38e372ed51c913f9b7a791b0083",
+      "byte_size": 207,
+      "declared_media_type": "message/rfc822",
+      "served_media_type": "application/octet-stream"
+    }
+  ],
+  "candidates": [
+    {
+      "contract_version": "ledgerbridge.candidate.v1",
+      "candidate_ref": "30000000-0000-4000-8000-000000000001",
+      "short_id": "C-R0A001",
+      "revision": 1,
+      "status": "INCOMPLETE",
+      "entity_ref": "10000000-0000-4000-8000-000000000001",
+      "business_unit_ref": null,
+      "business_unit_label": null,
+      "category_code": "SUPPLIES",
+      "category_label": "Synthetic supplies",
+      "amount_minor": -12345,
+      "currency": "CNY",
+      "accounting_month": "2026-08",
+      "summary": "Synthetic candidate missing a business unit",
+      "confidence_basis_points": 7400,
+      "source": {
+        "ingest_channel": "SYNTHETIC",
+        "source_system": "synthetic_bank",
+        "source_event_ref": "40000000-0000-4000-8000-000000000001",
+        "display_label": "Synthetic bank fixture"
+      },
+      "evidence": [{
+        "evidence_ref": "20000000-0000-4000-8000-000000000001",
+        "kind": "ATTACHMENT",
+        "media_type": "text/plain",
+        "display_name": "synthetic-note.txt",
+        "download_available": true
+      }],
+      "blockers": [{
+        "code": "MISSING_BUSINESS_UNIT",
+        "message": "A business unit must be selected",
+        "field": "business_unit",
+        "conflict_ref": null,
+        "evidence_ref": null
+      }],
+      "review_summary": {"event_count": 0, "last_action": null, "last_decided_at": null, "current_revision": 1},
+      "created_at": "2026-08-24T01:00:00Z",
+      "updated_at": "2026-08-24T01:00:00Z",
+      "supersedes_candidate_ref": null,
+      "superseded_by_candidate_ref": null
+    },
+    {
+      "contract_version": "ledgerbridge.candidate.v1",
+      "candidate_ref": "30000000-0000-4000-8000-000000000002",
+      "short_id": "C-R0A002",
+      "revision": 1,
+      "status": "CONFLICTED",
+      "entity_ref": "10000000-0000-4000-8000-000000000001",
+      "business_unit_ref": "unit-demo-a",
+      "business_unit_label": "Demo unit A",
+      "category_code": "SUPPLIES",
+      "category_label": "Synthetic supplies",
+      "amount_minor": -12345,
+      "currency": "CNY",
+      "accounting_month": "2026-08",
+      "summary": "Synthetic candidate with a business-key conflict",
+      "confidence_basis_points": 8100,
+      "source": {
+        "ingest_channel": "SYNTHETIC",
+        "source_system": "synthetic_bank",
+        "source_event_ref": "40000000-0000-4000-8000-000000000002",
+        "display_label": "Synthetic bank fixture"
+      },
+      "evidence": [{
+        "evidence_ref": "20000000-0000-4000-8000-000000000001",
+        "kind": "ATTACHMENT",
+        "media_type": "text/plain",
+        "display_name": "synthetic-note.txt",
+        "download_available": true
+      }],
+      "blockers": [{
+        "code": "BUSINESS_KEY_CONFLICT",
+        "message": "Two synthetic records claim the same business key",
+        "field": null,
+        "conflict_ref": "50000000-0000-4000-8000-000000000001",
+        "evidence_ref": null
+      }],
+      "review_summary": {"event_count": 0, "last_action": null, "last_decided_at": null, "current_revision": 1},
+      "created_at": "2026-08-24T01:01:00Z",
+      "updated_at": "2026-08-24T01:01:00Z",
+      "supersedes_candidate_ref": null,
+      "superseded_by_candidate_ref": null
+    },
+    {
+      "contract_version": "ledgerbridge.candidate.v1",
+      "candidate_ref": "30000000-0000-4000-8000-000000000003",
+      "short_id": "C-R0A003",
+      "revision": 1,
+      "status": "PENDING",
+      "entity_ref": "10000000-0000-4000-8000-000000000001",
+      "business_unit_ref": "unit-demo-a",
+      "business_unit_label": "Demo unit A",
+      "category_code": "SUPPLIES",
+      "category_label": "Synthetic supplies",
+      "amount_minor": 0,
+      "currency": "CNY",
+      "accounting_month": "2026-08",
+      "summary": "Synthetic zero-value review boundary",
+      "confidence_basis_points": 9000,
+      "source": {
+        "ingest_channel": "HERMES",
+        "source_system": "telegram",
+        "source_event_ref": "40000000-0000-4000-8000-000000000003",
+        "display_label": "Hermes private message"
+      },
+      "evidence": [{
+        "evidence_ref": "20000000-0000-4000-8000-000000000001",
+        "kind": "MESSAGE_ENVELOPE",
+        "media_type": "text/plain",
+        "display_name": null,
+        "download_available": true
+      }],
+      "blockers": [],
+      "review_summary": {"event_count": 0, "last_action": null, "last_decided_at": null, "current_revision": 1},
+      "created_at": "2026-08-24T01:02:00Z",
+      "updated_at": "2026-08-24T01:02:00Z",
+      "supersedes_candidate_ref": null,
+      "superseded_by_candidate_ref": null
+    },
+    {
+      "contract_version": "ledgerbridge.candidate.v1",
+      "candidate_ref": "30000000-0000-4000-8000-000000000004",
+      "short_id": "C-R0B004",
+      "revision": 2,
+      "status": "CONFIRMED",
+      "entity_ref": "10000000-0000-4000-8000-000000000002",
+      "business_unit_ref": "unit-demo-b",
+      "business_unit_label": "Demo unit B",
+      "category_code": "SETTLEMENT",
+      "category_label": "Synthetic settlement",
+      "amount_minor": 50000,
+      "currency": "CNY",
+      "accounting_month": "2026-08",
+      "summary": "Synthetic confirmed settlement",
+      "confidence_basis_points": 9900,
+      "source": {
+        "ingest_channel": "OUTLOOK",
+        "source_system": "outlook_mail",
+        "source_event_ref": "40000000-0000-4000-8000-000000000004",
+        "display_label": "Outlook Inbox message"
+      },
+      "evidence": [{
+        "evidence_ref": "20000000-0000-4000-8000-000000000003",
+        "kind": "MAIL_ENVELOPE",
+        "media_type": "message/rfc822",
+        "display_name": "synthetic-message.eml",
+        "download_available": true
+      }],
+      "blockers": [],
+      "review_summary": {"event_count": 1, "last_action": "CONFIRM", "last_decided_at": "2026-08-24T01:04:00Z", "current_revision": 2},
+      "created_at": "2026-08-24T01:03:00Z",
+      "updated_at": "2026-08-24T01:04:00Z",
+      "supersedes_candidate_ref": null,
+      "superseded_by_candidate_ref": null
+    },
+    {
+      "contract_version": "ledgerbridge.candidate.v1",
+      "candidate_ref": "30000000-0000-4000-8000-000000000005",
+      "short_id": "C-R0A005",
+      "revision": 2,
+      "status": "IGNORED",
+      "entity_ref": "10000000-0000-4000-8000-000000000001",
+      "business_unit_ref": "unit-demo-a",
+      "business_unit_label": "Demo unit A",
+      "category_code": "SUPPLIES",
+      "category_label": "Synthetic supplies",
+      "amount_minor": -1,
+      "currency": "CNY",
+      "accounting_month": "2026-08",
+      "summary": "Synthetic ignored candidate",
+      "confidence_basis_points": 1000,
+      "source": {
+        "ingest_channel": "HERMES",
+        "source_system": "dingtalk",
+        "source_event_ref": "40000000-0000-4000-8000-000000000005",
+        "display_label": "Hermes private message"
+      },
+      "evidence": [{
+        "evidence_ref": "20000000-0000-4000-8000-000000000001",
+        "kind": "MESSAGE_ENVELOPE",
+        "media_type": "text/plain",
+        "display_name": null,
+        "download_available": true
+      }],
+      "blockers": [],
+      "review_summary": {"event_count": 1, "last_action": "IGNORE", "last_decided_at": "2026-08-24T01:06:00Z", "current_revision": 2},
+      "created_at": "2026-08-24T01:05:00Z",
+      "updated_at": "2026-08-24T01:06:00Z",
+      "supersedes_candidate_ref": null,
+      "superseded_by_candidate_ref": null
+    },
+    {
+      "contract_version": "ledgerbridge.candidate.v1",
+      "candidate_ref": "30000000-0000-4000-8000-000000000006",
+      "short_id": "C-R0B006",
+      "revision": 3,
+      "status": "SUPERSEDED",
+      "entity_ref": "10000000-0000-4000-8000-000000000002",
+      "business_unit_ref": "unit-demo-b",
+      "business_unit_label": "Demo unit B",
+      "category_code": "SETTLEMENT",
+      "category_label": "Synthetic settlement",
+      "amount_minor": 9007199254740991,
+      "currency": "CNY",
+      "accounting_month": "2026-08",
+      "summary": "Synthetic safe-integer boundary candidate",
+      "confidence_basis_points": 9900,
+      "source": {
+        "ingest_channel": "HERMES",
+        "source_system": "weixin",
+        "source_event_ref": "40000000-0000-4000-8000-000000000006",
+        "display_label": "Hermes private message"
+      },
+      "evidence": [{
+        "evidence_ref": "20000000-0000-4000-8000-000000000002",
+        "kind": "ATTACHMENT",
+        "media_type": "image/svg+xml",
+        "display_name": "synthetic-active.svg",
+        "download_available": true
+      }],
+      "blockers": [],
+      "review_summary": {"event_count": 2, "last_action": "SUPERSEDE", "last_decided_at": "2026-08-24T01:08:00Z", "current_revision": 3},
+      "created_at": "2026-08-24T01:07:00Z",
+      "updated_at": "2026-08-24T01:08:00Z",
+      "supersedes_candidate_ref": null,
+      "superseded_by_candidate_ref": "30000000-0000-4000-8000-000000000007"
+    }
+  ],
+  "ledger_entries": [
+    {"entity_ref": "10000000-0000-4000-8000-000000000001", "business_unit_ref": "unit-demo-a", "status": "POSTED", "amount_minor": -12345, "currency": "CNY"},
+    {"entity_ref": "10000000-0000-4000-8000-000000000001", "business_unit_ref": "unit-demo-a", "status": "DRAFT", "amount_minor": 999999, "currency": "CNY"},
+    {"entity_ref": "10000000-0000-4000-8000-000000000002", "business_unit_ref": "unit-demo-b", "status": "POSTED", "amount_minor": 50000, "currency": "CNY"},
+    {"entity_ref": "10000000-0000-4000-8000-000000000002", "business_unit_ref": "unit-demo-b", "status": "REVERSED", "amount_minor": -50000, "currency": "CNY"}
+  ],
+  "read_responses": {
+    "capabilities": {
+      "contract_version": "ledgerbridge.internal-read.v1",
+      "candidate_contract_version": "ledgerbridge.candidate.v1",
+      "state_graph_version": "ledgerbridge.candidate-state.v1",
+      "data_mode": "synthetic",
+      "enabled_modules": ["candidates", "evidence", "reconciliations", "ledger-summary"]
+    },
+    "candidate_page": {
+      "candidate_indexes": [0, 1, 2, 3, 4, 5],
+      "next_cursor": null
+    },
+    "reconciliation": {
+      "entity_ref": "10000000-0000-4000-8000-000000000001",
+      "business_unit_ref": "unit-demo-a",
+      "month": "2026-08",
+      "snapshot_revision": 1,
+      "blockers": [],
+      "proposals": [{
+        "proposal_ref": "60000000-0000-4000-8000-000000000001",
+        "relation": "1:1",
+        "status": "PROPOSED",
+        "amount_minor": -12345,
+        "currency": "CNY"
+      }],
+      "suspense": [{
+        "suspense_ref": "70000000-0000-4000-8000-000000000001",
+        "status": "OPEN",
+        "reason": "UNKNOWN_COUNTERPARTY",
+        "amount_minor": -100,
+        "currency": "CNY"
+      }],
+      "posted_amount_minor": -12345,
+      "currency": "CNY"
+    },
+    "ledger_summary": {
+      "entity_ref": "10000000-0000-4000-8000-000000000001",
+      "business_unit_ref": "unit-demo-a",
+      "from_month": "2026-08",
+      "to_month": "2026-08",
+      "posting_status": "POSTED",
+      "currency": "CNY",
+      "totals_minor": {"SUPPLIES": -12345}
+    }
+  }
+}

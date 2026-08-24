@@ -1,7 +1,9 @@
 # Evidence and Import operations
 
-Status: implementation contract through Phase 3 platform-controls Slice A
-Date: 2026-08-22
+Status: implementation contract plus feature-flagged worker-async dispatch
+endpoint/worker composition through Phase 3 platform-controls Slice A; real
+manifest, Connector and production enablement remain pending
+Date: 2026-08-23
 
 ## Evidence identity and retention
 
@@ -121,6 +123,58 @@ a row lock on the job. Unique locator races converge as duplicates; other
 identity conflicts roll back the entire batch. Phase 2 never creates a
 JournalEntry from imported evidence.
 
+## Worker-owned asynchronous dispatch (implemented, feature-flagged and disabled)
+
+The Codex branch implements the durable dispatch foundation in migration
+`20260823_0005` and `src/ledgerbridge/dispatch.py`. `ImportDispatch` captures the
+artifact, ingest channel, verified manifest generation/digest, acceptance audit,
+bounded attempt state, lease owner/deadline, and the eventual `ImportJob`.
+The unique `(artifact_id, ingest_channel, manifest_generation)` key makes
+repeated admissions converge; a digest disagreement is rejected rather than
+silently reusing a different manifest. The database trigger pins
+`search_path=pg_catalog`, schema-qualifies business references, and enforces
+the legal PENDING/RUNNING/RETRY_WAIT/SUCCEEDED/FAILED transitions.
+
+`DispatchService` provides transactionally audited enqueue, principal-scoped
+status reads, SKIP-LOCKED claims, lease renewal, expiry recovery, bounded retry,
+and terminal completion/failure. A `NEEDS_REVIEW` import is an execution
+success (`dispatch=SUCCEEDED`) whose status projection exposes the review
+result; a failed import is terminal `dispatch=FAILED`. The migration revokes
+database TEMPORARY and PUBLIC privileges and grants only the currently tested
+compatibility-role columns. Migration `20260823_0006` adds separate
+`ledgerbridge_api` and `ledgerbridge_worker` runtime roles; migration
+`20260823_0007` retires the legacy `ledgerbridge_app` login and runtime grants
+in production. Migration `20260823_0008` makes dispatch acceptance a
+security-definer enqueue operation and binds each row to an exact
+`import.dispatch.accepted` payload created in the same transaction. API can
+call the enqueue function but cannot insert dispatch rows or update dispatch
+state; worker can update bounded dispatch lease/result columns but cannot insert
+dispatch rows. Both roles are non-owner logins without TEMPORARY privilege. The
+owner-only migrate service uses an explicit non-production profile in CI, while
+production API and worker settings require distinct dedicated role URLs.
+Forward migration `20260824_0009` repairs the historical Phase 1/2 function
+definitions by fixing `search_path=pg_catalog` and schema-qualifying all
+business-table references; its downgrade to `0008` intentionally preserves
+those hardened definitions.
+
+The Codex branch now also contains the separately named async operation
+profile: `POST /v1/evidence/import-requests` returns `202` only after the
+published artifact, audit binding and dispatch row commit, and the principal-
+scoped `GET` status projection exposes only bounded dispatch/result fields.
+`worker.py` contains the claim, lease-renewal, retry and terminalization loop;
+the API never calls the importer in this profile. Both are guarded by the
+internal async flag and by production fail-closed checks. The default manifest
+loader returns no generation and the default worker Connector registry is empty,
+so the endpoint and loop cannot execute real import work until a separately
+reviewed manifest and real Connector are supplied. The worker composition root
+now accepts only an injected `VerifiedRunnerManifest`; it performs canonical
+digest/identity checks and constructs worker-owned `RunnerConnector` facades,
+but does not load files, keys, or providers. The final local regression is
+`217 passed / 136 skipped`; the exact hosted CI coverage command passed in the
+prior disposable Hermes run at `348 passed` and `95.26%`. Production Hermes
+remains on `20260822_0004`; no dispatch row, endpoint request, evidence bytes or
+real Connector was used in production.
+
 ## Database permissions
 
 Migration `20260822_0004` creates `ingest_channel` and `source_system` with
@@ -131,12 +185,13 @@ only. UPDATE and DELETE are blocked even for the owner by a trigger function wit
 unregistered provenance makes upgrade roll back, and any dependent data makes
 downgrade refuse rather than erase provenance.
 
-`ledgerbridge_app` receives SELECT/INSERT on `raw_artifact` and `source_record`,
-SELECT/INSERT plus updates to the explicit lifecycle columns on `import_job`, and
-no direct AuditEvent write privilege. Database triggers reject RawArtifact or
-SourceRecord UPDATE/DELETE even from the migration owner and reject illegal job
-transitions. The SourceRecord and external transaction identities use unique
-constraints, and every evidence relationship uses `ON DELETE RESTRICT`.
+The compatibility role receives the legacy SELECT/INSERT grants only in
+non-production test profiles. Production API enqueue uses the dedicated
+security-definer function and cannot directly insert dispatch rows; the worker
+can update only explicit lifecycle columns. Database triggers reject RawArtifact
+or SourceRecord UPDATE/DELETE even from the migration owner and reject illegal
+job transitions. The SourceRecord and external transaction identities use
+unique constraints, and every evidence relationship uses `ON DELETE RESTRICT`.
 
 The runtime role has no database `TEMPORARY` privilege (including through
 `PUBLIC`). Every security-relevant trigger function pins
@@ -147,8 +202,8 @@ qualification is the defense in depth if that privilege is accidentally restored
 The API keeps the artifact volume read-only. The worker is the only service with
 a read-write artifact mount. Both continue to use a read-only root filesystem,
 dropped capabilities, no-new-privileges, the unprivileged UID, and the
-least-privileged database login. Phase 2 adds no business endpoint and performs
-no production ingestion.
+least-privileged database login. The async operation profile is an internal,
+default-disabled orchestration endpoint; it performs no production ingestion.
 
 ## POSTED audit binding
 
@@ -189,17 +244,58 @@ legacy fields actually present in the source backup and lists the richer restore
 observations separately; it does not invent Phase 2 or Phase 3 source-side
 evidence. Unsupported future formats fail closed.
 
-No production migration is implied by merging Phase 2. Before an authorized
+No production migration is implied by merging Phase 2 or implementing the
+dispatch foundation. Before an authorized
 deployment, create a fresh encrypted backup and pass an isolated restore
 rehearsal. After deployment, create another encrypted backup and repeat the
 restore verification. Real financial evidence and real connectors remain out of
 scope until separately approved.
 
-The Phase 2 and Phase 3 downgrades are intentionally non-destructive: if any RawArtifact,
-ImportJob, or SourceRecord exists, downgrade to `20260821_0002` fails closed.
+The Phase 2 and Phase 3 downgrades are intentionally non-destructive: if any
+dispatch, RawArtifact, ImportJob, or SourceRecord exists, the relevant downgrade
+fails closed rather than deleting provenance. The dispatch migration first
+downgrades only when `evidence_import_dispatch` is empty; the underlying Phase 2
+objects still refuse downgrade to `20260821_0002` while evidence exists.
 Operators must export and explicitly dispose of evidence through a separately
 approved procedure before removing Phase 2 objects. The Phase 1 function
 hardening and database-wide `PUBLIC` temporary-privilege revocation remain in
 place after an empty downgrade. Restore validation must also assert that every
 security trigger is present and `tgenabled = 'O'`; a table owner can otherwise
 disable PostgreSQL triggers by design.
+
+## Deferred request and runner availability controls
+
+The internal multipart routes remain disabled by default and fail closed in
+production. When a separately approved test profile enables them, request body
+reads are bounded by `LEDGERBRIDGE_UPLOAD_READ_TIMEOUT_SECONDS` (default 120
+seconds) and `LEDGERBRIDGE_UPLOAD_CONCURRENCY` (default two). Admission is
+independent of the asyncio event loop and is held until the temporary body is
+closed; timeouts return `EVIDENCE_READ_TIMEOUT` (HTTP 408) and saturation
+returns `EVIDENCE_UPLOAD_BUSY` (HTTP 429).
+
+The isolated runner uses a dedicated executor capped at eight synchronous
+Connector calls (default four). A cancelled asyncio wait does not release a
+slot until the underlying call actually returns, and saturated work fails
+closed with `TIMEOUT`. This bounds thread growth; hostile real Connectors still
+require killable process isolation and a reviewed signed manifest before
+enablement.
+
+## R1 Migration C security boundary update (2026-08-24)
+
+The R1 reader surface is now fail-closed for the independent security-review
+findings. Evidence-import roles do not receive direct access to the eight
+`internal_read` projection views; the external reader can use only the scoped
+SECURITY DEFINER functions with an explicit entity/business-unit and audit
+horizon contract. `ledgerbridge_backup`, when deployed, is checked for
+unprivileged NOINHERIT role attributes, memberships, object ownership and
+database/default ACL drift before it receives CONNECT. A POSTED Core entry with
+zero R1 attribution is not treated as R1-complete. These changes do not enable
+real evidence ingestion, reader bootstrap, connector registration, or
+production migration.
+
+The 2026-08-24 R1 Migration C remediation replay is closed at the disposable
+verification layer: Hermes PostgreSQL 15 completed the full R1 migration file
+with **48 passed** tests, and the Windows suite completed with **475 passed /
+189 skipped / 1 warning**. This is evidence of migration and reader-boundary
+correctness only; it does not authorize production role changes, reader
+bootstrap, real evidence ingestion, or deployment.

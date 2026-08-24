@@ -4,6 +4,8 @@ Phase modules must be imported here so Alembic autogenerate sees every table.
 """
 
 from ledgerbridge.models.evidence import (
+    DispatchState,
+    ImportDispatch,
     ImportJob,
     ImportJobStatus,
     IngestChannel,
@@ -21,13 +23,27 @@ from ledgerbridge.models.ledger import (
     JournalStatus,
     Posting,
 )
+from ledgerbridge.models.review import (
+    ReconciliationGroup,
+    ReconciliationLeg,
+    ReconciliationRelation,
+    ReconciliationStatus,
+    ReviewItem,
+    ReviewItemKind,
+    ReviewItemStatus,
+    SuspenseItem,
+    SuspenseReason,
+    SuspenseStatus,
+)
 
 __all__ = [
     "Account",
     "AccountClass",
     "AuditEvent",
+    "DispatchState",
     "Entity",
     "EntityType",
+    "ImportDispatch",
     "ImportJob",
     "ImportJobStatus",
     "IngestChannel",
@@ -35,6 +51,16 @@ __all__ = [
     "JournalStatus",
     "Posting",
     "RawArtifact",
+    "ReconciliationGroup",
+    "ReconciliationLeg",
+    "ReconciliationRelation",
+    "ReconciliationStatus",
+    "ReviewItem",
+    "ReviewItemKind",
+    "ReviewItemStatus",
     "SourceRecord",
     "SourceSystem",
+    "SuspenseItem",
+    "SuspenseReason",
+    "SuspenseStatus",
 ]

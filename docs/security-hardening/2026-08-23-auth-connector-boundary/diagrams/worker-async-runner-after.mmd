@@ -1,0 +1,11 @@
+flowchart LR
+    U[Upload request] --> API[API: auth + bounded spool]
+    API --> TX[DB transaction: artifact + dispatch]
+    TX --> ACK[202 + operation id]
+    TX --> Q[(PostgreSQL dispatch)]
+    Q -->|claim + lease| WK[Worker]
+    WK --> IMP[EvidenceImporter]
+    IMP --> RC[RunnerConnector]
+    RC -->|worker-only Unix socket| RUN[Runner: network none / no DB]
+    IMP --> DB[(ImportJob + SourceRecord + audit)]
+    API -. status read .-> DB

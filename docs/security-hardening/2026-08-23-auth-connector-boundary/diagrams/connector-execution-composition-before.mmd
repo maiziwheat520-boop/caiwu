@@ -1,0 +1,8 @@
+flowchart LR
+    U[Upload request] --> API[FastAPI API]
+    API --> PUB[ArtifactStore handoff]
+    PUB --> SYNC[ingest_published sync call]
+    SYNC --> IMP[EvidenceImporter]
+    IMP -. optional socket .-> API_SOCK[API has no runner mount]
+    WK[Worker heartbeat only] --> WK_SOCK[worker socket mount]
+    WK_SOCK --> RUN[Runner: network none]

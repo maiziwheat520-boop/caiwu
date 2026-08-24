@@ -1,5 +1,20 @@
 name: ledgerbridge
 
+x-runtime-environment: &runtime-environment
+  LEDGERBRIDGE_ENV: ${LEDGERBRIDGE_ENV:-production}
+  LEDGERBRIDGE_LOG_LEVEL: ${LEDGERBRIDGE_LOG_LEVEL:-INFO}
+  LEDGERBRIDGE_ENABLE_INTERNAL_UPLOAD: ${LEDGERBRIDGE_ENABLE_INTERNAL_UPLOAD:-false}
+  LEDGERBRIDGE_ENABLE_INTERNAL_READ_API: ${LEDGERBRIDGE_ENABLE_INTERNAL_READ_API:-false}
+  LEDGERBRIDGE_ENABLE_REVIEW_API: ${LEDGERBRIDGE_ENABLE_REVIEW_API:-false}
+  LEDGERBRIDGE_ENABLE_REAL_INGEST: ${LEDGERBRIDGE_ENABLE_REAL_INGEST:-false}
+  LEDGERBRIDGE_ARTIFACT_ROOT: ${LEDGERBRIDGE_ARTIFACT_ROOT:-/var/lib/ledgerbridge/artifacts}
+  LEDGERBRIDGE_ARTIFACT_MAX_BYTES: ${LEDGERBRIDGE_ARTIFACT_MAX_BYTES:-52428800}
+  LEDGERBRIDGE_ARTIFACT_TOTAL_MAX_BYTES: ${LEDGERBRIDGE_ARTIFACT_TOTAL_MAX_BYTES:-10737418240}
+  LEDGERBRIDGE_ARTIFACT_STAGING_MAX_BYTES: ${LEDGERBRIDGE_ARTIFACT_STAGING_MAX_BYTES:-536870912}
+  LEDGERBRIDGE_ARTIFACT_STAGING_TTL_SECONDS: ${LEDGERBRIDGE_ARTIFACT_STAGING_TTL_SECONDS:-3600}
+  LEDGERBRIDGE_UPLOAD_READ_TIMEOUT_SECONDS: ${LEDGERBRIDGE_UPLOAD_READ_TIMEOUT_SECONDS:-120}
+  LEDGERBRIDGE_UPLOAD_CONCURRENCY: ${LEDGERBRIDGE_UPLOAD_CONCURRENCY:-2}
+
 x-app: &app
   image: ledgerbridge-app:${LEDGERBRIDGE_REVISION:-dev}
   build:
@@ -8,14 +23,7 @@ x-app: &app
     args:
       LEDGERBRIDGE_REVISION: ${DEPLOYED_REVISION:-dev}
   environment:
-    LEDGERBRIDGE_ENV: ${LEDGERBRIDGE_ENV:-production}
-    LEDGERBRIDGE_LOG_LEVEL: ${LEDGERBRIDGE_LOG_LEVEL:-INFO}
-    LEDGERBRIDGE_DATABASE_URL: ${LEDGERBRIDGE_DATABASE_URL:?runtime database URL is required}
-    LEDGERBRIDGE_ARTIFACT_ROOT: ${LEDGERBRIDGE_ARTIFACT_ROOT:-/var/lib/ledgerbridge/artifacts}
-    LEDGERBRIDGE_ARTIFACT_MAX_BYTES: ${LEDGERBRIDGE_ARTIFACT_MAX_BYTES:-52428800}
-    LEDGERBRIDGE_ARTIFACT_TOTAL_MAX_BYTES: ${LEDGERBRIDGE_ARTIFACT_TOTAL_MAX_BYTES:-10737418240}
-    LEDGERBRIDGE_ARTIFACT_STAGING_MAX_BYTES: ${LEDGERBRIDGE_ARTIFACT_STAGING_MAX_BYTES:-536870912}
-    LEDGERBRIDGE_ARTIFACT_STAGING_TTL_SECONDS: ${LEDGERBRIDGE_ARTIFACT_STAGING_TTL_SECONDS:-3600}
+    <<: *runtime-environment
   depends_on:
     postgres:
       condition: service_healthy
@@ -36,6 +44,10 @@ services:
   api:
     <<: *app
     command: ["uvicorn", "ledgerbridge.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *runtime-environment
+      LEDGERBRIDGE_RUNTIME_ROLE: api
+      LEDGERBRIDGE_API_DATABASE_URL: ${LEDGERBRIDGE_API_DATABASE_URL:?api database URL is required}
     networks:
       - backend
       - ingress
@@ -53,8 +65,13 @@ services:
   worker:
     <<: *app
     command: ["python", "-m", "ledgerbridge.worker"]
+    environment:
+      <<: *runtime-environment
+      LEDGERBRIDGE_RUNTIME_ROLE: worker
+      LEDGERBRIDGE_WORKER_DATABASE_URL: ${LEDGERBRIDGE_WORKER_DATABASE_URL:?worker database URL is required}
     volumes:
       - artifacts:/var/lib/ledgerbridge/artifacts
+      - connector-socket:/run/ledgerbridge-connector
     healthcheck:
       test: ["CMD", "python", "-c", "from ledgerbridge.worker import heartbeat_is_fresh; raise SystemExit(0 if heartbeat_is_fresh() else 1)"]
       interval: 30s
@@ -67,7 +84,11 @@ services:
     profiles: ["tools"]
     command: ["alembic", "upgrade", "head"]
     environment:
-      LEDGERBRIDGE_ENV: ${LEDGERBRIDGE_ENV:-production}
+      # The migration container is an owner-only tool, not an API/worker runtime.
+      LEDGERBRIDGE_RUNTIME_ROLE: migrate
+      # A missing environment must stop the owner-only migration rather than
+      # silently taking the non-production compatibility path.
+      LEDGERBRIDGE_ENV: ${LEDGERBRIDGE_ENV:?LEDGERBRIDGE_ENV is required}
       LEDGERBRIDGE_LOG_LEVEL: ${LEDGERBRIDGE_LOG_LEVEL:-INFO}
       LEDGERBRIDGE_DATABASE_URL: ${LEDGERBRIDGE_MIGRATION_DATABASE_URL:?migration database URL is required}
       LEDGERBRIDGE_ARTIFACT_ROOT: ${LEDGERBRIDGE_ARTIFACT_ROOT:-/var/lib/ledgerbridge/artifacts}
@@ -88,6 +109,37 @@ services:
       - backend
       - egress
 
+  connector-runner:
+    image: ledgerbridge-connector-runner:${LEDGERBRIDGE_REVISION:-dev}
+    build:
+      context: .
+      dockerfile: docker/connector-runner.Dockerfile
+      args:
+        LEDGERBRIDGE_REVISION: ${DEPLOYED_REVISION:-dev}
+    profiles: ["connector-runner"]
+    command: ["python", "-m", "ledgerbridge.connector_runner", "--socket", "/run/ledgerbridge-connector/runner.sock"]
+    network_mode: none
+    volumes:
+      - connector-socket:/run/ledgerbridge-connector
+    read_only: true
+    tmpfs:
+      - /tmp:size=96m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: "0.50"
+    user: "10001:10001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "from ledgerbridge.runner_client import ConnectorRunnerClient; raise SystemExit(0 if ConnectorRunnerClient('/run/ledgerbridge-connector/runner.sock').health_check() else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   postgres:
     image: postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
     environment:
@@ -96,6 +148,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_INITDB_ARGS: --data-checksums
       LEDGERBRIDGE_APP_DB_PASSWORD: ${LEDGERBRIDGE_APP_DB_PASSWORD:?runtime database password is required}
+      LEDGERBRIDGE_API_DB_PASSWORD: ${LEDGERBRIDGE_API_DB_PASSWORD:?api runtime database password is required}
+      LEDGERBRIDGE_WORKER_DB_PASSWORD: ${LEDGERBRIDGE_WORKER_DB_PASSWORD:?worker runtime database password is required}
     restart: unless-stopped
     mem_limit: 512m
     pids_limit: 128
@@ -119,3 +173,4 @@ networks:
 volumes:
   artifacts:
   postgres-data:
+  connector-socket:

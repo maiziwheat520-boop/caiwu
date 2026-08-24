@@ -35,6 +35,14 @@ class ImportJobStatus(StrEnum):
     NEEDS_REVIEW = "NEEDS_REVIEW"
 
 
+class DispatchState(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    RETRY_WAIT = "RETRY_WAIT"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+
+
 class IngestChannel(Base):
     __tablename__ = "ingest_channel"
     __table_args__ = (
@@ -206,6 +214,122 @@ class ImportJob(Base):
     duplicate_count: Mapped[int] = mapped_column(
         BigInteger, nullable=False, server_default=text("0")
     )
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    diagnostic_summary: Mapped[str | None] = mapped_column(String(500))
+
+
+class ImportDispatch(Base):
+    __tablename__ = "evidence_import_dispatch"
+    __table_args__ = (
+        CheckConstraint(
+            "btrim(manifest_generation) <> ''",
+            name="dispatch_manifest_generation_not_blank",
+        ),
+        CheckConstraint(
+            "octet_length(manifest_digest) = 32",
+            name="dispatch_manifest_digest_length",
+        ),
+        CheckConstraint(
+            "attempt_count BETWEEN 0 AND 16",
+            name="dispatch_attempt_count_bounded",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR error_code ~ '^[A-Z][A-Z0-9_]{0,63}$'",
+            name="dispatch_error_code_bounded",
+        ),
+        CheckConstraint(
+            "diagnostic_summary IS NULL OR btrim(diagnostic_summary) <> ''",
+            name="dispatch_diagnostic_not_blank",
+        ),
+        CheckConstraint(
+            "(state = 'PENDING' AND attempt_count = 0 AND lease_owner IS NULL "
+            "AND lease_until IS NULL AND started_at IS NULL AND completed_at IS NULL "
+            "AND import_job_id IS NULL AND error_code IS NULL AND diagnostic_summary IS NULL) OR "
+            "(state = 'RUNNING' AND attempt_count > 0 AND lease_owner IS NOT NULL "
+            "AND lease_until IS NOT NULL AND started_at IS NOT NULL "
+            "AND completed_at IS NULL AND import_job_id IS NULL AND error_code IS NULL "
+            "AND diagnostic_summary IS NULL) OR "
+            "(state = 'RETRY_WAIT' AND attempt_count > 0 AND lease_owner IS NULL "
+            "AND lease_until IS NULL AND started_at IS NOT NULL "
+            "AND completed_at IS NULL AND import_job_id IS NULL AND error_code IS NOT NULL "
+            "AND diagnostic_summary IS NOT NULL) OR "
+            "(state = 'SUCCEEDED' AND completed_at IS NOT NULL AND import_job_id IS NOT NULL "
+            "AND lease_owner IS NULL AND lease_until IS NULL AND error_code IS NULL "
+            "AND diagnostic_summary IS NULL) OR "
+            "(state = 'FAILED' AND completed_at IS NOT NULL AND error_code IS NOT NULL "
+            "AND diagnostic_summary IS NOT NULL AND lease_owner IS NULL AND lease_until IS NULL)",
+            name="dispatch_state_shape",
+        ),
+        ForeignKeyConstraint(
+            ["import_job_id", "artifact_id"],
+            ["import_job.id", "import_job.artifact_id"],
+            name="fk_dispatch_import_job_artifact",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "artifact_id",
+            "ingest_channel",
+            "manifest_generation",
+            name="uq_dispatch_artifact_channel_generation",
+        ),
+        UniqueConstraint(
+            "accepted_audit_event_id",
+            name="uq_dispatch_accepted_audit_event",
+        ),
+        Index(
+            "ix_dispatch_status_lookup",
+            "id",
+            "accepted_audit_event_id",
+            "artifact_id",
+        ),
+        Index(
+            "ix_dispatch_available",
+            "available_at",
+            "created_at",
+            "id",
+            postgresql_where=text("state IN ('PENDING', 'RETRY_WAIT')"),
+        ),
+        Index(
+            "ix_dispatch_lease_expiry",
+            "lease_until",
+            "id",
+            postgresql_where=text("state = 'RUNNING'"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    artifact_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("raw_artifact.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    ingest_channel: Mapped[str] = mapped_column(
+        String(64), ForeignKey("ingest_channel.id", ondelete="RESTRICT"), nullable=False
+    )
+    accepted_audit_event_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("audit_event.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    manifest_generation: Mapped[str] = mapped_column(String(100), nullable=False)
+    manifest_digest: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
+    state: Mapped[DispatchState] = mapped_column(
+        Enum(DispatchState, name="dispatch_state"), nullable=False
+    )
+    attempt_count: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(128))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    import_job_id: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
     error_code: Mapped[str | None] = mapped_column(String(64))
     diagnostic_summary: Mapped[str | None] = mapped_column(String(500))
 

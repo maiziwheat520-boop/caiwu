@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, inspect, text, update
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -48,6 +49,7 @@ from ledgerbridge.models import (
     Posting,
     SourceRecord,
 )
+from ledgerbridge.runner_client import RunnerClientError, RunnerConnector
 
 
 def _run_alembic(database_url: str, revision: str, *, downgrade: bool = False) -> None:
@@ -57,6 +59,31 @@ def _run_alembic(database_url: str, revision: str, *, downgrade: bool = False) -
         command.downgrade(config, revision)
     else:
         command.upgrade(config, revision)
+
+
+def _test_admin_url() -> URL:
+    value = os.environ.get("LEDGERBRIDGE_TEST_ADMIN_DATABASE_URL")
+    if value is None:
+        pytest.skip(
+            "PostgreSQL integration tests require LEDGERBRIDGE_TEST_ADMIN_DATABASE_URL "
+            "for temporary database bootstrap and cleanup"
+        )
+    return make_url(value)
+
+
+def _maintenance_engine(admin_url: URL) -> Engine:
+    return create_engine(admin_url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+
+
+def _migration_owner_name(owner_url: URL) -> str:
+    username = owner_url.username
+    if not isinstance(username, str) or not username:
+        pytest.skip("LEDGERBRIDGE_MIGRATION_DATABASE_URL must identify a database owner")
+    return username
+
+
+def _quote_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
 
 
 @pytest.fixture(scope="session")
@@ -75,18 +102,62 @@ def migration_database_url() -> str:
     return value
 
 
-@pytest.fixture(scope="session")
-def admin_engine(migration_database_url: str) -> Iterator[Engine]:
-    _run_alembic(migration_database_url, "head")
-    engine = create_engine(migration_database_url, pool_pre_ping=True)
+@pytest.fixture(scope="module")
+def isolated_legacy_urls(
+    database_url: str,
+    migration_database_url: str,
+) -> Iterator[tuple[str, str]]:
+    """Run the pre-R1 evidence lifecycle against a disposable 0013 database.
+
+    Other integration modules intentionally exercise the R1 head on the
+    shared CI database.  Alembic upgrades are monotonic, so an in-place
+    ``upgrade 0013`` would silently leave this legacy suite on head and make
+    its valid POSTED fixtures fail the mandatory R1 attribution trigger.
+    """
+    owner_url = make_url(migration_database_url)
+    runtime_url = make_url(database_url)
+    owner_name = _migration_owner_name(owner_url)
+    database_name = f"ledgerbridge_evidence_legacy_{uuid4().hex[:12]}"
+    maintenance_engine = _maintenance_engine(_test_admin_url())
+    temporary_owner_url = owner_url.set(database=database_name)
+    temporary_runtime_url = runtime_url.set(database=database_name)
+    try:
+        with maintenance_engine.connect() as connection:
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
+        _run_alembic(temporary_owner_url.render_as_string(hide_password=False), "20260824_0013")
+        yield (
+            temporary_owner_url.render_as_string(hide_password=False),
+            temporary_runtime_url.render_as_string(hide_password=False),
+        )
+    finally:
+        with maintenance_engine.connect() as connection:
+            connection.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :database_name"
+                ),
+                {"database_name": database_name},
+            )
+            connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+        maintenance_engine.dispose()
+
+
+@pytest.fixture(scope="module")
+def admin_engine(isolated_legacy_urls: tuple[str, str]) -> Iterator[Engine]:
+    engine = create_engine(isolated_legacy_urls[0], pool_pre_ping=True)
     yield engine
     engine.dispose()
 
 
-@pytest.fixture(scope="session")
-def runtime_engine(database_url: str, admin_engine: Engine) -> Iterator[Engine]:
+@pytest.fixture(scope="module")
+def runtime_engine(
+    isolated_legacy_urls: tuple[str, str],
+    admin_engine: Engine,
+) -> Iterator[Engine]:
     del admin_engine
-    engine = build_engine(database_url)
+    engine = build_engine(isolated_legacy_urls[1])
     yield engine
     engine.dispose()
 
@@ -274,6 +345,30 @@ def _ingest(
     )
 
 
+def test_ingest_published_continues_from_an_artifact_store_commit(
+    importer: EvidenceImporter,
+) -> None:
+    content = b"already committed evidence"
+    published = importer._store.publish(io.BytesIO(content))
+    connector = SyntheticConnector(records=[_record("row:published")])
+
+    outcome = importer.ingest_published(
+        published,
+        IngestMetadata(
+            source="synthetic_upload",
+            original_filename="committed.txt",
+            media_type="text/plain",
+        ),
+        [connector],
+        actor="pytest",
+        reason="published handoff test",
+    )
+
+    assert outcome.status is ImportJobStatus.SUCCEEDED
+    assert outcome.parsed_count == 1
+    assert connector.parsed_bytes == content
+
+
 def test_importer_and_connector_batch_guardrails(
     runtime_engine: Engine,
     admin_engine: Engine,
@@ -319,6 +414,23 @@ def test_importer_and_connector_batch_guardrails(
     with admin_engine.connect() as connection:
         assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
         assert connection.execute(text("SELECT count(*) FROM journal_entry")).scalar_one() == 0
+
+
+def test_production_importer_rejects_in_process_connectors(
+    runtime_engine: Engine,
+    admin_engine: Engine,
+    tmp_path: Path,
+) -> None:
+    subject = EvidenceImporter(
+        sessionmaker(bind=runtime_engine, expire_on_commit=False),
+        ArtifactStore(tmp_path / "production-mode", max_bytes=1_000),
+        production=True,
+    )
+    outcome = _ingest(subject, b"production mode", [SyntheticConnector()])
+    assert outcome.status is ImportJobStatus.FAILED
+    assert outcome.error_code == "CONNECTOR_CONTRACT"
+    with admin_engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
 
 
 def test_canonical_source_registries_are_append_only_and_runtime_read_only(
@@ -550,6 +662,212 @@ def test_detection_exception_is_sanitized(
         assert summary == "connector detection failed"
         assert "987654" not in summary
         assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
+
+
+def test_untrusted_runner_error_code_is_terminalized_and_audited(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+) -> None:
+    class MaliciousRunnerClient:
+        def detect(self, request: object, stream: ReadableBinary) -> DetectionResult:
+            del request, stream
+            raise RunnerClientError("RUNNER_ERROR", "\x00")
+
+        def parse(self, request: object, stream: ReadableBinary) -> tuple[ParsedSourceRecord, ...]:
+            del request, stream
+            return ()
+
+    connector = RunnerConnector(
+        "synthetic",
+        "1",
+        "synthetic",
+        MaliciousRunnerClient(),  # type: ignore[arg-type]
+    )
+    outcome = importer.ingest_and_import(
+        io.BytesIO(b"malicious runner error"),
+        IngestMetadata(
+            source="synthetic_upload",
+            original_filename="runner.txt",
+            media_type="text/plain",
+        ),
+        [connector],  # type: ignore[list-item]
+        actor="pytest",
+        reason="runner error normalization",
+    )
+
+    assert outcome.status is ImportJobStatus.FAILED
+    assert outcome.error_code == "RUNNER_ERROR"
+    with admin_engine.connect() as connection:
+        job = connection.execute(
+            text(
+                "SELECT status, error_code, diagnostic_summary, terminal_audit_event_id "
+                "FROM import_job"
+            )
+        ).one()
+        assert job.status == "FAILED"
+        assert job.error_code == "RUNNER_ERROR"
+        assert job.diagnostic_summary == "connector runner failed"
+        assert job.terminal_audit_event_id is not None
+        assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM audit_event WHERE action = 'import.complete'")
+            ).scalar_one()
+            == 1
+        )
+
+
+def test_runner_capacity_failure_bubbles_for_dispatch_retry(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+) -> None:
+    class UnavailableRunnerClient:
+        def detect(self, request: object, stream: ReadableBinary) -> DetectionResult:
+            del request, stream
+            raise RunnerClientError("RUNNER_UNAVAILABLE", "runner capacity is unavailable")
+
+        def parse(self, request: object, stream: ReadableBinary) -> tuple[ParsedSourceRecord, ...]:
+            del request, stream
+            return ()
+
+    connector = RunnerConnector(
+        "synthetic",
+        "1",
+        "synthetic",
+        UnavailableRunnerClient(),  # type: ignore[arg-type]
+    )
+    with pytest.raises(EvidenceIngestionError) as error:
+        importer.ingest_and_import(
+            io.BytesIO(b"temporary runner capacity failure"),
+            IngestMetadata(
+                source="synthetic_upload",
+                original_filename="runner.txt",
+                media_type="text/plain",
+            ),
+            [connector],  # type: ignore[list-item]
+            actor="pytest",
+            reason="runner capacity retry",
+        )
+
+    assert error.value.error_code == "RUNNER_UNAVAILABLE"
+    with admin_engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM import_job")).scalar_one() == 0
+
+
+def test_runner_capacity_during_parse_keeps_job_retryable(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+) -> None:
+    class UnavailableRunnerClient:
+        def detect(self, request: object, stream: ReadableBinary) -> DetectionResult:
+            del request, stream
+            return DetectionResult.MATCH
+
+        def parse(self, request: object, stream: ReadableBinary) -> tuple[ParsedSourceRecord, ...]:
+            del request, stream
+            raise RunnerClientError("RUNNER_UNAVAILABLE", "runner capacity is unavailable")
+
+    connector = RunnerConnector(
+        "synthetic",
+        "1",
+        "synthetic",
+        UnavailableRunnerClient(),  # type: ignore[arg-type]
+    )
+    with admin_engine.connect() as connection:
+        audit_events_before = connection.execute(
+            text("SELECT count(*) FROM audit_event")
+        ).scalar_one()
+    with pytest.raises(EvidenceIngestionError) as error:
+        importer.ingest_and_import(
+            io.BytesIO(b"temporary parse capacity failure"),
+            IngestMetadata(
+                source="synthetic_upload",
+                original_filename="runner.txt",
+                media_type="text/plain",
+            ),
+            [connector],  # type: ignore[list-item]
+            actor="pytest",
+            reason="runner parse capacity retry",
+        )
+
+    assert error.value.error_code == "RUNNER_UNAVAILABLE"
+    with admin_engine.connect() as connection:
+        assert connection.execute(text("SELECT status FROM import_job")).scalar_one() == "RUNNING"
+        assert (
+            connection.execute(text("SELECT count(*) FROM audit_event")).scalar_one()
+            == audit_events_before + 1
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_text"),
+    [
+        ("record_locator", "\x00"),
+        ("record_locator", "\ud800"),
+        ("raw_fields", "\x00"),
+        ("raw_fields", "\ud800"),
+    ],
+)
+def test_untrusted_runner_record_text_is_terminalized_and_audited(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+    field: str,
+    bad_text: str,
+) -> None:
+    record = object.__new__(ParsedSourceRecord)
+    object.__setattr__(record, "record_locator", "row:1")
+    object.__setattr__(record, "source", "synthetic")
+    object.__setattr__(record, "parser_version", "1")
+    object.__setattr__(record, "raw_fields", {"memo": "safe"})
+    object.__setattr__(record, "normalized_fields", {})
+    object.__setattr__(record, "external_transaction_id", None)
+    if field == "record_locator":
+        object.__setattr__(record, field, bad_text)
+    else:
+        object.__setattr__(record, field, {"memo": bad_text})
+
+    class MaliciousRunnerClient:
+        def detect(self, request: object, stream: ReadableBinary) -> DetectionResult:
+            del request, stream
+            return DetectionResult.MATCH
+
+        def parse(self, request: object, stream: ReadableBinary) -> tuple[ParsedSourceRecord, ...]:
+            del request, stream
+            return (record,)
+
+    connector = RunnerConnector(
+        "synthetic",
+        "1",
+        "synthetic",
+        MaliciousRunnerClient(),  # type: ignore[arg-type]
+    )
+    outcome = importer.ingest_and_import(
+        io.BytesIO(b"malicious runner record"),
+        IngestMetadata(
+            source="synthetic_upload",
+            original_filename="runner-record.txt",
+            media_type="text/plain",
+        ),
+        [connector],  # type: ignore[list-item]
+        actor="pytest",
+        reason="runner record normalization",
+    )
+
+    assert outcome.status is ImportJobStatus.FAILED
+    assert outcome.error_code == "CONNECTOR_CONTRACT"
+    with admin_engine.connect() as connection:
+        job = connection.execute(
+            text("SELECT status, terminal_audit_event_id FROM import_job")
+        ).one()
+        assert job.status == "FAILED"
+        assert job.terminal_audit_event_id is not None
+        assert connection.execute(text("SELECT count(*) FROM source_record")).scalar_one() == 0
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM audit_event WHERE action = 'import.complete'")
+            ).scalar_one()
+            == 1
+        )
 
 
 def test_mutated_float_output_is_revalidated_before_publication(
@@ -1668,14 +1986,17 @@ def test_balance_failure_rolls_back_post_audit_atomically(runtime_engine: Engine
 def test_phase2_migration_round_trip_and_objects(
     migration_database_url: str,
 ) -> None:
-    url = create_engine(migration_database_url).url
+    owner_url = make_url(migration_database_url)
+    owner_name = _migration_owner_name(owner_url)
     database_name = f"ledgerbridge_phase2_rt_{uuid4().hex[:12]}"
-    maintenance_engine = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
-    temporary_url = url.set(database=database_name)
+    maintenance_engine = _maintenance_engine(_test_admin_url())
+    temporary_url = owner_url.set(database=database_name)
     temporary_engine: Engine | None = None
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
         rendered = temporary_url.render_as_string(hide_password=False)
         _run_alembic(rendered, "head")
         temporary_engine = create_engine(temporary_url)
@@ -1763,17 +2084,17 @@ def test_phase2_migration_round_trip_and_objects(
 def test_phase2_downgrade_refuses_to_delete_evidence(
     migration_database_url: str,
 ) -> None:
-    url = create_engine(migration_database_url).url
+    owner_url = make_url(migration_database_url)
+    owner_name = _migration_owner_name(owner_url)
     database_name = f"ledgerbridge_phase2_downgrade_{uuid4().hex[:10]}"
-    maintenance_engine = create_engine(
-        url.set(database="postgres"),
-        isolation_level="AUTOCOMMIT",
-    )
-    temporary_url = url.set(database=database_name)
+    maintenance_engine = _maintenance_engine(_test_admin_url())
+    temporary_url = owner_url.set(database=database_name)
     temporary_engine: Engine | None = None
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
         rendered = temporary_url.render_as_string(hide_password=False)
         _run_alembic(rendered, "head")
         temporary_engine = create_engine(temporary_url)
@@ -1823,7 +2144,7 @@ def test_phase2_downgrade_refuses_to_delete_evidence(
         with temporary_engine.connect() as connection:
             assert (
                 connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                == "20260822_0004"
+                == "20260824_0015"
             )
             assert connection.execute(text("SELECT count(*) FROM raw_artifact")).scalar_one() == 1
             assert connection.execute(text("SELECT count(*) FROM ingest_channel")).scalar_one() == 2
@@ -1845,14 +2166,17 @@ def test_phase2_downgrade_refuses_to_delete_evidence(
 def test_phase3_registry_migration_round_trip_preserves_security_controls(
     migration_database_url: str,
 ) -> None:
-    url = create_engine(migration_database_url).url
+    owner_url = make_url(migration_database_url)
+    owner_name = _migration_owner_name(owner_url)
     database_name = f"ledgerbridge_phase3_roundtrip_{uuid4().hex[:10]}"
-    maintenance_engine = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
-    temporary_url = url.set(database=database_name)
+    maintenance_engine = _maintenance_engine(_test_admin_url())
+    temporary_url = owner_url.set(database=database_name)
     temporary_engine: Engine | None = None
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
         rendered = temporary_url.render_as_string(hide_password=False)
         _run_alembic(rendered, "head")
         temporary_engine = create_engine(temporary_url)
@@ -1918,14 +2242,17 @@ def test_phase3_registry_migration_round_trip_preserves_security_controls(
 def test_phase3_upgrade_rolls_back_on_unregistered_legacy_provenance(
     migration_database_url: str,
 ) -> None:
-    url = create_engine(migration_database_url).url
+    owner_url = make_url(migration_database_url)
+    owner_name = _migration_owner_name(owner_url)
     database_name = f"ledgerbridge_phase3_legacy_{uuid4().hex[:10]}"
-    maintenance_engine = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
-    temporary_url = url.set(database=database_name)
+    maintenance_engine = _maintenance_engine(_test_admin_url())
+    temporary_url = owner_url.set(database=database_name)
     temporary_engine: Engine | None = None
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
         rendered = temporary_url.render_as_string(hide_password=False)
         _run_alembic(rendered, "20260821_0003")
         temporary_engine = create_engine(temporary_url)
@@ -2000,14 +2327,17 @@ def test_phase3_upgrade_rolls_back_on_unregistered_legacy_provenance(
 def test_phase2_migration_fails_closed_on_existing_posted_entry(
     migration_database_url: str,
 ) -> None:
-    url = create_engine(migration_database_url).url
+    owner_url = make_url(migration_database_url)
+    owner_name = _migration_owner_name(owner_url)
     database_name = f"ledgerbridge_phase2_posted_{uuid4().hex[:10]}"
-    maintenance_engine = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
-    temporary_url = url.set(database=database_name)
+    maintenance_engine = _maintenance_engine(_test_admin_url())
+    temporary_url = owner_url.set(database=database_name)
     temporary_engine: Engine | None = None
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
         rendered = temporary_url.render_as_string(hide_password=False)
         _run_alembic(rendered, "20260821_0002")
         temporary_engine = create_engine(temporary_url)
@@ -2086,14 +2416,17 @@ def test_phase2_migration_fails_closed_on_existing_posted_entry(
 def test_phase2_migration_fails_closed_on_orphan_source_placeholder(
     migration_database_url: str,
 ) -> None:
-    url = create_engine(migration_database_url).url
+    owner_url = make_url(migration_database_url)
+    owner_name = _migration_owner_name(owner_url)
     database_name = f"ledgerbridge_phase2_orphan_{uuid4().hex[:10]}"
-    maintenance_engine = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
-    temporary_url = url.set(database=database_name)
+    maintenance_engine = _maintenance_engine(_test_admin_url())
+    temporary_url = owner_url.set(database=database_name)
     temporary_engine: Engine | None = None
     try:
         with maintenance_engine.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
         rendered = temporary_url.render_as_string(hide_password=False)
         _run_alembic(rendered, "20260821_0002")
         temporary_engine = create_engine(temporary_url)
