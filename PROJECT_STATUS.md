@@ -64,9 +64,12 @@ behavior was added. The task card and contract evidence are in
 Phase 5's first framework slice is implemented in the working review branch:
 `src/ledgerbridge/reconciliation.py` defines side-effect-free external-ID and
 fingerprint dedup decisions, explicit zero-sum 1:1/1:N/N:1 reconciliation
-proposals, and an auditable Suspense open/resolve contract. It has no migration,
-automatic deletion, automatic posting, or production switch. The task card is
-`docs/tasks/2026-08-24-phase-5-dedup-reconciliation-suspense.md`; persistence and
+proposals, and an auditable Suspense open/resolve contract. Migration
+`20260824_0010` persists review items, reconciliation groups/legs and Suspense
+items with deferred zero-sum checks, terminal state triggers, fixed search paths
+and no DELETE grants. Automatic deletion, automatic posting and production
+switches remain closed. The task card is
+`docs/tasks/2026-08-24-phase-5-dedup-reconciliation-suspense.md`; service and
 real parser integration remain separately gated.
 
 The preceding implementation head `b453874` passed push run `32648931938` and

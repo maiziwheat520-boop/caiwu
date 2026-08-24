@@ -23,6 +23,18 @@ from ledgerbridge.models.ledger import (
     JournalStatus,
     Posting,
 )
+from ledgerbridge.models.review import (
+    ReconciliationGroup,
+    ReconciliationLeg,
+    ReconciliationRelation,
+    ReconciliationStatus,
+    ReviewItem,
+    ReviewItemKind,
+    ReviewItemStatus,
+    SuspenseItem,
+    SuspenseReason,
+    SuspenseStatus,
+)
 
 __all__ = [
     "Account",
@@ -39,6 +51,16 @@ __all__ = [
     "JournalStatus",
     "Posting",
     "RawArtifact",
+    "ReconciliationGroup",
+    "ReconciliationLeg",
+    "ReconciliationRelation",
+    "ReconciliationStatus",
+    "ReviewItem",
+    "ReviewItemKind",
+    "ReviewItemStatus",
     "SourceRecord",
     "SourceSystem",
+    "SuspenseItem",
+    "SuspenseReason",
+    "SuspenseStatus",
 ]

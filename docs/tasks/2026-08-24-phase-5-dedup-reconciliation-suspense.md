@@ -1,7 +1,7 @@
 # Phase 5 deduplication, reconciliation, and Suspense framework
 
 日期：2026-08-24
-结论：纯契约框架完成；持久化服务、真实 parser 和自动入账仍未启用
+结论：契约与持久化边界完成；持久化服务、真实 parser 和自动入账仍未启用
 
 ## 边界
 
@@ -30,13 +30,23 @@ Phase 5 先冻结“如何提出候选”和“如何进入人工决定”的契
 - 项目保持 `OPEN`，只有提供目标账户、操作人和理由才能 `RESOLVED`；金额不可改变，
   不能把 Suspense 解析为同一个 Suspense 账户。
 
+## 持久化边界
+
+迁移 `20260824_0010` 新增 `review_item`、`reconciliation_group`、
+`reconciliation_leg` 和 `suspense_item`。表级 check/FK/唯一约束、延迟零和/基数
+constraint trigger、OPEN→terminal 状态机和固定 `search_path = pg_catalog` 一起
+构成数据库第二道防线。API 只获得读取和决策列更新权限，worker 只获得创建/读取权限，
+没有 DELETE 授权；降级遇到任何 Phase 5 数据会拒绝破坏性回滚。
+
 ## 未包含
 
-本阶段没有迁移、数据库表、自动转账发现、规则引擎、真实财务数据、自动 POST、
-或生产配置开关。持久化实现必须新增 append-only 审计、并发唯一约束、人工 Review
-边界和回滚/恢复演练后才能进入下一次独立授权。
+本阶段没有自动转账发现、规则引擎、真实财务数据、自动 POST、或生产配置开关。
+持久化表仍需接入 append-only 审计服务、并发候选匹配和 Review API；任何真实数据
+或生产启用都要经过下一次独立授权。
 
 ## 验证
 
 `tests/test_reconciliation.py` 覆盖外部 ID 冲突、辅助指纹、三种对账关系、零和/重复
-定位符、显式确认/拒绝、Suspense 金额守恒和输入安全边界。
+定位符、显式确认/拒绝、Suspense 金额守恒和输入安全边界；
+`tests/test_phase5_persistence_boundary.py` 覆盖模型注册、迁移链、固定 search_path、
+constraint trigger 和最小权限静态契约。
