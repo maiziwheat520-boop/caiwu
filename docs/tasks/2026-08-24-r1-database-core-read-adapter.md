@@ -109,7 +109,8 @@ read receipt wiring、Hermes/真实数据回放及 production enablement 仍需�
 
 ## S1 CI closure (2026-08-25)
 
-- Hosted run `32755403473` is green across `secrets`, `quality`, and `compose`.
+- Hosted run `32756837443` is green across `secrets`, `quality`, and `compose`
+  on remote SHA `c5be03e`.
   The quality job passed PostgreSQL 15 pytest/coverage (unchanged 90% floor),
   Alembic round-trip, Bandit, and pip-audit.
 - The two earlier failed runs were caused by a PG-only exact-set test that did
@@ -118,6 +119,6 @@ read receipt wiring、Hermes/真实数据回放及 production enablement 仍需�
 - Backup restore metadata validation now checks the LedgerSummary function's
   signature, fixed owner/security-definer/search-path boundary, and reader
   EXECUTE privilege.
-- Final local suite at this point: **540 passed / 190 skipped / 1 warning**.
-  Commit `90ac572` is not yet confirmed on the remote because the current
-  network retry is pending; no production or merge action was taken.
+- Final local suite at this point: **540 passed / 190 skipped / 1 warning**;
+  the backup verifier also pins exact PostgreSQL function signatures. No
+  production or merge action was taken.
