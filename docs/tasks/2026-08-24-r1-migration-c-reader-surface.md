@@ -34,7 +34,24 @@
   凭据不一致，dispatch 集成在连接初始化阶段失败；这不触碰生产数据库。CI bootstrap
   已补 reader role，待 Hosted CI 以新提交验证完整 job。
 
+## 安全复核修复（2026-08-24）
+
+独立 Codex Security 复核发现的 1 HIGH、2 MEDIUM 已在当前工作树修复：
+
+- 八个 projection view 对 `ledgerbridge_reader` 的直接 SELECT 已撤销，避免
+  绕过 entity/business-unit/audit-horizon 约束；reader 只保留 scoped
+  SECURITY DEFINER function 的 EXECUTE。
+- `ledgerbridge_backup` 纳入 runtime role、membership、object ownership、
+  database/default ACL 和 internal_read 权限漂移检查；干净角色仅获得 CONNECT。
+- legacy POSTED 零 attribution 不再是隐式 opt-in，R1 hardening 升级会 fail closed。
+- Candidate wire contract 的 25 字符固定值与 0012 列宽已校正，兼容扩宽保留。
+
+验证：Windows 全量 **474 passed / 188 skipped / 1 warning**；Hermes PostgreSQL
+15 上 reader ACL、view fail-closed、privileged/clean backup、legacy POSTED
+五类定向回归均通过。完整 R1 文件仍有 20 项旧合同/fixture 期望不一致，详见
+`docs/reviews/2026-08-24-r1-migration-c-security-remediation-codex.md`。
+
 ## 状态与边界
 
 完成实现与隔离验证；未 merge、未部署、未创建生产 reader、未读取真实财务数据。
-ORM/read service、mTLS workload 授权、恢复演练、独立安全复核和生产迁移仍是后续 gate。
+ORM/read service、mTLS workload 授权、恢复演练、独立复核复验和生产迁移仍是后续 gate。

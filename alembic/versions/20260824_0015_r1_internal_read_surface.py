@@ -28,18 +28,24 @@ def _runtime_role_preflight() -> None:
         """
         DO $roles$
         DECLARE
-            v_reader oid;
             v_owner oid;
             v_database_owner oid;
-            v_current_user oid;
+            v_owner_can_login boolean;
+            role_name text;
+            role_oid oid;
+            controlled_roles text[] := ARRAY[
+                'ledgerbridge_reader', 'ledgerbridge_api',
+                'ledgerbridge_worker', 'ledgerbridge_app',
+                'ledgerbridge_backup'
+            ];
         BEGIN
-            SELECT oid INTO v_reader FROM pg_roles WHERE rolname = 'ledgerbridge_reader';
-            SELECT oid INTO v_current_user FROM pg_roles WHERE rolname = current_user;
+            SELECT oid, rolcanlogin
+              INTO v_owner, v_owner_can_login
+              FROM pg_roles WHERE rolname = current_user;
             SELECT datdba INTO v_database_owner
               FROM pg_database WHERE datname = current_database();
-            v_owner := v_current_user;
-            IF v_reader IS NULL THEN
-                RAISE EXCEPTION 'required reader role ledgerbridge_reader is missing'
+            IF v_owner IS NULL THEN
+                RAISE EXCEPTION 'current migration owner role is missing'
                     USING ERRCODE = 'invalid_authorization_specification';
             END IF;
             IF v_owner IS NULL OR v_database_owner IS DISTINCT FROM v_owner THEN
@@ -47,50 +53,115 @@ def _runtime_role_preflight() -> None:
                     USING ERRCODE = 'invalid_authorization_specification';
             END IF;
             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_api')
-               OR NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_worker') THEN
-                RAISE EXCEPTION 'runtime API/worker roles are missing'
+               OR NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_worker')
+               OR NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_reader') THEN
+                RAISE EXCEPTION 'required runtime reader/API/worker roles are missing'
                     USING ERRCODE = 'invalid_authorization_specification';
             END IF;
-            IF (SELECT rolcanlogin FROM pg_roles WHERE oid = v_reader) IS DISTINCT FROM true
-               OR (SELECT rolsuper FROM pg_roles WHERE oid = v_reader)
-               OR (SELECT rolcreatedb FROM pg_roles WHERE oid = v_reader)
-               OR (SELECT rolcreaterole FROM pg_roles WHERE oid = v_reader)
-               OR (SELECT rolinherit FROM pg_roles WHERE oid = v_reader)
-               OR (SELECT rolreplication FROM pg_roles WHERE oid = v_reader)
-               OR (SELECT rolbypassrls FROM pg_roles WHERE oid = v_reader)
-               OR current_user IN (
-                    'ledgerbridge_reader', 'ledgerbridge_api',
-                    'ledgerbridge_worker', 'ledgerbridge_app'
-               ) THEN
+
+            -- The migration owner is fixed by the database owner and is the
+            -- only role allowed to run DDL here.  Its DDL-capable attributes
+            -- are intentional; the security boundary is that it cannot be a
+            -- controlled runtime role or a member of one.
+            IF v_owner_can_login IS DISTINCT FROM (session_user = current_user)
+               OR current_user = ANY(controlled_roles) THEN
                 RAISE EXCEPTION
-                    'ledgerbridge_reader must be an unprivileged NOINHERIT LOGIN and not a runtime migrator'
+                    'fixed migration owner has invalid attributes or collides with a runtime role'
                     USING ERRCODE = 'invalid_authorization_specification';
             END IF;
+
+            -- Reader, API, and worker are direct, unprivileged LOGIN roles.
+            -- The compatibility app role is optional and may be NOLOGIN after
+            -- its production retirement, but it must remain NOINHERIT and
+            -- unprivileged whenever it exists.  The optional backup role is
+            -- held to the same unprivileged/NOINHERIT/no-membership/object-
+            -- ownership boundary; it may be LOGIN or NOLOGIN because the
+            -- database ACL does not grant it any fact or reader privilege.
+            FOREACH role_name IN ARRAY controlled_roles LOOP
+                SELECT oid INTO role_oid FROM pg_roles WHERE rolname = role_name;
+                IF role_oid IS NULL THEN
+                    IF role_name IN ('ledgerbridge_app', 'ledgerbridge_backup') THEN
+                        CONTINUE;
+                    END IF;
+                    RAISE EXCEPTION 'required runtime role % is missing', role_name
+                        USING ERRCODE = 'invalid_authorization_specification';
+                END IF;
+                IF EXISTS (
+                    SELECT 1 FROM pg_roles AS runtime_role
+                     WHERE runtime_role.oid = role_oid
+                       AND (runtime_role.rolsuper
+                            OR runtime_role.rolcreaterole
+                            OR runtime_role.rolcreatedb
+                            OR runtime_role.rolreplication
+                            OR runtime_role.rolbypassrls
+                            OR runtime_role.rolinherit IS DISTINCT FROM false)
+                ) OR (
+                    role_name = 'ledgerbridge_reader'
+                    AND (SELECT rolcanlogin FROM pg_roles WHERE oid = role_oid)
+                        IS DISTINCT FROM true
+                ) THEN
+                    IF role_name = 'ledgerbridge_reader' THEN
+                        RAISE EXCEPTION
+                            'ledgerbridge_reader must be an unprivileged NOINHERIT LOGIN role'
+                            USING ERRCODE = 'invalid_authorization_specification';
+                    END IF;
+                    RAISE EXCEPTION 'runtime role has unexpected privilege or inheritance: %',
+                        role_name USING ERRCODE = 'invalid_authorization_specification';
+                END IF;
+                IF role_name NOT IN ('ledgerbridge_app', 'ledgerbridge_backup')
+                   AND (SELECT rolcanlogin FROM pg_roles WHERE oid = role_oid)
+                       IS DISTINCT FROM true THEN
+                    RAISE EXCEPTION 'runtime role % must be a LOGIN role', role_name
+                        USING ERRCODE = 'invalid_authorization_specification';
+                END IF;
+            END LOOP;
+
+            -- Membership is checked in both directions.  In particular, a
+            -- stale GRANT owner TO api is not made harmless by NOINHERIT:
+            -- the runtime could still activate it with SET ROLE.  Any direct
+            -- membership involving a controlled role or the owner is drift.
             IF EXISTS (
-                SELECT 1 FROM pg_auth_members
-                WHERE member = v_reader OR roleid = v_reader
+                SELECT 1
+                  FROM pg_auth_members AS membership
+                  LEFT JOIN pg_roles AS member_role ON member_role.oid = membership.member
+                  LEFT JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+                 WHERE member_role.oid IS NULL
+                    OR granted_role.oid IS NULL
+                    OR member_role.rolname = 'ledgerbridge_reader'
+                    OR granted_role.rolname = 'ledgerbridge_reader'
             ) THEN
                 RAISE EXCEPTION
                     'ledgerbridge_reader has unexpected bidirectional role membership'
                     USING ERRCODE = 'invalid_authorization_specification';
             END IF;
             IF EXISTS (
-                SELECT 1 FROM pg_database WHERE datname = current_database() AND datdba = v_reader
-            ) OR EXISTS (
-                SELECT 1 FROM pg_namespace WHERE nspowner = v_reader
-            ) OR EXISTS (
-                SELECT 1 FROM pg_class WHERE relowner = v_reader
-            ) OR EXISTS (
-                SELECT 1 FROM pg_proc WHERE proowner = v_reader
+                SELECT 1
+                  FROM pg_auth_members AS membership
+                  LEFT JOIN pg_roles AS member_role ON member_role.oid = membership.member
+                  LEFT JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+                 WHERE member_role.oid = v_owner
+                    OR granted_role.oid = v_owner
+                    OR member_role.rolname = ANY(
+                        ARRAY['ledgerbridge_api', 'ledgerbridge_worker', 'ledgerbridge_app',
+                              'ledgerbridge_backup']
+                    )
+                    OR granted_role.rolname = ANY(
+                        ARRAY['ledgerbridge_api', 'ledgerbridge_worker', 'ledgerbridge_app',
+                              'ledgerbridge_backup']
+                    )
             ) THEN
-                RAISE EXCEPTION 'ledgerbridge_reader must not own database objects'
+                RAISE EXCEPTION 'runtime roles must not have role membership'
                     USING ERRCODE = 'invalid_authorization_specification';
             END IF;
+
+            -- None of the runtime roles may own any database object.  This is
+            -- deliberately broader than the new schema: a stale owner would
+            -- otherwise make the runtime an implicit SECURITY DEFINER trust
+            -- root after a restore.
             IF EXISTS (
                 SELECT 1
                   FROM pg_roles AS r
-                 WHERE r.rolname IN ('ledgerbridge_reader', 'ledgerbridge_api',
-                                     'ledgerbridge_worker', 'ledgerbridge_app')
+                 WHERE r.rolname = ANY(controlled_roles)
                    AND (
                        EXISTS (SELECT 1 FROM pg_database AS d WHERE d.datdba = r.oid)
                        OR EXISTS (SELECT 1 FROM pg_namespace AS n WHERE n.nspowner = r.oid)
@@ -99,15 +170,6 @@ def _runtime_role_preflight() -> None:
                    )
             ) THEN
                 RAISE EXCEPTION 'runtime roles must not own database objects'
-                    USING ERRCODE = 'invalid_authorization_specification';
-            END IF;
-            IF EXISTS (
-                SELECT 1 FROM pg_roles
-                 WHERE oid = v_owner
-                   AND rolname IN ('ledgerbridge_reader', 'ledgerbridge_api',
-                                   'ledgerbridge_worker', 'ledgerbridge_app')
-            ) THEN
-                RAISE EXCEPTION 'fixed migration owner collides with a runtime role'
                     USING ERRCODE = 'invalid_authorization_specification';
             END IF;
             IF pg_get_userbyid(v_owner) IS DISTINCT FROM current_user
@@ -128,61 +190,242 @@ def _database_acl() -> None:
         DECLARE
             v_database text := current_database();
             v_owner text := current_user;
+            v_allowlist text[] := ARRAY[
+                current_user, 'pg_database_owner',
+                'ledgerbridge_reader', 'ledgerbridge_api',
+                'ledgerbridge_worker', 'ledgerbridge_app',
+                'ledgerbridge_backup'
+            ];
+            v_runtime_roles text[] := ARRAY[
+                'ledgerbridge_reader', 'ledgerbridge_api',
+                'ledgerbridge_worker', 'ledgerbridge_app',
+                'ledgerbridge_backup'
+            ];
             role_name text;
+            grantee_name text;
+            grantee_oid oid;
         BEGIN
-            -- REVOKE ALL ON DATABASE is deliberate: the following explicit
-            -- GRANT CONNECT statements rebuild the allowlist.
+            -- Rebuild the database ACL from an explicit allowlist.  A stale
+            -- role is never silently ignored; an ACL whose role no longer
+            -- exists is an unrecoverable restore/drift condition.
             EXECUTE format('REVOKE ALL ON DATABASE %I FROM PUBLIC', v_database);
+
+            FOR grantee_oid, grantee_name IN
+                SELECT acl.grantee, grantee_role.rolname
+                  FROM pg_database AS database_row
+                  CROSS JOIN LATERAL aclexplode(
+                      COALESCE(database_row.datacl, '{}'::aclitem[])
+                  ) AS acl
+                  LEFT JOIN pg_roles AS grantee_role
+                    ON grantee_role.oid = acl.grantee
+                 WHERE database_row.datname = v_database
+                   AND acl.grantee <> 0
+            LOOP
+                IF grantee_name IS NULL OR NOT (grantee_name = ANY(v_allowlist)) THEN
+                    RAISE EXCEPTION 'database CONNECT allowlist contains a stale principal: %',
+                        COALESCE(grantee_name, grantee_oid::text)
+                        USING ERRCODE = 'invalid_authorization_specification';
+                END IF;
+            END LOOP;
+
+            -- Runtime and backup roles retain CONNECT only.  The owner and
+            -- pg_database_owner are intentionally not revoked: PostgreSQL
+            -- ownership is the required migration/backup rule.
             FOREACH role_name IN ARRAY ARRAY[
-                'ledgerbridge_app', 'ledgerbridge_api',
-                'ledgerbridge_worker', 'ledgerbridge_reader'
+                'ledgerbridge_reader', 'ledgerbridge_api',
+                'ledgerbridge_worker', 'ledgerbridge_app',
+                'ledgerbridge_backup'
             ] LOOP
                 IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
                     EXECUTE format('REVOKE ALL ON DATABASE %I FROM %I', v_database, role_name);
+                    EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', v_database, role_name);
+                    EXECUTE format(
+                        'REVOKE TEMPORARY, CREATE ON DATABASE %I FROM %I',
+                        v_database, role_name
+                    );
                 END IF;
             END LOOP;
-            EXECUTE format(
-                'GRANT CONNECT ON DATABASE %I TO ledgerbridge_app, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_reader, %I',
-                v_database, v_owner
-            );
-            EXECUTE format(
-                'REVOKE TEMPORARY, CREATE ON DATABASE %I FROM ledgerbridge_app, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_reader',
-                v_database
-            );
-            EXECUTE format(
-                'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
-                'REVOKE ALL ON TABLES FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker',
-                v_owner
-            );
-            EXECUTE format(
-                'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
-                'REVOKE ALL ON SEQUENCES FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker',
-                v_owner
-            );
-            EXECUTE format(
-                'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
-                'REVOKE ALL ON FUNCTIONS FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker',
-                v_owner
-            );
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_app') THEN
-                EXECUTE format(
-                    'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
-                    'REVOKE ALL ON TABLES FROM ledgerbridge_app', v_owner
-                );
-                EXECUTE format(
-                    'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
-                    'REVOKE ALL ON SEQUENCES FROM ledgerbridge_app', v_owner
-                );
-                EXECUTE format(
-                    'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
-                    'REVOKE ALL ON FUNCTIONS FROM ledgerbridge_app', v_owner
-                );
+            EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', v_database, v_owner);
+
+            IF EXISTS (
+                SELECT 1
+                  FROM pg_namespace AS namespace
+                  CROSS JOIN LATERAL aclexplode(
+                      COALESCE(namespace.nspacl, '{}'::aclitem[])
+                  ) AS acl
+                 WHERE namespace.nspname = 'public'
+                   AND acl.grantee = 0
+                   AND acl.privilege_type = 'CREATE'
+            ) THEN
+                RAISE EXCEPTION 'PUBLIC must not retain CREATE on schema public'
+                    USING ERRCODE = 'invalid_authorization_specification';
             END IF;
+            IF EXISTS (
+                SELECT 1
+                  FROM pg_namespace AS namespace
+                  CROSS JOIN LATERAL aclexplode(
+                      COALESCE(namespace.nspacl, '{}'::aclitem[])
+                  ) AS acl
+                 WHERE namespace.nspname = 'public'
+                   AND acl.privilege_type = 'CREATE'
+                   AND acl.grantee IN (
+                       SELECT oid FROM pg_roles WHERE rolname = ANY(v_runtime_roles)
+                   )
+            ) THEN
+                RAISE EXCEPTION 'runtime role must not retain CREATE on schema public'
+                    USING ERRCODE = 'invalid_authorization_specification';
+            END IF;
+
+            -- CREATE is removed before this migration creates any new
+            -- SECURITY DEFINER function in public.  API/worker (and the
+            -- optional compatibility app) still need schema name resolution;
+            -- reader deliberately receives no public-schema USAGE.
+            EXECUTE 'REVOKE CREATE ON SCHEMA public FROM PUBLIC';
+            FOREACH role_name IN ARRAY (v_runtime_roles || ARRAY['ledgerbridge_backup']) LOOP
+                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+                    EXECUTE format('REVOKE CREATE ON SCHEMA public FROM %I', role_name);
+                END IF;
+            END LOOP;
+            EXECUTE 'GRANT USAGE ON SCHEMA public TO ledgerbridge_api, ledgerbridge_worker';
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_app') THEN
+                EXECUTE 'GRANT USAGE ON SCHEMA public TO ledgerbridge_app';
+            END IF;
+            EXECUTE 'REVOKE USAGE ON SCHEMA public FROM ledgerbridge_reader';
         END
         $acl$;
-        -- PostgreSQL expresses this cleanup through ALTER DEFAULT PRIVILEGES;
-        -- keep the explicit audit phrase here so restore review cannot miss it.
-        -- REVOKE ALL ON DEFAULT PRIVILEGES FROM PUBLIC;
+        """
+    )
+    _revoke_owner_default_acls("public")
+
+
+def _revoke_owner_default_acls(schema_name: str) -> None:
+    """Remove PUBLIC/runtime grants from the current owner's default ACLs."""
+
+    if schema_name not in {"public", "internal_read"}:
+        raise ValueError("default ACL schema is not allowlisted")
+    op.execute(
+        f"""
+        DO $default_acl$
+        DECLARE
+            v_schema text := {schema_name!r};
+            role_name text;
+            owner_oid oid;
+            schema_oid oid;
+        BEGIN
+            SELECT oid INTO owner_oid FROM pg_roles WHERE rolname = current_user;
+            SELECT oid INTO schema_oid FROM pg_namespace WHERE nspname = v_schema;
+            IF owner_oid IS NULL OR schema_oid IS NULL THEN
+                RAISE EXCEPTION 'default ACL owner or schema is missing'
+                    USING ERRCODE = 'invalid_authorization_specification';
+            END IF;
+
+            IF EXISTS (
+                SELECT 1
+                  FROM pg_default_acl AS defaults
+                  CROSS JOIN LATERAL aclexplode(
+                      COALESCE(defaults.defaclacl, '{{}}'::aclitem[])
+                  ) AS acl
+                 WHERE defaults.defaclrole = owner_oid
+                   AND defaults.defaclnamespace IN (0, schema_oid)
+                   AND (
+                       acl.grantee = 0
+                       OR acl.grantee IN (
+                           SELECT oid FROM pg_roles
+                            WHERE rolname IN ('ledgerbridge_reader',
+                                              'ledgerbridge_api',
+                                              'ledgerbridge_worker',
+                                              'ledgerbridge_app', 'ledgerbridge_backup')
+                       )
+                   )
+            ) THEN
+                RAISE EXCEPTION 'default privileges grant PUBLIC or a runtime role'
+                    USING ERRCODE = 'invalid_authorization_specification';
+            END IF;
+
+            -- Global owner defaults are inherited by every schema.  Revoke
+            -- the same PUBLIC/runtime entries there as well; a schema-local
+            -- revoke alone would leave a future object exposed through the
+            -- global default ACL.
+            EXECUTE format(
+                'ALTER DEFAULT PRIVILEGES FOR ROLE %I REVOKE ALL ON TABLES FROM PUBLIC',
+                current_user
+            );
+            EXECUTE format(
+                'ALTER DEFAULT PRIVILEGES FOR ROLE %I REVOKE ALL ON SEQUENCES FROM PUBLIC',
+                current_user
+            );
+            EXECUTE format(
+                'ALTER DEFAULT PRIVILEGES FOR ROLE %I REVOKE ALL ON FUNCTIONS FROM PUBLIC',
+                current_user
+            );
+            EXECUTE format(
+                'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I '
+                'REVOKE ALL ON TABLES FROM PUBLIC', current_user, v_schema
+            );
+            EXECUTE format(
+                'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I '
+                'REVOKE ALL ON SEQUENCES FROM PUBLIC', current_user, v_schema
+            );
+            EXECUTE format(
+                'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I '
+                'REVOKE ALL ON FUNCTIONS FROM PUBLIC', current_user, v_schema
+            );
+            FOREACH role_name IN ARRAY ARRAY['PUBLIC', 'ledgerbridge_reader',
+                                             'ledgerbridge_api', 'ledgerbridge_worker',
+                                             'ledgerbridge_app', 'ledgerbridge_backup'] LOOP
+                IF role_name = 'PUBLIC' THEN
+                    CONTINUE;
+                ELSIF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+                    EXECUTE format(
+                        'ALTER DEFAULT PRIVILEGES FOR ROLE %I REVOKE ALL ON TABLES FROM %I',
+                        current_user, role_name
+                    );
+                    EXECUTE format(
+                        'ALTER DEFAULT PRIVILEGES FOR ROLE %I REVOKE ALL ON SEQUENCES FROM %I',
+                        current_user, role_name
+                    );
+                    EXECUTE format(
+                        'ALTER DEFAULT PRIVILEGES FOR ROLE %I REVOKE ALL ON FUNCTIONS FROM %I',
+                        current_user, role_name
+                    );
+                    EXECUTE format(
+                        'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I '
+                        'REVOKE ALL ON TABLES FROM %I', current_user, v_schema, role_name
+                    );
+                    EXECUTE format(
+                        'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I '
+                        'REVOKE ALL ON SEQUENCES FROM %I', current_user, v_schema, role_name
+                    );
+                    EXECUTE format(
+                        'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I '
+                        'REVOKE ALL ON FUNCTIONS FROM %I', current_user, v_schema, role_name
+                    );
+                END IF;
+            END LOOP;
+            IF EXISTS (
+                SELECT 1
+                 FROM pg_default_acl AS defaults
+                  CROSS JOIN LATERAL aclexplode(
+                      COALESCE(defaults.defaclacl, '{{}}'::aclitem[])
+                  ) AS acl
+                 WHERE defaults.defaclrole = owner_oid
+                   AND defaults.defaclnamespace IN (0, schema_oid)
+                   AND (
+                       acl.grantee = 0
+                       OR acl.grantee IN (
+                           SELECT oid FROM pg_roles
+                            WHERE rolname IN ('ledgerbridge_reader',
+                                              'ledgerbridge_api',
+                                              'ledgerbridge_worker',
+                                              'ledgerbridge_app', 'ledgerbridge_backup')
+                       )
+                   )
+            ) THEN
+                RAISE EXCEPTION 'owner default ACL for schema % is not closed', v_schema
+                    USING ERRCODE = 'invalid_authorization_specification';
+            END IF;
+        END
+        $default_acl$;
         """
     )
 
@@ -209,6 +452,7 @@ def _grant_exact_surface() -> None:
                         'public.candidate_event, public.candidate_field_change, '
                         'public.candidate_conflict_resolution, public.candidate_evidence, '
                         'public.journal_entry_attribution, public.posting_attribution, '
+                        'public.reconciliation_leg, '
                         'public.reconciliation_snapshot, '
                         'public.reconciliation_snapshot_proposal, '
                         'public.reconciliation_snapshot_suspense FROM %I', role_name
@@ -224,7 +468,8 @@ def _grant_exact_surface() -> None:
             public.candidate_revision, public.candidate_blocker, public.candidate_event,
             public.candidate_field_change, public.candidate_conflict_resolution,
             public.candidate_evidence, public.journal_entry_attribution,
-            public.posting_attribution, public.reconciliation_snapshot,
+            public.posting_attribution, public.reconciliation_leg,
+            public.reconciliation_snapshot,
             public.reconciliation_snapshot_proposal, public.reconciliation_snapshot_suspense
         FROM PUBLIC;
         REVOKE ALL ON ALL TABLES IN SCHEMA public FROM ledgerbridge_reader;
@@ -232,13 +477,28 @@ def _grant_exact_surface() -> None:
         REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM ledgerbridge_reader;
         REVOKE ALL ON FUNCTION public.append_audit_event(text, text, text, text, jsonb)
             FROM ledgerbridge_reader;
+        REVOKE ALL ON FUNCTION public.r1_assert_posted_total_integrity()
+            FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker;
+        DO $helper_acl$
+        DECLARE role_name text;
+        BEGIN
+            FOREACH role_name IN ARRAY ARRAY['ledgerbridge_app', 'ledgerbridge_backup'] LOOP
+                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+                    EXECUTE format(
+                        'REVOKE ALL ON FUNCTION public.r1_assert_posted_total_integrity() FROM %I',
+                        role_name
+                    );
+                END IF;
+            END LOOP;
+        END
+        $helper_acl$;
         REVOKE USAGE ON SCHEMA public FROM ledgerbridge_reader;
         DO $schema_acl$
         DECLARE role_name text;
         BEGIN
             FOREACH role_name IN ARRAY ARRAY[
                 'ledgerbridge_api', 'ledgerbridge_worker',
-                'ledgerbridge_app', 'ledgerbridge_reader'
+                'ledgerbridge_app', 'ledgerbridge_reader', 'ledgerbridge_backup'
             ] LOOP
                 IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
                     EXECUTE format('REVOKE ALL ON SCHEMA internal_read FROM %I', role_name);
@@ -253,7 +513,8 @@ def _grant_exact_surface() -> None:
         DECLARE role_name text;
         BEGIN
             FOREACH role_name IN ARRAY ARRAY[
-                'ledgerbridge_api', 'ledgerbridge_worker', 'ledgerbridge_app'
+                'ledgerbridge_api', 'ledgerbridge_worker', 'ledgerbridge_app',
+                'ledgerbridge_backup'
             ] LOOP
                 IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
                     EXECUTE format(
@@ -267,19 +528,30 @@ def _grant_exact_surface() -> None:
         REVOKE ALL ON ALL TABLES IN SCHEMA internal_read
             FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker;
         DO $table_acl$
+        DECLARE role_name text;
         BEGIN
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_app') THEN
-                EXECUTE 'REVOKE ALL ON ALL TABLES IN SCHEMA internal_read FROM ledgerbridge_app';
-            END IF;
+            FOREACH role_name IN ARRAY ARRAY['ledgerbridge_app', 'ledgerbridge_backup'] LOOP
+                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+                    EXECUTE format(
+                        'REVOKE ALL ON ALL TABLES IN SCHEMA internal_read FROM %I',
+                        role_name
+                    );
+                END IF;
+            END LOOP;
         END
         $table_acl$;
-        GRANT SELECT ON internal_read.candidate_current_v,
+        -- These views are owner-controlled projection helpers, not an
+        -- authorization boundary.  The reader must use the SECURITY DEFINER
+        -- functions below, which require entity/scope and audit-horizon
+        -- parameters; leaving direct SELECT revoked is the fail-closed
+        -- default until every projection has an equivalent scoped function.
+        REVOKE ALL ON internal_read.candidate_current_v,
             internal_read.candidate_evidence_v, internal_read.evidence_metadata_v,
             internal_read.reconciliation_current_v,
             internal_read.reconciliation_blocker_v,
             internal_read.reconciliation_proposal_v,
             internal_read.reconciliation_suspense_v,
-            internal_read.ledger_posted_total_v TO ledgerbridge_reader;
+            internal_read.ledger_posted_total_v FROM ledgerbridge_reader;
         GRANT EXECUTE ON FUNCTION internal_read.current_audit_horizon(),
             internal_read.list_candidates_as_of(
                 uuid, uuid, varchar(16), bigint, bytea, timestamptz, uuid, integer
@@ -306,6 +578,7 @@ def upgrade() -> None:
         REVOKE ALL ON SCHEMA internal_read FROM PUBLIC;
         """
     )
+    _revoke_owner_default_acls("internal_read")
     op.execute(
         """
         CREATE TABLE internal_read.evidence_read_receipt (
@@ -396,6 +669,98 @@ def upgrade() -> None:
         CREATE TRIGGER evidence_read_receipt_append_only
         BEFORE UPDATE OR DELETE ON internal_read.evidence_read_receipt
         FOR EACH ROW EXECUTE FUNCTION public.r1_evidence_read_receipt_append_only();
+
+        -- Migration 0014 makes attribution rows immutable, but it still
+        -- permits legacy POSTED rows that have not opted into the R1
+        -- attribution boundary.  A plain inner join here would silently drop
+        -- those facts.  The owner-only guard turns every missing, duplicate,
+        -- or mismatched attribution/primary posting into a fail-closed error
+        -- before the view can materialize a total.
+        CREATE FUNCTION public.r1_assert_posted_total_integrity()
+        RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
+        AS $function$
+        DECLARE v_bad_count bigint;
+        BEGIN
+            SELECT count(*) INTO v_bad_count
+              FROM (
+                  SELECT je.id, je.primary_account_id,
+                         (SELECT count(*)
+                            FROM public.journal_entry_attribution AS ja
+                           WHERE ja.entry_id = je.id) AS attribution_count,
+                         (SELECT count(*)
+                            FROM public.posting AS p
+                           WHERE p.entry_id = je.id
+                             AND p.account_id = je.primary_account_id)
+                             AS primary_posting_count
+                    FROM public.journal_entry AS je
+                   WHERE je.status = 'POSTED'
+              ) AS entry_shape
+             WHERE entry_shape.primary_account_id IS NULL
+                OR entry_shape.attribution_count <> 1
+                OR entry_shape.primary_posting_count <> 1;
+            IF v_bad_count <> 0 THEN
+                RAISE EXCEPTION 'POSTED total has incomplete scope or primary posting attribution'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+
+            SELECT count(*) INTO v_bad_count
+              FROM (
+                  SELECT p.id
+                    FROM public.posting AS p
+                    JOIN public.journal_entry AS je ON je.id = p.entry_id
+                    LEFT JOIN public.posting_attribution AS pa
+                      ON pa.posting_id = p.id
+                   WHERE je.status = 'POSTED'
+                   GROUP BY p.id
+                  HAVING count(pa.posting_id) <> 1
+              ) AS posting_shape;
+            IF v_bad_count <> 0 THEN
+                RAISE EXCEPTION 'POSTED total has incomplete posting category attribution'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+
+            IF EXISTS (
+                SELECT 1
+                  FROM public.journal_entry_attribution AS ja
+                  JOIN public.journal_entry AS je ON je.id = ja.entry_id
+                 WHERE je.status = 'POSTED'
+                   AND (
+                       ja.entity_id IS DISTINCT FROM je.entity_id
+                       OR
+                       ja.business_unit_id IS NULL
+                       OR ja.accounting_month IS NULL
+                       OR NOT EXISTS (
+                           SELECT 1
+                             FROM public.business_unit AS bu
+                            WHERE bu.id = ja.business_unit_id
+                              AND bu.entity_id = je.entity_id
+                       )
+                   )
+            ) THEN
+                RAISE EXCEPTION 'POSTED total has an invalid business-unit scope'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+
+            IF EXISTS (
+                SELECT 1
+                  FROM public.posting_attribution AS pa
+                  JOIN public.posting AS p ON p.id = pa.posting_id
+                  JOIN public.journal_entry AS je ON je.id = p.entry_id
+                  JOIN public.reporting_category AS rc
+                    ON rc.id = pa.reporting_category_id
+                 WHERE je.status = 'POSTED'
+                   AND (
+                       rc.entity_id IS DISTINCT FROM je.entity_id
+                       OR pa.category_code_snapshot IS DISTINCT FROM rc.code
+                       OR pa.category_label_snapshot IS DISTINCT FROM rc.label
+                   )
+            ) THEN
+                RAISE EXCEPTION 'POSTED total has an invalid category attribution'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+            RETURN true;
+        END
+        $function$;
 
         CREATE VIEW internal_read.candidate_current_v
         WITH (security_barrier = true, security_invoker = false) AS
@@ -499,21 +864,37 @@ def upgrade() -> None:
 
         CREATE VIEW internal_read.ledger_posted_total_v
         WITH (security_barrier = true, security_invoker = false) AS
-        SELECT je.entity_id,
-               ja.business_unit_id,
-               ja.accounting_month,
-               pa.category_code_snapshot AS category_code,
-               pa.category_label_snapshot AS category_label,
-               p.currency,
-               sum(p.amount_minor)::bigint AS posted_amount_minor
-          FROM public.journal_entry AS je
-         JOIN public.journal_entry_attribution AS ja ON ja.entry_id = je.id
-          JOIN public.posting AS p ON p.entry_id = je.id
-          JOIN public.posting_attribution AS pa ON pa.posting_id = p.id
-         WHERE je.status = 'POSTED'
-           AND p.account_id = je.primary_account_id
-         GROUP BY je.entity_id, ja.business_unit_id, ja.accounting_month,
-                  pa.category_code_snapshot, pa.category_label_snapshot, p.currency;
+        -- Keep the owner-only guard as a MATERIALIZED, outer LATERAL driver:
+        -- it must execute before the fact joins even when a malformed POSTED
+        -- row would otherwise match no join and disappear from the result.
+        WITH posted_guard AS MATERIALIZED (
+            SELECT public.r1_assert_posted_total_integrity() AS ok
+        )
+        SELECT posted.entity_id,
+               posted.business_unit_id,
+               posted.accounting_month,
+               posted.category_code,
+               posted.category_label,
+               posted.currency,
+               sum(posted.amount_minor)::bigint AS posted_amount_minor
+          FROM posted_guard AS guard
+         CROSS JOIN LATERAL (
+            SELECT je.entity_id,
+                   ja.business_unit_id,
+                   ja.accounting_month,
+                   pa.category_code_snapshot AS category_code,
+                   pa.category_label_snapshot AS category_label,
+                   p.currency,
+                   p.amount_minor
+              FROM public.journal_entry AS je
+              JOIN public.journal_entry_attribution AS ja ON ja.entry_id = je.id
+              JOIN public.posting AS p
+                ON p.entry_id = je.id AND p.account_id = je.primary_account_id
+              JOIN public.posting_attribution AS pa ON pa.posting_id = p.id
+             WHERE guard.ok IS TRUE AND je.status = 'POSTED'
+         ) AS posted
+         GROUP BY posted.entity_id, posted.business_unit_id, posted.accounting_month,
+                  posted.category_code, posted.category_label, posted.currency;
         """
     )
 
@@ -984,11 +1365,14 @@ def upgrade() -> None:
             SELECT ref INTO STRICT v_business_unit_ref
               FROM public.business_unit
              WHERE id = p_business_unit_id AND entity_id = p_entity_id;
+            -- Every argument is explicitly cast to the existing exact
+            -- signature.  Schema qualification alone is insufficient when a
+            -- future public overload accepts varchar/unknown arguments.
             v_audit := public.append_audit_event(
-                p_principal_ref,
-                'internal.read.evidence.content',
-                'internal evidence content read',
-                'ledgerbridge.internal-read-audit.v1',
+                p_principal_ref::text,
+                'internal.read.evidence.content'::text,
+                'internal evidence content read'::text,
+                'ledgerbridge.internal-read-audit.v1'::text,
                 jsonb_build_object(
                     'receipt_type', 'ledgerbridge.evidence_read_receipt.v1',
                     'operation_id', p_operation_id::text,
@@ -1002,7 +1386,7 @@ def upgrade() -> None:
                     'byte_size', p_byte_size,
                     'sha256', encode(p_plaintext_sha256, 'hex'),
                     'outcome', 'SUCCEEDED'
-                )
+                )::jsonb
             );
             INSERT INTO internal_read.evidence_read_receipt (
                 operation_id, audit_event_id, principal_ref, verified_san,
@@ -1074,6 +1458,7 @@ def downgrade() -> None:
         );
         DROP FUNCTION IF EXISTS internal_read.current_audit_horizon();
         DROP VIEW IF EXISTS internal_read.ledger_posted_total_v;
+        DROP FUNCTION IF EXISTS public.r1_assert_posted_total_integrity();
         DROP VIEW IF EXISTS internal_read.reconciliation_suspense_v;
         DROP VIEW IF EXISTS internal_read.reconciliation_proposal_v;
         DROP VIEW IF EXISTS internal_read.reconciliation_blocker_v;

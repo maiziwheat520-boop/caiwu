@@ -226,7 +226,9 @@ def upgrade() -> None:
         sa.Column("id", UUID, server_default=sa.text("gen_random_uuid()"), nullable=False),
         sa.Column("short_id", sa.String(10), nullable=False),
         sa.Column("entity_id", UUID, nullable=False),
-        sa.Column("contract_version", sa.String(24), nullable=False),
+        # The fixed wire contract is 25 bytes; leave headroom for the
+        # compatibility ALTER in 0014 while keeping the value immutable.
+        sa.Column("contract_version", sa.String(32), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("supersedes_candidate_id", UUID, nullable=True),
         sa.CheckConstraint("short_id ~ '^C-[A-Z0-9]{4,8}$'", name="candidate_short_id_shape"),
@@ -312,6 +314,12 @@ def upgrade() -> None:
             "(category_id IS NULL) = (category_code_snapshot IS NULL AND category_label_snapshot IS NULL)",
             name="candidate_revision_category_snapshot_shape",
         ),
+        sa.CheckConstraint(
+            "status IN ('INCOMPLETE','IGNORED') OR "
+            "(business_unit_id IS NOT NULL AND category_id IS NOT NULL "
+            "AND amount_minor IS NOT NULL AND accounting_month IS NOT NULL)",
+            name="candidate_revision_complete_status_shape",
+        ),
         sa.ForeignKeyConstraint(["candidate_id"], ["candidate.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["business_unit_id"], ["business_unit.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["category_id"], ["reporting_category.id"], ondelete="RESTRICT"),
@@ -335,6 +343,18 @@ def upgrade() -> None:
         sa.CheckConstraint("ordinal >= 0", name="candidate_blocker_ordinal_nonnegative"),
         sa.CheckConstraint(
             "btrim(code) <> '' AND btrim(message) <> ''", name="candidate_blocker_text_not_blank"
+        ),
+        sa.CheckConstraint(
+            "code IN ('MISSING_BUSINESS_UNIT','MISSING_CATEGORY','MISSING_AMOUNT',"
+            "'MISSING_ACCOUNTING_MONTH','AMBIGUOUS_EXTRACTION','PARSE_FAILED',"
+            "'DEPENDENCY_UNAVAILABLE','EVIDENCE_INCOMPLETE','UNSUPPORTED_ATTACHMENT',"
+            "'DUPLICATE_MESSAGE','DUPLICATE_ATTACHMENT','BUSINESS_KEY_CONFLICT',"
+            "'CROSS_FORMAT_DUPLICATE')",
+            name="candidate_blocker_code_allowed",
+        ),
+        sa.CheckConstraint(
+            "field IS NULL OR field IN ('business_unit','category','amount_minor','accounting_month')",
+            name="candidate_blocker_field_allowed",
         ),
         sa.ForeignKeyConstraint(
             ["candidate_id", "revision"],
@@ -396,6 +416,15 @@ def upgrade() -> None:
         sa.Column("previous_value", postgresql.JSONB, nullable=True),
         sa.Column("new_value", postgresql.JSONB, nullable=True),
         sa.CheckConstraint("btrim(field) <> ''", name="candidate_field_change_field_not_blank"),
+        sa.CheckConstraint(
+            "field IN ('status','business_unit_ref','business_unit_label','category_code',"
+            "'category_label','amount_minor','accounting_month')",
+            name="candidate_field_change_field_allowed",
+        ),
+        sa.CheckConstraint(
+            "previous_value IS NOT NULL OR new_value IS NOT NULL",
+            name="candidate_field_change_value_not_both_null",
+        ),
         sa.ForeignKeyConstraint(["event_ref"], ["candidate_event.event_ref"], ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("event_ref", "field", name="pk_candidate_field_change"),
     )
@@ -465,14 +494,15 @@ def upgrade() -> None:
             SELECT entity_id INTO candidate_entity FROM public.candidate WHERE id = NEW.candidate_id;
             SELECT entity_id, business_unit_id INTO evidence_entity, evidence_unit
               FROM public.evidence_object WHERE evidence_ref = NEW.evidence_ref;
-            IF candidate_entity IS NULL OR evidence_entity IS NULL OR candidate_entity <> evidence_entity THEN
+            IF candidate_entity IS NULL OR evidence_entity IS NULL
+               OR candidate_entity IS DISTINCT FROM evidence_entity THEN
                 RAISE EXCEPTION 'candidate and evidence must belong to the same entity'
                     USING ERRCODE = 'integrity_constraint_violation';
             END IF;
             SELECT business_unit_id INTO revision_unit
               FROM public.candidate_revision WHERE candidate_id = NEW.candidate_id
               ORDER BY revision DESC LIMIT 1;
-            IF revision_unit IS NOT NULL AND revision_unit <> evidence_unit THEN
+            IF revision_unit IS NOT NULL AND revision_unit IS DISTINCT FROM evidence_unit THEN
                 RAISE EXCEPTION 'assigned candidate evidence must share its business unit'
                     USING ERRCODE = 'integrity_constraint_violation';
             END IF;
@@ -505,7 +535,9 @@ def upgrade() -> None:
             IF NEW.business_unit_id IS NOT NULL THEN
                 SELECT b.entity_id, b.ref, b.label INTO unit_entity, unit_ref, unit_label
                   FROM public.business_unit AS b WHERE b.id = NEW.business_unit_id;
-                IF unit_entity IS NULL OR unit_entity <> candidate_entity_id OR unit_ref <> NEW.business_unit_ref_snapshot OR unit_label <> NEW.business_unit_label_snapshot THEN
+                IF unit_entity IS NULL OR unit_entity IS DISTINCT FROM candidate_entity_id
+                   OR unit_ref IS DISTINCT FROM NEW.business_unit_ref_snapshot
+                   OR unit_label IS DISTINCT FROM NEW.business_unit_label_snapshot THEN
                     RAISE EXCEPTION 'candidate business unit scope or snapshot is invalid'
                         USING ERRCODE = 'integrity_constraint_violation';
                 END IF;
@@ -513,7 +545,9 @@ def upgrade() -> None:
             IF NEW.category_id IS NOT NULL THEN
                 SELECT r.entity_id, r.code, r.label INTO category_entity, category_code, category_label
                   FROM public.reporting_category AS r WHERE r.id = NEW.category_id;
-                IF category_entity IS NULL OR category_entity <> candidate_entity_id OR category_code <> NEW.category_code_snapshot OR category_label <> NEW.category_label_snapshot THEN
+                IF category_entity IS NULL OR category_entity IS DISTINCT FROM candidate_entity_id
+                   OR category_code IS DISTINCT FROM NEW.category_code_snapshot
+                   OR category_label IS DISTINCT FROM NEW.category_label_snapshot THEN
                     RAISE EXCEPTION 'candidate reporting category scope or snapshot is invalid'
                         USING ERRCODE = 'integrity_constraint_violation';
                 END IF;
@@ -523,9 +557,9 @@ def upgrade() -> None:
                 FROM public.candidate_evidence AS ce
                 JOIN public.evidence_object AS eo ON eo.evidence_ref = ce.evidence_ref
                 WHERE ce.candidate_id = NEW.candidate_id
-                  AND (eo.entity_id <> candidate_entity_id
+                    AND (eo.entity_id IS DISTINCT FROM candidate_entity_id
                        OR (NEW.business_unit_id IS NOT NULL
-                           AND eo.business_unit_id <> NEW.business_unit_id))
+                           AND eo.business_unit_id IS DISTINCT FROM NEW.business_unit_id))
             ) THEN
                 RAISE EXCEPTION 'candidate revision conflicts with linked evidence scope'
                     USING ERRCODE = 'integrity_constraint_violation';

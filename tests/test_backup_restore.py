@@ -23,6 +23,12 @@ from scripts.backup_restore import (
     PHASE_3_FUNCTIONS,
     PHASE_3_TABLE_PRIVILEGES,
     PHASE_3_TRIGGERS,
+    R1_INTERNAL_READ_FUNCTIONS,
+    R1_INTERNAL_READ_VIEWS,
+    R1_PUBLIC_TABLES,
+    R1_REQUIRED_CONSTRAINTS,
+    R1_REQUIRED_TRIGGERS,
+    R1_ROLES,
     BackupError,
     CommonConfig,
     RestoreResources,
@@ -74,6 +80,203 @@ def _database_metadata() -> dict[str, object]:
             "audit_event": 0,
         },
     }
+
+
+def _r1_database_metadata() -> dict[str, object]:
+    metadata = _database_metadata() | {
+        "metadata_version": 2,
+        "alembic_version": "20260824_0015",
+        "database_owner": "ledgerbridge_owner",
+        "database_temp_denied": True,
+        "security_functions": [
+            {"name": name, "proconfig": ["search_path=pg_catalog"]}
+            for name in sorted(PHASE_1_FUNCTIONS | PHASE_2_FUNCTIONS | PHASE_3_FUNCTIONS)
+        ],
+        "public_triggers": [
+            {"name": name, "enabled": "O"}
+            for name in sorted(PHASE_1_TRIGGERS | PHASE_2_TRIGGERS | PHASE_3_TRIGGERS)
+        ],
+        "table_grants": [
+            {"table": table, "privilege": privilege, "grantable": "NO"}
+            for table, privilege in sorted(
+                PHASE_1_TABLE_PRIVILEGES | PHASE_2_TABLE_PRIVILEGES | PHASE_3_TABLE_PRIVILEGES
+            )
+        ],
+        "column_grants": [
+            {"table": table, "column": column, "privilege": privilege, "grantable": "NO"}
+            for table, column, privilege in sorted(
+                PHASE_2_COLUMN_PRIVILEGES | PHASE_3_COLUMN_PRIVILEGES
+            )
+        ],
+        "sequence_grants": [],
+        "function_grants": [
+            {
+                "function": "append_audit_event",
+                "grantee": "ledgerbridge_app",
+                "privilege": "EXECUTE",
+                "grantable": "NO",
+            }
+        ],
+        "r1_role_matrix": [
+            {
+                "role": role,
+                "login": True,
+                "superuser": False,
+                "create_database": False,
+                "create_role": False,
+                "inherit": False,
+                "replication": False,
+                "bypass_rls": False,
+                "memberships": [],
+            }
+            for role in R1_ROLES
+        ],
+        "r1_database_acl": [
+            {"grantee": role, "privilege": "CONNECT", "grantable": "NO"}
+            for role in (*R1_ROLES, "ledgerbridge_owner")
+        ],
+        "r1_schema_acl": [
+            {"schema": "public", "grantee": "PUBLIC", "privilege": "USAGE", "grantable": "NO"},
+            {
+                "schema": "internal_read",
+                "grantee": "ledgerbridge_reader",
+                "privilege": "USAGE",
+                "grantable": "NO",
+            },
+        ],
+        "r1_default_acls": [],
+        "r1_constraints": [
+            {
+                "schema": "public",
+                "table": "candidate",
+                "name": name,
+                "type": "f",
+                "deferrable": True,
+                "initially_deferred": True,
+                "validated": True,
+            }
+            for name in sorted(R1_REQUIRED_CONSTRAINTS)
+        ],
+        "r1_triggers": [
+            {
+                "schema": "public",
+                "table": "candidate_event",
+                "name": name,
+                "enabled": "O",
+                "constraint": True,
+            }
+            for name in sorted(R1_REQUIRED_TRIGGERS)
+        ],
+        "r1_views": [
+            {
+                "schema": "internal_read",
+                "name": name,
+                "security_barrier": True,
+                "security_invoker": False,
+                "owner": "ledgerbridge_owner",
+            }
+            for name in R1_INTERNAL_READ_VIEWS
+        ],
+        "r1_functions": [
+            {
+                "schema": "internal_read",
+                "name": name,
+                "identity_arguments": "",
+                "owner": "ledgerbridge_owner",
+                "security_definer": True,
+                "proconfig": ["search_path=pg_catalog"],
+            }
+            for name in R1_INTERNAL_READ_FUNCTIONS
+        ]
+        + [
+            {
+                "schema": "public",
+                "name": "r1_assert_posted_total_integrity",
+                "identity_arguments": "",
+                "owner": "ledgerbridge_owner",
+                "security_definer": True,
+                "proconfig": ["search_path=pg_catalog"],
+            }
+        ],
+        "r1_effective_table_privileges": [],
+        "r1_effective_function_privileges": [],
+        "r1_effective_schema_privileges": [],
+    }
+    table_rows = cast(list[dict[str, object]], metadata["r1_effective_table_privileges"])
+    for role in R1_ROLES:
+        for table in R1_PUBLIC_TABLES:
+            table_rows.append(
+                {
+                    "role": role,
+                    "schema": "public",
+                    "object": table,
+                    "kind": "table",
+                    "select": False,
+                    "insert": False,
+                    "update": False,
+                    "delete": False,
+                    "references": False,
+                    "trigger": False,
+                }
+            )
+        for view in R1_INTERNAL_READ_VIEWS:
+            table_rows.append(
+                {
+                    "role": role,
+                    "schema": "internal_read",
+                    "object": view,
+                    "kind": "view",
+                    "select": False,
+                    "insert": False,
+                    "update": False,
+                    "delete": False,
+                    "references": False,
+                    "trigger": False,
+                }
+            )
+        table_rows.append(
+            {
+                "role": role,
+                "schema": "internal_read",
+                "object": "evidence_read_receipt",
+                "kind": "table",
+                "select": False,
+                "insert": False,
+                "update": False,
+                "delete": False,
+                "references": False,
+                "trigger": False,
+            }
+        )
+    function_rows = cast(list[dict[str, object]], metadata["r1_effective_function_privileges"])
+    functions = cast(list[dict[str, object]], metadata["r1_functions"])
+    for role in R1_ROLES:
+        for function in functions:
+            function_rows.append(
+                {
+                    "role": role,
+                    "schema": function["schema"],
+                    "name": function["name"],
+                    "identity_arguments": function["identity_arguments"],
+                    "execute": (
+                        role == "ledgerbridge_reader" and function["schema"] == "internal_read"
+                    ),
+                }
+            )
+    schema_rows = cast(list[dict[str, object]], metadata["r1_effective_schema_privileges"])
+    for role in R1_ROLES:
+        schema_rows.extend(
+            [
+                {"role": role, "schema": "public", "usage": True, "create": False},
+                {
+                    "role": role,
+                    "schema": "internal_read",
+                    "usage": role == "ledgerbridge_reader",
+                    "create": False,
+                },
+            ]
+        )
+    return metadata
 
 
 def test_fingerprint_normalization_and_validation() -> None:
@@ -261,6 +464,117 @@ def test_v2_database_metadata_requires_trigger_and_grant_baseline() -> None:
     }
     with pytest.raises(BackupError, match="column grants"):
         _validate_restored_database(excess_column_grant, excess_column_grant.copy())
+
+
+def test_r1_database_metadata_verifies_role_acl_catalog_and_effective_privileges() -> None:
+    expected = _r1_database_metadata()
+    _validate_restored_database(expected, expected.copy())
+
+    app_fact_grant = {
+        **expected,
+        "r1_effective_table_privileges": [
+            {
+                **cast(list[dict[str, object]], expected["r1_effective_table_privileges"])[0],
+                "role": "ledgerbridge_app",
+                "select": True,
+            },
+            *cast(list[dict[str, object]], expected["r1_effective_table_privileges"])[1:],
+        ],
+    }
+    with pytest.raises(BackupError, match=r"ledgerbridge_app.*R1 table grant"):
+        _validate_restored_database(app_fact_grant, app_fact_grant.copy())
+
+    public_create = {
+        **expected,
+        "r1_schema_acl": [
+            {
+                "schema": "public",
+                "grantee": "PUBLIC",
+                "privilege": "CREATE",
+                "grantable": "NO",
+            }
+        ],
+    }
+    with pytest.raises(BackupError, match="schema CREATE"):
+        _validate_restored_database(public_create, public_create.copy())
+
+    public_function_execute = {
+        **expected,
+        "r1_effective_function_privileges": [
+            {
+                **row,
+                "execute": True,
+            }
+            if row.get("schema") == "public" and row.get("role") == "ledgerbridge_reader"
+            else row
+            for row in cast(list[dict[str, object]], expected["r1_effective_function_privileges"])
+        ],
+    }
+    with pytest.raises(BackupError, match="public validator"):
+        _validate_restored_database(public_function_execute, public_function_execute.copy())
+
+
+def test_r1_database_metadata_requires_closed_objects_and_default_acl() -> None:
+    expected = _r1_database_metadata()
+    missing_role = {
+        **expected,
+        "r1_role_matrix": cast(list[dict[str, object]], expected["r1_role_matrix"])[1:],
+    }
+    with pytest.raises(BackupError, match="role matrix"):
+        _validate_restored_database(missing_role, missing_role.copy())
+
+    missing_constraint = {
+        **expected,
+        "r1_constraints": cast(list[dict[str, object]], expected["r1_constraints"])[1:],
+    }
+    with pytest.raises(BackupError, match="constraints"):
+        _validate_restored_database(missing_constraint, missing_constraint.copy())
+
+    missing_trigger = {
+        **expected,
+        "r1_triggers": cast(list[dict[str, object]], expected["r1_triggers"])[1:],
+    }
+    with pytest.raises(BackupError, match="triggers"):
+        _validate_restored_database(missing_trigger, missing_trigger.copy())
+
+    missing_view = {
+        **expected,
+        "r1_views": cast(list[dict[str, object]], expected["r1_views"])[1:],
+    }
+    with pytest.raises(BackupError, match="views"):
+        _validate_restored_database(missing_view, missing_view.copy())
+
+    missing_function = {
+        **expected,
+        "r1_functions": cast(list[dict[str, object]], expected["r1_functions"])[1:],
+    }
+    with pytest.raises(BackupError, match="functions"):
+        _validate_restored_database(missing_function, missing_function.copy())
+
+    missing_function_privilege = {
+        **expected,
+        "r1_effective_function_privileges": cast(
+            list[dict[str, object]], expected["r1_effective_function_privileges"]
+        )[1:],
+    }
+    with pytest.raises(BackupError, match="effective function"):
+        _validate_restored_database(missing_function_privilege, missing_function_privilege.copy())
+
+    default_acl_drift = {
+        **expected,
+        "r1_default_acls": [
+            {
+                "owner": "ledgerbridge_owner",
+                "schema": "public",
+                "object_type": "r",
+                "grantee": "PUBLIC",
+                "privilege": "SELECT",
+                "grantable": "NO",
+            }
+        ],
+    }
+    with pytest.raises(BackupError, match="default ACL"):
+        _validate_restored_database(default_acl_drift, default_acl_drift.copy())
 
 
 def test_artifact_archive_metadata_counts_published_and_staging_bytes(

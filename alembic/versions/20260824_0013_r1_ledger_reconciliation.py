@@ -273,6 +273,53 @@ def upgrade() -> None:
     )
     op.execute(
         """
+        CREATE FUNCTION public.r1_validate_journal_attribution_entity()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path = pg_catalog
+        AS $function$
+        DECLARE
+            v_entry_id uuid;
+            v_entry_entity uuid;
+            v_attribution_entity uuid;
+        BEGIN
+            IF TG_TABLE_NAME = 'journal_entry_attribution' THEN
+                v_entry_id := NEW.entry_id;
+                v_attribution_entity := NEW.entity_id;
+            ELSE
+                v_entry_id := NEW.id;
+                SELECT ja.entity_id
+                  INTO v_attribution_entity
+                  FROM public.journal_entry_attribution AS ja
+                 WHERE ja.entry_id = v_entry_id;
+                IF NOT FOUND THEN
+                    RETURN NEW;
+                END IF;
+            END IF;
+            SELECT je.entity_id
+              INTO v_entry_entity
+              FROM public.journal_entry AS je
+             WHERE je.id = v_entry_id;
+            IF v_entry_entity IS DISTINCT FROM v_attribution_entity THEN
+                RAISE EXCEPTION 'journal entry attribution must remain in the entry entity'
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+            RETURN NEW;
+        END
+        $function$;
+        CREATE CONSTRAINT TRIGGER r1_journal_attribution_entity
+        AFTER INSERT ON public.journal_entry_attribution
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW EXECUTE FUNCTION public.r1_validate_journal_attribution_entity();
+        CREATE CONSTRAINT TRIGGER r1_journal_entry_attribution_entity
+        AFTER INSERT OR UPDATE OF entity_id ON public.journal_entry
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW EXECUTE FUNCTION public.r1_validate_journal_attribution_entity();
+        """
+    )
+    op.execute(
+        """
         DO $grant$
         DECLARE role_name text;
         BEGIN
@@ -290,6 +337,24 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     bind = op.get_bind()
+    if bind.execute(
+        sa.text(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                  FROM public.reconciliation_leg
+                 WHERE posting_id IS NOT NULL
+                    OR is_primary IS NOT NULL
+                    OR entity_id IS NOT NULL
+                    OR business_unit_id IS NOT NULL
+                    OR accounting_month IS NOT NULL
+            )
+            """
+        )
+    ).scalar_one():
+        raise RuntimeError(
+            "R1 reconciliation-leg columns contain data and cannot be removed by downgrade"
+        )
     tables = (
         "reconciliation_snapshot_suspense",
         "reconciliation_snapshot_proposal",
@@ -308,6 +373,11 @@ def downgrade() -> None:
         "DROP TRIGGER IF EXISTS r1_posting_attribution_posted_guard ON public.posting_attribution"
     )
     op.execute("DROP FUNCTION IF EXISTS public.r1_posted_attribution_immutable()")
+    op.execute("DROP TRIGGER IF EXISTS r1_journal_entry_attribution_entity ON public.journal_entry")
+    op.execute(
+        "DROP TRIGGER IF EXISTS r1_journal_attribution_entity ON public.journal_entry_attribution"
+    )
+    op.execute("DROP FUNCTION IF EXISTS public.r1_validate_journal_attribution_entity()")
     for table in tables:
         op.execute(f"DROP TRIGGER IF EXISTS r1_{table}_append_only_trigger ON public.{table}")
         op.execute(f"DROP FUNCTION IF EXISTS public.r1_{table}_append_only()")

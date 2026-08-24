@@ -402,3 +402,24 @@ ingestion require their later explicit gates.
   and update the legacy downgrade assertion. Hosted CI run `32721624365` is
   green across `secrets`, `quality`, and `compose`.
 - No merge, production role migration, real data read, or deployment is authorized.
+
+## R1 Migration C security-remediation checkpoint (2026-08-24)
+
+- Independent review findings (1 HIGH, 2 MEDIUM) are addressed fail-closed:
+  direct reader SELECT on all eight projection views is revoked; only scoped
+  SECURITY DEFINER functions remain executable by `ledgerbridge_reader`.
+- `ledgerbridge_backup` is now covered by runtime role, membership, ownership,
+  database/default ACL, and internal-read privilege checks. When present it is
+  optional and receives CONNECT only.
+- Zero-attribution legacy POSTED entries no longer silently opt in to R1; the
+  hardening upgrade rejects incomplete attribution. Candidate contract width is
+  corrected to fit the fixed 25-character wire value.
+- Windows full suite: **474 passed / 188 skipped / 1 warning**; strict mypy,
+  Ruff, compileall, offline lock, and diff-check pass. Hermes PostgreSQL 15
+  targeted security regressions all pass. The complete R1 migration file still
+  has 20 existing contract/fixture expectation failures; they are tracked in
+  the remediation report and are not declared green.
+- Remediation report:
+  `docs/reviews/2026-08-24-r1-migration-c-security-remediation-codex.md`.
+  No merge, production role migration, real data read, or deployment is
+  authorized.

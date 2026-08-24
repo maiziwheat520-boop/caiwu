@@ -279,3 +279,16 @@ slot until the underlying call actually returns, and saturated work fails
 closed with `TIMEOUT`. This bounds thread growth; hostile real Connectors still
 require killable process isolation and a reviewed signed manifest before
 enablement.
+
+## R1 Migration C security boundary update (2026-08-24)
+
+The R1 reader surface is now fail-closed for the independent security-review
+findings. Evidence-import roles do not receive direct access to the eight
+`internal_read` projection views; the external reader can use only the scoped
+SECURITY DEFINER functions with an explicit entity/business-unit and audit
+horizon contract. `ledgerbridge_backup`, when deployed, is checked for
+unprivileged NOINHERIT role attributes, memberships, object ownership and
+database/default ACL drift before it receives CONNECT. A POSTED Core entry with
+zero R1 attribution is not treated as R1-complete. These changes do not enable
+real evidence ingestion, reader bootstrap, connector registration, or
+production migration.

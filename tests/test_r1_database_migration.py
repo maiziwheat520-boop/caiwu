@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -46,6 +48,609 @@ RUNTIME_ROLES = (
     "ledgerbridge_worker",
     "ledgerbridge_app",
 )
+
+
+def _sqlstate(error: BaseException) -> str | None:
+    original = getattr(error, "orig", error)
+    return cast(str | None, getattr(original, "sqlstate", getattr(original, "pgcode", None)))
+
+
+def _assert_db_rejection(
+    engine: Engine,
+    statements: Sequence[tuple[str, dict[str, Any] | None]],
+    *,
+    sqlstate: str,
+    message: str,
+) -> None:
+    """Assert one rejected write in its own savepoint/transaction.
+
+    PostgreSQL marks a transaction failed after a constraint error.  Every
+    negative case therefore gets a fresh outer transaction and savepoint, and
+    deferred R1 triggers are forced before the savepoint is rolled back.  This
+    prevents a later ``InFailedSqlTransaction`` from masquerading as the
+    expected rejection.
+    """
+
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        savepoint = connection.begin_nested()
+        try:
+            with pytest.raises(SQLAlchemyError) as raised:
+                for statement, parameters in statements:
+                    connection.execute(text(statement), parameters or {})
+                connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+            assert _sqlstate(raised.value) == sqlstate
+            assert message in str(getattr(raised.value, "orig", raised.value))
+        finally:
+            if savepoint.is_active:
+                savepoint.rollback()
+            if transaction.is_active:
+                transaction.rollback()
+
+
+def _migration_owner_url() -> Any:
+    value = os.environ.get("LEDGERBRIDGE_MIGRATION_DATABASE_URL")
+    if value is None:
+        pytest.skip("PostgreSQL integration tests require LEDGERBRIDGE_MIGRATION_DATABASE_URL")
+    return create_engine(value).url
+
+
+@contextmanager
+def _legacy_r1_database(*, reader: bool = True) -> Iterator[str]:
+    """Create a disposable database at 0013 for an isolated upgrade case."""
+
+    owner_url = _migration_owner_url()
+    database_name = f"ledgerbridge_r1_legacy_{uuid4().hex[:12]}"
+    maintenance_engine = create_engine(
+        owner_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
+    )
+    created_roles: list[str] = []
+    try:
+        with maintenance_engine.connect() as connection:
+            existing = set(
+                connection.execute(
+                    text("SELECT rolname FROM pg_roles WHERE rolname = ANY(:roles)"),
+                    {"roles": list(RUNTIME_ROLES)},
+                ).scalars()
+            )
+            required_roles = (
+                RUNTIME_ROLES
+                if reader
+                else tuple(role for role in RUNTIME_ROLES if role != "ledgerbridge_reader")
+            )
+            for role in required_roles:
+                if role in existing:
+                    continue
+                connection.exec_driver_sql(
+                    f"CREATE ROLE {role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                    "NOINHERIT NOREPLICATION NOBYPASSRLS"
+                )
+                created_roles.append(role)
+            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+        temporary_url = owner_url.set(database=database_name)
+        config = Config("alembic.ini")
+        config.attributes["database_url"] = temporary_url.render_as_string(hide_password=False)
+        command.upgrade(config, "20260824_0013")
+        yield temporary_url.render_as_string(hide_password=False)
+    finally:
+        with maintenance_engine.connect() as connection:
+            connection.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :database_name"
+                ),
+                {"database_name": database_name},
+            )
+            connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+            for role in reversed(created_roles):
+                connection.execute(text(f"DROP ROLE IF EXISTS {role}"))
+        maintenance_engine.dispose()
+
+
+def _upgrade_config(database_url: str) -> Config:
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = database_url
+    return config
+
+
+def _legacy_candidate_seed(
+    connection: Connection,
+    *,
+    entity_id: UUID | None = None,
+    evidence_entity_id: UUID | None = None,
+    status: str = "INCOMPLETE",
+    source_record_id: UUID | None = None,
+    audit_payload: dict[str, object] | None = None,
+) -> dict[str, Any]:
+    """Insert a structurally valid 0013 Candidate graph for one preflight case."""
+
+    entity_id = entity_id or uuid4()
+    evidence_entity_id = evidence_entity_id or entity_id
+    unit_id = uuid4()
+    evidence_ref = uuid4()
+    category_id = uuid4()
+    candidate_id = uuid4()
+    operation_id = uuid4()
+    event_ref = uuid4()
+    source_event_ref = uuid4()
+    now = datetime.now(UTC)
+    connection.execute(
+        text(
+            "INSERT INTO public.entity (id, entity_type, name) VALUES "
+            "(:entity, 'COMPANY', :entity_name), (:evidence_entity, 'COMPANY', :other_name) "
+            "ON CONFLICT (id) DO NOTHING"
+        ),
+        {
+            "entity": entity_id,
+            "evidence_entity": evidence_entity_id,
+            "entity_name": "legacy candidate entity",
+            "other_name": "legacy evidence entity",
+        },
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.business_unit (id, entity_id, ref, label) "
+            "VALUES (:unit, :entity, :ref, 'Legacy Unit')"
+        ),
+        {"unit": unit_id, "entity": evidence_entity_id, "ref": f"u-{unit_id.hex[:8]}"},
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.reporting_category (id, entity_id, code, label) "
+            "VALUES (:category, :entity, 'legacy-category', 'Legacy Category')"
+        ),
+        {"category": category_id, "entity": entity_id},
+    )
+    evidence_audit = _append_audit_event(
+        connection,
+        "evidence.object.create",
+        {
+            "evidence_ref": str(evidence_ref),
+            "entity_id": str(evidence_entity_id),
+            "business_unit_id": str(unit_id),
+        },
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.evidence_object "
+            "(evidence_ref, entity_id, business_unit_id, media_type, display_name, "
+            "plaintext_sha256, plaintext_size, audit_event_id) VALUES "
+            "(:evidence, :entity, :unit, 'application/pdf', 'legacy.pdf', :digest, 1, :audit)"
+        ),
+        {
+            "evidence": evidence_ref,
+            "entity": evidence_entity_id,
+            "unit": unit_id,
+            "digest": hashlib.sha256(b"legacy").digest(),
+            "audit": evidence_audit,
+        },
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.candidate (id, short_id, entity_id, contract_version, created_at) "
+            "VALUES (:candidate, :short_id, :entity, 'ledgerbridge.candidate.v1', :now)"
+        ),
+        {
+            "candidate": candidate_id,
+            "short_id": "C-" + candidate_id.hex[:8].upper(),
+            "entity": entity_id,
+            "now": now,
+        },
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.candidate_source "
+            "(candidate_id, ingest_channel_id, source_system_id, source_event_ref, "
+            "source_record_id, display_label) VALUES "
+            "(:candidate, 'synthetic_upload', 'synthetic', :source_event, :source_record, "
+            "'legacy source')"
+        ),
+        {
+            "candidate": candidate_id,
+            "source_event": source_event_ref,
+            "source_record": source_record_id,
+        },
+    )
+    if status in {"INCOMPLETE", "IGNORED"}:
+        connection.execute(
+            text(
+                "INSERT INTO public.candidate_revision "
+                "(candidate_id, revision, status, currency, summary, confidence_basis_points, "
+                "created_at, updated_at) VALUES (:candidate, 1, :status, 'CNY', "
+                "'legacy candidate', 100, :now, :now)"
+            ),
+            {"candidate": candidate_id, "status": status, "now": now},
+        )
+    else:
+        connection.execute(
+            text(
+                "INSERT INTO public.candidate_revision "
+                "(candidate_id, revision, status, business_unit_id, "
+                "business_unit_ref_snapshot, business_unit_label_snapshot, category_id, "
+                "category_code_snapshot, category_label_snapshot, amount_minor, currency, "
+                "accounting_month, summary, confidence_basis_points, created_at, updated_at) "
+                "VALUES (:candidate, 1, :status, :unit, :unit_ref, 'Legacy Unit', :category, "
+                "'legacy-category', 'Legacy Category', 1, 'CNY', DATE '2026-08-01', "
+                "'legacy candidate', 100, :now, :now)"
+            ),
+            {
+                "candidate": candidate_id,
+                "status": status,
+                "unit": unit_id,
+                "unit_ref": f"u-{unit_id.hex[:8]}",
+                "category": category_id,
+                "now": now,
+            },
+        )
+    connection.execute(
+        text(
+            "INSERT INTO public.candidate_evidence "
+            "(candidate_id, ordinal, evidence_ref, kind, media_type_snapshot, "
+            "display_name_snapshot, download_available) VALUES "
+            "(:candidate, 0, :evidence, 'ATTACHMENT', 'application/pdf', 'legacy.pdf', true)"
+        ),
+        {"candidate": candidate_id, "evidence": evidence_ref},
+    )
+    if status == "INCOMPLETE":
+        connection.execute(
+            text(
+                "INSERT INTO public.candidate_blocker "
+                "(candidate_id, revision, ordinal, code, message, field) VALUES "
+                "(:candidate, 1, :ordinal, :code, :message, :field)"
+            ),
+            [
+                {
+                    "candidate": candidate_id,
+                    "ordinal": ordinal,
+                    "code": code,
+                    "message": message,
+                    "field": field,
+                }
+                for ordinal, (code, message, field) in enumerate(
+                    (
+                        ("MISSING_BUSINESS_UNIT", "missing business unit", "business_unit"),
+                        ("MISSING_CATEGORY", "missing category", "category"),
+                        ("MISSING_AMOUNT", "missing amount", "amount_minor"),
+                        (
+                            "MISSING_ACCOUNTING_MONTH",
+                            "missing accounting month",
+                            "accounting_month",
+                        ),
+                    )
+                )
+            ],
+        )
+    payload: dict[str, object] = {
+        "event_ref": str(event_ref),
+        "candidate_id": str(candidate_id),
+        "candidate_ref": str(candidate_id),
+        "operation_id": str(operation_id),
+        "command_fingerprint": (operation_id.bytes * 2).hex(),
+        "event_type": "CREATE",
+        "action": None,
+        "from_revision": None,
+        "to_revision": 1,
+        "from_status": None,
+        "to_status": status,
+        "field_changes": [],
+        "conflict_resolutions": [],
+        "actor_ref": "legacy-test",
+        "reason": "legacy candidate",
+        "derived_candidate_id": None,
+    }
+    audit_event = _append_audit_event(
+        connection,
+        "candidate.create",
+        payload if audit_payload is None else audit_payload,
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.candidate_event "
+            "(event_ref, candidate_id, operation_id, command_fingerprint, event_type, to_revision, "
+            "to_status, actor_ref, reason, occurred_at, audit_event_id) VALUES "
+            "(:event_ref, :candidate, :operation, :fingerprint, 'CREATE', 1, :status, "
+            "'legacy-test', 'legacy candidate', :now, :audit)"
+        ),
+        {
+            "event_ref": event_ref,
+            "candidate": candidate_id,
+            "operation": operation_id,
+            "fingerprint": operation_id.bytes * 2,
+            "status": status,
+            "now": now,
+            "audit": audit_event,
+        },
+    )
+    return {
+        "entity": entity_id,
+        "evidence_entity": evidence_entity_id,
+        "unit": unit_id,
+        "category": category_id,
+        "evidence": evidence_ref,
+        "candidate": candidate_id,
+        "event": event_ref,
+        "operation": operation_id,
+        "now": now,
+    }
+
+
+def _legacy_transition(
+    connection: Connection,
+    facts: dict[str, Any],
+    *,
+    event_type: str,
+    from_status: str,
+    to_status: str,
+    derived_candidate_id: UUID | None = None,
+    add_field_change: bool = False,
+) -> None:
+    candidate_id = cast(UUID, facts["candidate"])
+    revision = (
+        int(
+            connection.execute(
+                text(
+                    "SELECT max(revision) FROM public.candidate_revision WHERE candidate_id = :candidate"
+                ),
+                {"candidate": candidate_id},
+            ).scalar_one()
+        )
+        + 1
+    )
+    operation_id = uuid4()
+    event_ref = uuid4()
+    now = datetime.now(UTC)
+    action = event_type
+    previous = connection.execute(
+        text(
+            "SELECT business_unit_id, business_unit_ref_snapshot, "
+            "business_unit_label_snapshot, category_id, category_code_snapshot, "
+            "category_label_snapshot, amount_minor, accounting_month "
+            "FROM public.candidate_revision WHERE candidate_id = :candidate "
+            "AND revision = :revision"
+        ),
+        {"candidate": candidate_id, "revision": revision - 1},
+    ).one()
+    if to_status in {"INCOMPLETE", "IGNORED"}:
+        connection.execute(
+            text(
+                "INSERT INTO public.candidate_revision "
+                "(candidate_id, revision, status, currency, summary, confidence_basis_points, "
+                "created_at, updated_at) VALUES (:candidate, :revision, :status, 'CNY', "
+                "'legacy candidate', 100, :now, :now)"
+            ),
+            {"candidate": candidate_id, "revision": revision, "status": to_status, "now": now},
+        )
+    else:
+        connection.execute(
+            text(
+                "INSERT INTO public.candidate_revision "
+                "(candidate_id, revision, status, business_unit_id, "
+                "business_unit_ref_snapshot, business_unit_label_snapshot, category_id, "
+                "category_code_snapshot, category_label_snapshot, amount_minor, currency, "
+                "accounting_month, summary, confidence_basis_points, created_at, updated_at) "
+                "VALUES (:candidate, :revision, :status, :unit, :unit_ref, :unit_label, "
+                ":category, :category_code, :category_label, :amount, 'CNY', :month, "
+                "'legacy candidate', 100, :now, :now)"
+            ),
+            {
+                "candidate": candidate_id,
+                "revision": revision,
+                "status": to_status,
+                "unit": previous.business_unit_id or facts["unit"],
+                "unit_ref": previous.business_unit_ref_snapshot or f"u-{facts['unit'].hex[:8]}",
+                "unit_label": previous.business_unit_label_snapshot or "Legacy Unit",
+                "category": previous.category_id or facts["category"],
+                "category_code": previous.category_code_snapshot or "legacy-category",
+                "category_label": previous.category_label_snapshot or "Legacy Category",
+                "amount": previous.amount_minor if previous.amount_minor is not None else 1,
+                "month": previous.accounting_month or datetime(2026, 8, 1).date(),
+                "now": now,
+            },
+        )
+    payload = {
+        "event_ref": str(event_ref),
+        "candidate_id": str(candidate_id),
+        "candidate_ref": str(candidate_id),
+        "operation_id": str(operation_id),
+        "command_fingerprint": (operation_id.bytes * 2).hex(),
+        "event_type": event_type,
+        "action": action,
+        "from_revision": revision - 1,
+        "to_revision": revision,
+        "from_status": from_status,
+        "to_status": to_status,
+        "field_changes": [],
+        "conflict_resolutions": [],
+        "actor_ref": "legacy-test",
+        "reason": "legacy transition",
+        "derived_candidate_id": str(derived_candidate_id) if derived_candidate_id else None,
+    }
+    audit_event = _append_audit_event(connection, "candidate.transition", payload)
+    connection.execute(
+        text(
+            "INSERT INTO public.candidate_event "
+            "(event_ref, candidate_id, operation_id, command_fingerprint, event_type, action, "
+            "from_revision, to_revision, from_status, to_status, actor_ref, reason, "
+            "derived_candidate_id, occurred_at, audit_event_id) VALUES "
+            "(:event_ref, :candidate, :operation, :fingerprint, :event_type, :action, "
+            ":from_revision, :to_revision, :from_status, :to_status, 'legacy-test', "
+            "'legacy transition', :derived, :now, :audit)"
+        ),
+        {
+            "event_ref": event_ref,
+            "candidate": candidate_id,
+            "operation": operation_id,
+            "fingerprint": operation_id.bytes * 2,
+            "event_type": event_type,
+            "action": action,
+            "from_revision": revision - 1,
+            "to_revision": revision,
+            "from_status": from_status,
+            "to_status": to_status,
+            "derived": derived_candidate_id,
+            "now": now,
+            "audit": audit_event,
+        },
+    )
+    if add_field_change:
+        connection.execute(
+            text(
+                "INSERT INTO public.candidate_field_change "
+                "(event_ref, field, previous_value, new_value) VALUES "
+                "(:event, 'amount_minor', '1'::jsonb, '2'::jsonb)"
+            ),
+            {"event": event_ref},
+        )
+
+
+def _assert_legacy_upgrade_rejected(
+    seed: Callable[[Connection], None],
+    *,
+    message: str,
+    sqlstate: str = "23000",
+) -> None:
+    with _legacy_r1_database(reader=False) as database_url:
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            seed(connection)
+        with pytest.raises(SQLAlchemyError) as raised:
+            command.upgrade(_upgrade_config(database_url), "20260824_0014")
+        assert _sqlstate(raised.value) == sqlstate
+        assert message in str(getattr(raised.value, "orig", raised.value))
+        engine.dispose()
+
+
+@contextmanager
+def _hardened_r1_database() -> Iterator[str]:
+    with _legacy_r1_database(reader=True) as database_url:
+        command.upgrade(_upgrade_config(database_url), "20260824_0014")
+        yield database_url
+
+
+@contextmanager
+def _temporarily_privileged_role(database_url: str, role: str) -> Iterator[None]:
+    engine = create_engine(database_url)
+    maintenance = create_engine(engine.url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    try:
+        with maintenance.connect() as connection:
+            state = connection.execute(
+                text(
+                    "SELECT rolsuper, rolcreatedb, rolcreaterole, rolinherit, "
+                    "rolreplication, rolbypassrls FROM pg_roles WHERE rolname = :role"
+                ),
+                {"role": role},
+            ).one()
+            connection.exec_driver_sql(f"ALTER ROLE {role} SUPERUSER")
+        try:
+            yield
+        finally:
+            clauses = [
+                "SUPERUSER" if state[0] else "NOSUPERUSER",
+                "CREATEDB" if state[1] else "NOCREATEDB",
+                "CREATEROLE" if state[2] else "NOCREATEROLE",
+                "INHERIT" if state[3] else "NOINHERIT",
+                "REPLICATION" if state[4] else "NOREPLICATION",
+                "BYPASSRLS" if state[5] else "NOBYPASSRLS",
+            ]
+            with maintenance.connect() as connection:
+                connection.exec_driver_sql(f"ALTER ROLE {role} {' '.join(clauses)}")
+    finally:
+        maintenance.dispose()
+        engine.dispose()
+
+
+@contextmanager
+def _temporarily_runtime_membership(database_url: str, role: str) -> Iterator[None]:
+    engine = create_engine(database_url)
+    maintenance = create_engine(engine.url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    with maintenance.connect() as connection:
+        owner = str(connection.execute(text("SELECT current_user")).scalar_one())
+        was_member = bool(
+            connection.execute(
+                text(
+                    "SELECT EXISTS (SELECT 1 FROM pg_auth_members m "
+                    "JOIN pg_roles granted ON granted.oid = m.roleid "
+                    "JOIN pg_roles member ON member.oid = m.member "
+                    "WHERE granted.rolname = :role AND member.rolname = :owner)"
+                ),
+                {"role": role, "owner": owner},
+            ).scalar_one()
+        )
+        if not was_member:
+            connection.exec_driver_sql(f"GRANT {role} TO {owner}")
+    try:
+        yield
+    finally:
+        if not was_member:
+            with maintenance.connect() as connection:
+                connection.exec_driver_sql(f"REVOKE {role} FROM {owner}")
+        maintenance.dispose()
+        engine.dispose()
+
+
+@contextmanager
+def _temporary_backup_role(database_url: str, attributes: str) -> Iterator[None]:
+    engine = create_engine(database_url)
+    maintenance = create_engine(engine.url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    try:
+        with maintenance.connect() as connection:
+            connection.exec_driver_sql(
+                "CREATE ROLE ledgerbridge_backup "
+                "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT "
+                "NOREPLICATION NOBYPASSRLS"
+            )
+            if attributes:
+                connection.exec_driver_sql(f"ALTER ROLE ledgerbridge_backup {attributes}")
+        yield
+    finally:
+        with maintenance.connect() as connection:
+            database_name = engine.url.database
+            connection.exec_driver_sql(
+                f'REVOKE ALL ON DATABASE "{database_name}" FROM ledgerbridge_backup'
+            )
+            connection.exec_driver_sql("DROP ROLE IF EXISTS ledgerbridge_backup")
+        maintenance.dispose()
+        engine.dispose()
+
+
+@contextmanager
+def _temporarily_stale_connect(database_url: str) -> Iterator[None]:
+    engine = create_engine(database_url)
+    maintenance = create_engine(engine.url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    role = "ledgerbridge_stale_" + uuid4().hex[:8]
+    database_name = engine.url.database
+    try:
+        with maintenance.connect() as connection:
+            connection.exec_driver_sql(
+                f"CREATE ROLE {role} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                "NOINHERIT NOREPLICATION NOBYPASSRLS"
+            )
+            connection.exec_driver_sql(f'GRANT CONNECT ON DATABASE "{database_name}" TO {role}')
+        yield
+    finally:
+        with maintenance.connect() as connection:
+            connection.exec_driver_sql(f'REVOKE ALL ON DATABASE "{database_name}" FROM {role}')
+            connection.exec_driver_sql(f"DROP ROLE IF EXISTS {role}")
+        maintenance.dispose()
+        engine.dispose()
+
+
+def _assert_acl_upgrade_rejected(
+    mutate: Callable[[str], Any], *, message: str, sqlstate: str = "28000"
+) -> None:
+    with _hardened_r1_database() as database_url:
+        mutate(database_url)
+        with pytest.raises(SQLAlchemyError) as raised:
+            command.upgrade(_upgrade_config(database_url), "head")
+        assert _sqlstate(raised.value) == sqlstate
+        assert message in str(getattr(raised.value, "orig", raised.value))
+
+
+def _assert_head_upgrade_rejected(database_url: str, *, message: str) -> None:
+    with pytest.raises(SQLAlchemyError) as raised:
+        command.upgrade(_upgrade_config(database_url), "head")
+    assert _sqlstate(raised.value) == "28000"
+    assert message in str(getattr(raised.value, "orig", raised.value))
 
 
 @pytest.fixture(scope="module")
@@ -147,6 +752,7 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
     entity_id = uuid4()
     other_entity_id = uuid4()
     business_unit_id = uuid4()
+    category_id = uuid4()
     evidence_ref = uuid4()
     old_blob_ref = uuid4()
     active_blob_ref = uuid4()
@@ -167,6 +773,13 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
             "VALUES (:id, :entity, 'unit-a', 'Unit A')"
         ),
         {"id": business_unit_id, "entity": entity_id},
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.reporting_category (id, entity_id, code, label) "
+            "VALUES (:id, :entity, 'category-a', 'Category A')"
+        ),
+        {"id": category_id, "entity": entity_id},
     )
     evidence_event = _append_audit_event(
         connection,
@@ -328,7 +941,7 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
             "from_revision": None,
             "to_revision": 1,
             "from_status": None,
-            "to_status": "INCOMPLETE",
+            "to_status": "PENDING",
             "field_changes": [],
             "conflict_resolutions": [],
             "actor_ref": "r1-test",
@@ -359,11 +972,14 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
     connection.execute(
         text(
             "INSERT INTO public.candidate_revision "
-            "(candidate_id, revision, status, currency, summary, confidence_basis_points, "
-            "created_at, updated_at) VALUES (:candidate, 1, 'INCOMPLETE', 'CNY', "
-            "'unassigned fixture candidate', 100, :now, :now)"
+            "(candidate_id, revision, status, business_unit_id, business_unit_ref_snapshot, "
+            "business_unit_label_snapshot, category_id, category_code_snapshot, "
+            "category_label_snapshot, amount_minor, currency, accounting_month, summary, "
+            "confidence_basis_points, created_at, updated_at) VALUES (:candidate, 1, 'PENDING', "
+            ":unit, 'unit-a', 'Unit A', :category, 'category-a', 'Category A', 1234, 'CNY', "
+            "DATE '2026-08-01', 'assigned complete fixture candidate', 9500, :now, :now)"
         ),
-        {"candidate": candidate_id, "now": now},
+        {"candidate": candidate_id, "unit": business_unit_id, "category": category_id, "now": now},
     )
     connection.execute(
         text(
@@ -386,7 +1002,7 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
             "INSERT INTO public.candidate_event "
             "(event_ref, candidate_id, operation_id, command_fingerprint, event_type, to_revision, "
             "to_status, actor_ref, reason, occurred_at, audit_event_id) VALUES "
-            "(:event_ref, :candidate, :operation, :fingerprint, 'CREATE', 1, 'INCOMPLETE', 'r1-test', "
+            "(:event_ref, :candidate, :operation, :fingerprint, 'CREATE', 1, 'PENDING', 'r1-test', "
             "'fixture candidate', :now, :audit)"
         ),
         {
@@ -398,6 +1014,73 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
             "audit": candidate_event,
         },
     )
+    watermark = connection.execute(
+        text("SELECT sequence, hash FROM public.audit_event ORDER BY sequence DESC LIMIT 1")
+    ).one()
+    snapshot_ref = uuid4()
+    proposal_ref = uuid4()
+    suspense_ref = uuid4()
+    snapshot_event = _append_audit_event(
+        connection,
+        "reconciliation.snapshot",
+        {
+            "snapshot_ref": str(snapshot_ref),
+            "entity_id": str(entity_id),
+            "business_unit_id": str(business_unit_id),
+            "accounting_month": "2026-08-01",
+            "snapshot_revision": 1,
+            "ledger_audit_sequence": int(watermark.sequence),
+            "ledger_audit_hash": bytes(watermark.hash).hex(),
+            "posted_amount_minor": 1234,
+            "currency": "CNY",
+            "blocker_count": 1,
+            "proposal_count": 1,
+            "suspense_count": 1,
+        },
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.reconciliation_snapshot "
+            "(snapshot_ref, entity_id, business_unit_id, accounting_month, snapshot_revision, "
+            "ledger_audit_sequence, ledger_audit_hash, posted_amount_minor, currency, created_at, "
+            "audit_event_id) VALUES (:snapshot, :entity, :unit, DATE '2026-08-01', 1, :sequence, "
+            ":hash, 1234, 'CNY', :now, :audit)"
+        ),
+        {
+            "snapshot": snapshot_ref,
+            "entity": entity_id,
+            "unit": business_unit_id,
+            "sequence": int(watermark.sequence),
+            "hash": bytes(watermark.hash),
+            "now": now,
+            "audit": snapshot_event,
+        },
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.reconciliation_snapshot_blocker "
+            "(snapshot_ref, ordinal, code, message, field, evidence_ref) VALUES "
+            "(:snapshot, 0, 'MISSING_FIELD', 'fixture blocker', 'amount', :evidence)"
+        ),
+        {"snapshot": snapshot_ref, "evidence": evidence_ref},
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.reconciliation_snapshot_proposal "
+            "(snapshot_ref, proposal_ref, reconciliation_group_id, relation, status, amount_minor, "
+            "currency, amount_basis) VALUES (:snapshot, :proposal, NULL, '1:1', 'PROPOSED', "
+            "1234, 'CNY', 'PRIMARY_LEG')"
+        ),
+        {"snapshot": snapshot_ref, "proposal": proposal_ref},
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.reconciliation_snapshot_suspense "
+            "(snapshot_ref, suspense_ref, suspense_item_id, status, reason, amount_minor, currency) "
+            "VALUES (:snapshot, :suspense, NULL, 'OPEN', 'UNMATCHED', 1234, 'CNY')"
+        ),
+        {"snapshot": snapshot_ref, "suspense": suspense_ref},
+    )
     horizon = connection.execute(
         text("SELECT sequence, hash FROM public.audit_event ORDER BY sequence DESC LIMIT 1")
     ).one()
@@ -405,10 +1088,13 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
         "entity": entity_id,
         "other_entity": other_entity_id,
         "unit": business_unit_id,
+        "category": category_id,
         "evidence": evidence_ref,
         "old_blob": old_blob_ref,
         "active_blob": active_blob_ref,
         "candidate": candidate_id,
+        "snapshot": snapshot_ref,
+        "snapshot_watermark_sequence": int(watermark.sequence),
         "sequence": int(horizon.sequence),
         "hash": bytes(horizon.hash),
     }
@@ -635,6 +1321,1019 @@ def test_r1_fact_hardening_migration_is_identity_and_history_fail_closed() -> No
     assert "R1 fact hardening data prevents destructive downgrade" in source
 
 
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("status", "existing candidate event history has an invalid edge"),
+        ("blocker", "existing candidate blocker evidence is outside scope"),
+        ("null_shape", "existing candidate event history has an invalid edge"),
+        ("delta", "candidate field changes do not exactly match revisions"),
+        ("supersede", "candidate supersede requires one same-entity successor"),
+        ("provenance", "existing candidate source provenance is invalid"),
+    ],
+)
+def test_r1_legacy_candidate_upgrade_rejects_each_bad_history_shape(
+    case: str, message: str
+) -> None:
+    def seed(connection: Connection) -> None:
+        if case == "status":
+            _legacy_candidate_seed(connection, status="CONFIRMED")
+            return
+        if case == "blocker":
+            facts = _legacy_candidate_seed(connection)
+            other = _legacy_candidate_seed(connection)
+            connection.execute(
+                text(
+                    "INSERT INTO public.candidate_blocker "
+                    "(candidate_id, revision, ordinal, code, message, evidence_ref) VALUES "
+                    "(:candidate, 1, 0, 'EVIDENCE_INCOMPLETE', 'bad scope', :evidence)"
+                ),
+                {"candidate": facts["candidate"], "evidence": other["evidence"]},
+            )
+            return
+        if case == "null_shape":
+            facts = _legacy_candidate_seed(connection)
+            event_ref = cast(UUID, facts["event"])
+            operation_id = uuid4()
+            bad_payload = {
+                "event_ref": str(event_ref),
+                "candidate_id": str(facts["candidate"]),
+                "candidate_ref": str(facts["candidate"]),
+                "operation_id": str(operation_id),
+                "command_fingerprint": (operation_id.bytes * 2).hex(),
+                "event_type": "CREATE",
+                "action": "COMPLETE_FIELDS",
+                "from_revision": 0,
+                "to_revision": 1,
+                "from_status": "INCOMPLETE",
+                "to_status": "INCOMPLETE",
+                "field_changes": [],
+                "conflict_resolutions": [],
+                "actor_ref": "legacy-test",
+                "reason": "legacy candidate",
+                "derived_candidate_id": None,
+            }
+            bad_audit = _append_audit_event(connection, "candidate.create", bad_payload)
+            connection.exec_driver_sql("ALTER TABLE public.candidate_event DISABLE TRIGGER ALL")
+            connection.execute(
+                text(
+                    "UPDATE public.candidate_event SET operation_id = :operation, "
+                    "command_fingerprint = :fingerprint, action = 'COMPLETE_FIELDS', "
+                    "from_revision = 0, from_status = 'INCOMPLETE', audit_event_id = :audit "
+                    "WHERE event_ref = :event"
+                ),
+                {
+                    "operation": operation_id,
+                    "fingerprint": operation_id.bytes * 2,
+                    "audit": bad_audit,
+                    "event": event_ref,
+                },
+            )
+            connection.exec_driver_sql("ALTER TABLE public.candidate_event ENABLE TRIGGER ALL")
+            return
+        if case == "delta":
+            facts = _legacy_candidate_seed(connection, status="INCOMPLETE")
+            _legacy_transition(
+                connection,
+                facts,
+                event_type="COMPLETE_FIELDS",
+                from_status="INCOMPLETE",
+                to_status="PENDING",
+            )
+            return
+        if case == "supersede":
+            facts = _legacy_candidate_seed(connection, status="PENDING")
+            _legacy_transition(
+                connection,
+                facts,
+                event_type="CONFIRM",
+                from_status="PENDING",
+                to_status="CONFIRMED",
+            )
+            successor = _legacy_candidate_seed(connection, status="PENDING")
+            connection.exec_driver_sql("ALTER TABLE public.candidate DISABLE TRIGGER ALL")
+            connection.execute(
+                text(
+                    "UPDATE public.candidate SET supersedes_candidate_id = :candidate "
+                    "WHERE id = :successor"
+                ),
+                {"candidate": facts["candidate"], "successor": successor["candidate"]},
+            )
+            connection.exec_driver_sql("ALTER TABLE public.candidate ENABLE TRIGGER ALL")
+            _legacy_transition(
+                connection,
+                facts,
+                event_type="SUPERSEDE",
+                from_status="CONFIRMED",
+                to_status="SUPERSEDED",
+                derived_candidate_id=cast(UUID, successor["candidate"]),
+            )
+            return
+        assert case == "provenance"
+        facts = _legacy_candidate_seed(connection)
+        artifact_id = uuid4()
+        source_record_id = uuid4()
+        import_job_id = uuid4()
+        digest = bytes.fromhex("ab" * 32)
+        storage_key = "sha256/ab/" + "ab" + "/" + digest.hex()
+        artifact_audit = _append_audit_event(
+            connection,
+            "artifact.ingest",
+            {
+                "sha256": digest.hex(),
+                "byte_size": 3,
+                "storage_key": storage_key,
+                "source": "wrong-channel",
+                "original_filename_sha256": hashlib.sha256(b"legacy.csv").hexdigest(),
+                "media_type": "text/csv",
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.raw_artifact "
+                "(id, sha256, source, original_filename, media_type, byte_size, storage_key, "
+                "audit_event_id) VALUES (:id, :digest, 'wrong-channel', 'legacy.csv', 'text/csv', "
+                "3, :storage_key, :audit)"
+            ),
+            {
+                "id": artifact_id,
+                "digest": digest,
+                "storage_key": storage_key,
+                "audit": artifact_audit,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.import_job "
+                "(id, artifact_id, connector_name, connector_version, status) VALUES "
+                "(:job, :artifact, 'legacy', '1', 'PENDING')"
+            ),
+            {"job": import_job_id, "artifact": artifact_id},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.source_record "
+                "(id, artifact_id, import_job_id, record_locator, source, parser_version, "
+                "raw_fields, normalized_fields) VALUES (:id, :artifact, :job, 'row-1', "
+                "'wrong-source', 'legacy-1', '{}'::jsonb, '{}'::jsonb)"
+            ),
+            {"id": source_record_id, "artifact": artifact_id, "job": import_job_id},
+        )
+        connection.exec_driver_sql("ALTER TABLE public.candidate_source DISABLE TRIGGER ALL")
+        connection.execute(
+            text(
+                "UPDATE public.candidate_source SET source_record_id = :record "
+                "WHERE candidate_id = :candidate"
+            ),
+            {"record": source_record_id, "candidate": facts["candidate"]},
+        )
+        connection.exec_driver_sql("ALTER TABLE public.candidate_source ENABLE TRIGGER ALL")
+
+    _assert_legacy_upgrade_rejected(seed, message=message)
+
+
+def test_r1_legacy_upgrade_rejects_cross_transaction_typed_candidate_audit() -> None:
+    with _legacy_r1_database(reader=False) as database_url:
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            facts = _legacy_candidate_seed(connection, status="PENDING")
+        event_ref = uuid4()
+        operation_id = uuid4()
+        event_now = datetime.now(UTC)
+        payload = {
+            "event_ref": str(event_ref),
+            "candidate_id": str(facts["candidate"]),
+            "candidate_ref": str(facts["candidate"]),
+            "operation_id": str(operation_id),
+            "command_fingerprint": (operation_id.bytes * 2).hex(),
+            "event_type": "CONFIRM",
+            "action": "CONFIRM",
+            "from_revision": 1,
+            "to_revision": 2,
+            "from_status": "PENDING",
+            "to_status": "CONFIRMED",
+            "field_changes": [],
+            "conflict_resolutions": [],
+            "actor_ref": "legacy-test",
+            "reason": "cross transaction typed audit",
+            "derived_candidate_id": None,
+        }
+        with engine.begin() as connection:
+            audit_event = _append_audit_event(connection, "candidate.transition", payload)
+            connection.execute(
+                text(
+                    "INSERT INTO public.candidate_revision "
+                    "(candidate_id, revision, status, business_unit_id, "
+                    "business_unit_ref_snapshot, business_unit_label_snapshot, category_id, "
+                    "category_code_snapshot, category_label_snapshot, amount_minor, currency, "
+                    "accounting_month, summary, confidence_basis_points, created_at, updated_at) "
+                    "VALUES (:candidate, 2, 'CONFIRMED', :unit, :unit_ref, 'Legacy Unit', "
+                    ":category, 'legacy-category', 'Legacy Category', 1, 'CNY', DATE '2026-08-01', "
+                    "'legacy candidate', 100, :now, :now)"
+                ),
+                {
+                    "candidate": facts["candidate"],
+                    "unit": facts["unit"],
+                    "unit_ref": f"u-{facts['unit'].hex[:8]}",
+                    "category": facts["category"],
+                    "now": event_now,
+                },
+            )
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO public.candidate_event "
+                    "(event_ref, candidate_id, operation_id, command_fingerprint, event_type, "
+                    "action, from_revision, to_revision, from_status, to_status, actor_ref, "
+                    "reason, occurred_at, audit_event_id) VALUES (:event, :candidate, :operation, "
+                    ":fingerprint, 'CONFIRM', 'CONFIRM', 1, 2, 'PENDING', 'CONFIRMED', "
+                    "'legacy-test', 'cross transaction typed audit', :now, :audit)"
+                ),
+                {
+                    "event": event_ref,
+                    "candidate": facts["candidate"],
+                    "operation": operation_id,
+                    "fingerprint": operation_id.bytes * 2,
+                    "now": event_now,
+                    "audit": audit_event,
+                },
+            )
+        with pytest.raises(SQLAlchemyError) as raised:
+            command.upgrade(_upgrade_config(database_url), "20260824_0014")
+        assert _sqlstate(raised.value) == "23000"
+        assert "candidate event and its audited children must share one transaction" in str(
+            getattr(raised.value, "orig", raised.value)
+        )
+        engine.dispose()
+
+
+def test_r1_legacy_attribution_upgrade_rejects_cross_entity_and_posted_primary_gaps() -> None:
+    def seed(connection: Connection) -> None:
+        first = _legacy_candidate_seed(connection)
+        second = _legacy_candidate_seed(connection)
+        # The attribution tables are present in 0013 and accept these rows;
+        # 0014 must reject facts that silently cross entity boundaries.
+        entry_id = uuid4()
+        create_audit = _append_audit_event(connection, "journal.entry.create", {})
+        posted_audit = _append_audit_event(connection, "journal.entry.post", {})
+        connection.exec_driver_sql(
+            "ALTER TABLE public.journal_entry DISABLE TRIGGER ALL; "
+            "ALTER TABLE public.journal_entry_attribution DISABLE TRIGGER ALL"
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.journal_entry "
+                "(id, entity_id, status, occurred_at, origin, source_record_id, audit_event_id, "
+                "posted_audit_event_id) VALUES (:entry, :entity, 'POSTED', :occurred, 'legacy', "
+                "NULL, :create_audit, :posted_audit)"
+            ),
+            {
+                "entry": entry_id,
+                "entity": first["entity"],
+                "occurred": datetime.now(UTC),
+                "create_audit": create_audit,
+                "posted_audit": posted_audit,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.journal_entry_attribution "
+                "(entry_id, entity_id, business_unit_id, accounting_month) "
+                "VALUES (:entry, :entity, :unit, DATE '2026-08-01')"
+            ),
+            {"entry": entry_id, "entity": second["entity"], "unit": second["unit"]},
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE public.journal_entry_attribution ENABLE TRIGGER ALL; "
+            "ALTER TABLE public.journal_entry ENABLE TRIGGER ALL"
+        )
+
+    _assert_legacy_upgrade_rejected(seed, message="journal attribution entity is contradictory")
+
+
+@pytest.mark.parametrize(
+    ("primary_case", "message"),
+    [
+        ("null", "existing POSTED journal entry lacks one non-null primary account posting"),
+        ("zero", "existing POSTED journal entry lacks one non-null primary account posting"),
+        ("multiple", "existing POSTED journal entry lacks one non-null primary account posting"),
+    ],
+)
+def test_r1_legacy_posted_primary_shape_is_explicitly_required(
+    primary_case: str, message: str
+) -> None:
+    def seed(connection: Connection) -> None:
+        facts = _legacy_candidate_seed(connection)
+        category_id = uuid4()
+        account_one = uuid4()
+        account_two = uuid4()
+        entry_id = uuid4()
+        posting_one = uuid4()
+        posting_two = uuid4()
+        audit_event = _append_audit_event(connection, "journal.entry.create", {})
+        posted_audit_event = _append_audit_event(connection, "journal.entry.post", {})
+        connection.execute(
+            text(
+                "INSERT INTO public.reporting_category (id, entity_id, code, label) "
+                "VALUES (:id, :entity, 'legacy-expense', 'Legacy Expense')"
+            ),
+            {"id": category_id, "entity": facts["entity"]},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.account (id, entity_id, identifier, name, account_class) "
+                "VALUES (:one, :entity, 'legacy-one', 'Legacy One', 'EXPENSE'), "
+                "(:two, :entity, 'legacy-two', 'Legacy Two', 'ASSET')"
+            ),
+            {"one": account_one, "two": account_two, "entity": facts["entity"]},
+        )
+        primary = None if primary_case == "null" else account_one
+        if primary_case == "zero":
+            posting_accounts = [(posting_one, account_two, 1)]
+        elif primary_case == "multiple":
+            posting_accounts = [
+                (posting_one, account_one, 1),
+                (posting_two, account_one, -1),
+            ]
+        else:
+            posting_accounts = [(posting_one, account_one, 1)]
+        # These are legacy rows; disable the old write-time checks so the
+        # 0014 read-only preflight, rather than an insert trigger, diagnoses
+        # the contradictory historical fact.
+        connection.exec_driver_sql(
+            "ALTER TABLE public.journal_entry DISABLE TRIGGER ALL; "
+            "ALTER TABLE public.posting DISABLE TRIGGER ALL; "
+            "ALTER TABLE public.journal_entry_attribution DISABLE TRIGGER ALL; "
+            "ALTER TABLE public.posting_attribution DISABLE TRIGGER ALL"
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.journal_entry "
+                "(id, entity_id, occurred_at, origin, status, primary_account_id, audit_event_id, "
+                "posted_audit_event_id) VALUES (:entry, :entity, :occurred, 'legacy', 'POSTED', "
+                ":primary, :audit, :posted_audit)"
+            ),
+            {
+                "entry": entry_id,
+                "entity": facts["entity"],
+                "occurred": datetime.now(UTC),
+                "primary": primary,
+                "audit": audit_event,
+                "posted_audit": posted_audit_event,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.journal_entry_attribution "
+                "(entry_id, entity_id, business_unit_id, accounting_month) "
+                "VALUES (:entry, :entity, :unit, DATE '2026-08-01')"
+            ),
+            {"entry": entry_id, "entity": facts["entity"], "unit": facts["unit"]},
+        )
+        for posting_id, account_id, amount in posting_accounts:
+            connection.execute(
+                text(
+                    "INSERT INTO public.posting (id, entry_id, account_id, amount_minor, currency) "
+                    "VALUES (:posting, :entry, :account, :amount, 'CNY')"
+                ),
+                {
+                    "posting": posting_id,
+                    "entry": entry_id,
+                    "account": account_id,
+                    "amount": amount,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.posting_attribution "
+                    "(posting_id, reporting_category_id, category_code_snapshot, "
+                    "category_label_snapshot) VALUES (:posting, :category, 'legacy-expense', "
+                    "'Legacy Expense')"
+                ),
+                {"posting": posting_id, "category": category_id},
+            )
+        connection.exec_driver_sql(
+            "ALTER TABLE public.posting_attribution ENABLE TRIGGER ALL; "
+            "ALTER TABLE public.journal_entry_attribution ENABLE TRIGGER ALL; "
+            "ALTER TABLE public.posting ENABLE TRIGGER ALL; "
+            "ALTER TABLE public.journal_entry ENABLE TRIGGER ALL"
+        )
+
+    _assert_legacy_upgrade_rejected(seed, message=message)
+
+
+def test_r1_legacy_posted_without_scope_attribution_is_rejected() -> None:
+    def seed(connection: Connection) -> None:
+        facts = _legacy_candidate_seed(connection)
+        account_id = uuid4()
+        entry_id = uuid4()
+        posting_id = uuid4()
+        entry_audit = _append_audit_event(connection, "journal.entry.create", {})
+        posted_audit = _append_audit_event(connection, "journal.entry.post", {})
+        connection.exec_driver_sql(
+            "ALTER TABLE public.journal_entry DISABLE TRIGGER ALL; "
+            "ALTER TABLE public.posting DISABLE TRIGGER ALL; "
+            "ALTER TABLE public.journal_entry_attribution DISABLE TRIGGER ALL; "
+            "ALTER TABLE public.posting_attribution DISABLE TRIGGER ALL"
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.account "
+                "(id, entity_id, identifier, name, account_class) "
+                "VALUES (:account, :entity, 'legacy-unattributed', 'Legacy Unattributed', 'EXPENSE')"
+            ),
+            {"account": account_id, "entity": facts["entity"]},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.journal_entry "
+                "(id, entity_id, occurred_at, origin, status, primary_account_id, "
+                "audit_event_id, posted_audit_event_id) VALUES "
+                "(:entry, :entity, :occurred, 'legacy', 'POSTED', :account, :audit, :posted)"
+            ),
+            {
+                "entry": entry_id,
+                "entity": facts["entity"],
+                "occurred": datetime.now(UTC),
+                "account": account_id,
+                "audit": entry_audit,
+                "posted": posted_audit,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.posting "
+                "(id, entry_id, account_id, amount_minor, currency) "
+                "VALUES (:posting, :entry, :account, 1, 'CNY')"
+            ),
+            {"posting": posting_id, "entry": entry_id, "account": account_id},
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE public.posting_attribution ENABLE TRIGGER ALL; "
+            "ALTER TABLE public.journal_entry_attribution ENABLE TRIGGER ALL; "
+            "ALTER TABLE public.posting ENABLE TRIGGER ALL; "
+            "ALTER TABLE public.journal_entry ENABLE TRIGGER ALL"
+        )
+
+    _assert_legacy_upgrade_rejected(
+        seed,
+        message="existing POSTED attribution or category scope is incomplete",
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("null_posting", "existing reconciliation leg lacks reliable scope or primary flag"),
+        ("scope", "existing reconciliation scope or primary posting is invalid"),
+    ],
+)
+def test_r1_legacy_reconciliation_leg_scope_and_posting_are_required(
+    case: str, message: str
+) -> None:
+    def seed(connection: Connection) -> None:
+        facts = _legacy_candidate_seed(connection)
+        artifact_id = uuid4()
+        job_id = uuid4()
+        source_record_id = uuid4()
+        digest = bytes.fromhex("de" * 32)
+        storage_key = "sha256/de/de/" + digest.hex()
+        artifact_audit = _append_audit_event(
+            connection,
+            "artifact.ingest",
+            {
+                "sha256": digest.hex(),
+                "byte_size": 3,
+                "storage_key": storage_key,
+                "source": "legacy-channel",
+                "original_filename_sha256": hashlib.sha256(b"leg.csv").hexdigest(),
+                "media_type": "text/csv",
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.raw_artifact "
+                "(id, sha256, source, original_filename, media_type, byte_size, storage_key, "
+                "audit_event_id) VALUES (:id, :digest, 'legacy-channel', 'leg.csv', 'text/csv', "
+                "3, :storage_key, :audit)"
+            ),
+            {
+                "id": artifact_id,
+                "digest": digest,
+                "storage_key": storage_key,
+                "audit": artifact_audit,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.import_job "
+                "(id, artifact_id, connector_name, connector_version, status) VALUES "
+                "(:job, :artifact, 'legacy', '1', 'PENDING')"
+            ),
+            {"job": job_id, "artifact": artifact_id},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.source_record "
+                "(id, artifact_id, import_job_id, record_locator, source, parser_version, "
+                "raw_fields, normalized_fields) VALUES (:id, :artifact, :job, 'leg-1', "
+                "'legacy-channel', 'legacy-1', '{}'::jsonb, '{}'::jsonb)"
+            ),
+            {"id": source_record_id, "artifact": artifact_id, "job": job_id},
+        )
+        review_id = uuid4()
+        review_audit = _append_audit_event(
+            connection,
+            "review.create",
+            {"review_item_id": str(review_id), "kind": "RECONCILIATION"},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.review_item "
+                "(id, kind, status, source_record_id, summary, payload, audit_event_id) "
+                "VALUES (:id, 'RECONCILIATION', 'OPEN', :source, 'legacy review', "
+                "'{}'::jsonb, :audit)"
+            ),
+            {"id": review_id, "source": source_record_id, "audit": review_audit},
+        )
+        group_id = uuid4()
+        leg_id = uuid4()
+        posting_id = None
+        if case == "scope":
+            account_id = uuid4()
+            entry_id = uuid4()
+            posting_id = uuid4()
+            entry_audit = _append_audit_event(connection, "journal.entry.create", {})
+            posted_audit = _append_audit_event(connection, "journal.entry.post", {})
+            connection.exec_driver_sql(
+                "ALTER TABLE public.journal_entry DISABLE TRIGGER ALL; "
+                "ALTER TABLE public.posting DISABLE TRIGGER ALL; "
+                "ALTER TABLE public.journal_entry_attribution DISABLE TRIGGER ALL; "
+                "ALTER TABLE public.posting_attribution DISABLE TRIGGER ALL"
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.account "
+                    "(id, entity_id, identifier, name, account_class) "
+                    "VALUES (:account, :entity, 'legacy-leg', 'Legacy Leg', 'EXPENSE')"
+                ),
+                {"account": account_id, "entity": facts["entity"]},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.journal_entry "
+                    "(id, entity_id, occurred_at, origin, status, primary_account_id, "
+                    "audit_event_id, posted_audit_event_id) VALUES "
+                    "(:entry, :entity, :occurred, 'legacy', 'POSTED', :account, :audit, :posted)"
+                ),
+                {
+                    "entry": entry_id,
+                    "entity": facts["entity"],
+                    "occurred": datetime.now(UTC),
+                    "account": account_id,
+                    "audit": entry_audit,
+                    "posted": posted_audit,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.journal_entry_attribution "
+                    "(entry_id, entity_id, business_unit_id, accounting_month) "
+                    "VALUES (:entry, :entity, :unit, DATE '2026-08-01')"
+                ),
+                {"entry": entry_id, "entity": facts["entity"], "unit": facts["unit"]},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.posting "
+                    "(id, entry_id, account_id, amount_minor, currency) "
+                    "VALUES (:posting, :entry, :account, 1, 'CNY')"
+                ),
+                {"posting": posting_id, "entry": entry_id, "account": account_id},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.posting_attribution "
+                    "(posting_id, reporting_category_id, category_code_snapshot, "
+                    "category_label_snapshot) VALUES (:posting, :category, "
+                    "'legacy-category', 'Legacy Category')"
+                ),
+                {"posting": posting_id, "category": facts["category"]},
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE public.posting_attribution ENABLE TRIGGER ALL; "
+                "ALTER TABLE public.journal_entry_attribution ENABLE TRIGGER ALL; "
+                "ALTER TABLE public.posting ENABLE TRIGGER ALL; "
+                "ALTER TABLE public.journal_entry ENABLE TRIGGER ALL"
+            )
+        connection.exec_driver_sql(
+            "ALTER TABLE public.reconciliation_group DISABLE TRIGGER ALL; "
+            "ALTER TABLE public.reconciliation_leg DISABLE TRIGGER ALL"
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.reconciliation_group "
+                "(id, review_item_id, relation, status, currency) VALUES "
+                "(:group, :review, '1:1', 'PROPOSED', 'CNY')"
+            ),
+            {"group": group_id, "review": review_id},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.reconciliation_leg "
+                "(id, reconciliation_group_id, source_record_id, amount_minor, currency, "
+                "posting_id, is_primary, entity_id, business_unit_id, accounting_month) VALUES "
+                "(:leg, :group, :source, 1, 'CNY', :posting, :primary, :entity, :unit, "
+                "DATE '2026-08-01')"
+            ),
+            {
+                "leg": leg_id,
+                "group": group_id,
+                "source": source_record_id,
+                "posting": posting_id,
+                "primary": True if case == "scope" else None,
+                "entity": facts["other_entity"] if case == "scope" else facts["entity"],
+                "unit": facts["unit"],
+            },
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE public.reconciliation_leg ENABLE TRIGGER ALL; "
+            "ALTER TABLE public.reconciliation_group ENABLE TRIGGER ALL"
+        )
+
+    _assert_legacy_upgrade_rejected(seed, message=message)
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("first_revision", "snapshot revision history must start at one"),
+        ("gap", "snapshot revision history has a gap"),
+        ("watermark", "snapshot audit watermark is invalid"),
+    ],
+)
+def test_r1_legacy_snapshot_upgrade_rejects_noncontiguous_or_fake_watermarks(
+    case: str, message: str
+) -> None:
+    def seed(connection: Connection) -> None:
+        facts = _legacy_candidate_seed(connection)
+        watermark = connection.execute(
+            text("SELECT sequence, hash FROM public.audit_event ORDER BY sequence DESC LIMIT 1")
+        ).one()
+        revisions = (2,) if case == "first_revision" else (1, 3) if case == "gap" else (1,)
+        for revision in revisions:
+            snapshot_ref = uuid4()
+            audit = _append_audit_event(
+                connection,
+                "reconciliation.snapshot",
+                {
+                    "snapshot_ref": str(snapshot_ref),
+                    "entity_id": str(facts["entity"]),
+                    "business_unit_id": str(facts["unit"]),
+                    "accounting_month": "2026-08-01",
+                    "snapshot_revision": revision,
+                    "ledger_audit_sequence": int(watermark.sequence)
+                    + (1 if case == "watermark" else 0),
+                    "ledger_audit_hash": (
+                        "00" * 32 if case == "watermark" else bytes(watermark.hash).hex()
+                    ),
+                    "posted_amount_minor": 1,
+                    "currency": "CNY",
+                    "blocker_count": 0,
+                    "proposal_count": 0,
+                    "suspense_count": 0,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.reconciliation_snapshot "
+                    "(snapshot_ref, entity_id, business_unit_id, accounting_month, snapshot_revision, "
+                    "ledger_audit_sequence, ledger_audit_hash, posted_amount_minor, currency, "
+                    "created_at, audit_event_id) VALUES (:snapshot, :entity, :unit, "
+                    "DATE '2026-08-01', :revision, :sequence, :hash, 1, 'CNY', :now, :audit)"
+                ),
+                {
+                    "snapshot": snapshot_ref,
+                    "entity": facts["entity"],
+                    "unit": facts["unit"],
+                    "revision": revision,
+                    "sequence": int(watermark.sequence) + (1 if case == "watermark" else 0),
+                    "hash": bytes(watermark.hash)
+                    if case != "watermark"
+                    else bytes.fromhex("00" * 32),
+                    "now": datetime.now(UTC),
+                    "audit": audit,
+                },
+            )
+
+    _assert_legacy_upgrade_rejected(seed, message=message)
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("rotation_null", "existing encrypted blob rotation mode is invalid"),
+        ("rewrap", "existing encrypted blob rotation mode is invalid"),
+    ],
+)
+def test_r1_legacy_blob_upgrade_rejects_unclosed_rotation_lineage(case: str, message: str) -> None:
+    def seed(connection: Connection) -> None:
+        facts = _legacy_candidate_seed(connection)
+        blob_ref = uuid4()
+        object_ref = blob_ref.hex * 2
+        digest = bytes.fromhex("cd" * 32)
+        storage_key = "sha256/cd/cd/" + digest.hex()
+        payload: dict[str, object] = {
+            "rotation_mode": None if case == "rotation_null" else "REWRAP",
+            "blob_ref": str(blob_ref),
+            "evidence_ref": str(facts["evidence"]),
+            "predecessor_blob_ref": None,
+            "object_ref": object_ref,
+            "ciphertext_sha256": digest.hex(),
+            "ciphertext_size": 1,
+            "storage_key": storage_key,
+            "envelope_schema": "ledgerbridge.secretstream.v1",
+            "algorithm": "xchacha20poly1305-secretstream",
+            "chunk_size": 1,
+            "stream_header": "11" * 24,
+            "wrapped_key_generation": "generation-1",
+            "wrapped_key_nonce": "22" * 24,
+            "wrapped_key_ciphertext": "33" * 48,
+            "purpose": "ledgerbridge-artifact-v2",
+        }
+        audit = _append_audit_event(connection, "evidence.blob.version", payload)
+        connection.execute(
+            text(
+                "INSERT INTO public.encrypted_blob_version "
+                "(blob_ref, evidence_ref, predecessor_blob_ref, object_ref, ciphertext_sha256, "
+                "ciphertext_size, storage_key, envelope_schema, algorithm, chunk_size, stream_header, "
+                "wrapped_key_generation, wrapped_key_nonce, wrapped_key_ciphertext, purpose, audit_event_id) "
+                "VALUES (:blob, :evidence, NULL, :object_ref, :digest, 1, :storage_key, "
+                "'ledgerbridge.secretstream.v1', 'xchacha20poly1305-secretstream', 1, :header, "
+                "'generation-1', :nonce, :wrapped, 'ledgerbridge-artifact-v2', :audit)"
+            ),
+            {
+                "blob": blob_ref,
+                "evidence": facts["evidence"],
+                "object_ref": object_ref,
+                "digest": digest,
+                "storage_key": storage_key,
+                "header": bytes.fromhex("11" * 24),
+                "nonce": bytes.fromhex("22" * 24),
+                "wrapped": bytes.fromhex("33" * 48),
+                "audit": audit,
+            },
+        )
+        if case == "rewrap":
+            child = uuid4()
+            child_digest = bytes.fromhex("ef" * 32)
+            child_key = "sha256/ef/ef/" + child_digest.hex()
+            child_payload = payload | {
+                "rotation_mode": "REWRAP",
+                "blob_ref": str(child),
+                "predecessor_blob_ref": str(blob_ref),
+                "object_ref": child.hex * 2,
+                "ciphertext_sha256": child_digest.hex(),
+                "storage_key": child_key,
+            }
+            child_audit = _append_audit_event(connection, "evidence.blob.version", child_payload)
+            connection.execute(
+                text(
+                    "INSERT INTO public.encrypted_blob_version "
+                    "(blob_ref, evidence_ref, predecessor_blob_ref, object_ref, ciphertext_sha256, "
+                    "ciphertext_size, storage_key, envelope_schema, algorithm, chunk_size, stream_header, "
+                    "wrapped_key_generation, wrapped_key_nonce, wrapped_key_ciphertext, purpose, audit_event_id) "
+                    "VALUES (:blob, :evidence, :predecessor, :object_ref, :digest, 1, :storage_key, "
+                    "'ledgerbridge.secretstream.v1', 'xchacha20poly1305-secretstream', 1, :header, "
+                    "'generation-1', :nonce, :wrapped, 'ledgerbridge-artifact-v2', :audit)"
+                ),
+                {
+                    "blob": child,
+                    "evidence": facts["evidence"],
+                    "predecessor": blob_ref,
+                    "object_ref": child.hex * 2,
+                    "digest": child_digest,
+                    "storage_key": child_key,
+                    "header": bytes.fromhex("44" * 24),
+                    "nonce": bytes.fromhex("55" * 24),
+                    "wrapped": bytes.fromhex("66" * 48),
+                    "audit": child_audit,
+                },
+            )
+
+    _assert_legacy_upgrade_rejected(seed, message=message)
+
+
+@pytest.mark.parametrize("role", ["ledgerbridge_reader", "ledgerbridge_api", "ledgerbridge_worker"])
+def test_r1_acl_upgrade_rejects_privileged_reader_or_runtime_role(role: str) -> None:
+    with _hardened_r1_database() as database_url, _temporarily_privileged_role(database_url, role):
+        _assert_head_upgrade_rejected(
+            database_url,
+            message=(
+                "ledgerbridge_reader must be an unprivileged"
+                if role == "ledgerbridge_reader"
+                else "runtime role has unexpected privilege"
+            ),
+        )
+
+
+def test_r1_acl_upgrade_rejects_privileged_backup_role() -> None:
+    with _hardened_r1_database() as database_url, _temporary_backup_role(database_url, "SUPERUSER"):
+        _assert_head_upgrade_rejected(
+            database_url,
+            message="runtime role has unexpected privilege or inheritance: ledgerbridge_backup",
+        )
+
+
+def test_r1_clean_backup_role_receives_connect_only() -> None:
+    with _hardened_r1_database() as database_url, _temporary_backup_role(database_url, ""):
+        command.upgrade(_upgrade_config(database_url), "head")
+        with create_engine(database_url).connect() as connection:
+            assert _has_db_privilege(connection, "ledgerbridge_backup", "CONNECT")
+            assert not _has_db_privilege(connection, "ledgerbridge_backup", "TEMPORARY")
+            assert not _has_db_privilege(connection, "ledgerbridge_backup", "CREATE")
+            assert not connection.execute(
+                text("SELECT has_schema_privilege('ledgerbridge_backup', 'internal_read', 'USAGE')")
+            ).scalar_one()
+            assert not connection.execute(
+                text(
+                    "SELECT has_table_privilege('ledgerbridge_backup', "
+                    "'internal_read.candidate_current_v', 'SELECT')"
+                )
+            ).scalar_one()
+
+
+@pytest.mark.parametrize(
+    "role",
+    ["ledgerbridge_reader", "ledgerbridge_api", "ledgerbridge_worker", "ledgerbridge_app"],
+)
+def test_r1_acl_upgrade_rejects_owner_runtime_membership(role: str) -> None:
+    with (
+        _hardened_r1_database() as database_url,
+        _temporarily_runtime_membership(database_url, role),
+    ):
+        _assert_head_upgrade_rejected(
+            database_url,
+            message=(
+                "ledgerbridge_reader has unexpected bidirectional role membership"
+                if role == "ledgerbridge_reader"
+                else "runtime roles must not have role membership"
+            ),
+        )
+
+
+def test_r1_acl_upgrade_rejects_stale_connect_and_public_create_overloads() -> None:
+    with _hardened_r1_database() as database_url, _temporarily_stale_connect(database_url):
+        _assert_head_upgrade_rejected(
+            database_url,
+            message="database CONNECT allowlist contains a stale principal",
+        )
+
+    with _hardened_r1_database() as database_url:
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            connection.exec_driver_sql("GRANT CREATE ON SCHEMA public TO PUBLIC")
+        _assert_head_upgrade_rejected(
+            database_url,
+            message="PUBLIC must not retain CREATE on schema public",
+        )
+        engine.dispose()
+
+
+def test_r1_acl_upgrade_rejects_default_acl_drift() -> None:
+    with _hardened_r1_database() as database_url:
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO PUBLIC"
+            )
+        _assert_head_upgrade_rejected(
+            database_url,
+            message="default privileges grant PUBLIC or a runtime role",
+        )
+        engine.dispose()
+
+
+def test_r1_no_reader_0013_0014_0013_round_trip_is_supported() -> None:
+    with _legacy_r1_database(reader=False) as database_url:
+        command.upgrade(_upgrade_config(database_url), "20260824_0014")
+        command.downgrade(_upgrade_config(database_url), "20260824_0013")
+        with create_engine(database_url).connect() as connection:
+            assert (
+                connection.execute(
+                    text("SELECT to_regclass('public.journal_entry_attribution')")
+                ).scalar_one()
+                is None
+            )
+
+
+def test_r1_downgrade_rejects_a_fact_using_0013_added_reconciliation_columns() -> None:
+    with _legacy_r1_database(reader=False) as database_url:
+        command.upgrade(_upgrade_config(database_url), "20260824_0014")
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            connection.exec_driver_sql("SET session_replication_role = replica")
+            connection.execute(
+                text(
+                    "INSERT INTO public.reconciliation_leg "
+                    "(id, reconciliation_group_id, source_record_id, amount_minor, currency, "
+                    "posting_id, is_primary, entity_id, business_unit_id, accounting_month) VALUES "
+                    "(:leg, :group, :source, 1, 'CNY', NULL, false, :entity, :unit, DATE '2026-08-01')"
+                ),
+                {
+                    "leg": uuid4(),
+                    "group": uuid4(),
+                    "source": uuid4(),
+                    "entity": uuid4(),
+                    "unit": uuid4(),
+                },
+            )
+            connection.exec_driver_sql("SET session_replication_role = origin")
+        with pytest.raises(RuntimeError, match="R1 ledger/reconciliation data"):
+            command.downgrade(_upgrade_config(database_url), "20260824_0013")
+        engine.dispose()
+
+
+def test_r1_parent_audit_commit_then_child_rejection_keeps_horizon_fixed(
+    isolated_r1_database: str,
+) -> None:
+    engine = create_engine(isolated_r1_database)
+    with engine.begin() as connection:
+        facts = _seed_read_facts(connection)
+    event_ref = uuid4()
+    operation_id = uuid4()
+    payload = {
+        "event_ref": str(event_ref),
+        "candidate_id": str(facts["candidate"]),
+        "candidate_ref": str(facts["candidate"]),
+        "operation_id": str(operation_id),
+        "command_fingerprint": (operation_id.bytes * 2).hex(),
+        "event_type": "CONFIRM",
+        "action": "CONFIRM",
+        "from_revision": 1,
+        "to_revision": 2,
+        "from_status": "PENDING",
+        "to_status": "CONFIRMED",
+        "field_changes": [],
+        "conflict_resolutions": [],
+        "actor_ref": "r1-test",
+        "reason": "committed parent audit",
+        "derived_candidate_id": None,
+    }
+    with engine.begin() as connection:
+        audit_event = _append_audit_event(connection, "candidate.transition", payload)
+    with engine.connect() as connection:
+        before = connection.execute(
+            text("SELECT sequence, hash FROM public.audit_event ORDER BY sequence DESC LIMIT 1")
+        ).one()
+    child_now = datetime.now(UTC)
+    _assert_db_rejection(
+        engine,
+        [
+            (
+                "INSERT INTO public.candidate_revision "
+                "(candidate_id, revision, status, business_unit_id, "
+                "business_unit_ref_snapshot, business_unit_label_snapshot, category_id, "
+                "category_code_snapshot, category_label_snapshot, amount_minor, currency, "
+                "accounting_month, summary, confidence_basis_points, created_at, updated_at) "
+                "VALUES (:candidate, 2, 'CONFIRMED', :unit, 'unit-a', 'Unit A', :category, "
+                "'category-a', 'Category A', 1234, 'CNY', DATE '2026-08-01', "
+                "'committed parent child', 100, :now, :now)",
+                {
+                    "candidate": facts["candidate"],
+                    "unit": facts["unit"],
+                    "category": facts["category"],
+                    "now": child_now,
+                },
+            ),
+            (
+                "INSERT INTO public.candidate_event "
+                "(event_ref, candidate_id, operation_id, command_fingerprint, event_type, action, "
+                "from_revision, to_revision, from_status, to_status, actor_ref, reason, "
+                "occurred_at, audit_event_id) VALUES (:event, :candidate, :operation, :fingerprint, "
+                "'CONFIRM', 'CONFIRM', 1, 2, 'PENDING', 'CONFIRMED', 'r1-test', "
+                "'committed parent child', :now, :audit)",
+                {
+                    "event": event_ref,
+                    "candidate": facts["candidate"],
+                    "operation": operation_id,
+                    "fingerprint": operation_id.bytes * 2,
+                    "now": child_now,
+                    "audit": audit_event,
+                },
+            ),
+        ],
+        sqlstate="23000",
+        message="candidate event audit binding is invalid",
+    )
+    with engine.connect() as connection:
+        after = connection.execute(
+            text("SELECT sequence, hash FROM public.audit_event ORDER BY sequence DESC LIMIT 1")
+        ).one()
+    assert (after.sequence, bytes(after.hash)) == (before.sequence, bytes(before.hash))
+    engine.dispose()
+
+
 def test_r1_reader_role_and_database_acl_are_minimal(isolated_r1_database: str) -> None:
     with create_engine(isolated_r1_database).connect() as connection:
         role = connection.execute(
@@ -685,7 +2384,7 @@ def test_r1_reader_role_and_database_acl_are_minimal(isolated_r1_database: str) 
         assert public_acl is False
 
 
-def test_r1_internal_read_objects_are_fixed_owner_security_definer_and_exactly_granted(
+def test_r1_internal_read_objects_are_fixed_owner_security_definer_and_fail_closed(
     isolated_r1_database: str,
 ) -> None:
     with create_engine(isolated_r1_database).connect() as connection:
@@ -720,7 +2419,20 @@ def test_r1_internal_read_objects_are_fixed_owner_security_definer_and_exactly_g
         assert connection.execute(
             text("SELECT has_schema_privilege('ledgerbridge_reader', 'internal_read', 'USAGE')")
         ).scalar_one()
-        for role_name in ("ledgerbridge_api", "ledgerbridge_worker", "ledgerbridge_app"):
+        for role_name in (
+            "ledgerbridge_api",
+            "ledgerbridge_worker",
+            "ledgerbridge_app",
+            "ledgerbridge_backup",
+        ):
+            if (
+                role_name == "ledgerbridge_backup"
+                and not connection.execute(
+                    text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :role)"),
+                    {"role": role_name},
+                ).scalar_one()
+            ):
+                continue
             assert not connection.execute(
                 text("SELECT has_schema_privilege(:role, 'internal_read', 'USAGE')"),
                 {"role": role_name},
@@ -730,11 +2442,24 @@ def test_r1_internal_read_objects_are_fixed_owner_security_definer_and_exactly_g
         ).scalar_one()
 
         for view_name in INTERNAL_READ_VIEWS:
-            assert connection.execute(
+            assert not connection.execute(
                 text("SELECT has_table_privilege('ledgerbridge_reader', :object_name, 'SELECT')"),
                 {"object_name": f"internal_read.{view_name}"},
             ).scalar_one()
-            for role_name in ("ledgerbridge_api", "ledgerbridge_worker", "ledgerbridge_app"):
+            for role_name in (
+                "ledgerbridge_api",
+                "ledgerbridge_worker",
+                "ledgerbridge_app",
+                "ledgerbridge_backup",
+            ):
+                if (
+                    role_name == "ledgerbridge_backup"
+                    and not connection.execute(
+                        text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :role)"),
+                        {"role": role_name},
+                    ).scalar_one()
+                ):
+                    continue
                 assert not connection.execute(
                     text("SELECT has_table_privilege(:role, :object_name, 'SELECT')"),
                     {"role": role_name, "object_name": f"internal_read.{view_name}"},
@@ -753,7 +2478,20 @@ def test_r1_internal_read_objects_are_fixed_owner_security_definer_and_exactly_g
                 text("SELECT has_function_privilege('ledgerbridge_reader', :oid, 'EXECUTE')"),
                 {"oid": function_oid},
             ).scalar_one()
-            for role_name in ("ledgerbridge_api", "ledgerbridge_worker", "ledgerbridge_app"):
+            for role_name in (
+                "ledgerbridge_api",
+                "ledgerbridge_worker",
+                "ledgerbridge_app",
+                "ledgerbridge_backup",
+            ):
+                if (
+                    role_name == "ledgerbridge_backup"
+                    and not connection.execute(
+                        text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :role)"),
+                        {"role": role_name},
+                    ).scalar_one()
+                ):
+                    continue
                 assert not connection.execute(
                     text("SELECT has_function_privilege(:role, :oid, 'EXECUTE')"),
                     {"role": role_name, "oid": function_oid},
@@ -850,7 +2588,7 @@ def test_r1_reader_horizon_as_of_scope_resolver_and_audit_wrapper_fail_closed(
             ),
             {"entity": facts["entity"], "sequence": horizon.sequence, "hash": horizon.hash},
         ).all()
-        assert [row[0] for row in unassigned] == [facts["candidate"]]
+        assert unassigned == []
         assigned_scope = connection.execute(
             text(
                 "SELECT candidate_ref FROM internal_read.list_candidates_as_of("
@@ -863,7 +2601,7 @@ def test_r1_reader_horizon_as_of_scope_resolver_and_audit_wrapper_fail_closed(
                 "hash": horizon.hash,
             },
         ).all()
-        assert assigned_scope == []
+        assert [row[0] for row in assigned_scope] == [facts["candidate"]]
         other_entity_scope = connection.execute(
             text(
                 "SELECT candidate_ref FROM internal_read.list_candidates_as_of("
@@ -918,37 +2656,65 @@ def test_r1_reader_horizon_as_of_scope_resolver_and_audit_wrapper_fail_closed(
         ).scalar_one()
         assert isinstance(receipt, UUID)
 
-        with pytest.raises(SQLAlchemyError):
-            connection.execute(
-                text(
+        _assert_db_rejection(
+            engine,
+            [
+                ("SET ROLE ledgerbridge_reader", None),
+                (
                     "SELECT * FROM internal_read.list_candidates_as_of("
-                    ":entity, NULL, NULL, :sequence, :hash, NULL, NULL, 10)"
+                    ":entity, NULL, NULL, :sequence, :hash, NULL, NULL, 10)",
+                    {
+                        "entity": facts["entity"],
+                        "sequence": int(horizon.sequence) + 1,
+                        "hash": horizon.hash,
+                    },
                 ),
-                {
-                    "entity": facts["entity"],
-                    "sequence": int(horizon.sequence) + 1,
-                    "hash": horizon.hash,
-                },
-            )
-        with pytest.raises(SQLAlchemyError):
-            connection.execute(
-                text(
+            ],
+            sqlstate="22023",
+            message="audit horizon is not an exact chain row",
+        )
+        _assert_db_rejection(
+            engine,
+            [
+                ("SET ROLE ledgerbridge_reader", None),
+                (
                     "SELECT internal_read.append_internal_evidence_read_audit("
-                    ":operation, :principal, :san, :generation, :evidence, :entity, :unit, :blob, :size, :sha)"
+                    ":operation, :principal, :san, :generation, :evidence, :entity, :unit, :blob, :size, :sha)",
+                    {
+                        "operation": uuid4(),
+                        "principal": "principal-r1",
+                        "san": "spiffe://ledgerbridge/r1-reader",
+                        "generation": "generation-1",
+                        "evidence": facts["evidence"],
+                        "entity": facts["entity"],
+                        "unit": facts["unit"],
+                        "blob": facts["old_blob"],
+                        "size": 7,
+                        "sha": bytes.fromhex("11" * 32),
+                    },
                 ),
-                {
-                    "operation": uuid4(),
-                    "principal": "principal-r1",
-                    "san": "spiffe://ledgerbridge/r1-reader",
-                    "generation": "generation-1",
-                    "evidence": facts["evidence"],
-                    "entity": facts["entity"],
-                    "unit": facts["unit"],
-                    "blob": facts["old_blob"],
-                    "size": 7,
-                    "sha": bytes.fromhex("11" * 32),
-                },
-            )
+            ],
+            sqlstate="P0002",
+            message="query returned no rows",
+        )
+        _assert_db_rejection(
+            engine,
+            [
+                ("SET ROLE ledgerbridge_reader", None),
+                (
+                    "SELECT * FROM internal_read.get_reconciliation_as_of("
+                    ":entity, :unit, DATE '2026-08-01', :sequence, :hash)",
+                    {
+                        "entity": facts["other_entity"],
+                        "unit": facts["unit"],
+                        "sequence": horizon.sequence,
+                        "hash": horizon.hash,
+                    },
+                ),
+            ],
+            sqlstate="22023",
+            message="business unit does not belong to entity",
+        )
 
 
 def test_r1_fact_hardening_identity_history_and_write_acl_invariants(
@@ -980,6 +2746,7 @@ def test_r1_fact_hardening_identity_history_and_write_acl_invariants(
 
         for table_name in (
             "encrypted_object_identity",
+            "reconciliation_leg",
             "journal_entry_attribution",
             "posting_attribution",
             "reconciliation_snapshot",
