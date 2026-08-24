@@ -467,7 +467,7 @@ ingestion require their later explicit gates.
 
 ## R1 database hardening final local gate (2026-08-25)
 
-- Fixed implementation head is `7534fdf` on the local
+- Fixed implementation head is `c61825e` on the local
   `ai/chatgpt/r1-db-schema-grants-design` branch. Sol's independent short
   recheck of `0014`, `0015`, the complete migration chain, and the CI/bootstrap
   change found no validated BLOCKER/HIGH/MEDIUM. This is not merge or production

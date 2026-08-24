@@ -45,7 +45,7 @@
 
 ## 2026-08-25 final local verification
 
-- Fixed implementation head is `7534fdf`. Sol's independent short recheck of
+- Fixed implementation head is `c61825e`. Sol's independent short recheck of
   `0014`, `0015`, the migration chain, and the CI/bootstrap delta found no
   validated BLOCKER/HIGH/MEDIUM. The recheck does not authorize merge,
   production role migration, reader bootstrap, or real-data access.

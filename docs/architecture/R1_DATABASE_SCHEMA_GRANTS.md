@@ -1503,7 +1503,7 @@ disabled.
 
 The design remains non-authorizing: this note records implementation evidence
 without changing the approved D-016 boundary or opening production gates. The
-current local implementation head is `7534fdf`. Independent Sol recheck of
+current local implementation head is `c61825e`. Independent Sol recheck of
 `0014`, `0015`, the complete migration chain, and the CI/bootstrap delta found
 no validated BLOCKER/HIGH/MEDIUM. Local disposable WSL PostgreSQL **18.6**
 passed the R1 migration suite (**49 passed**) and a CI-like full run (**696
