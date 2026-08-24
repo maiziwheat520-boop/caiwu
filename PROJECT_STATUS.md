@@ -298,10 +298,10 @@ in an isolated Hermes project; no evidence was ingested.
 ## Next task
 
 Audit the Phase 4 mailbox/provider and Phase 5 dedup/reconciliation/Suspense
-contracts, then design the first synthetic connector fixtures. The default
-manifest and registry stay empty. Next gates are signed-manifest/key custody,
-trusted OAuth, provider/source ownership, concurrent candidate matching, real
-parser samples, and a narrow Claude audit.
+contracts, then replay the Phase 6 synthetic connector through the importer.
+The default manifest and registry stay empty. Next gates are signed-manifest/key
+custody, trusted OAuth, provider/source ownership, concurrent candidate matching,
+real parser samples, and a narrow Claude audit.
 Merge, production role migration, feature-flag enablement, real Connector
 registration, evidence ingestion, and mail collection each require distinct
 later authorization.

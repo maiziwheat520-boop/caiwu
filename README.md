@@ -33,6 +33,9 @@ has no automatic posting or production switch. A default-disabled Review API
 and worker persistence boundary now expose only explicit human decisions; the
 deployed service remains on
 Slice A with no real evidence imported.
+Phase 6 adds a credential-free synthetic bank-statement Connector fixture for
+isolated tests only; the default Connector registry and production manifest
+remain empty.
 See [PROJECT_STATUS.md](PROJECT_STATUS.md) and
 [docs/architecture/IMPLEMENTATION_BASELINE.md](docs/architecture/IMPLEMENTATION_BASELINE.md).
 
