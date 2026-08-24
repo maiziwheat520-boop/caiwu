@@ -12,9 +12,10 @@ from ledgerbridge.encrypted_artifacts import (
     EncryptedArtifactError,
     EncryptedArtifactIntegrityError,
     EncryptedArtifactStore,
+    EncryptedEnvelopeMetadata,
     EncryptedPublishedArtifact,
 )
-from ledgerbridge.keyring import SyntheticKeyProvider
+from ledgerbridge.keyring import SyntheticKeyProvider, WrappedKey
 
 KEY = b"\x91" * 32
 OTHER_KEY = b"\x92" * 32
@@ -99,6 +100,48 @@ def test_encrypted_artifact_binds_object_reference_digest_size_and_key(tmp_path:
     wrong_key_store = _store(tmp_path, key=OTHER_KEY)
     with pytest.raises(EncryptedArtifactIntegrityError), wrong_key_store.open_verified(artifact):
         pass
+
+
+def test_encrypted_artifact_descriptor_metadata_is_verified(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    artifact = store.publish(io.BytesIO(b"descriptor evidence"))
+    with store._durable.open_verified(artifact.ciphertext) as ciphertext_stream:
+        from ledgerbridge.crypto import _parse_envelope
+
+        header = _parse_envelope(ciphertext_stream.read()).header
+    metadata = EncryptedEnvelopeMetadata(
+        chunk_size=header.chunk_size,
+        stream_header=header.stream_header,
+        wrapped_key=header.wrapped_key,
+    )
+    with store.open_verified(artifact, envelope_metadata=metadata) as stream:
+        assert stream.read() == b"descriptor evidence"
+
+    drifted = EncryptedEnvelopeMetadata(
+        chunk_size=header.chunk_size + 1,
+        stream_header=header.stream_header,
+        wrapped_key=header.wrapped_key,
+    )
+    with (
+        pytest.raises(EncryptedArtifactIntegrityError, match="authentication"),
+        store.open_verified(artifact, envelope_metadata=drifted),
+    ):
+        pass
+
+
+def test_encrypted_envelope_metadata_rejects_invalid_shape() -> None:
+    with pytest.raises(ValueError, match="chunk size"):
+        EncryptedEnvelopeMetadata(
+            chunk_size=0,
+            stream_header=b"h" * 24,
+            wrapped_key=WrappedKey("synthetic-1", b"n" * 24, b"w" * 48),
+        )
+    with pytest.raises(ValueError, match="stream header"):
+        EncryptedEnvelopeMetadata(
+            chunk_size=7,
+            stream_header=b"short",
+            wrapped_key=WrappedKey("synthetic-1", b"n" * 24, b"w" * 48),
+        )
 
 
 def test_encrypted_handoff_abort_and_limits_fail_closed(tmp_path: Path) -> None:

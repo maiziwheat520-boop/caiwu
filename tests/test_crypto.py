@@ -12,7 +12,7 @@ from ledgerbridge.crypto import (
     SecretStreamCipher,
     TruncatedCiphertextError,
 )
-from ledgerbridge.keyring import KeyUnwrapError, SyntheticKeyProvider
+from ledgerbridge.keyring import KeyUnwrapError, SyntheticKeyProvider, WrappedKey
 
 OLD_KEY = b"\x44" * 32
 ACTIVE_KEY = b"\x55" * 32
@@ -75,6 +75,58 @@ def test_secretstream_binds_purpose_and_associated_data() -> None:
         cipher.decrypt(envelope, purpose="candidate", aad=b"object-1")
     with pytest.raises(KeyUnwrapError, match="authentication"):
         cipher.decrypt(envelope, purpose="evidence", aad=b"object-2")
+
+
+def test_secretstream_verified_metadata_binds_authenticated_header() -> None:
+    cipher = _cipher(chunk_size=8)
+    envelope = cipher.encrypt(b"descriptor-bound", purpose="evidence", aad=b"object-1")
+    # Parse through the module helper so the descriptor test uses the exact
+    # immutable values that would have come from the database row.
+    from ledgerbridge.crypto import _parse_envelope
+
+    parsed = _parse_envelope(envelope)
+    assert (
+        cipher.decrypt_verified_metadata(
+            envelope,
+            purpose="evidence",
+            aad=b"object-1",
+            expected_chunk_size=parsed.header.chunk_size,
+            expected_stream_header=parsed.header.stream_header,
+            expected_wrapped_key=parsed.header.wrapped_key,
+        )
+        == b"descriptor-bound"
+    )
+    with pytest.raises(EnvelopeFormatError, match="metadata"):
+        cipher.decrypt_verified_metadata(
+            envelope,
+            purpose="evidence",
+            aad=b"object-1",
+            expected_chunk_size=parsed.header.chunk_size + 1,
+            expected_stream_header=parsed.header.stream_header,
+            expected_wrapped_key=parsed.header.wrapped_key,
+        )
+    with pytest.raises(EnvelopeFormatError, match="metadata"):
+        cipher.decrypt_verified_metadata(
+            envelope,
+            purpose="evidence",
+            aad=b"object-1",
+            expected_chunk_size=parsed.header.chunk_size,
+            expected_stream_header=b"x" * 24,
+            expected_wrapped_key=parsed.header.wrapped_key,
+        )
+    with pytest.raises(EnvelopeFormatError, match="metadata"):
+        cipher.decrypt_verified_metadata(
+            envelope,
+            purpose="evidence",
+            aad=b"object-1",
+            expected_chunk_size=parsed.header.chunk_size,
+            expected_stream_header=parsed.header.stream_header,
+            expected_wrapped_key=WrappedKey(
+                generation=parsed.header.wrapped_key.generation,
+                nonce=b"x" * 24,
+                ciphertext=parsed.header.wrapped_key.ciphertext,
+            ),
+        )
 
 
 def test_secretstream_detects_tamper_truncation_and_trailing_data() -> None:
