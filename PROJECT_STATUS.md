@@ -2,6 +2,18 @@
 
 Updated: 2026-08-24
 
+## R1 database Core read adapter checkpoint (2026-08-24)
+
+The default-disabled Core route now has an explicit database reader backend on
+`ai/chatgpt/r1-db-schema-grants-design`. It requires a separate
+`LEDGERBRIDGE_READER_DATABASE_URL` and uses only Migration C's scoped
+`internal_read` functions for candidate and reconciliation projections. The
+synthetic backend remains the default; production enablement is still rejected.
+Evidence decryption and LedgerSummary remain fixed 503 gates until the reviewed
+S1 decryptor and scoped aggregate function exist. No reader credential, real
+data, Hermes production change, merge, or deployment was performed. See
+`docs/tasks/2026-08-24-r1-database-core-read-adapter.md`.
+
 ## Current phase
 
 R1 synthetic Core read API code foundation and the next audit slice are implemented on

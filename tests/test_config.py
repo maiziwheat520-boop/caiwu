@@ -52,7 +52,7 @@ def test_real_ingest_is_unconditionally_unavailable_during_s1(tmp_path: Path) ->
         )
 
 
-def test_internal_read_api_is_synthetic_only_and_generation_bound(tmp_path: Path) -> None:
+def test_internal_read_api_is_generation_bound_and_reader_url_is_explicit(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="internal_read_policy_generation"):
         Settings(
             database_url="sqlite+pysqlite:///:memory:",
@@ -67,6 +67,25 @@ def test_internal_read_api_is_synthetic_only_and_generation_bound(tmp_path: Path
         internal_read_policy_generation=7,
     )
     assert enabled.internal_read_policy_generation == 7
+
+    with pytest.raises(ValidationError, match="reader_database_url"):
+        Settings(
+            database_url="sqlite+pysqlite:///:memory:",
+            artifact_root=tmp_path.resolve(),
+            enable_internal_read_api=True,
+            internal_read_backend="database",
+            internal_read_policy_generation=7,
+        )
+
+    database_reader = Settings(
+        database_url="sqlite+pysqlite:///:memory:",
+        reader_database_url="postgresql+psycopg://ledgerbridge_reader@db/app",
+        artifact_root=tmp_path.resolve(),
+        enable_internal_read_api=True,
+        internal_read_backend="database",
+        internal_read_policy_generation=7,
+    )
+    assert database_reader.resolved_reader_database_url().endswith("/app")
 
     with pytest.raises(ValidationError, match="R1 operational gate"):
         Settings(

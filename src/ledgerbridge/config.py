@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     database_url: str | None = Field(default=None, min_length=1)
     api_database_url: str | None = Field(default=None, min_length=1)
     worker_database_url: str | None = Field(default=None, min_length=1)
+    reader_database_url: str | None = Field(default=None, min_length=1)
     artifact_root: Path = Path("/var/lib/ledgerbridge/artifacts")
     artifact_max_bytes: int = Field(default=50 * 1024 * 1024, gt=0, le=2**63 - 1)
     artifact_total_max_bytes: int = Field(default=10 * 1024 * 1024 * 1024, gt=0, le=2**63 - 1)
@@ -34,6 +35,7 @@ class Settings(BaseSettings):
     enable_internal_upload: bool = False
     enable_internal_async_dispatch: bool = False
     enable_internal_read_api: bool = False
+    internal_read_backend: Literal["synthetic", "database"] = "synthetic"
     enable_internal_read_persistent_audit: bool = False
     enable_review_api: bool = False
     enable_real_ingest: bool = False
@@ -77,6 +79,10 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "internal_read_policy_generation is required when the internal "
                     "read API is enabled"
+                )
+            if self.internal_read_backend == "database" and self.reader_database_url is None:
+                raise ValueError(
+                    "reader_database_url is required when internal_read_backend=database"
                 )
         if self.enable_internal_read_persistent_audit:
             if self.env == "production":
@@ -170,6 +176,11 @@ class Settings(BaseSettings):
         if value is None:
             raise ValueError("a worker database URL is required")
         return value
+
+    def resolved_reader_database_url(self) -> str:
+        if self.reader_database_url is None:
+            raise ValueError("a reader database URL is required")
+        return self.reader_database_url
 
 
 def escape_alembic_ini_value(value: str) -> str:

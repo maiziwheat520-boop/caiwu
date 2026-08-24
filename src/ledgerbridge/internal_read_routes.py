@@ -22,6 +22,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ledgerbridge.candidate_contract import CandidateProjection, CandidateStatus
 from ledgerbridge.config import Settings, get_settings
+from ledgerbridge.db import get_session_factory
 from ledgerbridge.internal_read_audit import (
     AuditSinkUnavailable,
     EvidenceReadAuditEvent,
@@ -44,6 +45,8 @@ from ledgerbridge.internal_read_contract import (
     require_capability,
 )
 from ledgerbridge.internal_read_service import (
+    DatabaseInternalReadService,
+    InternalReadBackendUnavailable,
     SyntheticInternalReadService,
     SyntheticResourceIntegrityError,
 )
@@ -116,6 +119,11 @@ class InternalReadRoute(APIRoute):
                     status.HTTP_503_SERVICE_UNAVAILABLE,
                     "SYNTHETIC_RESOURCE_UNAVAILABLE",
                 )
+            except InternalReadBackendUnavailable:
+                return _problem_response(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "INTERNAL_READ_UNAVAILABLE",
+                )
 
         return route_handler
 
@@ -159,7 +167,13 @@ def require_internal_read_api(
         raise InternalReadProblem(status.HTTP_404_NOT_FOUND, "INTERNAL_READ_DISABLED")
 
 
-def get_synthetic_internal_read_service() -> SyntheticInternalReadService:
+def get_synthetic_internal_read_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> SyntheticInternalReadService | DatabaseInternalReadService:
+    if settings.internal_read_backend == "database":
+        return DatabaseInternalReadService(
+            get_session_factory(settings.resolved_reader_database_url())
+        )
     return SyntheticInternalReadService()
 
 
@@ -290,7 +304,7 @@ ResourceRef = Annotated[UUID, Depends(_parse_closed_resource_uuid)]
 ReconciliationParams = Annotated[_ReconciliationParams, Depends(_parse_reconciliation_params)]
 LedgerParams = Annotated[_LedgerParams, Depends(_parse_ledger_params)]
 Service = Annotated[
-    SyntheticInternalReadService,
+    SyntheticInternalReadService | DatabaseInternalReadService,
     Depends(get_synthetic_internal_read_service),
 ]
 AuditSink = Annotated[InternalReadAuditSink, Depends(get_internal_read_audit_sink)]

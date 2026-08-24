@@ -96,7 +96,7 @@ class CapabilitiesResponse(_FrozenModel):
     state_graph_version: Literal["ledgerbridge.candidate-state.v1"] = (
         "ledgerbridge.candidate-state.v1"
     )
-    data_mode: Literal["synthetic"] = "synthetic"
+    data_mode: Literal["synthetic", "database"] = "synthetic"
     enabled_modules: tuple[
         Literal["candidates", "evidence", "reconciliations", "ledger-summary"], ...
     ]
@@ -159,11 +159,20 @@ class LedgerSummary(_FrozenModel):
 class EntityGrant(_FrozenModel):
     entity_ref: UUID
     business_unit_refs: frozenset[BusinessUnitRef] = frozenset()
+    # Database-backed readers need the immutable UUID used by the scoped SQL
+    # functions.  The human-readable refs remain the HTTP authorization key;
+    # keeping both prevents the database layer from resolving policy through a
+    # broad business_unit lookup.
+    business_unit_ids: frozenset[UUID] = frozenset()
     allow_unassigned_candidates: bool = False
 
     @model_validator(mode="after")
     def has_at_least_one_scope(self) -> EntityGrant:
-        if not self.business_unit_refs and not self.allow_unassigned_candidates:
+        if (
+            not self.business_unit_refs
+            and not self.business_unit_ids
+            and not self.allow_unassigned_candidates
+        ):
             raise ValueError("entity grant must include a business unit or unassigned candidates")
         return self
 
