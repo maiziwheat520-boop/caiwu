@@ -292,3 +292,10 @@ database/default ACL drift before it receives CONNECT. A POSTED Core entry with
 zero R1 attribution is not treated as R1-complete. These changes do not enable
 real evidence ingestion, reader bootstrap, connector registration, or
 production migration.
+
+The 2026-08-24 R1 Migration C remediation replay is closed at the disposable
+verification layer: Hermes PostgreSQL 15 completed the full R1 migration file
+with **48 passed** tests, and the Windows suite completed with **475 passed /
+189 skipped / 1 warning**. This is evidence of migration and reader-boundary
+correctness only; it does not authorize production role changes, reader
+bootstrap, real evidence ingestion, or deployment.

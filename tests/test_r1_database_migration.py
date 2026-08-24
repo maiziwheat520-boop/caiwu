@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
-from sqlalchemy.engine import Connection
+from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.exc import SQLAlchemyError
 
 from alembic import command
@@ -92,18 +92,55 @@ def _migration_owner_url() -> Any:
     value = os.environ.get("LEDGERBRIDGE_MIGRATION_DATABASE_URL")
     if value is None:
         pytest.skip("PostgreSQL integration tests require LEDGERBRIDGE_MIGRATION_DATABASE_URL")
-    return create_engine(value).url
+    return make_url(value)
+
+
+def _test_admin_url() -> Any:
+    value = os.environ.get("LEDGERBRIDGE_TEST_ADMIN_DATABASE_URL")
+    if value is None:
+        pytest.skip(
+            "PostgreSQL integration tests require LEDGERBRIDGE_TEST_ADMIN_DATABASE_URL "
+            "for isolated database bootstrap"
+        )
+    return make_url(value)
+
+
+def _maintenance_engine(admin_url: Any) -> Engine:
+    return create_engine(admin_url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+
+
+def _migration_owner_name(owner_url: Any) -> str:
+    username = owner_url.username
+    if not isinstance(username, str) or not username:
+        pytest.skip("LEDGERBRIDGE_MIGRATION_DATABASE_URL must identify a database owner")
+    return username
+
+
+def _quote_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _database_name(database_url: str) -> str:
+    database = make_url(database_url).database
+    if not isinstance(database, str) or not database:
+        raise RuntimeError("temporary migration database URL has no database name")
+    return database
 
 
 @contextmanager
 def _legacy_r1_database(*, reader: bool = True) -> Iterator[str]:
-    """Create a disposable database at 0013 for an isolated upgrade case."""
+    """Create a disposable 0013 database owned by the restricted migration role.
+
+    ``LEDGERBRIDGE_TEST_ADMIN_DATABASE_URL`` is used only for CREATE/DROP
+    DATABASE and external role bootstrap.  Alembic and all fact writes use the
+    owner from ``LEDGERBRIDGE_MIGRATION_DATABASE_URL``.
+    """
 
     owner_url = _migration_owner_url()
+    admin_url = _test_admin_url()
+    owner_name = _migration_owner_name(owner_url)
     database_name = f"ledgerbridge_r1_legacy_{uuid4().hex[:12]}"
-    maintenance_engine = create_engine(
-        owner_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
+    maintenance_engine = _maintenance_engine(admin_url)
     created_roles: list[str] = []
     try:
         with maintenance_engine.connect() as connection:
@@ -126,7 +163,19 @@ def _legacy_r1_database(*, reader: bool = True) -> Iterator[str]:
                     "NOINHERIT NOREPLICATION NOBYPASSRLS"
                 )
                 created_roles.append(role)
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT pg_get_userbyid(datdba) FROM pg_database "
+                        "WHERE datname = :database_name"
+                    ),
+                    {"database_name": database_name},
+                ).scalar_one()
+                == owner_name
+            )
         temporary_url = owner_url.set(database=database_name)
         config = Config("alembic.ini")
         config.attributes["database_url"] = temporary_url.render_as_string(hide_password=False)
@@ -161,6 +210,7 @@ def _legacy_candidate_seed(
     status: str = "INCOMPLETE",
     source_record_id: UUID | None = None,
     audit_payload: dict[str, object] | None = None,
+    include_default_blockers: bool = True,
 ) -> dict[str, Any]:
     """Insert a structurally valid 0013 Candidate graph for one preflight case."""
 
@@ -291,7 +341,7 @@ def _legacy_candidate_seed(
         ),
         {"candidate": candidate_id, "evidence": evidence_ref},
     )
-    if status == "INCOMPLETE":
+    if status == "INCOMPLETE" and include_default_blockers:
         connection.execute(
             text(
                 "INSERT INTO public.candidate_blocker "
@@ -447,6 +497,12 @@ def _legacy_transition(
                 "now": now,
             },
         )
+    field_changes: list[tuple[str, object, object]] = []
+    if from_status != to_status:
+        field_changes.append(("status", from_status, to_status))
+    if add_field_change:
+        field_changes.append(("amount_minor", 1, 2))
+    field_changes.sort(key=lambda item: item[0])
     payload = {
         "event_ref": str(event_ref),
         "candidate_id": str(candidate_id),
@@ -459,7 +515,14 @@ def _legacy_transition(
         "to_revision": revision,
         "from_status": from_status,
         "to_status": to_status,
-        "field_changes": [],
+        "field_changes": [
+            {
+                "field": field,
+                "previous_value": previous_value,
+                "new_value": new_value,
+            }
+            for field, previous_value, new_value in field_changes
+        ],
         "conflict_resolutions": [],
         "actor_ref": "legacy-test",
         "reason": "legacy transition",
@@ -492,14 +555,20 @@ def _legacy_transition(
             "audit": audit_event,
         },
     )
-    if add_field_change:
+    for field, previous_value, new_value in field_changes:
         connection.execute(
             text(
                 "INSERT INTO public.candidate_field_change "
                 "(event_ref, field, previous_value, new_value) VALUES "
-                "(:event, 'amount_minor', '1'::jsonb, '2'::jsonb)"
+                "(:event, :field, CAST(:previous_value AS jsonb), "
+                "CAST(:new_value AS jsonb))"
             ),
-            {"event": event_ref},
+            {
+                "event": event_ref,
+                "field": field,
+                "previous_value": json.dumps(previous_value),
+                "new_value": json.dumps(new_value),
+            },
         )
 
 
@@ -528,9 +597,17 @@ def _hardened_r1_database() -> Iterator[str]:
 
 
 @contextmanager
-def _temporarily_privileged_role(database_url: str, role: str) -> Iterator[None]:
-    engine = create_engine(database_url)
-    maintenance = create_engine(engine.url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+def _fresh_head_r1_database() -> Iterator[str]:
+    """Create a clean reader-surface database for tests requiring no prior facts."""
+
+    with _legacy_r1_database(reader=True) as database_url:
+        command.upgrade(_upgrade_config(database_url), "head")
+        yield database_url
+
+
+@contextmanager
+def _temporarily_privileged_role(_database_url: str, role: str) -> Iterator[None]:
+    maintenance = _maintenance_engine(_test_admin_url())
     try:
         with maintenance.connect() as connection:
             state = connection.execute(
@@ -556,15 +633,13 @@ def _temporarily_privileged_role(database_url: str, role: str) -> Iterator[None]
                 connection.exec_driver_sql(f"ALTER ROLE {role} {' '.join(clauses)}")
     finally:
         maintenance.dispose()
-        engine.dispose()
 
 
 @contextmanager
 def _temporarily_runtime_membership(database_url: str, role: str) -> Iterator[None]:
-    engine = create_engine(database_url)
-    maintenance = create_engine(engine.url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    maintenance = _maintenance_engine(_test_admin_url())
+    owner = _migration_owner_name(make_url(database_url))
     with maintenance.connect() as connection:
-        owner = str(connection.execute(text("SELECT current_user")).scalar_one())
         was_member = bool(
             connection.execute(
                 text(
@@ -577,21 +652,19 @@ def _temporarily_runtime_membership(database_url: str, role: str) -> Iterator[No
             ).scalar_one()
         )
         if not was_member:
-            connection.exec_driver_sql(f"GRANT {role} TO {owner}")
+            connection.exec_driver_sql(f"GRANT {role} TO {_quote_identifier(owner)}")
     try:
         yield
     finally:
         if not was_member:
             with maintenance.connect() as connection:
-                connection.exec_driver_sql(f"REVOKE {role} FROM {owner}")
+                connection.exec_driver_sql(f"REVOKE {role} FROM {_quote_identifier(owner)}")
         maintenance.dispose()
-        engine.dispose()
 
 
 @contextmanager
 def _temporary_backup_role(database_url: str, attributes: str) -> Iterator[None]:
-    engine = create_engine(database_url)
-    maintenance = create_engine(engine.url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    maintenance = _maintenance_engine(_test_admin_url())
     try:
         with maintenance.connect() as connection:
             connection.exec_driver_sql(
@@ -604,21 +677,19 @@ def _temporary_backup_role(database_url: str, attributes: str) -> Iterator[None]
         yield
     finally:
         with maintenance.connect() as connection:
-            database_name = engine.url.database
+            database_name = _database_name(database_url)
             connection.exec_driver_sql(
                 f'REVOKE ALL ON DATABASE "{database_name}" FROM ledgerbridge_backup'
             )
             connection.exec_driver_sql("DROP ROLE IF EXISTS ledgerbridge_backup")
         maintenance.dispose()
-        engine.dispose()
 
 
 @contextmanager
 def _temporarily_stale_connect(database_url: str) -> Iterator[None]:
-    engine = create_engine(database_url)
-    maintenance = create_engine(engine.url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    maintenance = _maintenance_engine(_test_admin_url())
     role = "ledgerbridge_stale_" + uuid4().hex[:8]
-    database_name = engine.url.database
+    database_name = _database_name(database_url)
     try:
         with maintenance.connect() as connection:
             connection.exec_driver_sql(
@@ -632,7 +703,6 @@ def _temporarily_stale_connect(database_url: str) -> Iterator[None]:
             connection.exec_driver_sql(f'REVOKE ALL ON DATABASE "{database_name}" FROM {role}')
             connection.exec_driver_sql(f"DROP ROLE IF EXISTS {role}")
         maintenance.dispose()
-        engine.dispose()
 
 
 def _assert_acl_upgrade_rejected(
@@ -653,21 +723,23 @@ def _assert_head_upgrade_rejected(database_url: str, *, message: str) -> None:
     assert message in str(getattr(raised.value, "orig", raised.value))
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def isolated_r1_database() -> Iterator[str]:
-    """Run 0013 -> 0014 -> 0015 after external role bootstrap in a disposable database."""
+    """Run 0013 -> 0014 -> 0015 in a fresh disposable DB with split bootstrap authority.
 
-    value = os.environ.get("LEDGERBRIDGE_MIGRATION_DATABASE_URL")
-    if value is None:
-        pytest.skip("PostgreSQL integration tests require LEDGERBRIDGE_MIGRATION_DATABASE_URL")
+    The admin URL owns only temporary database/role lifecycle.  The migration
+    URL must authenticate as the temporary database owner and remains the sole
+    connection Alembic uses for migrations and fixture writes.
+    """
+
+    owner_url = _migration_owner_url()
+    admin_url = _test_admin_url()
+    owner_name = _migration_owner_name(owner_url)
     if not MIGRATION_HARDENING.exists() or not MIGRATION_C.exists():
         pytest.skip("Migration C split (0014 hardening + 0015 reader) is supplied in parallel")
 
-    owner_url = create_engine(value).url
     database_name = f"ledgerbridge_r1_read_{uuid4().hex[:12]}"
-    maintenance_engine = create_engine(
-        owner_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
+    maintenance_engine = _maintenance_engine(admin_url)
     created_roles: list[str] = []
     temporary_engine: Engine | None = None
     try:
@@ -679,23 +751,29 @@ def isolated_r1_database() -> Iterator[str]:
                 ).scalars()
             )
             # These are intentionally external to Alembic: Migration C must not
-            # silently create a login role or choose its credentials.
+            # silently create a login role.  The harness never stores or uses
+            # runtime credentials; tests exercise roles through SET ROLE.
             for role in RUNTIME_ROLES:
                 if role in existing:
                     continue
-                if role == "ledgerbridge_reader":
-                    password = f"r1-test-{uuid4().hex}"
-                    connection.exec_driver_sql(
-                        f"CREATE ROLE {role} LOGIN PASSWORD '{password}' NOSUPERUSER "
-                        "NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS"
-                    )
-                else:
-                    connection.exec_driver_sql(
-                        f"CREATE ROLE {role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
-                        "NOINHERIT NOREPLICATION NOBYPASSRLS"
-                    )
+                connection.exec_driver_sql(
+                    f"CREATE ROLE {role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                    "NOINHERIT NOREPLICATION NOBYPASSRLS"
+                )
                 created_roles.append(role)
-            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            connection.execute(
+                text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
+            )
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT pg_get_userbyid(datdba) FROM pg_database "
+                        "WHERE datname = :database_name"
+                    ),
+                    {"database_name": database_name},
+                ).scalar_one()
+                == owner_name
+            )
 
         temporary_url = owner_url.set(database=database_name)
         config = Config("alembic.ini")
@@ -1175,6 +1253,18 @@ def test_r1_candidate_evidence_migration_is_forward_only_and_owner_written() -> 
     assert "R1 Candidate/evidence data prevents destructive downgrade" in source
 
 
+def test_r1_pg_harness_separates_admin_bootstrap_from_migration_owner() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    assert 'os.environ.get("LEDGERBRIDGE_MIGRATION_DATABASE_URL")' in source
+    assert 'os.environ.get("LEDGERBRIDGE_TEST_ADMIN_DATABASE_URL")' in source
+    assert 'CREATE DATABASE "{database_name}" ' in source
+    assert "OWNER {_quote_identifier(owner_name)}" in source
+    assert "pg_get_userbyid(datdba)" in source
+    assert "maintenance_engine = _maintenance_engine(admin_url)" in source
+    assert "PASSWORD " + "'" not in source
+    assert "create_engine(" + "value).url" not in source
+
+
 def test_r1_migration_pins_secretstream_and_candidate_scope_contracts() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     for literal in (
@@ -1342,14 +1432,15 @@ def test_r1_legacy_candidate_upgrade_rejects_each_bad_history_shape(
         if case == "blocker":
             facts = _legacy_candidate_seed(connection)
             other = _legacy_candidate_seed(connection)
+            connection.exec_driver_sql("ALTER TABLE public.candidate_blocker DISABLE TRIGGER USER")
             connection.execute(
                 text(
-                    "INSERT INTO public.candidate_blocker "
-                    "(candidate_id, revision, ordinal, code, message, evidence_ref) VALUES "
-                    "(:candidate, 1, 0, 'EVIDENCE_INCOMPLETE', 'bad scope', :evidence)"
+                    "UPDATE public.candidate_blocker SET evidence_ref = :evidence "
+                    "WHERE candidate_id = :candidate AND revision = 1 AND ordinal = 0"
                 ),
                 {"candidate": facts["candidate"], "evidence": other["evidence"]},
             )
+            connection.exec_driver_sql("ALTER TABLE public.candidate_blocker ENABLE TRIGGER USER")
             return
         if case == "null_shape":
             facts = _legacy_candidate_seed(connection)
@@ -1374,7 +1465,7 @@ def test_r1_legacy_candidate_upgrade_rejects_each_bad_history_shape(
                 "derived_candidate_id": None,
             }
             bad_audit = _append_audit_event(connection, "candidate.create", bad_payload)
-            connection.exec_driver_sql("ALTER TABLE public.candidate_event DISABLE TRIGGER ALL")
+            connection.exec_driver_sql("ALTER TABLE public.candidate_event DISABLE TRIGGER USER")
             connection.execute(
                 text(
                     "UPDATE public.candidate_event SET operation_id = :operation, "
@@ -1389,7 +1480,7 @@ def test_r1_legacy_candidate_upgrade_rejects_each_bad_history_shape(
                     "event": event_ref,
                 },
             )
-            connection.exec_driver_sql("ALTER TABLE public.candidate_event ENABLE TRIGGER ALL")
+            connection.exec_driver_sql("ALTER TABLE public.candidate_event ENABLE TRIGGER USER")
             return
         if case == "delta":
             facts = _legacy_candidate_seed(connection, status="INCOMPLETE")
@@ -1411,7 +1502,7 @@ def test_r1_legacy_candidate_upgrade_rejects_each_bad_history_shape(
                 to_status="CONFIRMED",
             )
             successor = _legacy_candidate_seed(connection, status="PENDING")
-            connection.exec_driver_sql("ALTER TABLE public.candidate DISABLE TRIGGER ALL")
+            connection.exec_driver_sql("ALTER TABLE public.candidate DISABLE TRIGGER USER")
             connection.execute(
                 text(
                     "UPDATE public.candidate SET supersedes_candidate_id = :candidate "
@@ -1419,7 +1510,7 @@ def test_r1_legacy_candidate_upgrade_rejects_each_bad_history_shape(
                 ),
                 {"candidate": facts["candidate"], "successor": successor["candidate"]},
             )
-            connection.exec_driver_sql("ALTER TABLE public.candidate ENABLE TRIGGER ALL")
+            connection.exec_driver_sql("ALTER TABLE public.candidate ENABLE TRIGGER USER")
             _legacy_transition(
                 connection,
                 facts,
@@ -1443,7 +1534,7 @@ def test_r1_legacy_candidate_upgrade_rejects_each_bad_history_shape(
                 "sha256": digest.hex(),
                 "byte_size": 3,
                 "storage_key": storage_key,
-                "source": "wrong-channel",
+                "source": "manual_upload",
                 "original_filename_sha256": hashlib.sha256(b"legacy.csv").hexdigest(),
                 "media_type": "text/csv",
             },
@@ -1452,7 +1543,7 @@ def test_r1_legacy_candidate_upgrade_rejects_each_bad_history_shape(
             text(
                 "INSERT INTO public.raw_artifact "
                 "(id, sha256, source, original_filename, media_type, byte_size, storage_key, "
-                "audit_event_id) VALUES (:id, :digest, 'wrong-channel', 'legacy.csv', 'text/csv', "
+                "audit_event_id) VALUES (:id, :digest, 'manual_upload', 'legacy.csv', 'text/csv', "
                 "3, :storage_key, :audit)"
             ),
             {
@@ -1465,8 +1556,8 @@ def test_r1_legacy_candidate_upgrade_rejects_each_bad_history_shape(
         connection.execute(
             text(
                 "INSERT INTO public.import_job "
-                "(id, artifact_id, connector_name, connector_version, status) VALUES "
-                "(:job, :artifact, 'legacy', '1', 'PENDING')"
+                "(id, artifact_id, connector_name, connector_version, source_system, status) VALUES "
+                "(:job, :artifact, 'legacy', '1', 'synthetic', 'PENDING')"
             ),
             {"job": import_job_id, "artifact": artifact_id},
         )
@@ -1475,11 +1566,11 @@ def test_r1_legacy_candidate_upgrade_rejects_each_bad_history_shape(
                 "INSERT INTO public.source_record "
                 "(id, artifact_id, import_job_id, record_locator, source, parser_version, "
                 "raw_fields, normalized_fields) VALUES (:id, :artifact, :job, 'row-1', "
-                "'wrong-source', 'legacy-1', '{}'::jsonb, '{}'::jsonb)"
+                "'synthetic', '1', '{}'::jsonb, '{}'::jsonb)"
             ),
             {"id": source_record_id, "artifact": artifact_id, "job": import_job_id},
         )
-        connection.exec_driver_sql("ALTER TABLE public.candidate_source DISABLE TRIGGER ALL")
+        connection.exec_driver_sql("ALTER TABLE public.candidate_source DISABLE TRIGGER USER")
         connection.execute(
             text(
                 "UPDATE public.candidate_source SET source_record_id = :record "
@@ -1487,7 +1578,7 @@ def test_r1_legacy_candidate_upgrade_rejects_each_bad_history_shape(
             ),
             {"record": source_record_id, "candidate": facts["candidate"]},
         )
-        connection.exec_driver_sql("ALTER TABLE public.candidate_source ENABLE TRIGGER ALL")
+        connection.exec_driver_sql("ALTER TABLE public.candidate_source ENABLE TRIGGER USER")
 
     _assert_legacy_upgrade_rejected(seed, message=message)
 
@@ -1561,7 +1652,7 @@ def test_r1_legacy_upgrade_rejects_cross_transaction_typed_candidate_audit() -> 
         with pytest.raises(SQLAlchemyError) as raised:
             command.upgrade(_upgrade_config(database_url), "20260824_0014")
         assert _sqlstate(raised.value) == "23000"
-        assert "candidate event and its audited children must share one transaction" in str(
+        assert "existing candidate event audit payload is invalid" in str(
             getattr(raised.value, "orig", raised.value)
         )
         engine.dispose()
@@ -1577,8 +1668,8 @@ def test_r1_legacy_attribution_upgrade_rejects_cross_entity_and_posted_primary_g
         create_audit = _append_audit_event(connection, "journal.entry.create", {})
         posted_audit = _append_audit_event(connection, "journal.entry.post", {})
         connection.exec_driver_sql(
-            "ALTER TABLE public.journal_entry DISABLE TRIGGER ALL; "
-            "ALTER TABLE public.journal_entry_attribution DISABLE TRIGGER ALL"
+            "ALTER TABLE public.journal_entry DISABLE TRIGGER USER; "
+            "ALTER TABLE public.journal_entry_attribution DISABLE TRIGGER USER"
         )
         connection.execute(
             text(
@@ -1604,11 +1695,13 @@ def test_r1_legacy_attribution_upgrade_rejects_cross_entity_and_posted_primary_g
             {"entry": entry_id, "entity": second["entity"], "unit": second["unit"]},
         )
         connection.exec_driver_sql(
-            "ALTER TABLE public.journal_entry_attribution ENABLE TRIGGER ALL; "
-            "ALTER TABLE public.journal_entry ENABLE TRIGGER ALL"
+            "ALTER TABLE public.journal_entry_attribution ENABLE TRIGGER USER; "
+            "ALTER TABLE public.journal_entry ENABLE TRIGGER USER"
         )
 
-    _assert_legacy_upgrade_rejected(seed, message="journal attribution entity is contradictory")
+    _assert_legacy_upgrade_rejected(
+        seed, message="existing POSTED attribution or category scope is incomplete"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1661,10 +1754,10 @@ def test_r1_legacy_posted_primary_shape_is_explicitly_required(
         # 0014 read-only preflight, rather than an insert trigger, diagnoses
         # the contradictory historical fact.
         connection.exec_driver_sql(
-            "ALTER TABLE public.journal_entry DISABLE TRIGGER ALL; "
-            "ALTER TABLE public.posting DISABLE TRIGGER ALL; "
-            "ALTER TABLE public.journal_entry_attribution DISABLE TRIGGER ALL; "
-            "ALTER TABLE public.posting_attribution DISABLE TRIGGER ALL"
+            "ALTER TABLE public.journal_entry DISABLE TRIGGER USER; "
+            "ALTER TABLE public.posting DISABLE TRIGGER USER; "
+            "ALTER TABLE public.journal_entry_attribution DISABLE TRIGGER USER; "
+            "ALTER TABLE public.posting_attribution DISABLE TRIGGER USER"
         )
         connection.execute(
             text(
@@ -1713,10 +1806,10 @@ def test_r1_legacy_posted_primary_shape_is_explicitly_required(
                 {"posting": posting_id, "category": category_id},
             )
         connection.exec_driver_sql(
-            "ALTER TABLE public.posting_attribution ENABLE TRIGGER ALL; "
-            "ALTER TABLE public.journal_entry_attribution ENABLE TRIGGER ALL; "
-            "ALTER TABLE public.posting ENABLE TRIGGER ALL; "
-            "ALTER TABLE public.journal_entry ENABLE TRIGGER ALL"
+            "ALTER TABLE public.posting_attribution ENABLE TRIGGER USER; "
+            "ALTER TABLE public.journal_entry_attribution ENABLE TRIGGER USER; "
+            "ALTER TABLE public.posting ENABLE TRIGGER USER; "
+            "ALTER TABLE public.journal_entry ENABLE TRIGGER USER"
         )
 
     _assert_legacy_upgrade_rejected(seed, message=message)
@@ -1731,10 +1824,10 @@ def test_r1_legacy_posted_without_scope_attribution_is_rejected() -> None:
         entry_audit = _append_audit_event(connection, "journal.entry.create", {})
         posted_audit = _append_audit_event(connection, "journal.entry.post", {})
         connection.exec_driver_sql(
-            "ALTER TABLE public.journal_entry DISABLE TRIGGER ALL; "
-            "ALTER TABLE public.posting DISABLE TRIGGER ALL; "
-            "ALTER TABLE public.journal_entry_attribution DISABLE TRIGGER ALL; "
-            "ALTER TABLE public.posting_attribution DISABLE TRIGGER ALL"
+            "ALTER TABLE public.journal_entry DISABLE TRIGGER USER; "
+            "ALTER TABLE public.posting DISABLE TRIGGER USER; "
+            "ALTER TABLE public.journal_entry_attribution DISABLE TRIGGER USER; "
+            "ALTER TABLE public.posting_attribution DISABLE TRIGGER USER"
         )
         connection.execute(
             text(
@@ -1769,10 +1862,10 @@ def test_r1_legacy_posted_without_scope_attribution_is_rejected() -> None:
             {"posting": posting_id, "entry": entry_id, "account": account_id},
         )
         connection.exec_driver_sql(
-            "ALTER TABLE public.posting_attribution ENABLE TRIGGER ALL; "
-            "ALTER TABLE public.journal_entry_attribution ENABLE TRIGGER ALL; "
-            "ALTER TABLE public.posting ENABLE TRIGGER ALL; "
-            "ALTER TABLE public.journal_entry ENABLE TRIGGER ALL"
+            "ALTER TABLE public.posting_attribution ENABLE TRIGGER USER; "
+            "ALTER TABLE public.journal_entry_attribution ENABLE TRIGGER USER; "
+            "ALTER TABLE public.posting ENABLE TRIGGER USER; "
+            "ALTER TABLE public.journal_entry ENABLE TRIGGER USER"
         )
 
     _assert_legacy_upgrade_rejected(
@@ -1784,7 +1877,7 @@ def test_r1_legacy_posted_without_scope_attribution_is_rejected() -> None:
 @pytest.mark.parametrize(
     ("case", "message"),
     [
-        ("null_posting", "existing reconciliation leg lacks reliable scope or primary flag"),
+        ("null_posting", "existing reconciliation scope or primary posting is invalid"),
         ("scope", "existing reconciliation scope or primary posting is invalid"),
     ],
 )
@@ -1793,6 +1886,16 @@ def test_r1_legacy_reconciliation_leg_scope_and_posting_are_required(
 ) -> None:
     def seed(connection: Connection) -> None:
         facts = _legacy_candidate_seed(connection)
+        scope_entity = facts["entity"]
+        if case == "scope":
+            scope_entity = uuid4()
+            connection.execute(
+                text(
+                    "INSERT INTO public.entity (id, entity_type, name) "
+                    "VALUES (:entity, 'COMPANY', 'contradictory reconciliation entity')"
+                ),
+                {"entity": scope_entity},
+            )
         artifact_id = uuid4()
         job_id = uuid4()
         source_record_id = uuid4()
@@ -1805,7 +1908,7 @@ def test_r1_legacy_reconciliation_leg_scope_and_posting_are_required(
                 "sha256": digest.hex(),
                 "byte_size": 3,
                 "storage_key": storage_key,
-                "source": "legacy-channel",
+                "source": "manual_upload",
                 "original_filename_sha256": hashlib.sha256(b"leg.csv").hexdigest(),
                 "media_type": "text/csv",
             },
@@ -1814,7 +1917,7 @@ def test_r1_legacy_reconciliation_leg_scope_and_posting_are_required(
             text(
                 "INSERT INTO public.raw_artifact "
                 "(id, sha256, source, original_filename, media_type, byte_size, storage_key, "
-                "audit_event_id) VALUES (:id, :digest, 'legacy-channel', 'leg.csv', 'text/csv', "
+                "audit_event_id) VALUES (:id, :digest, 'manual_upload', 'leg.csv', 'text/csv', "
                 "3, :storage_key, :audit)"
             ),
             {
@@ -1827,8 +1930,8 @@ def test_r1_legacy_reconciliation_leg_scope_and_posting_are_required(
         connection.execute(
             text(
                 "INSERT INTO public.import_job "
-                "(id, artifact_id, connector_name, connector_version, status) VALUES "
-                "(:job, :artifact, 'legacy', '1', 'PENDING')"
+                "(id, artifact_id, connector_name, connector_version, source_system, status) VALUES "
+                "(:job, :artifact, 'legacy', '1', 'synthetic', 'PENDING')"
             ),
             {"job": job_id, "artifact": artifact_id},
         )
@@ -1837,7 +1940,7 @@ def test_r1_legacy_reconciliation_leg_scope_and_posting_are_required(
                 "INSERT INTO public.source_record "
                 "(id, artifact_id, import_job_id, record_locator, source, parser_version, "
                 "raw_fields, normalized_fields) VALUES (:id, :artifact, :job, 'leg-1', "
-                "'legacy-channel', 'legacy-1', '{}'::jsonb, '{}'::jsonb)"
+                "'synthetic', '1', '{}'::jsonb, '{}'::jsonb)"
             ),
             {"id": source_record_id, "artifact": artifact_id, "job": job_id},
         )
@@ -1866,10 +1969,10 @@ def test_r1_legacy_reconciliation_leg_scope_and_posting_are_required(
             entry_audit = _append_audit_event(connection, "journal.entry.create", {})
             posted_audit = _append_audit_event(connection, "journal.entry.post", {})
             connection.exec_driver_sql(
-                "ALTER TABLE public.journal_entry DISABLE TRIGGER ALL; "
-                "ALTER TABLE public.posting DISABLE TRIGGER ALL; "
-                "ALTER TABLE public.journal_entry_attribution DISABLE TRIGGER ALL; "
-                "ALTER TABLE public.posting_attribution DISABLE TRIGGER ALL"
+                "ALTER TABLE public.journal_entry DISABLE TRIGGER USER; "
+                "ALTER TABLE public.posting DISABLE TRIGGER USER; "
+                "ALTER TABLE public.journal_entry_attribution DISABLE TRIGGER USER; "
+                "ALTER TABLE public.posting_attribution DISABLE TRIGGER USER"
             )
             connection.execute(
                 text(
@@ -1921,14 +2024,14 @@ def test_r1_legacy_reconciliation_leg_scope_and_posting_are_required(
                 {"posting": posting_id, "category": facts["category"]},
             )
             connection.exec_driver_sql(
-                "ALTER TABLE public.posting_attribution ENABLE TRIGGER ALL; "
-                "ALTER TABLE public.journal_entry_attribution ENABLE TRIGGER ALL; "
-                "ALTER TABLE public.posting ENABLE TRIGGER ALL; "
-                "ALTER TABLE public.journal_entry ENABLE TRIGGER ALL"
+                "ALTER TABLE public.posting_attribution ENABLE TRIGGER USER; "
+                "ALTER TABLE public.journal_entry_attribution ENABLE TRIGGER USER; "
+                "ALTER TABLE public.posting ENABLE TRIGGER USER; "
+                "ALTER TABLE public.journal_entry ENABLE TRIGGER USER"
             )
         connection.exec_driver_sql(
-            "ALTER TABLE public.reconciliation_group DISABLE TRIGGER ALL; "
-            "ALTER TABLE public.reconciliation_leg DISABLE TRIGGER ALL"
+            "ALTER TABLE public.reconciliation_group DISABLE TRIGGER USER; "
+            "ALTER TABLE public.reconciliation_leg DISABLE TRIGGER USER"
         )
         connection.execute(
             text(
@@ -1952,13 +2055,13 @@ def test_r1_legacy_reconciliation_leg_scope_and_posting_are_required(
                 "source": source_record_id,
                 "posting": posting_id,
                 "primary": True if case == "scope" else None,
-                "entity": facts["other_entity"] if case == "scope" else facts["entity"],
+                "entity": scope_entity,
                 "unit": facts["unit"],
             },
         )
         connection.exec_driver_sql(
-            "ALTER TABLE public.reconciliation_leg ENABLE TRIGGER ALL; "
-            "ALTER TABLE public.reconciliation_group ENABLE TRIGGER ALL"
+            "ALTER TABLE public.reconciliation_leg ENABLE TRIGGER USER; "
+            "ALTER TABLE public.reconciliation_group ENABLE TRIGGER USER"
         )
 
     _assert_legacy_upgrade_rejected(seed, message=message)
@@ -2033,7 +2136,7 @@ def test_r1_legacy_snapshot_upgrade_rejects_noncontiguous_or_fake_watermarks(
     ("case", "message"),
     [
         ("rotation_null", "existing encrypted blob rotation mode is invalid"),
-        ("rewrap", "existing encrypted blob rotation mode is invalid"),
+        ("rewrap", "existing encrypted blob audit or lineage is invalid"),
     ],
 )
 def test_r1_legacy_blob_upgrade_rejects_unclosed_rotation_lineage(case: str, message: str) -> None:
@@ -2223,35 +2326,187 @@ def test_r1_no_reader_0013_0014_0013_round_trip_is_supported() -> None:
                 connection.execute(
                     text("SELECT to_regclass('public.journal_entry_attribution')")
                 ).scalar_one()
+                is not None
+            )
+            assert (
+                connection.execute(
+                    text("SELECT to_regclass('public.encrypted_object_identity')")
+                ).scalar_one()
                 is None
             )
 
 
 def test_r1_downgrade_rejects_a_fact_using_0013_added_reconciliation_columns() -> None:
     with _legacy_r1_database(reader=False) as database_url:
-        command.upgrade(_upgrade_config(database_url), "20260824_0014")
         engine = create_engine(database_url)
         with engine.begin() as connection:
-            connection.exec_driver_sql("SET session_replication_role = replica")
+            facts = _legacy_candidate_seed(connection)
+            artifact_id = uuid4()
+            job_id = uuid4()
+            source_record_id = uuid4()
+            digest = bytes.fromhex("ef" * 32)
+            storage_key = "sha256/ef/ef/" + digest.hex()
+            artifact_audit = _append_audit_event(
+                connection,
+                "artifact.ingest",
+                {
+                    "sha256": digest.hex(),
+                    "byte_size": 3,
+                    "storage_key": storage_key,
+                    "source": "manual_upload",
+                    "original_filename_sha256": hashlib.sha256(b"downgrade.csv").hexdigest(),
+                    "media_type": "text/csv",
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.raw_artifact "
+                    "(id, sha256, source, original_filename, media_type, byte_size, storage_key, "
+                    "audit_event_id) VALUES (:id, :digest, 'manual_upload', 'downgrade.csv', "
+                    "'text/csv', 3, :storage_key, :audit)"
+                ),
+                {
+                    "id": artifact_id,
+                    "digest": digest,
+                    "storage_key": storage_key,
+                    "audit": artifact_audit,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.import_job "
+                    "(id, artifact_id, connector_name, connector_version, source_system, status) "
+                    "VALUES (:job, :artifact, 'legacy', '1', 'synthetic', 'PENDING')"
+                ),
+                {"job": job_id, "artifact": artifact_id},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.source_record "
+                    "(id, artifact_id, import_job_id, record_locator, source, parser_version, "
+                    "raw_fields, normalized_fields) VALUES (:id, :artifact, :job, 'downgrade-1', "
+                    "'synthetic', '1', '{}'::jsonb, '{}'::jsonb)"
+                ),
+                {"id": source_record_id, "artifact": artifact_id, "job": job_id},
+            )
+            review_id = uuid4()
+            review_audit = _append_audit_event(
+                connection,
+                "review.create",
+                {"review_item_id": str(review_id), "kind": "RECONCILIATION"},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.review_item "
+                    "(id, kind, status, source_record_id, summary, payload, audit_event_id) "
+                    "VALUES (:id, 'RECONCILIATION', 'OPEN', :source, 'downgrade review', "
+                    "'{}'::jsonb, :audit)"
+                ),
+                {"id": review_id, "source": source_record_id, "audit": review_audit},
+            )
+            account_id = uuid4()
+            entry_id = uuid4()
+            posting_id = uuid4()
+            entry_audit = _append_audit_event(connection, "journal.entry.create", {})
+            posted_audit = _append_audit_event(connection, "journal.entry.post", {})
+            connection.exec_driver_sql(
+                "ALTER TABLE public.journal_entry DISABLE TRIGGER USER; "
+                "ALTER TABLE public.posting DISABLE TRIGGER USER; "
+                "ALTER TABLE public.journal_entry_attribution DISABLE TRIGGER USER; "
+                "ALTER TABLE public.posting_attribution DISABLE TRIGGER USER"
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.account "
+                    "(id, entity_id, identifier, name, account_class) "
+                    "VALUES (:account, :entity, 'downgrade-leg', 'Downgrade Leg', 'EXPENSE')"
+                ),
+                {"account": account_id, "entity": facts["entity"]},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.journal_entry "
+                    "(id, entity_id, occurred_at, origin, status, primary_account_id, "
+                    "audit_event_id, posted_audit_event_id) VALUES "
+                    "(:entry, :entity, :occurred, 'legacy', 'POSTED', :account, :audit, :posted)"
+                ),
+                {
+                    "entry": entry_id,
+                    "entity": facts["entity"],
+                    "occurred": datetime.now(UTC),
+                    "account": account_id,
+                    "audit": entry_audit,
+                    "posted": posted_audit,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.journal_entry_attribution "
+                    "(entry_id, entity_id, business_unit_id, accounting_month) "
+                    "VALUES (:entry, :entity, :unit, DATE '2026-08-01')"
+                ),
+                {"entry": entry_id, "entity": facts["entity"], "unit": facts["unit"]},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.posting "
+                    "(id, entry_id, account_id, amount_minor, currency) "
+                    "VALUES (:posting, :entry, :account, 1, 'CNY')"
+                ),
+                {"posting": posting_id, "entry": entry_id, "account": account_id},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.posting_attribution "
+                    "(posting_id, reporting_category_id, category_code_snapshot, "
+                    "category_label_snapshot) VALUES (:posting, :category, "
+                    "'legacy-category', 'Legacy Category')"
+                ),
+                {"posting": posting_id, "category": facts["category"]},
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE public.posting_attribution ENABLE TRIGGER USER; "
+                "ALTER TABLE public.journal_entry_attribution ENABLE TRIGGER USER; "
+                "ALTER TABLE public.posting ENABLE TRIGGER USER; "
+                "ALTER TABLE public.journal_entry ENABLE TRIGGER USER"
+            )
+            group_id = uuid4()
+            connection.exec_driver_sql(
+                "ALTER TABLE public.reconciliation_group DISABLE TRIGGER USER; "
+                "ALTER TABLE public.reconciliation_leg DISABLE TRIGGER USER"
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.reconciliation_group "
+                    "(id, review_item_id, relation, status, currency) VALUES "
+                    "(:group, :review, '1:1', 'PROPOSED', 'CNY')"
+                ),
+                {"group": group_id, "review": review_id},
+            )
             connection.execute(
                 text(
                     "INSERT INTO public.reconciliation_leg "
                     "(id, reconciliation_group_id, source_record_id, amount_minor, currency, "
                     "posting_id, is_primary, entity_id, business_unit_id, accounting_month) VALUES "
-                    "(:leg, :group, :source, 1, 'CNY', NULL, false, :entity, :unit, DATE '2026-08-01')"
+                    "(:leg, :group, :source, 1, 'CNY', :posting, true, :entity, :unit, "
+                    "DATE '2026-08-01')"
                 ),
                 {
                     "leg": uuid4(),
-                    "group": uuid4(),
-                    "source": uuid4(),
-                    "entity": uuid4(),
-                    "unit": uuid4(),
+                    "group": group_id,
+                    "source": source_record_id,
+                    "posting": posting_id,
+                    "entity": facts["entity"],
+                    "unit": facts["unit"],
                 },
             )
-            connection.exec_driver_sql("SET session_replication_role = origin")
-        with pytest.raises(RuntimeError, match="R1 ledger/reconciliation data"):
-            command.downgrade(_upgrade_config(database_url), "20260824_0013")
+            connection.exec_driver_sql(
+                "ALTER TABLE public.reconciliation_leg ENABLE TRIGGER USER; "
+                "ALTER TABLE public.reconciliation_group ENABLE TRIGGER USER"
+            )
         engine.dispose()
+        with pytest.raises(RuntimeError, match="R1 reconciliation-leg columns contain data"):
+            command.downgrade(_upgrade_config(database_url), "20260824_0012")
 
 
 def test_r1_parent_audit_commit_then_child_rejection_keeps_horizon_fixed(
@@ -2324,7 +2579,7 @@ def test_r1_parent_audit_commit_then_child_rejection_keeps_horizon_fixed(
             ),
         ],
         sqlstate="23000",
-        message="candidate event audit binding is invalid",
+        message="candidate event and its audited children must share one transaction",
     )
     with engine.connect() as connection:
         after = connection.execute(
@@ -2537,20 +2792,19 @@ def test_r1_internal_read_objects_are_fixed_owner_security_definer_and_fail_clos
             ).scalar_one()
 
 
-def test_r1_internal_read_empty_database_downgrade_round_trips(
-    isolated_r1_database: str,
-) -> None:
-    config = Config("alembic.ini")
-    config.attributes["database_url"] = isolated_r1_database
-    command.downgrade(config, "20260824_0014")
-    with create_engine(isolated_r1_database).connect() as connection:
-        assert (
-            connection.execute(
-                text("SELECT to_regclass('internal_read.current_audit_horizon')")
-            ).scalar_one()
-            is None
-        )
-    command.upgrade(config, "head")
+def test_r1_internal_read_empty_database_downgrade_round_trips() -> None:
+    with _fresh_head_r1_database() as isolated_r1_database:
+        config = Config("alembic.ini")
+        config.attributes["database_url"] = isolated_r1_database
+        command.downgrade(config, "20260824_0014")
+        with create_engine(isolated_r1_database).connect() as connection:
+            assert (
+                connection.execute(
+                    text("SELECT to_regclass('internal_read.current_audit_horizon')")
+                ).scalar_one()
+                is None
+            )
+        command.upgrade(config, "head")
 
 
 def test_r1_internal_read_nonempty_downgrade_is_rejected(
@@ -2565,9 +2819,17 @@ def test_r1_internal_read_nonempty_downgrade_is_rejected(
         command.downgrade(config, "20260824_0014")
 
 
-def test_r1_reader_horizon_as_of_scope_resolver_and_audit_wrapper_fail_closed(
-    isolated_r1_database: str,
-) -> None:
+def test_r1_reader_horizon_as_of_scope_resolver_and_audit_wrapper_fail_closed() -> None:
+    # The restricted owner cannot SET ROLE to an unrelated LOGIN role.  Grant
+    # this membership only for the isolated read-surface session.
+    with (
+        _fresh_head_r1_database() as database_url,
+        _temporarily_runtime_membership(database_url, "ledgerbridge_reader"),
+    ):
+        _exercise_r1_reader_horizon_as_of_scope_resolver(database_url)
+
+
+def _exercise_r1_reader_horizon_as_of_scope_resolver(isolated_r1_database: str) -> None:
     engine = create_engine(isolated_r1_database)
     with engine.begin() as connection:
         facts = _seed_read_facts(connection)
@@ -2627,7 +2889,21 @@ def test_r1_reader_horizon_as_of_scope_resolver_and_audit_wrapper_fail_closed(
                 "hash": horizon.hash,
             },
         ).all()
-        assert reconciliation == []
+        assert len(reconciliation) == 1
+        reconciliation_row = reconciliation[0]
+        assert tuple(reconciliation_row[:4]) == (facts["entity"], "unit-a", "2026-08", 1)
+        assert reconciliation_row[4] == [
+            {
+                "code": "MISSING_FIELD",
+                "message": "fixture blocker",
+                "field": "amount",
+                "conflict_ref": None,
+                "evidence_ref": str(facts["evidence"]),
+            }
+        ]
+        assert reconciliation_row[5][0]["status"] == "PROPOSED"
+        assert reconciliation_row[6][0]["status"] == "OPEN"
+        assert tuple(reconciliation_row[7:]) == (1234, "CNY")
 
         active = connection.execute(
             text("SELECT blob_ref FROM internal_read.resolve_active_evidence_blob(:evidence)"),

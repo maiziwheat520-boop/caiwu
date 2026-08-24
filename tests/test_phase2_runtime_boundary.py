@@ -117,12 +117,23 @@ def test_runtime_role_split_reasserts_least_privilege_and_membership_boundary() 
     )
     assert "ALTER ROLE ledgerbridge_api" in migration
     assert "ALTER ROLE ledgerbridge_worker" in migration
-    assert "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT" in migration
+    assert "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT" in migration
     assert "NOREPLICATION NOBYPASSRLS" in migration
-    assert "REVOKE ledgerbridge_app FROM ledgerbridge_api, ledgerbridge_worker" in migration
-    assert "FROM pg_auth_members" in migration
+    assert "rolcreaterole" in migration
+    assert "rolcanlogin" in migration
+    assert "pg_catalog.pg_auth_members" in migration
     assert "FOR v_membership IN" in migration
+    assert "pg_catalog.format" in migration
     assert "REVOKE %I FROM %I" in migration
+    # Keep public first so the same Alembic transaction does not resolve later
+    # unqualified CREATE TABLE statements into the read-only pg_catalog schema.
+    assert "SET LOCAL search_path = public, pg_catalog" in migration
+    assert "REVOKE ALL ON SCHEMA public FROM ledgerbridge_api, ledgerbridge_worker" in migration
+    assert "pg_catalog.aclexplode" not in migration
+    assert "WHEN insufficient_privilege" not in migration
+    assert "CREATE ROLE" not in migration.upper()
+    assert "CREATE USER" not in migration.upper()
+    assert "PASSWORD" not in migration.upper()
 
 
 def test_forward_migration_permanently_hardens_security_function_lookup() -> None:

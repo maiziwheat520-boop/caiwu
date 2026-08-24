@@ -372,8 +372,9 @@ def upgrade() -> None:
                 SELECT 1 FROM public.candidate_event AS e
                  WHERE (e.event_type = 'CREATE'
                          AND (e.to_revision IS DISTINCT FROM 1 OR e.from_revision IS NOT NULL
-                             OR e.from_status IS NOT NULL OR e.action IS NOT NULL
-                             OR e.derived_candidate_id IS NOT NULL))
+                              OR e.from_status IS NOT NULL OR e.action IS NOT NULL
+                              OR e.derived_candidate_id IS NOT NULL
+                              OR e.to_status NOT IN ('INCOMPLETE','CONFLICTED','PENDING')))
                     OR (e.event_type <> 'CREATE'
                         AND (e.from_revision IS NULL OR e.from_status IS NULL
                              OR e.action IS DISTINCT FROM e.event_type
@@ -512,12 +513,32 @@ def upgrade() -> None:
     # resolves that unqualified reference as ambiguous.  Replace the trigger
     # body with an explicitly named local so existing revision inserts remain
     # valid under the hardened schema.
-    op.alter_column(
-        "candidate",
-        "contract_version",
-        existing_type=sa.String(32),
-        type_=sa.String(32),
-        schema="public",
+    # 0012 fresh installs already use VARCHAR(32).  Only rewrite an older
+    # deployed VARCHAR(24) column when its actual typmod is narrower; an
+    # unconditional ALTER TYPE rewrites every candidate row and changes xmin,
+    # which would make the legacy same-transaction audit preflight appear
+    # non-atomic.
+    op.execute(
+        """
+        DO $contract_width$
+        DECLARE
+            v_typmod integer;
+        BEGIN
+            SELECT a.atttypmod INTO v_typmod
+              FROM pg_attribute AS a
+              JOIN pg_class AS c ON c.oid = a.attrelid
+              JOIN pg_namespace AS n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'public'
+               AND c.relname = 'candidate'
+               AND a.attname = 'contract_version'
+               AND NOT a.attisdropped;
+            IF v_typmod IS NOT NULL AND v_typmod > 0 AND v_typmod < 36 THEN
+                EXECUTE 'ALTER TABLE public.candidate '
+                     || 'ALTER COLUMN contract_version TYPE VARCHAR(32)';
+            END IF;
+        END
+        $contract_width$;
+        """
     )
     op.create_table(
         "encrypted_object_identity",
@@ -1142,7 +1163,7 @@ def upgrade() -> None:
                            AND successor.supersedes_candidate_id = p_candidate_id
                            AND successor.entity_id IS NOT DISTINCT FROM v_candidate.entity_id;
                         IF v_count IS DISTINCT FROM 1 THEN
-                            RAISE EXCEPTION 'SUPERSEDE requires one same-entity successor'
+                            RAISE EXCEPTION 'candidate supersede requires one same-entity successor'
                                 USING ERRCODE = 'integrity_constraint_violation';
                         END IF;
                         v_successor := v_event.derived_candidate_id;
@@ -1565,7 +1586,7 @@ def upgrade() -> None:
                        AND successor.entity_id IS NOT DISTINCT FROM v_candidate.entity_id;
                     IF v_count IS DISTINCT FROM 1
                        OR v_event.derived_candidate_id IS NULL THEN
-                        RAISE EXCEPTION 'SUPERSEDE requires one same-entity successor'
+                        RAISE EXCEPTION 'candidate supersede requires one same-entity successor'
                             USING ERRCODE = 'integrity_constraint_violation';
                     END IF;
                     SELECT successor.id INTO v_successor
@@ -1700,15 +1721,6 @@ def upgrade() -> None:
                     OR cs.xmin IS DISTINCT FROM a.xmin
                     OR r.xmin IS DISTINCT FROM a.xmin
                     OR e.xmin IS DISTINCT FROM a.xmin
-            ) OR EXISTS (
-                SELECT 1
-                  FROM public.candidate_evidence AS ce
-                  JOIN public.candidate_event AS e
-                    ON e.candidate_id = ce.candidate_id
-                   AND e.event_type = 'CREATE'
-                   AND e.to_revision = 1
-                  JOIN public.audit_event AS a ON a.id = e.audit_event_id
-                 WHERE ce.xmin IS DISTINCT FROM a.xmin
             ) THEN
                 RAISE EXCEPTION
                     'existing candidate CREATE source/revision/event/evidence is not atomic'

@@ -303,11 +303,12 @@ def _revoke_owner_default_acls(schema_name: str) -> None:
 
     if schema_name not in {"public", "internal_read"}:
         raise ValueError("default ACL schema is not allowlisted")
-    op.execute(
-        f"""
+    sql = (
+        ""  # nosec B608 - the schema literal is allowlisted before it is inserted.
+        """
         DO $default_acl$
         DECLARE
-            v_schema text := {schema_name!r};
+            v_schema text := __SCHEMA_LITERAL__;
             role_name text;
             owner_oid oid;
             schema_oid oid;
@@ -323,7 +324,7 @@ def _revoke_owner_default_acls(schema_name: str) -> None:
                 SELECT 1
                   FROM pg_default_acl AS defaults
                   CROSS JOIN LATERAL aclexplode(
-                      COALESCE(defaults.defaclacl, '{{}}'::aclitem[])
+                      COALESCE(defaults.defaclacl, '{}'::aclitem[])
                   ) AS acl
                  WHERE defaults.defaclrole = owner_oid
                    AND defaults.defaclnamespace IN (0, schema_oid)
@@ -406,7 +407,7 @@ def _revoke_owner_default_acls(schema_name: str) -> None:
                 SELECT 1
                  FROM pg_default_acl AS defaults
                   CROSS JOIN LATERAL aclexplode(
-                      COALESCE(defaults.defaclacl, '{{}}'::aclitem[])
+                      COALESCE(defaults.defaclacl, '{}'::aclitem[])
                   ) AS acl
                  WHERE defaults.defaclrole = owner_oid
                    AND defaults.defaclnamespace IN (0, schema_oid)
@@ -427,7 +428,8 @@ def _revoke_owner_default_acls(schema_name: str) -> None:
         END
         $default_acl$;
         """
-    )
+    ).replace("__SCHEMA_LITERAL__", repr(schema_name))
+    op.execute(sql)
 
 
 def _grant_exact_surface() -> None:

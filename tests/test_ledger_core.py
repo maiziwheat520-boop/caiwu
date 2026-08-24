@@ -1915,6 +1915,18 @@ def test_runtime_role_split_removes_preexisting_owner_membership(
                 == 0
             )
             connection.execute(
+                text(
+                    "ALTER ROLE ledgerbridge_api SUPERUSER CREATEDB CREATEROLE "
+                    "INHERIT REPLICATION BYPASSRLS NOLOGIN"
+                )
+            )
+            connection.execute(
+                text(
+                    "ALTER ROLE ledgerbridge_worker SUPERUSER CREATEDB CREATEROLE "
+                    "INHERIT REPLICATION BYPASSRLS NOLOGIN"
+                )
+            )
+            connection.execute(
                 text("GRANT ledgerbridge_owner TO ledgerbridge_api, ledgerbridge_worker")
             )
         temporary_engine.dispose()
@@ -1923,6 +1935,23 @@ def test_runtime_role_split_removes_preexisting_owner_membership(
         _run_alembic(rendered, "20260823_0006")
         temporary_engine = create_engine(temporary_url)
         with temporary_engine.connect() as connection:
+            assert [
+                tuple(row)
+                for row in connection.execute(
+                    text(
+                        """
+                        SELECT rolname, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
+                               rolinherit, rolreplication, rolbypassrls
+                        FROM pg_roles
+                        WHERE rolname IN ('ledgerbridge_api', 'ledgerbridge_worker')
+                        ORDER BY rolname
+                        """
+                    )
+                ).all()
+            ] == [
+                ("ledgerbridge_api", True, False, False, False, False, False, False),
+                ("ledgerbridge_worker", True, False, False, False, False, False, False),
+            ]
             assert (
                 connection.execute(
                     text(
@@ -1960,4 +1989,96 @@ def test_runtime_role_split_removes_preexisting_owner_membership(
                 {"database_name": database_name},
             )
             connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+        maintenance_engine.dispose()
+
+
+def test_runtime_role_split_restricted_owner_validates_bootstrap_contract(
+    migration_database_url: str,
+) -> None:
+    source = create_engine(migration_database_url)
+    url = source.url
+    source.dispose()
+    database_name = f"ledgerbridge_role_restricted_{uuid4().hex[:12]}"
+    role_name = f"ledgerbridge_migrate_{uuid4().hex[:12]}"
+    role_password = uuid4().hex
+    maintenance_engine = create_engine(
+        url.set(database="postgres"),
+        isolation_level="AUTOCOMMIT",
+    )
+    temporary_engine: Engine | None = None
+    restricted_engine: Engine | None = None
+    api_contract = (
+        "ALTER ROLE ledgerbridge_api LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+        "NOINHERIT NOREPLICATION NOBYPASSRLS"
+    )
+
+    try:
+        with maintenance_engine.connect() as connection:
+            admin_role = connection.execute(text("SELECT current_user")).scalar_one()
+            connection.execute(
+                text(
+                    f'CREATE ROLE "{role_name}" LOGIN NOSUPERUSER NOCREATEDB '
+                    f"NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '{role_password}'"
+                )
+            )
+            connection.execute(text(f'CREATE DATABASE "{database_name}" OWNER "{role_name}"'))
+
+        temporary_url = url.set(database=database_name)
+        restricted_url = url.set(
+            database=database_name,
+            username=role_name,
+            password=role_password,
+        )
+        rendered = temporary_url.render_as_string(hide_password=False)
+        restricted_rendered = restricted_url.render_as_string(hide_password=False)
+        _run_alembic(rendered, "20260823_0005")
+
+        # Transfer the disposable migration objects to the restricted owner.
+        # The 0005 grants are intentionally left in their pre-split state so
+        # 0006 must normalize the ACLs itself.
+        temporary_engine = create_engine(temporary_url)
+        with temporary_engine.begin() as connection:
+            connection.execute(text(f'REASSIGN OWNED BY "{admin_role}" TO "{role_name}"'))
+            connection.execute(text(f'ALTER SCHEMA public OWNER TO "{role_name}"'))
+            connection.execute(text("ALTER ROLE ledgerbridge_api CREATEDB"))
+
+        # Role drift must fail before a restricted owner can rely on any ACL.
+        with pytest.raises(Exception, match="bootstrap attributes"):
+            _run_alembic(restricted_rendered, "20260823_0006")
+
+        restricted_engine = create_engine(restricted_url)
+        with restricted_engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == ("20260823_0005")
+        restricted_engine.dispose()
+        restricted_engine = None
+
+        # Restore the externally managed role contract.  The second run must
+        # normalize the pre-0006 ACLs as the restricted object owner.
+        with maintenance_engine.connect() as connection:
+            connection.execute(text(api_contract))
+        _run_alembic(restricted_rendered, "20260823_0006")
+
+        restricted_engine = create_engine(restricted_url)
+        with restricted_engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == ("20260823_0006")
+    finally:
+        if restricted_engine is not None:
+            restricted_engine.dispose()
+        if temporary_engine is not None:
+            temporary_engine.dispose()
+        with maintenance_engine.connect() as connection:
+            connection.execute(text(api_contract))
+            connection.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :database_name"
+                ),
+                {"database_name": database_name},
+            )
+            connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+            connection.execute(text(f'DROP ROLE IF EXISTS "{role_name}"'))
         maintenance_engine.dispose()

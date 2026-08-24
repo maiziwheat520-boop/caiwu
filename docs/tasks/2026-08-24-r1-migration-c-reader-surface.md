@@ -46,9 +46,11 @@
 - legacy POSTED 零 attribution 不再是隐式 opt-in，R1 hardening 升级会 fail closed。
 - Candidate wire contract 的 25 字符固定值与 0012 列宽已校正，兼容扩宽保留。
 
-验证：Windows 全量 **474 passed / 188 skipped / 1 warning**；Hermes PostgreSQL
-15 上 reader ACL、view fail-closed、privileged/clean backup、legacy POSTED
-五类定向回归均通过。完整 R1 文件仍有 20 项旧合同/fixture 期望不一致，详见
+验证：Windows 全量 **475 passed / 189 skipped / 1 warning**；Hermes PostgreSQL
+15 上完整 R1 文件 **48 passed**。回放覆盖 reader ACL、view fail-closed、
+privileged/clean backup、legacy POSTED、candidate history/audit atomicity、
+reconciliation scope、blob lineage、downgrade、reader horizon/as-of 与 evidence
+read receipt。修复报告详见
 `docs/reviews/2026-08-24-r1-migration-c-security-remediation-codex.md`。
 
 ## 状态与边界

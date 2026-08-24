@@ -414,12 +414,22 @@ ingestion require their later explicit gates.
 - Zero-attribution legacy POSTED entries no longer silently opt in to R1; the
   hardening upgrade rejects incomplete attribution. Candidate contract width is
   corrected to fit the fixed 25-character wire value.
-- Windows full suite: **474 passed / 188 skipped / 1 warning**; strict mypy,
+- Windows full suite: **475 passed / 189 skipped / 1 warning**; strict mypy,
   Ruff, compileall, offline lock, and diff-check pass. Hermes PostgreSQL 15
-  targeted security regressions all pass. The complete R1 migration file still
-  has 20 existing contract/fixture expectation failures; they are tracked in
-  the remediation report and are not declared green.
+  complete R1 migration replay is **48 passed**. The replay also exercises
+  fresh-database downgrade and reader-surface isolation so the result is not
+  dependent on shared-cluster fixture state.
 - Remediation report:
   `docs/reviews/2026-08-24-r1-migration-c-security-remediation-codex.md`.
   No merge, production role migration, real data read, or deployment is
   authorized.
+
+## R1 Migration C security-remediation replay closure (2026-08-24)
+
+- The remaining legacy fixture and error-order contracts are now aligned with
+  the fail-closed migration order.  This includes candidate blocker evidence,
+  reconciliation scope, 0013/0014 downgrade guards, and fresh reader DB
+  fixtures.
+- Final evidence: Hermes PostgreSQL 15 **48 passed**; Windows **475 passed /
+  189 skipped / 1 warning**. No production database, role, reader bootstrap,
+  merge, or deployment was touched.

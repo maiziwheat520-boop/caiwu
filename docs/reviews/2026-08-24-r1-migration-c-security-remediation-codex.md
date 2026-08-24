@@ -33,7 +33,7 @@ Passed locally on Windows:
 - `uv lock --offline`
 - `uv run mypy` (40 source files)
 - Ruff format/check, Python compileall, and `git diff --check`
-- Full local suite: **474 passed, 188 skipped**
+- Full local suite: **475 passed, 189 skipped, 1 warning**
 
 Passed individually against the disposable Hermes PostgreSQL 15 replay:
 
@@ -43,13 +43,16 @@ Passed individually against the disposable Hermes PostgreSQL 15 replay:
 - clean backup role receives CONNECT only
 - legacy POSTED entry without complete attribution is rejected
 
-The complete Hermes R1 migration file was also replayed. It reports 27 passed
-and 20 failures in the existing dirty R1 hardening test set; those failures are
-pre-existing contract/fixture expectation mismatches (candidate closure error
-ordering, legacy downgrade fixtures, and reconciliation fixtures), not failures
-of the three remediated security assertions. The focused security tests above
-were run separately to avoid the shared-cluster role lifecycle flake in the
-legacy fixture helpers.
+The complete Hermes R1 migration file was replayed against a disposable
+PostgreSQL 15 container after the legacy fixtures were made self-consistent:
+**48 passed**. The replay covers candidate history and audit atomicity,
+POSTED attribution and primary-leg invariants, reconciliation scope, blob
+lineage, role/default-ACL drift, downgrade guards, reader horizon/as-of
+queries, and evidence-read audit receipts. The fixture harness now separates
+database-admin bootstrap from the migration owner, uses fresh head databases
+for tests that require an empty reader surface, and keeps the migration's
+public-first search path from resolving later unqualified DDL into
+`pg_catalog`.
 
 ## Deployment boundary
 
