@@ -5,6 +5,13 @@ The versioned R0 synthetic Core read/state contract is documented in
 test fixture only: `/internal/v1` is not installed, production remains unchanged,
 and no real-data source is enabled.
 
+The S1 synthetic online-encryption foundation is documented in
+`docs/tasks/2026-08-24-s1-online-encryption.md` and
+`docs/architecture/ONLINE_ENCRYPTION.md`. It adds secretstream, encrypted
+artifact/state/spool primitives and a host-attestation parser, but Hermes volumes
+and production key custody have not passed the operational gate. Real ingest is
+still unconditionally unavailable.
+
 LedgerBridge is a self-hosted financial ledger gateway for importing personal
 financial evidence, normalizing source records, and building a traceable
 double-entry ledger for trusted queries through Hermes.
@@ -81,6 +88,8 @@ uv run --frozen --extra dev pip-audit --strict --requirement /tmp/ledgerbridge-a
 
 See [docs/architecture/STORAGE.md](docs/architecture/STORAGE.md) for the full
 layout and retention rules, [docs/architecture/LEDGER_CORE_OPERATIONS.md](docs/architecture/LEDGER_CORE_OPERATIONS.md)
-for the Phase 1 lifecycle and audit contract, and
+for the Phase 1 lifecycle and audit contract,
+[docs/architecture/ONLINE_ENCRYPTION.md](docs/architecture/ONLINE_ENCRYPTION.md)
+for the S1 application/host split, and
 [docs/architecture/DEPLOYMENT_HERMES.md](docs/architecture/DEPLOYMENT_HERMES.md)
 for the split runtime/migration database identities.

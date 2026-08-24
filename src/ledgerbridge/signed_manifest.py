@@ -167,9 +167,27 @@ def _read_stable_file(path: Path) -> bytes:
         if descriptor is not None:
             with contextlib.suppress(OSError):
                 os.close(descriptor)
-    if len(raw) > MAX_MANIFEST_BYTES or before != after:
+    if (
+        len(raw) > MAX_MANIFEST_BYTES
+        or len(raw) != before.st_size
+        or _stable_file_fingerprint(before) != _stable_file_fingerprint(after)
+    ):
         raise ManifestVerificationError("manifest file changed while reading")
     return raw
+
+
+def _stable_file_fingerprint(value: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    """Exclude access time, which the read itself may update on some hosts."""
+
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:

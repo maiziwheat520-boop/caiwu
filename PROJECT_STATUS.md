@@ -4,6 +4,19 @@ Updated: 2026-08-24
 
 ## Current phase
 
+S1 synthetic online-encryption application foundation is complete on
+`ai/chatgpt/s1-online-encryption`. The branch adds test-only external-key
+contracts, XChaCha20-Poly1305 secretstream envelopes, encrypted artifact/state/
+transient-spool primitives, and a fail-closed host-storage attestation parser.
+Independent review found no code-level blocker/high finding and the two spool
+medium findings were fixed. Secure-state anti-rollback and host directory/lock
+hardening remain explicit real-data gates. Hermes still uses unencrypted
+ext4-backed Docker volumes, no production KeyProvider exists, and backup/restore
+has not been adapted to the encrypted artifact format.
+`LEDGERBRIDGE_ENABLE_REAL_INGEST=true` is rejected unconditionally; no real
+source, migration, deployment, or production key was enabled. See
+`docs/tasks/2026-08-24-s1-online-encryption.md`.
+
 R0 synthetic Core contract is implemented on the Codex task branch
 `ai/chatgpt/r0-synthetic-contract-v2`. It freezes a versioned CandidateProjection,
 append-only candidate state graph, deny-by-default test authorization matrix,

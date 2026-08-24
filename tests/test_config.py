@@ -32,12 +32,22 @@ def test_artifact_quota_defaults_are_production_safe(tmp_path: Path) -> None:
     assert settings.artifact_staging_max_bytes == 512 * 1024 * 1024
     assert settings.artifact_staging_ttl_seconds == 60 * 60
     assert settings.enable_internal_upload is False
+    assert settings.enable_real_ingest is False
 
     with pytest.raises(ValidationError, match="less than or equal"):
         Settings(
             database_url="sqlite+pysqlite:///:memory:",
             artifact_root=tmp_path.resolve(),
             artifact_total_max_bytes=2**63,
+        )
+
+
+def test_real_ingest_is_unconditionally_unavailable_during_s1(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="S1 operational and I1 gates"):
+        Settings(
+            database_url="sqlite+pysqlite:///:memory:",
+            artifact_root=tmp_path.resolve(),
+            enable_real_ingest=True,
         )
 
 

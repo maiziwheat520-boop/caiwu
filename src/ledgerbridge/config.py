@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     enable_internal_upload: bool = False
     enable_internal_async_dispatch: bool = False
     enable_review_api: bool = False
+    enable_real_ingest: bool = False
     dispatch_lease_seconds: int = Field(default=120, gt=0, le=3600)
     dispatch_max_attempts: int = Field(default=5, gt=0, le=16)
     dispatch_poll_seconds: float = Field(default=1.0, gt=0, le=60)
@@ -57,6 +58,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def production_requires_split_database_roles(self) -> "Settings":
+        if self.enable_real_ingest:
+            raise ValueError(
+                "real ingest remains unavailable until the S1 operational and I1 gates pass"
+            )
         if self.mail_provider == "microsoft_graph" and not self.mailbox_id:
             raise ValueError("mailbox_id is required when mail_provider=microsoft_graph")
 

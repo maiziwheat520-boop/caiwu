@@ -1,5 +1,4 @@
 import asyncio
-import tempfile
 import threading
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -35,6 +34,7 @@ from ledgerbridge.dispatch import (
 from ledgerbridge.imports import EvidenceImporter, EvidenceIngestionError, IngestMetadata
 from ledgerbridge.models import DispatchState, ImportJobStatus, ReviewItemKind
 from ledgerbridge.review_service import ReviewConflict, ReviewNotFound, ReviewService
+from ledgerbridge.secure_spool import EncryptedSpool
 from ledgerbridge.text import contains_unstorable_text
 from ledgerbridge.upload import (
     MAX_MULTIPART_FIELD_BYTES,
@@ -613,10 +613,10 @@ async def _read_bounded_request(
     admission = _get_upload_admission(concurrency)
     if not admission.acquire():
         raise UploadConcurrencyError("upload body admission pool is full")
-    body: BinaryIO | None = None
+    body: EncryptedSpool | None = None
     total = 0
     try:
-        body = cast(BinaryIO, tempfile.TemporaryFile(mode="w+b"))  # noqa: SIM115
+        body = EncryptedSpool()
         try:
             async with asyncio.timeout(timeout_seconds):
                 async for chunk in request.stream():
@@ -629,8 +629,8 @@ async def _read_bounded_request(
                         body.write(chunk)
         except TimeoutError as exc:
             raise UploadReadTimeoutError("multipart body read timed out") from exc
-        body.seek(0)
-        return cast(BinaryIO, _AdmittedBody(body, admission.release))
+        body.seal()
+        return cast(BinaryIO, _AdmittedBody(cast(BinaryIO, body), admission.release))
     except BaseException:
         try:
             if body is not None:

@@ -1,5 +1,7 @@
 import base64
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -48,6 +50,79 @@ def test_signed_manifest_round_trip_and_digest(tmp_path: Path) -> None:
     assert manifest.generation == "gen-1"
     assert len(manifest.digest) == 32
     assert manifest.connectors[0].source_system == "synthetic_bank"
+
+
+def test_signed_manifest_stability_check_ignores_access_time_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    path = tmp_path / "manifest.json"
+    public_key = _write_signed(path, private_key)
+    original_fstat = os.fstat
+    calls = 0
+
+    def fstat_with_changed_access_time(descriptor: int) -> os.stat_result:
+        nonlocal calls
+        calls += 1
+        value = original_fstat(descriptor)
+        if calls % 2:
+            return value
+        fields = {
+            name: getattr(value, name)
+            for name in (
+                "st_dev",
+                "st_ino",
+                "st_mode",
+                "st_nlink",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+            )
+        }
+        fields["st_atime_ns"] = value.st_atime_ns + 1
+        return SimpleNamespace(**fields)  # type: ignore[return-value]
+
+    monkeypatch.setattr(os, "fstat", fstat_with_changed_access_time)
+    manifest = load_signed_runner_manifest(path, {"test-key-1": public_key})
+    assert manifest.generation == "gen-1"
+
+
+@pytest.mark.parametrize("changed_field", ["st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"])
+def test_signed_manifest_stability_check_rejects_stable_fingerprint_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    changed_field: str,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    path = tmp_path / "manifest.json"
+    public_key = _write_signed(path, private_key)
+    original_fstat = os.fstat
+    calls = 0
+
+    def fstat_with_changed_field(descriptor: int) -> os.stat_result:
+        nonlocal calls
+        calls += 1
+        value = original_fstat(descriptor)
+        if calls % 2:
+            return value
+        fields = {
+            name: getattr(value, name)
+            for name in (
+                "st_dev",
+                "st_ino",
+                "st_mode",
+                "st_nlink",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+            )
+        }
+        fields[changed_field] += 1
+        return SimpleNamespace(**fields)  # type: ignore[return-value]
+
+    monkeypatch.setattr(os, "fstat", fstat_with_changed_field)
+    with pytest.raises(ManifestVerificationError, match="changed while reading"):
+        load_signed_runner_manifest(path, {"test-key-1": public_key})
 
 
 @pytest.mark.parametrize(

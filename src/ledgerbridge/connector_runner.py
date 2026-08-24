@@ -8,7 +8,6 @@ import contextlib
 import hashlib
 import logging
 import os
-import tempfile
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -44,6 +43,7 @@ from ledgerbridge.runner_protocol import (
     record_payload,
     terminal_payload,
 )
+from ledgerbridge.secure_spool import EncryptedSpool
 
 DEFAULT_SOCKET_PATH = "/run/ledgerbridge-connector/runner.sock"
 # Four in-flight connector calls bound the runner's synchronous work under its
@@ -56,7 +56,6 @@ MAX_EXECUTION_WORKERS = 8
 # private /tmp with many near-limit artifacts before execution slots apply.
 DEFAULT_MAX_CONNECTIONS = 16
 MAX_CONNECTIONS = 64
-SPOOL_MEMORY_BYTES = 4 * 1024 * 1024
 DEFAULT_SPOOL_BUDGET_BYTES = MAX_ARTIFACT_BYTES
 # The production runner mounts a 96 MiB /tmp, leaving 32 MiB for filesystem
 # metadata, frame buffers, and interpreter overhead above this hard reservation.
@@ -207,13 +206,8 @@ class ConnectorSupervisor:
         reservation_owned = True
         artifact: BinaryIO | None = None
         try:
-            artifact_file = cast(
-                BinaryIO,
-                tempfile.SpooledTemporaryFile(  # noqa: SIM115 - ownership crosses timeout cancellation
-                    max_size=SPOOL_MEMORY_BYTES,
-                    mode="w+b",
-                ),
-            )
+            artifact_spool = EncryptedSpool()
+            artifact_file = cast(BinaryIO, artifact_spool)
             artifact = artifact_file
             observed = 0
             chunks = 0
@@ -249,7 +243,7 @@ class ConnectorSupervisor:
                     ended = True
                     continue
                 raise RunnerProtocolError("artifact stream contains an unexpected frame")
-            artifact_file.seek(0)
+            artifact_spool.seal()
         except BaseException:
             if artifact is not None:
                 artifact.close()
