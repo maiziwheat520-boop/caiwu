@@ -23,6 +23,11 @@ from ledgerbridge.artifacts import (
     ArtifactTooLargeError,
     PublishedArtifact,
 )
+from ledgerbridge.auth import (
+    EVIDENCE_WRITE,
+    AuthenticatedPrincipal,
+    authorize_principal,
+)
 from ledgerbridge.config import Settings, get_settings
 from ledgerbridge.connectors import Connector
 from ledgerbridge.db import get_session, get_session_factory
@@ -261,10 +266,28 @@ def get_async_dispatch_manifest() -> tuple[str, bytes] | None:
     return None
 
 
-def get_authenticated_principal(request: Request) -> str:
-    """Read the principal installed by trusted auth middleware, never a header."""
+def get_authenticated_principal(
+    request: Request,
+    settings: Annotated[Settings | None, Depends(get_settings)] = None,
+) -> str:
+    """Read a verifier-owned principal, never a client-supplied identity header."""
 
     principal = getattr(request.state, "authenticated_principal", None)
+    if isinstance(principal, AuthenticatedPrincipal):
+        if not authorize_principal(
+            principal,
+            EVIDENCE_WRITE,
+            expected_policy_generation=(
+                getattr(settings, "auth_policy_generation", None) if settings is not None else None
+            ),
+            clock_skew_seconds=(
+                getattr(settings, "auth_clock_skew_seconds", 30) if settings is not None else 30
+            ),
+        ):
+            raise _route_error("AUTH_REQUIRED", status.HTTP_401_UNAUTHORIZED)
+        return principal.actor
+    if getattr(settings, "auth_provider", "disabled") == "trusted_gateway":
+        raise _route_error("AUTH_REQUIRED", status.HTTP_401_UNAUTHORIZED)
     if (
         not isinstance(principal, str)
         or not principal
