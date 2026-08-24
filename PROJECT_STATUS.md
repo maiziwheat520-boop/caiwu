@@ -568,4 +568,6 @@ ingestion require their later explicit gates.
   and production settings remain unchanged.
 - This is not production wiring: the default route composition remains
   unchanged, no reader bootstrap or production KeyProvider was added, and no
-  real evidence was read. Focused audit/database-reader tests pass **48**.
+  real evidence was read. Focused audit/database-reader/migration-source tests
+  pass **58**; 41 PostgreSQL integration cases remain skipped without the
+  disposable database URL.

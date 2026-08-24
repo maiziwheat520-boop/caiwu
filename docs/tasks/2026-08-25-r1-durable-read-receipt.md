@@ -35,8 +35,13 @@ and production compositions unchanged.
 ```text
 uv run --frozen --extra dev pytest -q tests/test_r1_internal_read_audit.py tests/test_r1_internal_read_database_service.py
 48 passed
-uv run --frozen --extra dev mypy
-Success: no issues found in 41 source files
+uv run --frozen --extra dev pytest -q tests/test_r1_internal_read_audit.py tests/test_r1_internal_read_database_service.py tests/test_r1_database_migration.py
+58 passed, 41 skipped (PostgreSQL integration URL not configured)
+ruff format --check: 5 files already formatted
+ruff check: All checks passed
+mypy: Success: no issues found in 5 source files
+git diff --check
+All static checks passed.
 ```
 
 The sink is not enabled by default or in production. A test-only database
