@@ -29,6 +29,10 @@ from ledgerbridge.encrypted_artifacts import (
     EncryptedEnvelopeMetadata,
     EncryptedPublishedArtifact,
 )
+from ledgerbridge.internal_read_audit import (
+    EvidenceReadReceipt,
+    InternalReadReceiptSink,
+)
 from ledgerbridge.internal_read_contract import (
     CandidatePage,
     CapabilitiesResponse,
@@ -90,6 +94,7 @@ class EvidenceContent(_FrozenModel):
 @dataclass(frozen=True, slots=True)
 class _DatabaseEvidenceMetadata:
     evidence_ref: UUID
+    blob_ref: UUID
     entity_ref: UUID
     business_unit_id: UUID
     business_unit_ref: str
@@ -417,10 +422,12 @@ class DatabaseInternalReadService:
         session_factory: Callable[[], Session],
         cursor_signer: ReadCursorSigner | None = None,
         encrypted_artifact_store: EncryptedArtifactStore | None = None,
+        receipt_sink: InternalReadReceiptSink | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._cursor_signer = cursor_signer
         self._encrypted_artifact_store = encrypted_artifact_store
+        self._receipt_sink = receipt_sink
 
     def capabilities(self, principal: WorkloadPrincipal) -> CapabilitiesResponse:
         authorize_read(principal, Capability.SYSTEM_READ)
@@ -672,6 +679,25 @@ class DatabaseInternalReadService:
             digest = hashlib.sha256(content).digest()
             if len(content) != metadata.plaintext_size or digest != metadata.plaintext_sha256:
                 raise InternalReadBackendUnavailable("database evidence plaintext is invalid")
+            if self._receipt_sink is not None:
+                try:
+                    self._receipt_sink.append(
+                        EvidenceReadReceipt(
+                            principal_ref=principal.principal_ref,
+                            principal_san_uri=principal.san_uri,
+                            key_generation=metadata.envelope_metadata.wrapped_key.generation,
+                            evidence_ref=metadata.evidence_ref,
+                            entity_ref=metadata.entity_ref,
+                            business_unit_id=metadata.business_unit_id,
+                            blob_ref=metadata.blob_ref,
+                            byte_size=len(content),
+                            sha256=digest.hex(),
+                        )
+                    )
+                except Exception as exc:
+                    raise InternalReadBackendUnavailable(
+                        "database evidence receipt could not be recorded"
+                    ) from exc
             return EvidenceContent(
                 content=content,
                 entity_ref=metadata.entity_ref,
@@ -933,6 +959,7 @@ class DatabaseInternalReadService:
         )
         return _DatabaseEvidenceMetadata(
             evidence_ref=require_uuid("evidence_ref"),
+            blob_ref=require_uuid("blob_ref"),
             entity_ref=entity_ref,
             business_unit_id=business_unit_id,
             business_unit_ref=business_unit_ref,
