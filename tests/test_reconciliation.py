@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from ledgerbridge.reconciliation import (
+    ConcurrentDedupIndex,
     DedupDecision,
     DedupIndex,
     DedupRecord,
@@ -68,6 +69,37 @@ def test_fingerprint_match_never_auto_deletes_or_registers() -> None:
     assert index.record_count == 1
     with pytest.raises(Phase5Error, match="requires review"):
         index.register(candidate)
+
+
+def test_concurrent_admission_has_one_winner_for_equivalent_candidates() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    index = ConcurrentDedupIndex()
+    records = [_record(locator=f"parallel-{number}") for number in range(16)]
+    with ThreadPoolExecutor(max_workers=len(records)) as pool:
+        results = tuple(pool.map(index.admit, records))
+
+    assert sum(result.decision is DedupDecision.NEW for result in results) == 1
+    assert sum(result.decision is DedupDecision.DUPLICATE for result in results) == 15
+    assert index.record_count == 1
+
+
+def test_concurrent_admission_keeps_conflicts_reviewable() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    index = ConcurrentDedupIndex()
+    records = [_record(locator=f"conflict-{number}", amount=500 + number) for number in range(8)]
+    with ThreadPoolExecutor(max_workers=len(records)) as pool:
+        results = tuple(pool.map(index.admit, records))
+
+    assert sum(result.decision is DedupDecision.NEW for result in results) == 1
+    assert sum(result.decision is DedupDecision.NEEDS_REVIEW for result in results) == 7
+    assert all(
+        result.reason == "EXTERNAL_ID_CONFLICT"
+        for result in results
+        if result.decision is DedupDecision.NEEDS_REVIEW
+    )
+    assert index.record_count == 1
 
 
 def test_fingerprint_is_stable_for_normalized_text() -> None:

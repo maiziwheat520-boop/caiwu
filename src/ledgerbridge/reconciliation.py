@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import date
 from enum import StrEnum
+from threading import RLock
 from uuid import UUID
 
 from ledgerbridge.connectors import CANONICAL_SOURCE_PATTERN
@@ -131,6 +132,30 @@ class DedupResult:
     matched_record_locator: str | None = None
 
 
+def dedup_candidate_key(record: DedupRecord, result: DedupResult) -> str:
+    """Return a stable opaque key for one reviewable candidate conflict."""
+
+    if result.decision is not DedupDecision.NEEDS_REVIEW:
+        raise Phase5Error("only reviewable dedup results have candidate keys")
+    payload = {
+        "account_key": record.external_identity.account_key
+        if record.external_identity is not None
+        else None,
+        "external_transaction_id": record.external_identity.external_transaction_id
+        if record.external_identity is not None
+        else None,
+        "fingerprint": record.fingerprint.digest_hex,
+        "matched_record_locator": result.matched_record_locator,
+        "reason": result.reason,
+        "record_locator": record.record_locator,
+        "source_system": record.external_identity.source_system
+        if record.external_identity is not None
+        else None,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 class DedupIndex:
     """In-memory decision index with no delete or overwrite operation."""
 
@@ -189,6 +214,54 @@ class DedupIndex:
         if record.external_identity is not None:
             self._by_external[record.external_identity] = record
         return result
+
+
+class ConcurrentDedupIndex:
+    """Atomic candidate-admission boundary for concurrent importer workers.
+
+    ``DedupIndex.classify()`` and ``register()`` are intentionally separate for
+    pure, single-threaded callers.  Import workers need one operation that cannot
+    interleave the classify/register pair: exactly one concurrent copy may be
+    admitted, while equivalent copies are duplicates and conflicting copies stay
+    reviewable.  The lock is process-local; a database unique constraint remains
+    the durable cross-process boundary.
+    """
+
+    def __init__(self, records: Iterable[DedupRecord] = ()) -> None:
+        self._index = DedupIndex(records)
+        self._lock = RLock()
+
+    @property
+    def record_count(self) -> int:
+        with self._lock:
+            return self._index.record_count
+
+    def classify(self, record: DedupRecord) -> DedupResult:
+        """Return a snapshot decision without admitting the record."""
+
+        with self._lock:
+            return self._index.classify(record)
+
+    def admit(self, record: DedupRecord) -> DedupResult:
+        """Classify and, only for ``NEW``, register atomically."""
+
+        with self._lock:
+            result = self._index.classify(record)
+            if result.decision is DedupDecision.NEW:
+                self._index.register(record)
+            return result
+
+    def admit_many(self, records: Iterable[DedupRecord]) -> tuple[DedupResult, ...]:
+        """Admit a bounded caller batch under one lock, preserving input order."""
+
+        with self._lock:
+            results: list[DedupResult] = []
+            for record in records:
+                result = self._index.classify(record)
+                if result.decision is DedupDecision.NEW:
+                    self._index.register(record)
+                results.append(result)
+            return tuple(results)
 
 
 @dataclass(frozen=True, slots=True)

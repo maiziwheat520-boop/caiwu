@@ -72,6 +72,10 @@ class ReviewItem(Base):
             name="review_item_status_allowed",
         ),
         CheckConstraint("btrim(summary) <> ''", name="review_item_summary_not_blank"),
+        CheckConstraint(
+            "candidate_key IS NULL OR candidate_key ~ '^[a-f0-9]{64}$'",
+            name="review_item_candidate_key_shape",
+        ),
         CheckConstraint("jsonb_typeof(payload) = 'object'", name="review_item_payload_object"),
         CheckConstraint(
             "(status = 'OPEN' AND decided_at IS NULL AND decision_actor IS NULL "
@@ -93,6 +97,7 @@ class ReviewItem(Base):
     )
     summary: Mapped[str] = mapped_column(String(500), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    candidate_key: Mapped[str | None] = mapped_column(String(64))
     audit_event_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
         ForeignKey("audit_event.id", ondelete="RESTRICT"),

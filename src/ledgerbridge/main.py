@@ -174,6 +174,7 @@ class ReviewResponse(BaseModel):
     source_record_id: UUID | None
     summary: str
     payload: dict[str, object]
+    candidate_key: str | None
     created_at: datetime
     decided_at: datetime | None
     decision_actor: str | None
