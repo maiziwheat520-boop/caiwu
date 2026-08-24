@@ -507,7 +507,7 @@ ingestion require their later explicit gates.
 
 ## S1 decryptor and LedgerSummary CI closure (2026-08-25)
 
-- S1 implementation is committed through `90ac572` on
+- S1 implementation is committed through remote SHA `c5be03e` on
   `ai/chatgpt/r1-db-schema-grants-design`: descriptor-bound encrypted evidence
   decryption, scoped `LedgerSummary`, metadata drift protection, and backup
   restore verification for the new reader function.
@@ -517,9 +517,9 @@ ingestion require their later explicit gates.
   failures were PG-only exact-function-set assertions that omitted
   `get_ledger_summary_as_of`; the test contract is now synchronized.
 - Local Windows full suite: **540 passed / 190 skipped / 1 warning**; Ruff,
-  strict mypy, and targeted backup/S1 tests pass. The latest backup-restore
-  commit is local and awaits a network retry before Hosted CI re-verifies that
-  final SHA.
+  strict mypy, and targeted backup/S1 tests pass. The final remote content
+  also includes the exact PostgreSQL function-signature allowlist used by the
+  backup verifier.
 - No production bootstrap, reader enablement, merge, deployment, or real-data
   access is authorized. Production KeyProvider, durable receipt wiring, mTLS,
   Hermes replay, and HTTP decryptor injection remain closed gates.
