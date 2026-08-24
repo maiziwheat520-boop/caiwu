@@ -137,7 +137,7 @@ class DatabaseInternalReadReceiptSink:
                         """
                         SELECT internal_read.append_internal_evidence_read_audit(
                             :operation_id, :principal_ref, :principal_san_uri,
-                            :key_generation, :evidence_ref, :entity_ref,
+                            :policy_generation, :evidence_ref, :entity_ref,
                             :business_unit_id, :blob_ref, :byte_size, :sha256
                         )
                         """
