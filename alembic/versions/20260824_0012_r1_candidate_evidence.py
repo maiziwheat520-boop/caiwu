@@ -576,7 +576,11 @@ def downgrade() -> None:
         "business_unit",
     )
     for table in tables:
-        if bind.execute(sa.text(f"SELECT EXISTS (SELECT 1 FROM public.{table})")).scalar_one():
+        if bind.execute(
+            sa.text(  # nosec B608 - table is drawn only from the fixed tuple above
+                f"SELECT EXISTS (SELECT 1 FROM public.{table})"  # nosec B608 - table is fixed
+            )
+        ).scalar_one():
             raise RuntimeError("R1 Candidate/evidence data prevents destructive downgrade")
     for table in tables:
         op.execute(f"DROP TRIGGER IF EXISTS r1_{table}_append_only_trigger ON public.{table}")

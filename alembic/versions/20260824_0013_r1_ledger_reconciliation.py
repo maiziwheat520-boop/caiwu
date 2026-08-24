@@ -298,7 +298,11 @@ def downgrade() -> None:
         "journal_entry_attribution",
     )
     for table in tables:
-        if bind.execute(sa.text(f"SELECT EXISTS (SELECT 1 FROM public.{table})")).scalar_one():
+        if bind.execute(
+            sa.text(  # nosec B608 - table is drawn only from the fixed tuple above
+                f"SELECT EXISTS (SELECT 1 FROM public.{table})"  # nosec B608 - table is fixed
+            )
+        ).scalar_one():
             raise RuntimeError("R1 ledger/reconciliation data prevents destructive downgrade")
     op.execute(
         "DROP TRIGGER IF EXISTS r1_posting_attribution_posted_guard ON public.posting_attribution"
