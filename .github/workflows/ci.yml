@@ -65,11 +65,15 @@ jobs:
         run: >-
           psql -h localhost -U ledgerbridge_admin -d postgres
           -v ON_ERROR_STOP=1
-          -c "CREATE ROLE ledgerbridge_owner LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-owner-password'; ALTER DATABASE ledgerbridge_test OWNER TO ledgerbridge_owner; CREATE ROLE ledgerbridge_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-runtime-password'; CREATE ROLE ledgerbridge_api LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-api-password'; CREATE ROLE ledgerbridge_worker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-worker-password'; CREATE ROLE ledgerbridge_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-reader-password'"
+          -c "CREATE ROLE ledgerbridge_owner LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-owner-password'; CREATE ROLE ledgerbridge_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-runtime-password'; CREATE ROLE ledgerbridge_api LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-api-password'; CREATE ROLE ledgerbridge_worker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-worker-password'; CREATE ROLE ledgerbridge_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-reader-password'"
       - run: >-
           psql -h localhost -U ledgerbridge_admin -d ledgerbridge_test
           -v ON_ERROR_STOP=1
-          -c "ALTER SCHEMA public OWNER TO ledgerbridge_owner"
+          -c "GRANT USAGE, CREATE ON SCHEMA public TO ledgerbridge_owner; ALTER SCHEMA public OWNER TO ledgerbridge_owner"
+      - run: >-
+          psql -h localhost -U ledgerbridge_admin -d postgres
+          -v ON_ERROR_STOP=1
+          -c "ALTER DATABASE ledgerbridge_test OWNER TO ledgerbridge_owner"
       - run: mkdir -p "$LEDGERBRIDGE_ARTIFACT_ROOT"
       - run: uv run --frozen --extra dev python scripts/check_sensitive_paths.py
       - run: uv run --frozen --extra dev ruff check .
