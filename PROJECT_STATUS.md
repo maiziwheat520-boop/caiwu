@@ -382,3 +382,18 @@ later authorization.
 None for Slice A implementation and review. Slice A merge, Slice B implementation,
 each production deployment, real Connector registration, OAuth, and real-data
 ingestion require their later explicit gates.
+
+## R1 Migration C checkpoint (2026-08-24)
+
+- `20260824_0014_r1_fact_hardening.py` and
+  `20260824_0015_r1_internal_read_surface.py` implement the closed reader boundary
+  on top of Migration A/B.  The reader role is external/test-bootstrapped only;
+  the migration does not create credentials.
+- The allowlist is eight `internal_read` security-barrier views plus five fixed
+  `SECURITY DEFINER SET search_path = pg_catalog` functions.  Reader has no public
+  base-table, sequence, or append-audit access; runtime write roles have no
+  internal-read access.
+- WSL disposable PostgreSQL R1 migration suite: **11 passed**.  Ruff, strict mypy,
+  offline lock, Bandit, and diff-check pass.  Hosted CI still needs to validate the
+  new reader bootstrap on the next push.
+- No merge, production role migration, real data read, or deployment is authorized.
