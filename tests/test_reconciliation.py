@@ -19,6 +19,7 @@ from ledgerbridge.reconciliation import (
     SuspenseReason,
     SuspenseStatus,
     TransactionFingerprint,
+    _normalize_optional,
 )
 
 
@@ -165,3 +166,76 @@ def test_phase5_rejects_non_cny_and_unstorable_identifiers() -> None:
         TransactionFingerprint(date(2026, 8, 24), 1, currency="USD")
     with pytest.raises(Phase5Error, match="account_key"):
         ExternalTransactionIdentity("bank_cn", "\x00", "tx")
+
+
+def test_phase5_rejects_conflicts_invalid_cardinality_and_bad_amounts() -> None:
+    with pytest.raises(Phase5Error, match="canonical"):
+        ExternalTransactionIdentity("Bank CN", "assets:bank", "tx")
+
+    index = DedupIndex([_record()])
+    same_locator = index.classify(_record())
+    assert same_locator.decision is DedupDecision.DUPLICATE
+    assert same_locator.reason == "RECORD_LOCATOR_MATCH"
+    conflict = index.classify(_record(locator="row-1", amount=501))
+    assert conflict.decision is DedupDecision.NEEDS_REVIEW
+    assert conflict.reason == "RECORD_LOCATOR_CONFLICT"
+
+    with pytest.raises(Phase5Error, match="canonical"):
+        ReconciliationLeg("row", "Bank CN", -1)
+    with pytest.raises(Phase5Error, match="currency"):
+        ReconciliationLeg("row", "bank_cn", -1, currency="USD")
+    with pytest.raises(Phase5Error, match="integer"):
+        ReconciliationLeg("row", "bank_cn", True)
+    with pytest.raises(Phase5Error, match="must not be zero"):
+        ReconciliationLeg("row", "bank_cn", 0)
+    with pytest.raises(Phase5Error, match="signed 64-bit"):
+        ReconciliationLeg("row", "bank_cn", 2**63)
+
+    with pytest.raises(Phase5Error, match="out of bounds"):
+        ReconciliationProposal.propose(uuid4(), ReconciliationRelation.ONE_TO_ONE, [])
+    with pytest.raises(Phase5Error, match="cardinality"):
+        ReconciliationProposal.propose(
+            uuid4(),
+            ReconciliationRelation.ONE_TO_MANY,
+            [ReconciliationLeg("one", "bank_cn", -1), ReconciliationLeg("two", "alipay", 1)],
+        )
+    with pytest.raises(Phase5Error, match="proposed"):
+        ReconciliationProposal(
+            uuid4(),
+            ReconciliationRelation.ONE_TO_ONE,
+            (
+                ReconciliationLeg("one", "bank_cn", -1),
+                ReconciliationLeg("two", "alipay", 1),
+            ),
+            decision_actor="operator",
+        )
+
+    rejected = ReconciliationProposal.propose(
+        uuid4(),
+        ReconciliationRelation.ONE_TO_ONE,
+        [ReconciliationLeg("bank", "bank_cn", -1), ReconciliationLeg("wallet", "alipay", 1)],
+    ).reject(actor="operator", reason="not enough")
+    with pytest.raises(Phase5Error, match="only a proposed"):
+        rejected.reject(actor="operator", reason="again")
+
+    with pytest.raises(Phase5Error, match="open Suspense"):
+        SuspenseItem(
+            uuid4(),
+            "row",
+            1,
+            SuspenseReason.BALANCE_GAP,
+            resolution_account="expense:x",
+        )
+    with pytest.raises(Phase5Error, match="different account"):
+        SuspenseItem(
+            uuid4(),
+            "row",
+            1,
+            SuspenseReason.BALANCE_GAP,
+            suspense_account="suspense:default",
+            status=SuspenseStatus.RESOLVED,
+            resolution_account="suspense:default",
+            resolution_actor="operator",
+            resolution_reason="mistake",
+        )
+    assert _normalize_optional(None) is None
