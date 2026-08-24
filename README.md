@@ -97,6 +97,27 @@ curl "http://127.0.0.1:8651/internal/v1/ledger-summary?entity_ref=10000000-0000-
 This launcher is for a local walkthrough only and must not be treated as an
 operational authentication or audit deployment.
 
+### Quick synthetic review demo
+
+The review workflow can also be exercised without PostgreSQL. This demo reuses
+the same `/v1/reviews` route handlers and response models with one deterministic
+in-memory candidate. It binds to `127.0.0.1:8652`, resolves the candidate, and
+shows that a second decision is rejected as a terminal conflict.
+
+```bash
+uv run --frozen --extra dev python scripts/r1_synthetic_review_demo.py --check
+```
+
+To start the loopback listener for manual checks:
+
+```bash
+uv run --frozen --extra dev python scripts/r1_synthetic_review_demo.py
+curl http://127.0.0.1:8652/v1/reviews?review_status=OPEN
+```
+
+The fixture is synthetic-only; it does not write a database, read real
+financial evidence, or enable the production review API.
+
 Quality gate:
 
 ```bash
