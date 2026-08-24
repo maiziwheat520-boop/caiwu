@@ -247,6 +247,8 @@ SELECT json_build_object(
 # view, function, trigger, or effective privilege observation.
 R1_RUNTIME_ROLES = ("ledgerbridge_app", "ledgerbridge_api", "ledgerbridge_worker")
 R1_ROLES = (*R1_RUNTIME_ROLES, "ledgerbridge_reader")
+R1_OPTIONAL_ROLES = ("ledgerbridge_backup",)
+R1_CONTROLLED_ROLES = (*R1_ROLES, *R1_OPTIONAL_ROLES)
 R1_PUBLIC_TABLES = (
     "business_unit",
     "reporting_category",
@@ -318,6 +320,7 @@ R1_REQUIRED_TRIGGERS = frozenset(
 _R1_PUBLIC_TABLE_SQL = ", ".join(f"'{name}'" for name in R1_PUBLIC_TABLES)
 _R1_VIEW_SQL = ", ".join(f"'{name}'" for name in R1_INTERNAL_READ_VIEWS)
 _R1_FUNCTION_SQL = ", ".join(f"'{name}'" for name in R1_INTERNAL_READ_FUNCTIONS)
+_R1_ROLE_SQL = ", ".join(f"('{name}'::name)" for name in R1_CONTROLLED_ROLES)
 
 # This query intentionally records both catalog ACLs and effective privileges.
 # ACL arrays alone do not show inherited PUBLIC grants, and information_schema
@@ -327,8 +330,11 @@ R1_SECURITY_SQL = (
     ""  # nosec B608 - placeholders are replaced only from fixed allowlists.
     """
 WITH expected_roles(role_name) AS (
-    VALUES ('ledgerbridge_app'::name), ('ledgerbridge_api'::name),
-           ('ledgerbridge_worker'::name), ('ledgerbridge_reader'::name)
+    VALUES __R1_ROLE_SQL__
+), present_roles(role_name) AS (
+    SELECT e.role_name
+      FROM expected_roles AS e
+      JOIN pg_roles AS r ON r.rolname = e.role_name
 ), r1_objects(schema_name, object_name, object_kind) AS (
     SELECT 'public'::text, object_name, 'table'::text
       FROM unnest(ARRAY[__R1_PUBLIC_TABLE_SQL__]::text[]) AS object(object_name)
@@ -462,7 +468,7 @@ WITH expected_roles(role_name) AS (
         'references', has_table_privilege(e.role_name::text, format('%I.%I', o.schema_name, o.object_name), 'REFERENCES'),
         'trigger', has_table_privilege(e.role_name::text, format('%I.%I', o.schema_name, o.object_name), 'TRIGGER')
     ) ORDER BY e.role_name, o.schema_name, o.object_name), '[]'::json) AS value
-      FROM expected_roles AS e CROSS JOIN r1_objects AS o
+      FROM present_roles AS e CROSS JOIN r1_objects AS o
 ), effective_function_privileges AS (
     SELECT COALESCE(json_agg(json_build_object(
         'role', e.role_name,
@@ -471,7 +477,7 @@ WITH expected_roles(role_name) AS (
         'identity_arguments', pg_get_function_identity_arguments(p.oid),
         'execute', has_function_privilege(e.role_name::text, p.oid, 'EXECUTE')
     ) ORDER BY e.role_name, n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)), '[]'::json) AS value
-      FROM expected_roles AS e
+      FROM present_roles AS e
       CROSS JOIN pg_proc AS p
       JOIN pg_namespace AS n ON n.oid = p.pronamespace
      WHERE (n.nspname = 'internal_read' AND p.proname IN (__R1_FUNCTION_SQL__))
@@ -483,7 +489,7 @@ WITH expected_roles(role_name) AS (
         'usage', has_schema_privilege(e.role_name::text, s.schema_name, 'USAGE'),
         'create', has_schema_privilege(e.role_name::text, s.schema_name, 'CREATE')
     ) ORDER BY e.role_name, s.schema_name), '[]'::json) AS value
-      FROM expected_roles AS e
+      FROM present_roles AS e
       CROSS JOIN (VALUES ('public'::text), ('internal_read'::text)) AS s(schema_name)
 )
 SELECT json_build_object(
@@ -499,9 +505,10 @@ SELECT json_build_object(
     'r1_effective_function_privileges', (SELECT value FROM effective_function_privileges),
     'r1_effective_schema_privileges', (SELECT value FROM effective_schema_privileges)
 )::text;
-""".replace("__R1_PUBLIC_TABLE_SQL__", _R1_PUBLIC_TABLE_SQL)
+    """.replace("__R1_PUBLIC_TABLE_SQL__", _R1_PUBLIC_TABLE_SQL)
     .replace("__R1_VIEW_SQL__", _R1_VIEW_SQL)
     .replace("__R1_FUNCTION_SQL__", _R1_FUNCTION_SQL)
+    .replace("__R1_ROLE_SQL__", _R1_ROLE_SQL)
     .strip()
 )
 
@@ -1711,15 +1718,34 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
             raise BackupError(f"restored R1 metadata is invalid: {name}")
         return cast(list[dict[str, Any]], value)
 
+    def _is_grantable_flag(value: Any) -> bool:
+        # R1_SECURITY_SQL emits the catalog boolean.  Accept the historical
+        # information_schema spelling as well for already-created v2 reports.
+        return (
+            value is True or value is False or (isinstance(value, str) and value in {"YES", "NO"})
+        )
+
+    def _is_not_grantable(value: Any) -> bool:
+        return value is False or value == "NO"
+
     roles = _list("r1_role_matrix")
-    role_by_name = {item.get("role"): item for item in roles}
-    if len(role_by_name) != len(roles) or set(role_by_name) != set(R1_ROLES):
+    role_names = [item.get("role") for item in roles]
+    if any(not isinstance(role, str) for role in role_names):
+        raise BackupError("restored R1 role matrix is invalid")
+    role_name_set = set(cast(list[str], role_names))
+    if (
+        len(role_name_set) != len(roles)
+        or not set(R1_ROLES).issubset(role_name_set)
+        or not role_name_set.issubset(set(R1_CONTROLLED_ROLES))
+    ):
         raise BackupError("restored R1 role matrix is incomplete")
+    active_roles = tuple(role for role in R1_CONTROLLED_ROLES if role in role_name_set)
     for item in roles:
         role = item.get("role")
         if (
             not isinstance(role, str)
-            or item.get("login") is not True
+            or not isinstance(item.get("login"), bool)
+            or (role != "ledgerbridge_backup" and item.get("login") is not True)
             or item.get("superuser") is not False
             or item.get("create_database") is not False
             or item.get("create_role") is not False
@@ -1732,38 +1758,128 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
 
     database_acl = _list("r1_database_acl")
     database_owner = metadata.get("database_owner")
-    if not isinstance(database_owner, str):
+    if not isinstance(database_owner, str) or database_owner in R1_CONTROLLED_ROLES:
         raise BackupError("restored R1 database owner is invalid")
+    database_principals = {
+        "PUBLIC",
+        "pg_database_owner",
+        database_owner,
+        *R1_CONTROLLED_ROLES,
+    }
+    database_acl_keys: set[tuple[str, str]] = set()
+    for item in database_acl:
+        grantee = item.get("grantee")
+        privilege = item.get("privilege")
+        if not isinstance(grantee, str) or not isinstance(privilege, str):
+            raise BackupError("restored R1 database ACL metadata is invalid")
+        if not _is_grantable_flag(item.get("grantable")):
+            raise BackupError("restored R1 database ACL metadata is invalid")
+        key = (grantee, privilege)
+        if key in database_acl_keys:
+            raise BackupError("restored R1 database ACL contains a duplicate entry")
+        database_acl_keys.add(key)
+        if grantee not in database_principals:
+            raise BackupError("restored R1 database ACL contains an unknown or stale grantee")
+        if privilege not in {"CONNECT", "TEMPORARY", "CREATE"}:
+            raise BackupError("restored R1 database ACL contains an excess privilege")
+        if grantee == "PUBLIC":
+            raise BackupError("restored R1 database ACL grants PUBLIC access")
+        if grantee in R1_CONTROLLED_ROLES:
+            if grantee not in active_roles:
+                raise BackupError("restored R1 database ACL references an absent controlled role")
+            if privilege != "CONNECT" or not _is_not_grantable(item.get("grantable")):
+                raise BackupError("restored R1 runtime database ACL is over-privileged")
+
     expected_connect = {*R1_ROLES, database_owner}
+    if "ledgerbridge_backup" in active_roles:
+        expected_connect.add("ledgerbridge_backup")
     connect_grantees = {
         item.get("grantee") for item in database_acl if item.get("privilege") == "CONNECT"
     }
     if not expected_connect.issubset(connect_grantees):
         raise BackupError("restored R1 database CONNECT allowlist is incomplete")
-    for item in database_acl:
-        grantee = item.get("grantee")
-        privilege = item.get("privilege")
-        if grantee == "PUBLIC" and privilege in {"CONNECT", "TEMPORARY", "CREATE"}:
-            raise BackupError("restored R1 database ACL grants PUBLIC access")
-        if grantee in R1_ROLES:
-            if privilege not in {"CONNECT"}:
-                raise BackupError("restored R1 runtime database ACL is over-privileged")
-            if item.get("grantable") != "NO":
-                raise BackupError("restored R1 database ACL is grantable")
-
     schema_acl = _list("r1_schema_acl")
+    schema_grants = {
+        "public": {
+            "PUBLIC": {"USAGE"},
+            "pg_database_owner": {"USAGE", "CREATE"},
+            database_owner: {"USAGE", "CREATE"},
+            "ledgerbridge_api": {"USAGE"},
+            "ledgerbridge_worker": {"USAGE"},
+            "ledgerbridge_app": {"USAGE"},
+        },
+        "internal_read": {
+            database_owner: {"USAGE", "CREATE"},
+            "ledgerbridge_reader": {"USAGE"},
+        },
+    }
+    schema_acl_keys: set[tuple[str, str, str]] = set()
     for item in schema_acl:
         schema = item.get("schema")
         grantee = item.get("grantee")
         privilege = item.get("privilege")
-        if privilege == "CREATE" and grantee in {"PUBLIC", *R1_ROLES}:
+        if (
+            not isinstance(schema, str)
+            or not isinstance(grantee, str)
+            or not isinstance(privilege, str)
+            or not _is_grantable_flag(item.get("grantable"))
+        ):
+            raise BackupError("restored R1 schema ACL metadata is invalid")
+        schema_key = (schema, grantee, privilege)
+        if schema_key in schema_acl_keys:
+            raise BackupError("restored R1 schema ACL contains a duplicate entry")
+        schema_acl_keys.add(schema_key)
+        allowed_grants = schema_grants.get(schema)
+        if allowed_grants is None:
+            raise BackupError("restored R1 schema ACL contains an unexpected schema")
+        allowed_privileges = allowed_grants.get(grantee)
+        if allowed_privileges is None:
+            if grantee not in database_principals:
+                raise BackupError("restored R1 schema ACL contains an unknown or stale grantee")
+            if privilege == "CREATE":
+                raise BackupError("restored R1 schema CREATE privilege is over-broad")
+            raise BackupError("restored R1 schema ACL contains an excess grant")
+        if privilege == "CREATE" and grantee in database_principals:
             raise BackupError("restored R1 schema CREATE privilege is over-broad")
-        if schema == "internal_read" and grantee == "PUBLIC":
-            raise BackupError("restored R1 internal_read schema is public")
+        if privilege not in allowed_privileges:
+            raise BackupError("restored R1 schema ACL contains an excess grant")
+        if grantee not in {database_owner, "pg_database_owner"} and not _is_not_grantable(
+            item.get("grantable")
+        ):
+            raise BackupError("restored R1 schema ACL is grantable")
+
     default_acls = _list("r1_default_acls")
+    default_acl_privileges = {
+        "r": {"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"},
+        "S": {"SELECT", "UPDATE", "USAGE"},
+        "f": {"EXECUTE"},
+        "T": {"USAGE"},
+        "n": {"USAGE", "CREATE"},
+    }
     for item in default_acls:
-        if item.get("grantee") in {"PUBLIC", *R1_ROLES}:
-            raise BackupError("restored R1 default ACL grants a runtime role or PUBLIC")
+        owner = item.get("owner")
+        schema = item.get("schema")
+        object_type = item.get("object_type")
+        grantee = item.get("grantee")
+        privilege = item.get("privilege")
+        if (
+            not isinstance(owner, str)
+            or not isinstance(schema, str)
+            or not isinstance(object_type, str)
+            or not isinstance(grantee, str)
+            or not isinstance(privilege, str)
+        ):
+            raise BackupError("restored R1 default ACL metadata is invalid")
+        if not _is_grantable_flag(item.get("grantable")):
+            raise BackupError("restored R1 default ACL metadata is invalid")
+        if grantee not in database_principals:
+            raise BackupError("restored R1 default ACL contains an unknown or stale grantee")
+        if owner != database_owner or grantee != database_owner:
+            raise BackupError("restored R1 default ACL contains an excess entry")
+        if schema not in {"", "public", "internal_read"}:
+            raise BackupError("restored R1 default ACL contains an unexpected schema")
+        if privilege not in default_acl_privileges.get(object_type, set()):
+            raise BackupError("restored R1 default ACL contains an excess privilege")
 
     constraints = _list("r1_constraints")
     constraint_names = {item.get("name") for item in constraints}
@@ -1795,20 +1911,22 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
         raise BackupError("restored R1 internal_read views differ from the required baseline")
     for item in views:
         if (
-            item.get("security_barrier") is not True
+            item.get("schema") != "internal_read"
+            or item.get("security_barrier") is not True
             or item.get("security_invoker") is not False
-            or item.get("owner") in R1_ROLES
+            or item.get("owner") != database_owner
         ):
             raise BackupError("restored R1 view security boundary is invalid")
 
     functions = _list("r1_functions")
+    if any(item.get("owner") != database_owner for item in functions):
+        raise BackupError("restored R1 function security boundary is invalid")
     internal_functions = [item for item in functions if item.get("schema") == "internal_read"]
     if {item.get("name") for item in internal_functions} != set(R1_INTERNAL_READ_FUNCTIONS):
         raise BackupError("restored R1 internal_read functions differ from the required baseline")
     for item in internal_functions:
         if (
             item.get("security_definer") is not True
-            or item.get("owner") in R1_ROLES
             or not isinstance(item.get("proconfig"), list)
             or "search_path=pg_catalog" not in item["proconfig"]
         ):
@@ -1821,7 +1939,9 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
         | {("internal_read", "evidence_read_receipt")}
     )
     expected_keys = {
-        (role, schema, object_name) for role in R1_ROLES for schema, object_name in expected_objects
+        (role, schema, object_name)
+        for role in active_roles
+        for schema, object_name in expected_objects
     }
     actual_keys = {
         (item.get("role"), item.get("schema"), item.get("object")) for item in table_privileges
@@ -1855,7 +1975,7 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
     function_privileges = _list("r1_effective_function_privileges")
     expected_function_keys = {
         (role, item.get("schema"), item.get("name"), item.get("identity_arguments"))
-        for role in R1_ROLES
+        for role in active_roles
         for item in functions
     }
     actual_function_keys = {
@@ -1879,7 +1999,7 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
 
     schema_privileges = _list("r1_effective_schema_privileges")
     expected_schema_keys = {
-        (role, schema) for role in R1_ROLES for schema in ("public", "internal_read")
+        (role, schema) for role in active_roles for schema in ("public", "internal_read")
     }
     actual_schema_keys = {(item.get("role"), item.get("schema")) for item in schema_privileges}
     if (

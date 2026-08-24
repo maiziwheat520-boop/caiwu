@@ -457,8 +457,10 @@ ingestion require their later explicit gates.
   closed, and month-filtered / candidate-detail reads advance through bounded
   keyset pages.
 - Windows full suite: **494 passed / 190 skipped / 1 warning**; targeted cursor
-  and database-reader tests pass; Ruff and strict mypy pass. Hosted CI for
-  `f3c2a73` is running; no merge or production enablement has occurred.
+  and database-reader tests pass; Ruff and strict mypy pass. Hosted CI runs
+  `32744316468`, `32744653451`, and `32745416540` kept `secrets`/`compose` green
+  but still failed the quality coverage step; no merge or production enablement
+  has occurred.
 - Database collection union across multiple scopes remains deliberately disabled
   until a per-scope cursor contract is reviewed; such grants return a fixed
   backend-unavailable response rather than risk cross-scope pagination leakage.

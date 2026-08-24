@@ -376,10 +376,7 @@ class SyntheticInternalReadService:
             raise ValueError("ledger summary is not POSTED-only")
 
 
-# The database adapter is default-disabled and its live reader-role integration
-# gate runs in the Hermes/PostgreSQL replay; keep the synthetic CI floor from
-# treating unavailable live bootstrap paths as production coverage.
-class DatabaseInternalReadService:  # pragma: no cover
+class DatabaseInternalReadService:
     """Reader-role adapter for the closed R1 PostgreSQL function surface.
 
     The login used by this service is intentionally separate from the general

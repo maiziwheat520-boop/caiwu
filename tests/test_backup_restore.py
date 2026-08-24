@@ -25,10 +25,12 @@ from scripts.backup_restore import (
     PHASE_3_TRIGGERS,
     R1_INTERNAL_READ_FUNCTIONS,
     R1_INTERNAL_READ_VIEWS,
+    R1_OPTIONAL_ROLES,
     R1_PUBLIC_TABLES,
     R1_REQUIRED_CONSTRAINTS,
     R1_REQUIRED_TRIGGERS,
     R1_ROLES,
+    R1_SECURITY_SQL,
     BackupError,
     CommonConfig,
     RestoreResources,
@@ -82,7 +84,8 @@ def _database_metadata() -> dict[str, object]:
     }
 
 
-def _r1_database_metadata() -> dict[str, object]:
+def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
+    observed_roles = (*R1_ROLES, *R1_OPTIONAL_ROLES) if include_backup else R1_ROLES
     metadata = _database_metadata() | {
         "metadata_version": 2,
         "alembic_version": "20260824_0015",
@@ -129,11 +132,11 @@ def _r1_database_metadata() -> dict[str, object]:
                 "bypass_rls": False,
                 "memberships": [],
             }
-            for role in R1_ROLES
+            for role in observed_roles
         ],
         "r1_database_acl": [
             {"grantee": role, "privilege": "CONNECT", "grantable": "NO"}
-            for role in (*R1_ROLES, "ledgerbridge_owner")
+            for role in (*observed_roles, "ledgerbridge_owner")
         ],
         "r1_schema_acl": [
             {"schema": "public", "grantee": "PUBLIC", "privilege": "USAGE", "grantable": "NO"},
@@ -203,7 +206,7 @@ def _r1_database_metadata() -> dict[str, object]:
         "r1_effective_schema_privileges": [],
     }
     table_rows = cast(list[dict[str, object]], metadata["r1_effective_table_privileges"])
-    for role in R1_ROLES:
+    for role in observed_roles:
         for table in R1_PUBLIC_TABLES:
             table_rows.append(
                 {
@@ -250,7 +253,7 @@ def _r1_database_metadata() -> dict[str, object]:
         )
     function_rows = cast(list[dict[str, object]], metadata["r1_effective_function_privileges"])
     functions = cast(list[dict[str, object]], metadata["r1_functions"])
-    for role in R1_ROLES:
+    for role in observed_roles:
         for function in functions:
             function_rows.append(
                 {
@@ -264,7 +267,7 @@ def _r1_database_metadata() -> dict[str, object]:
                 }
             )
     schema_rows = cast(list[dict[str, object]], metadata["r1_effective_schema_privileges"])
-    for role in R1_ROLES:
+    for role in observed_roles:
         schema_rows.extend(
             [
                 {"role": role, "schema": "public", "usage": True, "create": False},
@@ -512,6 +515,144 @@ def test_r1_database_metadata_verifies_role_acl_catalog_and_effective_privileges
     }
     with pytest.raises(BackupError, match="public validator"):
         _validate_restored_database(public_function_execute, public_function_execute.copy())
+
+
+def test_r1_security_sql_and_verifier_cover_optional_backup_role() -> None:
+    assert "ledgerbridge_backup" in R1_SECURITY_SQL
+    expected = _r1_database_metadata(include_backup=True)
+    _validate_restored_database(expected, expected.copy())
+
+    backup_database_acl = [
+        item
+        for item in cast(list[dict[str, object]], expected["r1_database_acl"])
+        if item.get("grantee") == "ledgerbridge_backup"
+    ]
+    assert backup_database_acl == [
+        {"grantee": "ledgerbridge_backup", "privilege": "CONNECT", "grantable": "NO"}
+    ]
+
+    backup_fact_grant = {
+        **expected,
+        "r1_effective_table_privileges": [
+            {
+                **row,
+                "select": True,
+            }
+            if row.get("role") == "ledgerbridge_backup"
+            and row.get("schema") == "public"
+            and row.get("object") == R1_PUBLIC_TABLES[0]
+            else row
+            for row in cast(list[dict[str, object]], expected["r1_effective_table_privileges"])
+        ],
+    }
+    with pytest.raises(BackupError, match="fact table"):
+        _validate_restored_database(backup_fact_grant, backup_fact_grant.copy())
+
+
+@pytest.mark.parametrize(
+    ("field", "entry"),
+    [
+        (
+            "r1_database_acl",
+            {"grantee": "retired_role", "privilege": "CONNECT", "grantable": "NO"},
+        ),
+        (
+            "r1_schema_acl",
+            {
+                "schema": "public",
+                "grantee": "retired_role",
+                "privilege": "USAGE",
+                "grantable": "NO",
+            },
+        ),
+        (
+            "r1_default_acls",
+            {
+                "owner": "ledgerbridge_owner",
+                "schema": "public",
+                "object_type": "r",
+                "grantee": "retired_role",
+                "privilege": "SELECT",
+                "grantable": "NO",
+            },
+        ),
+    ],
+)
+def test_r1_database_metadata_rejects_unknown_or_stale_acl_grantees(
+    field: str, entry: dict[str, object]
+) -> None:
+    expected = _r1_database_metadata()
+    drifted = {
+        **expected,
+        field: [*cast(list[dict[str, object]], expected[field]), entry],
+    }
+    with pytest.raises(BackupError, match="unknown or stale grantee"):
+        _validate_restored_database(drifted, drifted.copy())
+
+
+def test_r1_database_metadata_rejects_excess_allowlisted_acl_grants() -> None:
+    expected = _r1_database_metadata()
+    excess_cases = (
+        (
+            "r1_database_acl",
+            {"grantee": "ledgerbridge_reader", "privilege": "CREATE", "grantable": "NO"},
+        ),
+        (
+            "r1_schema_acl",
+            {
+                "schema": "public",
+                "grantee": "ledgerbridge_reader",
+                "privilege": "USAGE",
+                "grantable": "NO",
+            },
+        ),
+        (
+            "r1_default_acls",
+            {
+                "owner": "ledgerbridge_owner",
+                "schema": "public",
+                "object_type": "r",
+                "grantee": "ledgerbridge_reader",
+                "privilege": "SELECT",
+                "grantable": "NO",
+            },
+        ),
+    )
+    for field, entry in excess_cases:
+        drifted = {
+            **expected,
+            field: [*cast(list[dict[str, object]], expected[field]), entry],
+        }
+        with pytest.raises(BackupError, match=r"(excess|over-privileged)"):
+            _validate_restored_database(drifted, drifted.copy())
+
+
+def test_r1_database_metadata_requires_fixed_owner_for_views_and_functions() -> None:
+    expected = _r1_database_metadata()
+    view_owner_drift = {
+        **expected,
+        "r1_views": [
+            {**item, "owner": "stale_owner"}
+            if item.get("name") == R1_INTERNAL_READ_VIEWS[0]
+            else item
+            for item in cast(list[dict[str, object]], expected["r1_views"])
+        ],
+    }
+    with pytest.raises(BackupError, match="view security boundary"):
+        _validate_restored_database(view_owner_drift, view_owner_drift.copy())
+
+    function_owner_drift = {
+        **expected,
+        "r1_functions": [
+            {**item, "owner": "stale_owner"}
+            if item.get("schema") == "internal_read"
+            and item.get("name") == R1_INTERNAL_READ_FUNCTIONS[0]
+            else item
+            for item in cast(list[dict[str, object]], expected["r1_functions"])
+        ],
+    }
+    with pytest.raises(BackupError, match="function security boundary"):
+        _validate_restored_database(function_owner_drift, function_owner_drift.copy())
 
 
 def test_r1_database_metadata_requires_closed_objects_and_default_acl() -> None:

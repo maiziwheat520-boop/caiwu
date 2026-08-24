@@ -3419,10 +3419,6 @@ def downgrade() -> None:
         "uq_encrypted_blob_object_ref", "encrypted_blob_version", ["object_ref"]
     )
     op.drop_table("encrypted_object_identity")
-    op.alter_column(
-        "candidate",
-        "contract_version",
-        existing_type=sa.String(32),
-        type_=sa.String(24),
-        schema="public",
-    )
+    # 0013 defines this contract as VARCHAR(32).  The upgrade above only
+    # widens legacy deployed VARCHAR(24) columns to that 0013 contract, so a
+    # downgrade must leave the width at 32 instead of narrowing it back to 24.

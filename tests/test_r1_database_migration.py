@@ -2336,6 +2336,48 @@ def test_r1_no_reader_0013_0014_0013_round_trip_is_supported() -> None:
             )
 
 
+def test_r1_0014_0015_downgrade_restores_0013_candidate_contract_width() -> None:
+    with _legacy_r1_database(reader=True) as database_url:
+        config = _upgrade_config(database_url)
+        command.upgrade(config, "20260824_0015")
+        command.downgrade(config, "20260824_0013")
+
+        engine = create_engine(database_url)
+        try:
+            with engine.begin() as connection:
+                assert (
+                    connection.execute(
+                        text(
+                            "SELECT character_maximum_length "
+                            "FROM information_schema.columns "
+                            "WHERE table_schema = 'public' "
+                            "AND table_name = 'candidate' "
+                            "AND column_name = 'contract_version'"
+                        )
+                    ).scalar_one()
+                    == 32
+                )
+                entity_id = uuid4()
+                connection.execute(
+                    text(
+                        "INSERT INTO public.entity (id, entity_type, name) "
+                        "VALUES (:id, 'COMPANY', 'contract round-trip entity')"
+                    ),
+                    {"id": entity_id},
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO public.candidate "
+                        "(id, short_id, entity_id, contract_version, created_at) "
+                        "VALUES (:id, 'C-R1RT', :entity, 'ledgerbridge.candidate.v1', "
+                        "CURRENT_TIMESTAMP)"
+                    ),
+                    {"id": uuid4(), "entity": entity_id},
+                )
+        finally:
+            engine.dispose()
+
+
 def test_r1_downgrade_rejects_a_fact_using_0013_added_reconciliation_columns() -> None:
     with _legacy_r1_database(reader=False) as database_url:
         engine = create_engine(database_url)
