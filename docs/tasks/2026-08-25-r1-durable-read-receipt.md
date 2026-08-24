@@ -9,8 +9,10 @@ and production compositions unchanged.
 ## Implementation
 
 - `EvidenceReadReceipt` is an immutable, closed Pydantic payload containing the
-  operation id, verified principal, key generation, evidence/entity/business
-  unit/blob bindings, byte size, and plaintext SHA-256.
+  operation id, verified principal policy generation, evidence/entity/business
+  unit/blob bindings, byte size, and plaintext SHA-256. The envelope's external
+  key generation remains independently bound by the decryptor descriptor and is
+  not misrepresented as the authorization policy generation.
 - `DatabaseInternalReadReceiptSink` invokes the fixed Migration 0015 function
   `internal_read.append_internal_evidence_read_audit` with positional arguments,
   converts the digest to `bytea`, and commits only after a returned audit id.
