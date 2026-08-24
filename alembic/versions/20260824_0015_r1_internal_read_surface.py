@@ -233,11 +233,37 @@ def _grant_exact_surface() -> None:
         REVOKE ALL ON FUNCTION public.append_audit_event(text, text, text, text, jsonb)
             FROM ledgerbridge_reader;
         REVOKE USAGE ON SCHEMA public FROM ledgerbridge_reader;
-        REVOKE ALL ON SCHEMA internal_read FROM PUBLIC, ledgerbridge_api,
-            ledgerbridge_worker, ledgerbridge_app, ledgerbridge_reader;
+        DO $schema_acl$
+        DECLARE role_name text;
+        BEGIN
+            FOREACH role_name IN ARRAY ARRAY[
+                'ledgerbridge_api', 'ledgerbridge_worker',
+                'ledgerbridge_app', 'ledgerbridge_reader'
+            ] LOOP
+                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+                    EXECUTE format('REVOKE ALL ON SCHEMA internal_read FROM %I', role_name);
+                END IF;
+            END LOOP;
+        END
+        $schema_acl$;
+        REVOKE ALL ON SCHEMA internal_read FROM PUBLIC;
         GRANT USAGE ON SCHEMA internal_read TO ledgerbridge_reader;
-        REVOKE ALL ON ALL FUNCTIONS IN SCHEMA internal_read FROM PUBLIC,
-            ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app, ledgerbridge_reader;
+        REVOKE ALL ON ALL FUNCTIONS IN SCHEMA internal_read FROM PUBLIC, ledgerbridge_reader;
+        DO $function_acl$
+        DECLARE role_name text;
+        BEGIN
+            FOREACH role_name IN ARRAY ARRAY[
+                'ledgerbridge_api', 'ledgerbridge_worker', 'ledgerbridge_app'
+            ] LOOP
+                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+                    EXECUTE format(
+                        'REVOKE ALL ON ALL FUNCTIONS IN SCHEMA internal_read FROM %I',
+                        role_name
+                    );
+                END IF;
+            END LOOP;
+        END
+        $function_acl$;
         GRANT SELECT ON internal_read.candidate_current_v,
             internal_read.candidate_evidence_v, internal_read.evidence_metadata_v,
             internal_read.reconciliation_current_v,
@@ -263,12 +289,60 @@ def upgrade() -> None:
     _database_acl()
     op.execute(
         """
-        CREATE SCHEMA internal_read AUTHORIZATION ledgerbridge_owner;
+        DO $schema$
+        BEGIN
+            EXECUTE format('CREATE SCHEMA internal_read AUTHORIZATION %I', current_user);
+        END
+        $schema$;
         REVOKE ALL ON SCHEMA internal_read FROM PUBLIC;
         """
     )
     op.execute(
         """
+        CREATE TABLE internal_read.evidence_read_receipt (
+            operation_id uuid NOT NULL,
+            audit_event_id uuid NOT NULL,
+            principal_ref varchar(200) NOT NULL,
+            verified_san varchar(200) NOT NULL,
+            policy_generation varchar(128) NOT NULL,
+            evidence_ref uuid NOT NULL,
+            entity_id uuid NOT NULL,
+            business_unit_id uuid NOT NULL,
+            blob_ref uuid NOT NULL,
+            byte_size bigint NOT NULL,
+            plaintext_sha256 bytea NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT pk_evidence_read_receipt PRIMARY KEY (operation_id),
+            CONSTRAINT uq_evidence_read_receipt_audit UNIQUE (audit_event_id),
+            CONSTRAINT ck_evidence_read_receipt_principal
+                CHECK (btrim(principal_ref) <> ''),
+            CONSTRAINT ck_evidence_read_receipt_san
+                CHECK (verified_san ~ '^spiffe://ledgerbridge(\\.test)?/[a-z0-9/_-]+$'),
+            CONSTRAINT ck_evidence_read_receipt_policy
+                CHECK (policy_generation ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'),
+            CONSTRAINT ck_evidence_read_receipt_size
+                CHECK (byte_size BETWEEN 0 AND 134217728),
+            CONSTRAINT ck_evidence_read_receipt_sha
+                CHECK (octet_length(plaintext_sha256) = 32),
+            CONSTRAINT fk_evidence_read_receipt_audit
+                FOREIGN KEY (audit_event_id) REFERENCES public.audit_event(id),
+            CONSTRAINT fk_evidence_read_receipt_evidence
+                FOREIGN KEY (evidence_ref) REFERENCES public.evidence_object(evidence_ref),
+            CONSTRAINT fk_evidence_read_receipt_blob
+                FOREIGN KEY (blob_ref) REFERENCES public.encrypted_blob_version(blob_ref)
+        );
+        CREATE FUNCTION internal_read.evidence_read_receipt_append_only()
+        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        AS $function$
+        BEGIN
+            RAISE EXCEPTION 'evidence read receipts are append-only'
+                USING ERRCODE = 'integrity_constraint_violation';
+        END
+        $function$;
+        CREATE TRIGGER evidence_read_receipt_append_only
+        BEFORE UPDATE OR DELETE ON internal_read.evidence_read_receipt
+        FOR EACH ROW EXECUTE FUNCTION internal_read.evidence_read_receipt_append_only();
+
         CREATE VIEW internal_read.candidate_current_v
         WITH (security_barrier = true, security_invoker = false) AS
         SELECT c.contract_version,
@@ -779,33 +853,6 @@ def upgrade() -> None:
         """
     )
 
-    for object_name in (
-        "candidate_current_v",
-        "candidate_evidence_v",
-        "evidence_metadata_v",
-        "reconciliation_current_v",
-        "reconciliation_blocker_v",
-        "reconciliation_proposal_v",
-        "reconciliation_suspense_v",
-        "ledger_posted_total_v",
-    ):
-        op.execute(f"ALTER VIEW internal_read.{object_name} OWNER TO ledgerbridge_owner")
-    op.execute(
-        """
-        ALTER FUNCTION internal_read.current_audit_horizon() OWNER TO ledgerbridge_owner;
-        ALTER FUNCTION internal_read.list_candidates_as_of(
-            uuid, uuid, varchar(16), bigint, bytea, timestamptz, uuid, integer
-        ) OWNER TO ledgerbridge_owner;
-        ALTER FUNCTION internal_read.get_reconciliation_as_of(
-            uuid, uuid, date, bigint, bytea
-        ) OWNER TO ledgerbridge_owner;
-        ALTER FUNCTION internal_read.resolve_active_evidence_blob(uuid)
-            OWNER TO ledgerbridge_owner;
-        ALTER FUNCTION internal_read.append_internal_evidence_read_audit(
-            varchar(200), varchar(200), varchar(128), uuid, uuid, uuid, uuid, bigint, bytea
-        ) OWNER TO ledgerbridge_owner;
-        """
-    )
     _grant_exact_surface()
 
 
