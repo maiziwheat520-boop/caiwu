@@ -504,3 +504,22 @@ ingestion require their later explicit gates.
   current worktree now contains uncommitted parallel edits to `0015`,
   `internal_read_service`, and its test, which were not staged or pushed and
   require a separate review/run.
+
+## S1 decryptor and LedgerSummary CI closure (2026-08-25)
+
+- S1 implementation is committed through `90ac572` on
+  `ai/chatgpt/r1-db-schema-grants-design`: descriptor-bound encrypted evidence
+  decryption, scoped `LedgerSummary`, metadata drift protection, and backup
+  restore verification for the new reader function.
+- Hosted PostgreSQL 15 run `32755403473` passed `secrets`, `quality`, and
+  `compose`. Quality passed the unchanged 90% coverage gate, full pytest,
+  Alembic upgrade→downgrade→upgrade, Bandit, and pip-audit. The preceding
+  failures were PG-only exact-function-set assertions that omitted
+  `get_ledger_summary_as_of`; the test contract is now synchronized.
+- Local Windows full suite: **540 passed / 190 skipped / 1 warning**; Ruff,
+  strict mypy, and targeted backup/S1 tests pass. The latest backup-restore
+  commit is local and awaits a network retry before Hosted CI re-verifies that
+  final SHA.
+- No production bootstrap, reader enablement, merge, deployment, or real-data
+  access is authorized. Production KeyProvider, durable receipt wiring, mTLS,
+  Hermes replay, and HTTP decryptor injection remain closed gates.

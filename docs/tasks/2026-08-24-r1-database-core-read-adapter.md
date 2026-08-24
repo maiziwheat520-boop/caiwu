@@ -106,3 +106,18 @@
 
 生产 mTLS verifier、签名 cursor key、reader bootstrap、生产 KeyProvider、durable
 read receipt wiring、Hermes/真实数据回放及 production enablement 仍需独立实现和审计。
+
+## S1 CI closure (2026-08-25)
+
+- Hosted run `32755403473` is green across `secrets`, `quality`, and `compose`.
+  The quality job passed PostgreSQL 15 pytest/coverage (unchanged 90% floor),
+  Alembic round-trip, Bandit, and pip-audit.
+- The two earlier failed runs were caused by a PG-only exact-set test that did
+  not list the newly installed `get_ledger_summary_as_of` function; the test
+  contract and reader scope exercise now include it.
+- Backup restore metadata validation now checks the LedgerSummary function's
+  signature, fixed owner/security-definer/search-path boundary, and reader
+  EXECUTE privilege.
+- Final local suite at this point: **540 passed / 190 skipped / 1 warning**.
+  Commit `90ac572` is not yet confirmed on the remote because the current
+  network retry is pending; no production or merge action was taken.

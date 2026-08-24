@@ -286,8 +286,27 @@ R1_INTERNAL_READ_FUNCTIONS = (
     "list_candidates_as_of",
     "get_reconciliation_as_of",
     "resolve_active_evidence_blob",
+    "get_ledger_summary_as_of",
     "append_internal_evidence_read_audit",
 )
+# These are the exact strings emitted by PostgreSQL's
+# pg_get_function_identity_arguments().  Function identity does not include
+# varchar typmods, so the allowlist intentionally uses "character varying"
+# rather than the migration's varchar(N) declarations.
+R1_INTERNAL_READ_FUNCTION_SIGNATURES = {
+    "current_audit_horizon": "",
+    "list_candidates_as_of": (
+        "uuid, uuid, character varying, bigint, bytea, "
+        "timestamp with time zone, uuid, integer"
+    ),
+    "get_reconciliation_as_of": "uuid, uuid, date, bigint, bytea",
+    "resolve_active_evidence_blob": "uuid",
+    "get_ledger_summary_as_of": "uuid, uuid, date, date, bigint, bytea",
+    "append_internal_evidence_read_audit": (
+        "uuid, character varying, character varying, character varying, "
+        "uuid, uuid, uuid, uuid, bigint, bytea"
+    ),
+}
 R1_SECURITY_REVISION = "20260824_0015"
 R1_REQUIRED_CONSTRAINTS = frozenset(
     {
@@ -319,7 +338,10 @@ R1_REQUIRED_TRIGGERS = frozenset(
 
 _R1_PUBLIC_TABLE_SQL = ", ".join(f"'{name}'" for name in R1_PUBLIC_TABLES)
 _R1_VIEW_SQL = ", ".join(f"'{name}'" for name in R1_INTERNAL_READ_VIEWS)
-_R1_FUNCTION_SQL = ", ".join(f"'{name}'" for name in R1_INTERNAL_READ_FUNCTIONS)
+_R1_FUNCTION_SQL = ", ".join(
+    f"('{name}', '{identity_arguments}')"
+    for name, identity_arguments in R1_INTERNAL_READ_FUNCTION_SIGNATURES.items()
+)
 _R1_ROLE_SQL = ", ".join(f"('{name}'::name)" for name in R1_CONTROLLED_ROLES)
 
 # This query intentionally records both catalog ACLs and effective privileges.
@@ -331,6 +353,8 @@ R1_SECURITY_SQL = (
     """
 WITH expected_roles(role_name) AS (
     VALUES __R1_ROLE_SQL__
+), expected_r1_functions(function_name, identity_arguments) AS (
+    VALUES __R1_FUNCTION_SQL__
 ), database_owner AS (
     SELECT pg_get_userbyid(datdba) AS role_name
       FROM pg_database
@@ -459,9 +483,14 @@ WITH expected_roles(role_name) AS (
         'security_definer', p.prosecdef,
         'proconfig', COALESCE(to_json(p.proconfig), '[]'::json)
     ) ORDER BY n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)), '[]'::json) AS value
-      FROM pg_proc AS p
+     FROM pg_proc AS p
       JOIN pg_namespace AS n ON n.oid = p.pronamespace
-     WHERE (n.nspname = 'internal_read' AND p.proname IN (__R1_FUNCTION_SQL__))
+     WHERE (n.nspname = 'internal_read' AND EXISTS (
+                SELECT 1
+                  FROM expected_r1_functions AS expected
+                 WHERE expected.function_name = p.proname
+                   AND expected.identity_arguments = pg_get_function_identity_arguments(p.oid)
+            ))
         OR (n.nspname = 'public' AND p.proname LIKE 'r1_%')
 ), effective_table_privileges AS (
     SELECT COALESCE(json_agg(json_build_object(
@@ -488,7 +517,12 @@ WITH expected_roles(role_name) AS (
       FROM present_roles AS e
       CROSS JOIN pg_proc AS p
       JOIN pg_namespace AS n ON n.oid = p.pronamespace
-     WHERE (n.nspname = 'internal_read' AND p.proname IN (__R1_FUNCTION_SQL__))
+     WHERE (n.nspname = 'internal_read' AND EXISTS (
+                SELECT 1
+                  FROM expected_r1_functions AS expected
+                 WHERE expected.function_name = p.proname
+                   AND expected.identity_arguments = pg_get_function_identity_arguments(p.oid)
+            ))
         OR (n.nspname = 'public' AND p.proname LIKE 'r1_%')
 ), effective_schema_privileges AS (
     SELECT COALESCE(json_agg(json_build_object(
@@ -1958,9 +1992,29 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
     functions = _list("r1_functions")
     if any(item.get("owner") != database_owner for item in functions):
         raise BackupError("restored R1 function security boundary is invalid")
+    if any(
+        not isinstance(item.get("schema"), str)
+        or not isinstance(item.get("name"), str)
+        or not isinstance(item.get("identity_arguments"), str)
+        for item in functions
+    ):
+        raise BackupError("restored R1 function metadata is invalid")
     internal_functions = [item for item in functions if item.get("schema") == "internal_read"]
-    if {item.get("name") for item in internal_functions} != set(R1_INTERNAL_READ_FUNCTIONS):
-        raise BackupError("restored R1 internal_read functions differ from the required baseline")
+    expected_internal_function_keys = {
+        ("internal_read", name, identity_arguments)
+        for name, identity_arguments in R1_INTERNAL_READ_FUNCTION_SIGNATURES.items()
+    }
+    actual_internal_function_keys = {
+        (item["schema"], item["name"], item["identity_arguments"])
+        for item in internal_functions
+    }
+    if (
+        len(actual_internal_function_keys) != len(internal_functions)
+        or actual_internal_function_keys != expected_internal_function_keys
+    ):
+        raise BackupError(
+            "restored R1 internal_read functions differ from the required signature baseline"
+        )
     for item in internal_functions:
         if (
             item.get("security_definer") is not True
@@ -2010,11 +2064,25 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
                 raise BackupError("restored R1 internal_read view privilege matrix is invalid")
 
     function_privileges = _list("r1_effective_function_privileges")
-    expected_function_keys = {
-        (role, item.get("schema"), item.get("name"), item.get("identity_arguments"))
-        for role in active_roles
+    expected_function_objects = set(expected_internal_function_keys)
+    expected_function_objects.update(
+        (item["schema"], item["name"], item["identity_arguments"])
         for item in functions
+        if item["schema"] == "public"
+    )
+    expected_function_keys = {
+        (role, schema, name, identity_arguments)
+        for role in active_roles
+        for _, schema, name, identity_arguments in expected_function_objects
     }
+    if any(
+        not isinstance(item.get("role"), str)
+        or not isinstance(item.get("schema"), str)
+        or not isinstance(item.get("name"), str)
+        or not isinstance(item.get("identity_arguments"), str)
+        for item in function_privileges
+    ):
+        raise BackupError("restored R1 effective function privilege metadata is invalid")
     actual_function_keys = {
         (item.get("role"), item.get("schema"), item.get("name"), item.get("identity_arguments"))
         for item in function_privileges

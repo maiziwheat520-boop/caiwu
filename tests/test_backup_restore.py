@@ -233,7 +233,11 @@ def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
             {
                 "schema": "internal_read",
                 "name": name,
-                "identity_arguments": "",
+                "identity_arguments": (
+                    "uuid, uuid, date, date, bigint, bytea"
+                    if name == "get_ledger_summary_as_of"
+                    else ""
+                ),
                 "owner": "ledgerbridge_owner",
                 "security_definer": True,
                 "proconfig": ["search_path=pg_catalog"],
@@ -808,6 +812,81 @@ def test_r1_database_metadata_requires_fixed_owner_for_views_and_functions() -> 
     }
     with pytest.raises(BackupError, match="function security boundary"):
         _validate_restored_database(function_owner_drift, function_owner_drift.copy())
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("owner", "stale_owner"), ("security_definer", False), ("proconfig", [])],
+)
+def test_r1_database_metadata_checks_ledger_summary_function_security(
+    field: str, value: object
+) -> None:
+    expected = _r1_database_metadata()
+    drifted = {
+        **expected,
+        "r1_functions": [
+            {**item, field: value}
+            if item.get("schema") == "internal_read"
+            and item.get("name") == "get_ledger_summary_as_of"
+            else item
+            for item in cast(list[dict[str, object]], expected["r1_functions"])
+        ],
+    }
+    with pytest.raises(BackupError, match="function security boundary"):
+        _validate_restored_database(drifted, drifted.copy())
+
+
+def test_r1_database_metadata_requires_ledger_summary_reader_execute() -> None:
+    expected = _r1_database_metadata()
+    functions = cast(list[dict[str, object]], expected["r1_functions"])
+    summary = next(
+        item
+        for item in functions
+        if item.get("schema") == "internal_read" and item.get("name") == "get_ledger_summary_as_of"
+    )
+    assert summary["identity_arguments"] == "uuid, uuid, date, date, bigint, bytea"
+    assert summary["owner"] == "ledgerbridge_owner"
+    assert summary["security_definer"] is True
+    assert summary["proconfig"] == ["search_path=pg_catalog"]
+
+    function_privileges = cast(
+        list[dict[str, object]], expected["r1_effective_function_privileges"]
+    )
+    reader_summary = [
+        item
+        for item in function_privileges
+        if item.get("role") == "ledgerbridge_reader"
+        and item.get("schema") == "internal_read"
+        and item.get("name") == "get_ledger_summary_as_of"
+    ]
+    assert len(reader_summary) == 1
+    assert reader_summary[0]["execute"] is True
+
+    missing = {
+        **expected,
+        "r1_functions": [
+            item for item in functions if item.get("name") != "get_ledger_summary_as_of"
+        ],
+        "r1_effective_function_privileges": [
+            item for item in function_privileges if item.get("name") != "get_ledger_summary_as_of"
+        ],
+    }
+    with pytest.raises(BackupError, match="internal_read functions"):
+        _validate_restored_database(missing, missing.copy())
+
+    reader_execute_drift = {
+        **expected,
+        "r1_effective_function_privileges": [
+            {**item, "execute": False}
+            if item.get("role") == "ledgerbridge_reader"
+            and item.get("schema") == "internal_read"
+            and item.get("name") == "get_ledger_summary_as_of"
+            else item
+            for item in function_privileges
+        ],
+    }
+    with pytest.raises(BackupError, match="function privilege matrix"):
+        _validate_restored_database(reader_execute_drift, reader_execute_drift.copy())
 
 
 def test_r1_database_metadata_requires_closed_objects_and_default_acl() -> None:
