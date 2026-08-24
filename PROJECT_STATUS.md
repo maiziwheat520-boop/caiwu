@@ -538,5 +538,22 @@ ingestion require their later explicit gates.
 - Local evidence: `uv run --frozen --extra dev python
   scripts/r1_synthetic_demo.py --check` returned six successful routes,
   three candidates, one evidence audit event, and ledger total `SUPPLIES=-12345`.
-  The dedicated regression test passed. Main CI run `32758962228` was still
-  in progress at the time of this status update.
+  The dedicated regression test passed. Main CI run `32758962228` completed
+  successfully across `secrets`, `quality`, and `compose`.
+- The demo was then merged through PR #20 as
+  `3122610236755294eeac505d7e2bee47a4f97a69`; its post-merge main CI
+  `32759774150` also completed successfully across all three jobs.
+
+## R1 durable evidence-read receipt boundary (2026-08-25)
+
+- The database reader now has an explicit, opt-in `EvidenceReadReceipt` and
+  `InternalReadReceiptSink` contract. `DatabaseInternalReadReceiptSink` calls
+  Migration 0015's allowlisted `internal_read.append_internal_evidence_read_audit`
+  function and commits only after the function returns an audit id.
+- `DatabaseInternalReadService` accepts the receipt sink only through explicit
+  injection. It records the receipt after descriptor-bound decryption and
+  plaintext digest verification, before returning evidence bytes; any sink
+  failure is converted to a fail-closed backend-unavailable error.
+- This is not production wiring: the default route composition remains
+  unchanged, no reader bootstrap or production KeyProvider was added, and no
+  real evidence was read. Focused audit/database-reader tests pass **48**.

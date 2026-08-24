@@ -14,7 +14,9 @@ from ledgerbridge.config import Settings
 from ledgerbridge.internal_read_audit import (
     AuditSinkUnavailable,
     DatabaseInternalReadAuditSink,
+    DatabaseInternalReadReceiptSink,
     EvidenceReadAuditEvent,
+    EvidenceReadReceipt,
     UnavailableInternalReadAuditSink,
     get_internal_read_audit_sink,
 )
@@ -23,6 +25,7 @@ from ledgerbridge.internal_read_audit import (
 class _Session(AbstractContextManager["_Session"]):
     def __init__(self) -> None:
         self.committed = False
+        self.params: dict[str, object] = {}
 
     def __enter__(self) -> _Session:
         return self
@@ -33,6 +36,15 @@ class _Session(AbstractContextManager["_Session"]):
     def commit(self) -> None:
         self.committed = True
 
+    def execute(self, _statement: object, params: dict[str, object]) -> _Result:
+        self.params = params
+        return _Result()
+
+
+class _Result:
+    def scalar_one(self) -> UUID:
+        return UUID("40000000-0000-4000-8000-000000000002")
+
 
 def _event() -> EvidenceReadAuditEvent:
     return EvidenceReadAuditEvent(
@@ -42,6 +54,20 @@ def _event() -> EvidenceReadAuditEvent:
         evidence_ref=UUID("20000000-0000-4000-8000-000000000001"),
         entity_ref=UUID("10000000-0000-4000-8000-000000000001"),
         business_unit_ref="unit-demo-a",
+        byte_size=16,
+        sha256="a" * 64,
+    )
+
+
+def _receipt() -> EvidenceReadReceipt:
+    return EvidenceReadReceipt(
+        principal_ref="workload:r1-audit-test",
+        principal_san_uri="spiffe://ledgerbridge.test/r1-audit-test",
+        key_generation="generation-1",
+        evidence_ref=UUID("20000000-0000-4000-8000-000000000001"),
+        entity_ref=UUID("10000000-0000-4000-8000-000000000001"),
+        business_unit_id=UUID("11000000-0000-4000-8000-000000000001"),
+        blob_ref=UUID("30000000-0000-4000-8000-000000000001"),
         byte_size=16,
         sha256="a" * 64,
     )
@@ -89,6 +115,29 @@ def test_database_sink_maps_database_failure_to_fail_closed(
     with pytest.raises(AuditSinkUnavailable, match="append failed"):
         factory = cast(Callable[[], Session], _Session)
         DatabaseInternalReadAuditSink(factory).append(_event())
+
+
+def test_database_receipt_sink_calls_allowlisted_function_and_commits() -> None:
+    session = _Session()
+    factory = cast(Callable[[], Session], lambda: session)
+    DatabaseInternalReadReceiptSink(factory).append(_receipt())
+
+    assert session.committed is True
+    assert session.params["principal_ref"] == "workload:r1-audit-test"
+    assert session.params["key_generation"] == "generation-1"
+    assert session.params["blob_ref"] == UUID("30000000-0000-4000-8000-000000000001")
+    assert session.params["sha256"] == bytes.fromhex("aa" * 32)
+
+
+def test_database_receipt_sink_maps_failure_to_fail_closed() -> None:
+    class FailingSession(_Session):
+        def execute(self, _statement: object, _params: dict[str, object]) -> _Result:
+            raise RuntimeError("database unavailable")
+
+    with pytest.raises(AuditSinkUnavailable, match="receipt append failed"):
+        DatabaseInternalReadReceiptSink(cast(Callable[[], Session], FailingSession)).append(
+            _receipt()
+        )
 
 
 def test_audit_dependency_stays_unavailable_without_explicit_test_gate(tmp_path: Path) -> None:

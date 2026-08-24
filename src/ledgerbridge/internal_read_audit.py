@@ -11,10 +11,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Annotated, Literal, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import Depends
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ledgerbridge.audit import append_audit_event
@@ -52,6 +53,34 @@ class InternalReadAuditSink(Protocol):
 
 class AuditSinkUnavailable(RuntimeError):
     """No durable append-only audit sink accepted the event."""
+
+
+class EvidenceReadReceipt(BaseModel):
+    """Typed payload for the database reader's immutable evidence receipt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation_id: UUID = Field(default_factory=uuid4)
+    principal_ref: str = Field(min_length=1, max_length=200)
+    principal_san_uri: str = Field(pattern=r"^spiffe://ledgerbridge\.test/[a-z0-9/_-]+$")
+    key_generation: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+    )
+    evidence_ref: UUID
+    entity_ref: UUID
+    business_unit_id: UUID
+    blob_ref: UUID
+    byte_size: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class InternalReadReceiptSink(Protocol):
+    """Durable append-only receipt contract for database-backed evidence."""
+
+    def append(self, receipt: EvidenceReadReceipt) -> None:
+        """Persist the receipt or raise without returning evidence bytes."""
 
 
 class UnavailableInternalReadAuditSink:
@@ -92,6 +121,43 @@ class DatabaseInternalReadAuditSink:
                 session.commit()
         except Exception as exc:
             raise AuditSinkUnavailable("internal read audit append failed") from exc
+
+
+class DatabaseInternalReadReceiptSink:
+    """Append a database reader receipt through the allowlisted internal function."""
+
+    def __init__(self, session_factory: Callable[[], Session]) -> None:
+        self._session_factory = session_factory
+
+    def append(self, receipt: EvidenceReadReceipt) -> None:
+        try:
+            with self._session_factory() as session:
+                session.execute(
+                    text(
+                        """
+                        SELECT internal_read.append_internal_evidence_read_audit(
+                            :operation_id, :principal_ref, :principal_san_uri,
+                            :key_generation, :evidence_ref, :entity_ref,
+                            :business_unit_id, :blob_ref, :byte_size, :sha256
+                        )
+                        """
+                    ),
+                    {
+                        "operation_id": receipt.operation_id,
+                        "principal_ref": receipt.principal_ref,
+                        "principal_san_uri": receipt.principal_san_uri,
+                        "key_generation": receipt.key_generation,
+                        "evidence_ref": receipt.evidence_ref,
+                        "entity_ref": receipt.entity_ref,
+                        "business_unit_id": receipt.business_unit_id,
+                        "blob_ref": receipt.blob_ref,
+                        "byte_size": receipt.byte_size,
+                        "sha256": bytes.fromhex(receipt.sha256),
+                    },
+                ).scalar_one()
+                session.commit()
+        except Exception as exc:
+            raise AuditSinkUnavailable("internal read receipt append failed") from exc
 
 
 def get_internal_read_audit_sink(
