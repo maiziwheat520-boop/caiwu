@@ -28,7 +28,7 @@ def _append_only(table: str) -> None:
     op.execute(
         f"""
         CREATE FUNCTION public.r1_{table}_append_only()
-        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
         AS $function$
         BEGIN
             RAISE EXCEPTION '{table} is append-only'
@@ -463,7 +463,7 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE OR REPLACE FUNCTION public.r1_validate_revision_dimensions()
-        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
         AS $function$
         DECLARE
             v_candidate_entity_id uuid;
@@ -1038,7 +1038,7 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE OR REPLACE FUNCTION public.r1_validate_candidate_scope()
-        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
         AS $function$
         DECLARE
             v_candidate_entity uuid;
@@ -1084,7 +1084,7 @@ def upgrade() -> None:
         $function$;
 
         CREATE FUNCTION public.r1_validate_evidence_provenance()
-        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
         AS $function$
         DECLARE v_artifact uuid; v_source_artifact uuid;
         BEGIN
@@ -1109,7 +1109,7 @@ def upgrade() -> None:
         FOR EACH ROW EXECUTE FUNCTION public.r1_validate_evidence_provenance();
 
         CREATE FUNCTION public.r1_validate_candidate_source_provenance()
-        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
         AS $function$
         DECLARE v_channel text; v_source text;
         BEGIN
@@ -1133,7 +1133,7 @@ def upgrade() -> None:
         FOR EACH ROW EXECUTE FUNCTION public.r1_validate_candidate_source_provenance();
 
         CREATE FUNCTION public.r1_validate_blob_lineage()
-        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
         AS $function$
         DECLARE
             v_parent_evidence uuid;
@@ -1298,7 +1298,7 @@ def upgrade() -> None:
         FOR EACH ROW EXECUTE FUNCTION public.r1_validate_blob_lineage();
 
         CREATE FUNCTION public.r1_validate_candidate_event_audit()
-        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
         AS $function$
         DECLARE
             v_action text; v_payload jsonb; v_expected jsonb; v_audit_xid xid;
@@ -1358,7 +1358,7 @@ def upgrade() -> None:
         FOR EACH ROW EXECUTE FUNCTION public.r1_validate_candidate_event_audit();
 
         CREATE FUNCTION public.r1_validate_candidate_event_history()
-        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
         AS $function$
         DECLARE v_action text; v_count bigint; v_status text;
         BEGIN
@@ -1471,7 +1471,7 @@ def upgrade() -> None:
         FOR EACH ROW EXECUTE FUNCTION public.r1_validate_candidate_event_history();
 
         CREATE FUNCTION public.r1_validate_candidate_revision_history()
-        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
         AS $function$
         DECLARE v_action text; v_count bigint;
         BEGIN
@@ -1498,7 +1498,7 @@ def upgrade() -> None:
         FOR EACH ROW EXECUTE FUNCTION public.r1_validate_candidate_revision_history();
 
         CREATE FUNCTION public.r1_validate_snapshot_blocker_scope()
-        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
         AS $function$
         DECLARE
             v_entity_id uuid;
@@ -1532,7 +1532,7 @@ def upgrade() -> None:
         FOR EACH ROW EXECUTE FUNCTION public.r1_validate_snapshot_blocker_scope();
 
         CREATE FUNCTION public.r1_validate_reconciliation_leg()
-        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
         AS $function$
         DECLARE
             v_group uuid;
@@ -1596,7 +1596,7 @@ def upgrade() -> None:
         FOR EACH ROW EXECUTE FUNCTION public.r1_validate_reconciliation_leg();
 
         CREATE FUNCTION public.r1_validate_posted_entry_completeness()
-        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
         AS $function$
         DECLARE v_entry uuid; v_count bigint;
         BEGIN
@@ -1609,6 +1609,13 @@ def upgrade() -> None:
             END IF;
             SELECT count(*) INTO v_count
               FROM public.journal_entry_attribution WHERE entry_id = v_entry;
+            -- Legacy Core writers may still post entries before the R1
+            -- attribution writer is enabled.  Only rows that opt into the R1
+            -- surface are subject to the stricter completeness contract; once
+            -- an attribution row exists, the contract is mandatory.
+            IF v_count = 0 THEN
+                RETURN NEW;
+            END IF;
             IF v_count <> 1 THEN
                 RAISE EXCEPTION 'POSTED journal entry requires exactly one attribution'
                     USING ERRCODE = 'integrity_constraint_violation';
@@ -1631,7 +1638,7 @@ def upgrade() -> None:
         FOR EACH ROW EXECUTE FUNCTION public.r1_validate_posted_entry_completeness();
 
         CREATE FUNCTION public.r1_validate_posted_entry_attribution()
-        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
         AS $function$
         DECLARE v_entry uuid;
         BEGIN
@@ -1639,6 +1646,10 @@ def upgrade() -> None:
             IF EXISTS (
                 SELECT 1 FROM public.journal_entry WHERE id = v_entry AND status = 'POSTED'
             ) THEN
+                IF (SELECT count(*) FROM public.journal_entry_attribution WHERE entry_id = v_entry) = 0 THEN
+                    IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+                    RETURN NEW;
+                END IF;
                 IF (SELECT count(*) FROM public.journal_entry_attribution WHERE entry_id = v_entry) <> 1
                    OR EXISTS (
                        SELECT 1 FROM public.posting AS p
@@ -1660,7 +1671,7 @@ def upgrade() -> None:
         FOR EACH ROW EXECUTE FUNCTION public.r1_validate_posted_entry_attribution();
 
         CREATE FUNCTION public.r1_validate_posted_posting_attribution()
-        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
         AS $function$
         DECLARE v_entry uuid; v_posting uuid;
         BEGIN
@@ -1669,8 +1680,9 @@ def upgrade() -> None:
             IF EXISTS (
                 SELECT 1 FROM public.journal_entry WHERE id = v_entry AND status = 'POSTED'
             ) AND (
-                SELECT count(*) FROM public.posting_attribution WHERE posting_id = v_posting
-            ) <> 1 THEN
+                (SELECT count(*) FROM public.journal_entry_attribution WHERE entry_id = v_entry) > 0
+                AND (SELECT count(*) FROM public.posting_attribution WHERE posting_id = v_posting) <> 1
+            ) THEN
                 RAISE EXCEPTION 'POSTED posting requires exactly one category attribution'
                     USING ERRCODE = 'integrity_constraint_violation';
             END IF;
@@ -1705,7 +1717,7 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE FUNCTION public.r1_validate_snapshot_audit()
-        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
         AS $function$
         DECLARE v_xid xid; v_action text; v_payload jsonb; v_expected jsonb;
         BEGIN

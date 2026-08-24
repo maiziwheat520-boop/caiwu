@@ -944,15 +944,16 @@ reader role, the deployment verifier must prove and/or enforce:
   REVOKE CONNECT, TEMPORARY, CREATE ON DATABASE <db> FROM PUBLIC;
   REVOKE CONNECT, TEMPORARY, CREATE ON DATABASE <db> FROM ledgerbridge_app;
   GRANT CONNECT ON DATABASE <db>
-    TO ledgerbridge_api, ledgerbridge_worker, ledgerbridge_reader;
+    TO ledgerbridge_app, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_reader;
   REVOKE TEMPORARY, CREATE ON DATABASE <db>
-    FROM ledgerbridge_api, ledgerbridge_worker, ledgerbridge_reader;
+    FROM ledgerbridge_app, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_reader;
   ```
 
   A fixed non-runtime owner/migration role and a backup role receive `CONNECT`
   only when that named role is actually deployed and present in the explicit
-  allowlist; they receive no reader privileges. `ledgerbridge_app` has no
-  production `CONNECT`. The `REVOKE ALL ... FROM PUBLIC` cleanup below must
+  allowlist; they receive no reader privileges. `ledgerbridge_app` retains
+  `CONNECT` for compatibility but receives no fact-table, reader-surface,
+  `TEMPORARY`, or `CREATE` privileges. The `REVOKE ALL ... FROM PUBLIC` cleanup must
   therefore be followed by these explicit grants; revoking PUBLIC without
   restoring the required runtime `CONNECT` is an invalid bootstrap.
 - `REVOKE ALL ON DATABASE`, schema, tables, sequences, functions, and default

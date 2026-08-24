@@ -663,12 +663,17 @@ def test_r1_reader_role_and_database_acl_are_minimal(isolated_r1_database: str) 
                 "'ledgerbridge_app')"
             )
         ).scalar_one()
-        # The owner is the only test principal allowed to retain database-wide power.
-        for role_name in ("ledgerbridge_reader", "ledgerbridge_api", "ledgerbridge_worker"):
+        # Runtime roles retain only CONNECT; owner remains the only database-wide
+        # principal and the runtime roles have no TEMPORARY/CREATE capability.
+        for role_name in (
+            "ledgerbridge_reader",
+            "ledgerbridge_api",
+            "ledgerbridge_worker",
+            "ledgerbridge_app",
+        ):
             assert _has_db_privilege(connection, role_name, "CONNECT")
             assert not _has_db_privilege(connection, role_name, "TEMPORARY")
             assert not _has_db_privilege(connection, role_name, "CREATE")
-        assert not _has_db_privilege(connection, "ledgerbridge_app", "CONNECT")
 
         public_acl = connection.execute(
             text(

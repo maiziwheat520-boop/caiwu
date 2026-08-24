@@ -142,11 +142,11 @@ def _database_acl() -> None:
                 END IF;
             END LOOP;
             EXECUTE format(
-                'GRANT CONNECT ON DATABASE %I TO ledgerbridge_api, ledgerbridge_worker, ledgerbridge_reader, %I',
+                'GRANT CONNECT ON DATABASE %I TO ledgerbridge_app, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_reader, %I',
                 v_database, v_owner
             );
             EXECUTE format(
-                'REVOKE TEMPORARY, CREATE ON DATABASE %I FROM ledgerbridge_api, ledgerbridge_worker, ledgerbridge_reader',
+                'REVOKE TEMPORARY, CREATE ON DATABASE %I FROM ledgerbridge_app, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_reader',
                 v_database
             );
             EXECUTE format(
