@@ -1,7 +1,8 @@
 # R1 database schema and grants design
 
-Status: NOT APPROVED; design only. No migration, production role, database read,
-or real-data enablement is authorized by this document.
+Status: APPROVED FOR DESIGN DOCS COMMIT; design only. This approval authorizes
+committing the design documents only; it authorizes no migration, production
+role, database read, or real-data enablement.
 
 ## Purpose
 
@@ -1478,9 +1479,10 @@ alone is not evidence of authenticated ciphertext recovery.
 
 ## Operational gates not satisfied by this design
 
-- Sol has not approved this design; this document remains `NOT APPROVED` and is
-  a normative proposal only, not evidence that any listed gate or implementation
-  exists.
+- Sol approved the fixed-tree design at `8d98cb...` in commit `3435d7c`.
+  The approval is limited to these design documents; implementation and
+  operational gates remain unsatisfied, and this document is not evidence that
+  any migration, production role, database read, or real-data enablement exists.
 - No migration files, ORM models, database roles, passwords, or grants have been
   created.
 - No production mTLS verifier, certificate mapping, or policy rotation exists.

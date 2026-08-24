@@ -1,7 +1,7 @@
 # R1 database schema/grants design task
 
 日期：2026-08-24
-结论：设计中/待 Sol 批准；只产出设计与验收计划，不创建迁移或启用数据库读取
+结论：设计完成；Sol批准设计文档；只产出设计与验收计划，不创建迁移或启用数据库读取
 
 ## 目标
 
@@ -94,15 +94,23 @@
 - fresh-host restore 必须用外部 KeyProvider 验证 FINAL、plaintext digest/size、active
   blob、object-identity registry、views/functions/triggers/constraints/default ACL 和角色隔离。
 
-## 完成条件
+## 完成条件（已满足）
 
-- 设计覆盖表、约束、索引、视图、安全函数、精确 grant matrix、迁移/恢复验收和明确 gate。
-- Luna 完成现状/字段/决定并行盘点；Sol 完成关键架构和权限复核。
-- 任何审计发现先修订设计，不把“文档完成”表述为“数据库 R1 已实现”。
+- 已覆盖表、约束、索引、视图、安全函数、精确 grant matrix、迁移/恢复验收和明确 gate。
+- Luna 已完成现状/字段/决定并行盘点；Sol 已完成关键架构和权限复核。
+- 审计发现已通过 docs-only 修订纳入设计；“文档完成”不表示“数据库 R1 已实现”。
+
+## Sol 审计证据
+
+- 固定 tree `8d98cb...`、commit `3435d7c`：`0 blocker/high/medium`。
+- `1 low`：future `candidate_evidence` creation-only trigger hardening；不阻断本设计批准，
+  仍作为后续实现候选项。
+- 本批准仅覆盖设计文档提交；migration、production、database read、real-data 和运维恢复
+  gates 仍未通过。
 
 ## 并发提交记录与当前边界
 
 初稿曾被并发提交 `1620007` 带入；本次仅通过后续 docs-only 修订纠正设计规范，
 不把并发带入的 persistent-audit 代码纳入本任务，也不声称任何数据库迁移、reader
-bootstrap、KeyProvider 适配、snapshot builder 或审计实现已经完成。最终设计仍需
-Sol 批准，并在批准前保持 `NOT APPROVED`、真实数据关闭和生产读取关闭。
+bootstrap、KeyProvider 适配、snapshot builder 或审计实现已经完成。最终设计已获 Sol
+批准为设计文档，但真实数据、生产读取和实现/运维 gates 仍保持关闭。
