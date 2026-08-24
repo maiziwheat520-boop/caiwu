@@ -126,6 +126,16 @@ def test_database_candidate_reader_uses_horizon_and_scoped_function() -> None:
     assert all("public." not in statement for statement in session.statements)
 
 
+def test_database_candidate_reader_rejects_entity_scope_drift() -> None:
+    candidate = SyntheticInternalReadService()._fixture.candidates[1]
+    row = candidate.model_dump()
+    row["entity_ref"] = UUID("10000000-0000-4000-8000-000000000002")
+    row["business_unit_ref"] = "unit-demo-a"
+
+    with pytest.raises(InternalReadBackendUnavailable, match="scope binding"):
+        _service(_Session(row)).list_candidates(_principal(), month=candidate.accounting_month)
+
+
 def test_database_reader_rejects_ref_only_grants_before_querying_facts() -> None:
     principal = _principal().model_copy(
         update={
@@ -215,6 +225,34 @@ def test_database_reconciliation_reader_projects_rows_and_hides_missing() -> Non
     missing = _service(_Session({}))
     with pytest.raises(ResourceNotVisible, match="resource was not found"):
         missing.get_reconciliation(
+            _principal(), month="2026-08", entity_ref=ENTITY, business_unit_ref="unit-demo-a"
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("entity_ref", UUID("10000000-0000-4000-8000-000000000002")),
+        ("business_unit_ref", "unit-demo-b"),
+        ("month", "2026-07"),
+    ],
+)
+def test_database_reconciliation_reader_rejects_scope_drift(field: str, value: object) -> None:
+    row = {
+        "entity_ref": ENTITY,
+        "business_unit_ref": "unit-demo-a",
+        "month": "2026-08",
+        "snapshot_revision": 1,
+        "blockers": (),
+        "proposals": (),
+        "suspense": (),
+        "posted_amount_minor": 123,
+        "currency": "CNY",
+    }
+    row[field] = value
+
+    with pytest.raises(InternalReadBackendUnavailable, match="out of scope"):
+        _service(_Session({}, reconciliation_row=row)).get_reconciliation(
             _principal(), month="2026-08", entity_ref=ENTITY, business_unit_ref="unit-demo-a"
         )
 

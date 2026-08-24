@@ -496,6 +496,10 @@ class DatabaseInternalReadService:
                         raw_has_more = len(raw_rows) > 100
                         for row_map in raw_rows:
                             candidate = self._candidate(row_map)
+                            if candidate.entity_ref != grant.entity_ref:
+                                raise InternalReadBackendUnavailable(
+                                    "database candidate scope binding is invalid"
+                                )
                             if business_unit_id is None:
                                 if candidate.business_unit_ref is not None:
                                     raise InternalReadBackendUnavailable(
@@ -632,11 +636,20 @@ class DatabaseInternalReadService:
         if row is None:
             raise ResourceNotVisible("resource was not found")
         try:
-            return ReconciliationProjection.model_validate(dict(row), strict=True)
+            projection = ReconciliationProjection.model_validate(dict(row), strict=True)
         except (ValueError, TypeError) as exc:
             raise InternalReadBackendUnavailable(
                 "database reconciliation projection is invalid"
             ) from exc
+        if (
+            projection.entity_ref != entity_ref
+            or projection.business_unit_ref != business_unit_ref
+            or projection.month != month
+        ):
+            raise InternalReadBackendUnavailable(
+                "database reconciliation projection is out of scope"
+            )
+        return projection
 
     def get_ledger_summary(
         self,

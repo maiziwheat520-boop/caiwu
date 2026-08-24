@@ -331,6 +331,14 @@ R1_SECURITY_SQL = (
     """
 WITH expected_roles(role_name) AS (
     VALUES __R1_ROLE_SQL__
+), database_owner AS (
+    SELECT pg_get_userbyid(datdba) AS role_name
+      FROM pg_database
+     WHERE datname = current_database()
+), observed_roles(role_name) AS (
+    SELECT role_name FROM expected_roles
+    UNION
+    SELECT role_name FROM database_owner
 ), present_roles(role_name) AS (
     SELECT e.role_name
       FROM expected_roles AS e
@@ -367,7 +375,7 @@ WITH expected_roles(role_name) AS (
              WHERE m.member = r.oid OR m.roleid = r.oid
         ), '[]'::json)
     ) ORDER BY r.rolname), '[]'::json) AS value
-      FROM expected_roles AS e
+      FROM observed_roles AS e
       JOIN pg_roles AS r ON r.rolname = e.role_name
 ), database_acl AS (
     SELECT COALESCE(json_agg(json_build_object(
@@ -1670,7 +1678,29 @@ def _database_name(metadata: dict[str, Any]) -> str:
 def _validate_restored_database(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
     is_v2 = expected.get("metadata_version") == 2
     compared_fields = sorted(expected)
-    comparison_actual = actual if is_v2 else {key: actual.get(key) for key in expected}
+    if is_v2:
+        comparison_actual = dict(actual)
+        expected_roles = expected.get("r1_role_matrix")
+        actual_roles = actual.get("r1_role_matrix")
+        database_owner = expected.get("database_owner")
+        if (
+            isinstance(database_owner, str)
+            and actual.get("database_owner") == database_owner
+            and isinstance(expected_roles, list)
+            and isinstance(actual_roles, list)
+            and all(isinstance(item, dict) for item in expected_roles)
+            and all(isinstance(item, dict) for item in actual_roles)
+            and all(item.get("role") != database_owner for item in expected_roles)
+            and sum(item.get("role") == database_owner for item in actual_roles) == 1
+        ):
+            # The first R1 v2 metadata shape did not observe the database
+            # owner in the role matrix.  Compare that one historical shape
+            # against current observations without weakening any other field.
+            comparison_actual["r1_role_matrix"] = [
+                item for item in actual_roles if item.get("role") != database_owner
+            ]
+    else:
+        comparison_actual = {key: actual.get(key) for key in expected}
     if comparison_actual != expected:
         differing = sorted(
             key
@@ -1728,6 +1758,10 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
     def _is_not_grantable(value: Any) -> bool:
         return value is False or value == "NO"
 
+    database_owner = metadata.get("database_owner")
+    if not isinstance(database_owner, str) or database_owner in R1_CONTROLLED_ROLES:
+        raise BackupError("restored R1 database owner is invalid")
+
     roles = _list("r1_role_matrix")
     role_names = [item.get("role") for item in roles]
     if any(not isinstance(role, str) for role in role_names):
@@ -1736,30 +1770,33 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
     if (
         len(role_name_set) != len(roles)
         or not set(R1_ROLES).issubset(role_name_set)
-        or not role_name_set.issubset(set(R1_CONTROLLED_ROLES))
+        or not role_name_set.issubset({*R1_CONTROLLED_ROLES, database_owner})
     ):
         raise BackupError("restored R1 role matrix is incomplete")
     active_roles = tuple(role for role in R1_CONTROLLED_ROLES if role in role_name_set)
     for item in roles:
         role = item.get("role")
+        is_database_owner = role == database_owner
         if (
             not isinstance(role, str)
             or not isinstance(item.get("login"), bool)
-            or (role != "ledgerbridge_backup" and item.get("login") is not True)
-            or item.get("superuser") is not False
-            or item.get("create_database") is not False
-            or item.get("create_role") is not False
-            or item.get("inherit") is not False
-            or item.get("replication") is not False
-            or item.get("bypass_rls") is not False
+            or (
+                not is_database_owner
+                and (
+                    (role != "ledgerbridge_backup" and item.get("login") is not True)
+                    or item.get("superuser") is not False
+                    or item.get("create_database") is not False
+                    or item.get("create_role") is not False
+                    or item.get("inherit") is not False
+                    or item.get("replication") is not False
+                    or item.get("bypass_rls") is not False
+                )
+            )
             or item.get("memberships") != []
         ):
             raise BackupError(f"restored R1 role matrix is privileged or non-isolated: {role}")
 
     database_acl = _list("r1_database_acl")
-    database_owner = metadata.get("database_owner")
-    if not isinstance(database_owner, str) or database_owner in R1_CONTROLLED_ROLES:
-        raise BackupError("restored R1 database owner is invalid")
     database_principals = {
         "PUBLIC",
         "pg_database_owner",
@@ -1839,9 +1876,9 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
             if privilege == "CREATE":
                 raise BackupError("restored R1 schema CREATE privilege is over-broad")
             raise BackupError("restored R1 schema ACL contains an excess grant")
-        if privilege == "CREATE" and grantee in database_principals:
-            raise BackupError("restored R1 schema CREATE privilege is over-broad")
         if privilege not in allowed_privileges:
+            if privilege == "CREATE":
+                raise BackupError("restored R1 schema CREATE privilege is over-broad")
             raise BackupError("restored R1 schema ACL contains an excess grant")
         if grantee not in {database_owner, "pg_database_owner"} and not _is_not_grantable(
             item.get("grantable")
