@@ -159,3 +159,37 @@ def test_alembic_url_escapes_config_interpolation() -> None:
     assert escape_alembic_ini_value("postgresql://user:p%ss@db/name") == (
         "postgresql://user:p%%ss@db/name"
     )
+
+
+def test_runner_manifest_and_verification_keys_need_separate_trust_domains(
+    tmp_path: Path,
+) -> None:
+    manifest_dir = tmp_path / "manifest"
+    keys_dir = tmp_path / "keys"
+    manifest_dir.mkdir()
+    keys_dir.mkdir()
+
+    with pytest.raises(ValidationError, match="separate deployment directories"):
+        Settings(
+            database_url="sqlite+pysqlite:///:memory:",
+            artifact_root=tmp_path.resolve(),
+            runner_manifest_path=manifest_dir / "manifest.json",
+            runner_verification_keys_path=manifest_dir / "keys.json",
+        )
+
+    with pytest.raises(ValidationError, match="separate deployment directories"):
+        Settings(
+            database_url="sqlite+pysqlite:///:memory:",
+            artifact_root=tmp_path.resolve(),
+            runner_manifest_path=manifest_dir / "manifest.json",
+            runner_verification_keys_path=manifest_dir / "nested" / "keys.json",
+        )
+
+    settings = Settings(
+        database_url="sqlite+pysqlite:///:memory:",
+        artifact_root=tmp_path.resolve(),
+        runner_manifest_path=manifest_dir / "manifest.json",
+        runner_verification_keys_path=keys_dir / "keys.json",
+    )
+    assert settings.runner_manifest_path == manifest_dir / "manifest.json"
+    assert settings.runner_verification_keys_path == keys_dir / "keys.json"

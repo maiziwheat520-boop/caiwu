@@ -18,6 +18,7 @@ EVIDENCE_WRITE: Final = "evidence:write"
 MAX_PROVIDER_LENGTH: Final = 64
 MAX_SUBJECT_LENGTH: Final = 200
 MAX_POLICY_GENERATION_LENGTH: Final = 100
+MAX_ACTOR_LENGTH: Final = 200
 MAX_PRINCIPAL_LIFETIME: Final = timedelta(hours=1)
 
 
@@ -49,6 +50,10 @@ class AuthenticatedPrincipal:
             for value in self.capabilities
         ):
             raise AuthenticatedPrincipalError("principal capabilities are invalid")
+        if "/" in self.provider or "/" in self.subject:
+            raise AuthenticatedPrincipalError("principal provider and subject must not contain /")
+        if len(self.provider) + 1 + len(self.subject) > MAX_ACTOR_LENGTH:
+            raise AuthenticatedPrincipalError("principal actor is too long")
         issued = _as_utc(self.issued_at)
         expires = _as_utc(self.expires_at)
         if expires <= issued or expires - issued > MAX_PRINCIPAL_LIFETIME:
@@ -102,15 +107,16 @@ class TrustedPrincipalMiddleware:
 
     async def __call__(self, scope: dict[str, object], receive: object, send: object) -> None:
         if scope.get("type") == "http":
+            state = scope.get("state")
+            state_map = dict(state) if isinstance(state, Mapping) else {}
+            state_map.pop("authenticated_principal", None)
             try:
                 principal = self.resolver(scope)
             except Exception:
                 principal = None
-            if principal is not None:
-                state = scope.get("state")
-                state_map = dict(state) if isinstance(state, Mapping) else {}
+            if isinstance(principal, AuthenticatedPrincipal):
                 state_map["authenticated_principal"] = principal
-                scope["state"] = state_map
+            scope["state"] = state_map
         await self.app(scope, receive, send)
 
 
@@ -118,7 +124,9 @@ def _require_text(field: str, value: object, maximum: int) -> None:
     if (
         not isinstance(value, str)
         or not value.strip()
+        or value != value.strip()
         or len(value) > maximum
+        or not all(character.isprintable() for character in value)
         or contains_unstorable_text(value)
     ):
         raise AuthenticatedPrincipalError(f"{field} is invalid")

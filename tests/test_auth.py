@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
 from fastapi import HTTPException, Request
@@ -96,6 +97,9 @@ def test_route_dependency_uses_typed_principal_and_rejects_raw_gateway_state() -
     [
         {"provider": ""},
         {"subject": "\x00bad"},
+        {"provider": "idp/tenant"},
+        {"subject": "user\nforged"},
+        {"provider": " user"},
         {"capabilities": {EVIDENCE_WRITE}},
         {"expires_at": datetime.now(UTC) + timedelta(hours=2)},
         {"issued_at": datetime.now()},
@@ -104,6 +108,13 @@ def test_route_dependency_uses_typed_principal_and_rejects_raw_gateway_state() -
 def test_principal_rejects_untrusted_shapes(changes: dict[str, object]) -> None:
     with pytest.raises(AuthenticatedPrincipalError):
         _principal(**changes)
+
+
+def test_principal_actor_boundary_is_enforced_before_route_admission() -> None:
+    valid = _principal(provider="p" * 64, subject="s" * 135)
+    assert len(valid.actor) == 200
+    with pytest.raises(AuthenticatedPrincipalError, match="actor is too long"):
+        _principal(provider="p" * 64, subject="s" * 136)
 
 
 @pytest.mark.asyncio
@@ -137,6 +148,53 @@ async def test_trusted_middleware_fails_closed_on_resolver_error() -> None:
         raise RuntimeError("gateway unavailable")
 
     await TrustedPrincipalMiddleware(app, resolver)(
-        {"type": "http", "state": {"untrusted": True}}, object(), object()
+        {
+            "type": "http",
+            "state": {"untrusted": True, "authenticated_principal": _principal()},
+        },
+        object(),
+        object(),
     )
     assert seen["state"] == {"untrusted": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resolver_result", [None])
+async def test_trusted_middleware_removes_stale_raw_principal(
+    resolver_result: None,
+) -> None:
+    seen: dict[str, object] = {}
+
+    async def app(scope: dict[str, object], _receive: object, _send: object) -> None:
+        seen.update(scope)
+
+    def resolver(_scope: Mapping[str, object]) -> None:
+        return resolver_result
+
+    await TrustedPrincipalMiddleware(app, resolver)(
+        {
+            "type": "http",
+            "state": {"authenticated_principal": "attacker"},
+        },
+        object(),
+        object(),
+    )
+    assert seen["state"] == {}
+
+
+@pytest.mark.asyncio
+async def test_trusted_middleware_rejects_invalid_resolver_return() -> None:
+    seen: dict[str, object] = {}
+
+    async def app(scope: dict[str, object], _receive: object, _send: object) -> None:
+        seen.update(scope)
+
+    def resolver(_scope: Mapping[str, object]) -> AuthenticatedPrincipal | None:
+        return cast(AuthenticatedPrincipal | None, object())
+
+    await TrustedPrincipalMiddleware(app, resolver)(
+        {"type": "http", "state": {"authenticated_principal": _principal()}},
+        object(),
+        object(),
+    )
+    assert seen["state"] == {}

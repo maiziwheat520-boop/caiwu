@@ -67,6 +67,20 @@ class Settings(BaseSettings):
             raise ValueError(
                 "runner_manifest_path and runner_verification_keys_path must be configured together"
             )
+        if self.runner_manifest_path is not None and self.runner_verification_keys_path is not None:
+            manifest_path = self.runner_manifest_path.resolve()
+            keys_path = self.runner_verification_keys_path.resolve()
+            manifest_root = manifest_path.parent
+            keys_root = keys_path.parent
+            if (
+                manifest_path == keys_path
+                or manifest_root == keys_root
+                or manifest_root.is_relative_to(keys_root)
+                or keys_root.is_relative_to(manifest_root)
+            ):
+                raise ValueError(
+                    "runner manifest and verification keys must use separate deployment directories"
+                )
         for field_name in ("runner_manifest_path", "runner_verification_keys_path"):
             value = getattr(self, field_name)
             if value is not None and not value.is_absolute():

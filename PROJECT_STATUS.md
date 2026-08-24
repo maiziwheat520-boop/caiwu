@@ -104,6 +104,19 @@ configured. It remains disabled by default; certificate/token verification,
 gateway deployment, rotation, and production enablement are not included. See
 `docs/tasks/2026-08-24-trusted-principal-middleware.md`.
 
+Sol Max's narrow auth + signed-manifest audit initially returned CHANGES
+REQUIRED with two MEDIUM findings (`SOL-A1` actor canonicalization and `SOL-M1`
+trust-domain separation) and one LOW finding (`SOL-A2` stale middleware state).
+The fixes are now implemented in `auth.py` and `config.py`, with focused
+regressions for control/format text, actor length/delimiter boundaries,
+resolver failure/invalid returns, and manifest/key directory ancestry. Local
+verification is `314 passed / 149 skipped / 1 warning`, with ruff, strict mypy,
+offline lock, and diff checks green. The response is recorded in
+`docs/reviews/2026-08-24-sol-max-auth-manifest-remediation-codex.md`; the branch
+still requires hosted CI and a fresh Sol Max PASS before any merge or
+deployment. Production Hermes, real gateway, signed generation, Connector, and
+OAuth remain disabled.
+
 The preceding implementation head `b453874` passed push run `32648931938` and
 pull-request run `32648934569` across `secrets`, `quality`, and `compose`; the
 Phase 5 persistence commit has also passed the local and isolated Hermes gates
