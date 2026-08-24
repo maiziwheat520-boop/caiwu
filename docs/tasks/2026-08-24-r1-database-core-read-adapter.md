@@ -43,6 +43,30 @@
 - Windows full suite is **494 passed / 190 skipped / 1 warning**. Safe branch
   `ai/chatgpt/r1-core-reader-cursor` was pushed; hosted CI is the remaining gate.
 
+## 2026-08-25 final local verification
+
+- Fixed implementation head is `c61825e`. Sol's independent short recheck of
+  `0014`, `0015`, the migration chain, and the CI/bootstrap delta found no
+  validated BLOCKER/HIGH/MEDIUM. The recheck does not authorize merge,
+  production role migration, reader bootstrap, or real-data access.
+- The database reader now has immutable entity/business-unit bindings,
+  canonical signed cursor and audit-horizon binding, candidate entity/scope
+  revalidation, and reconciliation entity/business-unit/month revalidation;
+  multiple-scope union remains fail closed. The backup verifier covers the
+  optional backup role, memberships, owners, object/default ACLs, internal-read
+  privileges, and the narrowly allowed database-owner schema-creation case.
+- Windows R1 migration regression: **49 passed** against disposable WSL
+  PostgreSQL **18.6**. A separate CI-like Linux/WSL run against PostgreSQL
+  18.6 produced **696 passed / 1 warning** and **91.36%** coverage
+  (`6860` statements, `593` missed), passing the unchanged
+  `--cov-fail-under=90` gate. Full Alembic head→base→head and the focused
+  backup/reader/R1 run (**59 passed / 40 skipped**) also passed.
+- PG18.6 is not PG15; no latest-HEAD Hosted PG15 result is claimed. Earlier
+  hosted runs failed only at the unchanged coverage step, and no threshold or
+  coverage bypass was added. Production mTLS, reader bootstrap, S1 decryptor,
+  scoped ledger aggregate, Hermes/real-data replay, and enablement remain
+  explicitly closed.
+
 ## 未闭环 gate
 
 生产 mTLS verifier、签名 cursor key、reader bootstrap、S1 解密器、ledger scoped
