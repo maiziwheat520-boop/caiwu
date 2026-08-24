@@ -41,6 +41,41 @@ def test_artifact_quota_defaults_are_production_safe(tmp_path: Path) -> None:
         )
 
 
+def test_mail_provider_defaults_disabled_and_bounded(tmp_path: Path) -> None:
+    settings = Settings(
+        database_url="sqlite+pysqlite:///:memory:", artifact_root=tmp_path.resolve()
+    )
+    assert settings.mail_provider == "disabled"
+    assert settings.mail_max_messages == 100
+    assert settings.mail_graph_page_size == 20
+    assert settings.mail_timeout_seconds == 30.0
+
+    enabled = Settings(
+        database_url="sqlite+pysqlite:///:memory:",
+        artifact_root=tmp_path.resolve(),
+        mail_provider="microsoft_graph",
+        mailbox_id="ops@example.test",
+    )
+    assert enabled.mailbox_id == "ops@example.test"
+
+    with pytest.raises(ValidationError, match="mailbox_id"):
+        Settings(
+            database_url="sqlite+pysqlite:///:memory:",
+            artifact_root=tmp_path.resolve(),
+            mail_provider="microsoft_graph",
+        )
+
+    with pytest.raises(ValidationError, match="remains disabled"):
+        Settings(
+            env="production",
+            runtime_role="api",
+            api_database_url="postgresql://ledgerbridge_api@db/app",
+            artifact_root=tmp_path.resolve(),
+            mail_provider="microsoft_graph",
+            mailbox_id="ops@example.test",
+        )
+
+
 def test_database_role_urls_fallback_outside_production_and_split_in_production(
     tmp_path: Path,
 ) -> None:

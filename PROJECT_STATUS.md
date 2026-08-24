@@ -49,6 +49,15 @@ gated.
 Hosted CI for the prior documentation heads was green across `secrets`,
 `quality`, and `compose`; those run IDs remain historical evidence.
 
+Phase 4 framework work is now implemented on the Codex review branch. The
+mailbox provider is an injected, bounded Microsoft Graph adapter with no token
+storage or network client; the Connector registry accepts only an explicit
+factory tuple and remains empty by default. Settings keep the provider disabled
+and production rejects the provider until authentication and signed-manifest
+gates are separately approved. No real OAuth, mailbox, parser, financial
+evidence, or production behavior was added. The task card and contract evidence
+are in `docs/tasks/2026-08-24-phase-4-mail-connector-framework.md`.
+
 The preceding implementation head `b453874` passed push run `32648931938` and
 pull-request run `32648934569` across `secrets`, `quality`, and `compose`.
 The migration's two controlled-role B608 reports were removed by using fixed
@@ -270,14 +279,13 @@ in an isolated Hermes project; no evidence was ingested.
 
 ## Next task
 
-Review protected PR #18 at the new implementation head, including the bounded
-multipart adapter, async operation/status contract, worker claim loop, runner
-composition root, and migration `20260823_0006`. The default manifest and
-Connector registry stay empty. Next gates are signed-manifest/key custody,
-provider/source ownership, production role-password rollout, and a narrow
-Claude audit. Merge, production role migration, feature-flag enablement,
-real Connector registration, evidence ingestion, and mail collection each
-require distinct later authorization.
+Audit the Phase 4 mailbox/provider and explicit Connector factory boundaries,
+then design the first synthetic connector fixtures. The default manifest and
+registry stay empty. Next gates are signed-manifest/key custody, trusted OAuth,
+provider/source ownership, real parser samples, and a narrow Claude audit.
+Merge, production role migration, feature-flag enablement, real Connector
+registration, evidence ingestion, and mail collection each require distinct
+later authorization.
 
 ## Blocking decisions
 

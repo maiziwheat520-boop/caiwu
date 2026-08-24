@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     dispatch_max_attempts: int = Field(default=5, gt=0, le=16)
     dispatch_poll_seconds: float = Field(default=1.0, gt=0, le=60)
     runner_socket_path: str = "/run/ledgerbridge-connector/runner.sock"
+    mail_provider: Literal["disabled", "microsoft_graph"] = "disabled"
+    mailbox_id: str | None = Field(default=None, min_length=1, max_length=500)
+    mail_folder: str = Field(default="inbox", min_length=1, max_length=500)
+    mail_max_messages: int = Field(default=100, gt=0, le=100)
+    mail_graph_page_size: int = Field(default=20, gt=0, le=50)
+    mail_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
 
     @field_validator("artifact_root")
     @classmethod
@@ -47,6 +53,9 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def production_requires_split_database_roles(self) -> "Settings":
+        if self.mail_provider == "microsoft_graph" and not self.mailbox_id:
+            raise ValueError("mailbox_id is required when mail_provider=microsoft_graph")
+
         if self.runtime_role == "migrate":
             if not self.database_url:
                 raise ValueError("database_url is required for the migrate runtime role")
@@ -63,6 +72,10 @@ class Settings(BaseSettings):
             raise ValueError("production API and worker database URLs must differ")
 
         if self.env == "production":
+            if self.mail_provider != "disabled":
+                raise ValueError(
+                    "production mail provider remains disabled until auth and manifest gates"
+                )
             if "runtime_role" not in self.model_fields_set:
                 raise ValueError("production runtime_role must be explicit")
             role_urls: list[tuple[str, str | None]] = []
