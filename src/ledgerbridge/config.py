@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     internal_read_backend: Literal["synthetic", "database"] = "synthetic"
     internal_read_cursor_key: str | None = Field(default=None, min_length=32, max_length=256)
     enable_internal_read_persistent_audit: bool = False
+    enable_internal_read_persistent_receipt: bool = False
     enable_review_api: bool = False
     enable_real_ingest: bool = False
     internal_read_policy_generation: int | None = Field(default=None, ge=1)
@@ -97,6 +98,18 @@ class Settings(BaseSettings):
                 )
             if not self.enable_internal_read_api:
                 raise ValueError("persistent internal read audit requires the internal read API")
+        if self.enable_internal_read_persistent_receipt:
+            if self.env == "production":
+                raise ValueError(
+                    "production internal read persistent receipt remains unavailable "
+                    "until the R1 operational gate"
+                )
+            if not self.enable_internal_read_api:
+                raise ValueError("persistent internal read receipt requires the internal read API")
+            if self.internal_read_backend != "database":
+                raise ValueError(
+                    "persistent internal read receipt requires the database reader backend"
+                )
         if self.mail_provider == "microsoft_graph" and not self.mailbox_id:
             raise ValueError("mailbox_id is required when mail_provider=microsoft_graph")
 

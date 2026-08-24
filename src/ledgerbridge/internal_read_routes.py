@@ -27,7 +27,9 @@ from ledgerbridge.internal_read_audit import (
     AuditSinkUnavailable,
     EvidenceReadAuditEvent,
     InternalReadAuditSink,
+    InternalReadReceiptSink,
     get_internal_read_audit_sink,
+    get_internal_read_receipt_sink,
 )
 from ledgerbridge.internal_read_auth import get_internal_read_principal
 from ledgerbridge.internal_read_contract import (
@@ -172,6 +174,9 @@ def require_internal_read_api(
 
 def get_synthetic_internal_read_service(
     settings: Annotated[Settings, Depends(get_settings)],
+    receipt_sink: Annotated[
+        InternalReadReceiptSink | None, Depends(get_internal_read_receipt_sink)
+    ],
 ) -> SyntheticInternalReadService | DatabaseInternalReadService:
     if settings.internal_read_backend == "database":
         cursor_key = settings.internal_read_cursor_key
@@ -180,6 +185,7 @@ def get_synthetic_internal_read_service(
         return DatabaseInternalReadService(
             get_session_factory(settings.resolved_reader_database_url()),
             ReadCursorSigner(cursor_key),
+            receipt_sink=receipt_sink,
         )
     return SyntheticInternalReadService()
 

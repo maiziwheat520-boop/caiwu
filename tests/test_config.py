@@ -98,6 +98,24 @@ def test_internal_read_api_is_generation_bound_and_reader_url_is_explicit(tmp_pa
             internal_read_policy_generation=7,
         )
 
+    with pytest.raises(ValidationError, match="requires the database reader backend"):
+        Settings(
+            database_url="sqlite+pysqlite:///:memory:",
+            artifact_root=tmp_path.resolve(),
+            enable_internal_read_api=True,
+            internal_read_policy_generation=7,
+            enable_internal_read_persistent_receipt=True,
+        )
+
+    with pytest.raises(ValidationError, match="production internal read persistent receipt"):
+        Settings(
+            env="production",
+            runtime_role="api",
+            api_database_url="postgresql://ledgerbridge_api@db/app",
+            artifact_root=tmp_path.resolve(),
+            enable_internal_read_persistent_receipt=True,
+        )
+
 
 def test_mail_provider_defaults_disabled_and_bounded(tmp_path: Path) -> None:
     settings = Settings(

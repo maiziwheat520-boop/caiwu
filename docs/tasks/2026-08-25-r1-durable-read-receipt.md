@@ -16,6 +16,16 @@ and production compositions unchanged.
 - `DatabaseInternalReadReceiptSink` invokes the fixed Migration 0015 function
   `internal_read.append_internal_evidence_read_audit` with positional arguments,
   converts the digest to `bytea`, and commits only after a returned audit id.
+- Migration 0015 makes that function a trusted-writer endpoint: only
+  `ledgerbridge_api` receives `internal_read` schema `USAGE` and the exact
+  receipt-function `EXECUTE` grant. `ledgerbridge_reader` has no receipt
+  `EXECUTE`, and the API role has no direct receipt-table or fact-table write
+  grant. The function remains `SECURITY DEFINER` with a fixed
+  `search_path`, so principal, SAN, and policy-generation parameters are
+  writer assertions rather than claims a database reader can manufacture.
+- The receipt sink's session factory must therefore use the authenticated API
+  writer connection. The database ACL is the enforcement boundary; comments,
+  test doubles, and caller-supplied identity fields are not authorization.
 - `DatabaseInternalReadService` appends the receipt after successful decryption
   and digest verification, before returning content. Sink exceptions fail closed
   as `InternalReadBackendUnavailable`.
@@ -29,7 +39,8 @@ uv run --frozen --extra dev mypy
 Success: no issues found in 41 source files
 ```
 
-The sink is not wired into the default HTTP route or production settings. A
-future production enablement still requires a real KeyProvider, reader
-bootstrap, mTLS verifier, PostgreSQL 15 replay, and an independent security
-review.
+The sink is not enabled by default or in production. A test-only database
+route may opt in with `enable_internal_read_persistent_receipt`; the API writer
+sink is then injected while the reader role remains read-only. A future
+production enablement still requires a real KeyProvider, reader bootstrap,
+mTLS verifier, PostgreSQL 15 replay, and an independent security review.
