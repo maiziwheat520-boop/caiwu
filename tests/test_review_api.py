@@ -17,6 +17,13 @@ from ledgerbridge.main import (
     require_review_api,
 )
 from ledgerbridge.models import ReviewItem, ReviewItemKind
+from ledgerbridge.reconciliation import (
+    DedupDecision,
+    DedupRecord,
+    DedupResult,
+    ExternalTransactionIdentity,
+    TransactionFingerprint,
+)
 from ledgerbridge.review_service import ReviewConflict, ReviewNotFound, ReviewService
 
 
@@ -215,6 +222,49 @@ def test_review_service_reconciliation_and_suspense_branches() -> None:
             decision="REJECTED",
             reason="missing child",
         )
+
+
+def test_dedup_review_is_idempotent_by_opaque_candidate_key() -> None:
+    record = DedupRecord(
+        "row-1",
+        TransactionFingerprint(datetime(2026, 8, 24, tzinfo=UTC).date(), 500),
+        ExternalTransactionIdentity("bank_cn", "assets:bank", "tx-1"),
+    )
+    result = DedupResult(DedupDecision.NEEDS_REVIEW, "EXTERNAL_ID_CONFLICT", "row-0")
+    session = _FakeSession()
+    service = ReviewService(_FakeSessions(session))  # type: ignore[arg-type]
+
+    created_id = service.create_dedup_review(
+        record,
+        result,
+        actor="worker",
+        reason="concurrent candidate match",
+    )
+    assert isinstance(created_id, UUID)
+    assert len(session.added) == 1
+    created = session.added[0]
+    assert isinstance(created, ReviewItem)
+    assert created.kind == ReviewItemKind.DEDUP.value
+    assert created.candidate_key is not None
+    assert len(created.candidate_key) == 64
+    with pytest.raises(ValueError, match="only valid for DEDUP"):
+        service.create_review_item(
+            kind=ReviewItemKind.RECONCILIATION,
+            summary="wrong candidate key kind",
+            payload={},
+            actor="worker",
+            reason="invalid",
+            candidate_key=created.candidate_key,
+        )
+    assert (
+        service.create_dedup_review(
+            record,
+            DedupResult(DedupDecision.DUPLICATE, "EXTERNAL_ID_MATCH", "row-0"),
+            actor="worker",
+            reason="duplicate does not need review",
+        )
+        is None
+    )
 
     suspense_item = _open_item(ReviewItemKind.SUSPENSE.value)
     suspense = type(

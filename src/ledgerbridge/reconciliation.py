@@ -132,6 +132,30 @@ class DedupResult:
     matched_record_locator: str | None = None
 
 
+def dedup_candidate_key(record: DedupRecord, result: DedupResult) -> str:
+    """Return a stable opaque key for one reviewable candidate conflict."""
+
+    if result.decision is not DedupDecision.NEEDS_REVIEW:
+        raise Phase5Error("only reviewable dedup results have candidate keys")
+    payload = {
+        "account_key": record.external_identity.account_key
+        if record.external_identity is not None
+        else None,
+        "external_transaction_id": record.external_identity.external_transaction_id
+        if record.external_identity is not None
+        else None,
+        "fingerprint": record.fingerprint.digest_hex,
+        "matched_record_locator": result.matched_record_locator,
+        "reason": result.reason,
+        "record_locator": record.record_locator,
+        "source_system": record.external_identity.source_system
+        if record.external_identity is not None
+        else None,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 class DedupIndex:
     """In-memory decision index with no delete or overwrite operation."""
 

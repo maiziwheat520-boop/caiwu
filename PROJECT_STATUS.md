@@ -308,8 +308,8 @@ in an isolated Hermes project; no evidence was ingested.
 ## Next task
 
 Audit the Phase 4 mailbox/provider and Phase 5 dedup/reconciliation/Suspense
-contracts, then connect the concurrent candidate admission boundary to a persisted
-candidate/Review API slice.
+contracts, including the persisted candidate-key Review boundary, then prepare the
+narrow independent Claude audit.
 The default manifest and registry stay empty. Next gates are signed-manifest/key
 custody, trusted OAuth, provider/source ownership, concurrent candidate matching,
 real parser samples, and a narrow Claude audit.
