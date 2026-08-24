@@ -137,6 +137,7 @@ def _metadata_row() -> dict[str, Any]:
     ciphertext_sha256 = b"c" * 32
     return {
         "evidence_ref": UUID("20000000-0000-4000-8000-000000000001"),
+        "blob_ref": UUID("30000000-0000-4000-8000-000000000001"),
         "entity_id": ENTITY,
         "business_unit_id": BUSINESS_UNIT,
         "business_unit_ref": "unit-demo-a",
@@ -339,6 +340,7 @@ def test_database_evidence_decryptor_returns_verified_content(tmp_path: Any) -> 
         {},
         evidence_row={
             "evidence_ref": evidence_ref,
+            "blob_ref": UUID("30000000-0000-4000-8000-000000000001"),
             "entity_id": ENTITY,
             "business_unit_id": BUSINESS_UNIT,
             "business_unit_ref": "unit-demo-a",
@@ -367,6 +369,64 @@ def test_database_evidence_decryptor_returns_verified_content(tmp_path: Any) -> 
     result = service.get_evidence(_principal(), evidence_ref)
     assert result.content == b"verified-evidence"
     assert result.filename == "receipt.bin"
+
+
+def test_database_evidence_receipt_is_required_before_returning_content(tmp_path: Any) -> None:
+    from ledgerbridge.keyring import SyntheticKeyProvider
+
+    provider = SyntheticKeyProvider({"test": b"k" * 32}, active_generation="test")
+    cipher = SecretStreamCipher(provider, chunk_size=17)
+    durable = ArtifactStore(tmp_path.resolve(), max_bytes=1_000_000)
+    encrypted = EncryptedArtifactStore(durable, cipher, max_plaintext_bytes=1_000)
+    published = encrypted.publish(io.BytesIO(b"verified-evidence"))
+    with durable.open_verified(published.ciphertext) as ciphertext_stream:
+        envelope = _parse_envelope(ciphertext_stream.read())
+    row = _metadata_row()
+    row.update(
+        {
+            "object_ref": published.object_ref,
+            "plaintext_sha256": published.plaintext_sha256,
+            "plaintext_size": published.plaintext_size,
+            "ciphertext_sha256": published.ciphertext.sha256,
+            "ciphertext_size": published.ciphertext.byte_size,
+            "storage_key": published.ciphertext.storage_key,
+            "chunk_size": envelope.header.chunk_size,
+            "stream_header": envelope.header.stream_header,
+            "wrapped_key_generation": envelope.header.wrapped_key.generation,
+            "wrapped_key_nonce": envelope.header.wrapped_key.nonce,
+            "wrapped_key_ciphertext": envelope.header.wrapped_key.ciphertext,
+        }
+    )
+
+    class Sink:
+        def __init__(self) -> None:
+            self.receipts: list[Any] = []
+
+        def append(self, receipt: Any) -> None:
+            self.receipts.append(receipt)
+
+    sink = Sink()
+    service = DatabaseInternalReadService(
+        lambda: cast(Session, _Session({}, evidence_row=row)),
+        encrypted_artifact_store=encrypted,
+        receipt_sink=cast(Any, sink),
+    )
+    result = service.get_evidence(_principal(), row["evidence_ref"])
+    assert result.content == b"verified-evidence"
+    assert sink.receipts[0].blob_ref == row["blob_ref"]
+    assert sink.receipts[0].key_generation == "test"
+
+    class FailingSink:
+        def append(self, _receipt: Any) -> None:
+            raise RuntimeError("receipt unavailable")
+
+    failing = DatabaseInternalReadService(
+        lambda: cast(Session, _Session({}, evidence_row=row)),
+        encrypted_artifact_store=encrypted,
+        receipt_sink=cast(Any, FailingSink()),
+    )
+    with pytest.raises(InternalReadBackendUnavailable, match="receipt"):
+        failing.get_evidence(_principal(), row["evidence_ref"])
 
 
 def test_database_evidence_rejects_envelope_descriptor_drift(tmp_path: Any) -> None:
