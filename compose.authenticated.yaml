@@ -1,7 +1,7 @@
 services:
   web:
     image: python@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
-    container_name: ledgerbridge-web-preview
+    container_name: ledgerbridge-web-auth-preview
     restart: unless-stopped
     user: "${LEDGERBRIDGE_WEB_UID:-1000}:${LEDGERBRIDGE_WEB_GID:-1000}"
     read_only: true
@@ -38,7 +38,7 @@ services:
     tmpfs:
       - /tmp:size=16m,mode=1777
     ports:
-      - "127.0.0.1:${LEDGERBRIDGE_WEB_PORT:-8780}:8080"
+      - "127.0.0.1:${LEDGERBRIDGE_WEB_PORT:-8781}:8080"
     healthcheck:
       test:
         - CMD

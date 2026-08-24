@@ -49,12 +49,23 @@ class AuthStoreTests(unittest.TestCase):
         payload = self.store.session_payload(session.token)
         self.assertIsNotNone(payload)
         self.assertTrue(self.store.validate_csrf(session.token, payload["csrf_token"]))  # type: ignore[index]
+        self.assertTrue(self.store.validate_csrf(session.token, session.csrf_token))
+        second_payload = self.store.session_payload(session.token)
+        self.assertIsNotNone(second_payload)
+        self.assertTrue(self.store.validate_csrf(session.token, payload["csrf_token"]))  # type: ignore[index]
+        self.assertFalse(self.store.validate_csrf(session.token, session.csrf_token))
         self.assertFalse(self.store.validate_csrf(session.token, "wrong"))
         with self.store.connection() as connection:
             stored = bytes(connection.execute("SELECT token_hash FROM auth_sessions").fetchone()[0])
         self.assertNotEqual(stored, session.token.encode())
         self.store.revoke_all_sessions()
         self.assertIsNone(self.store.session_payload(session.token, rotate_csrf=False))
+
+    def test_missing_auth_state_fails_closed_on_reopen(self) -> None:
+        with self.store.connection() as connection:
+            connection.execute("DELETE FROM auth_state")
+        with self.assertRaisesRegex(RuntimeError, "authentication state row is missing"):
+            AuthStore(self.database)
 
 
 class AuthManagerTests(unittest.TestCase):

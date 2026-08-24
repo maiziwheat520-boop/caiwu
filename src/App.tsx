@@ -606,6 +606,7 @@ function AuthScreen({ status, onAuthenticated, onRecoveryCancelled }: {
             {firstSetup ? <><label htmlFor="setup-code">首次设置码</label><TextField.Root id="setup-code" type="password" autoComplete="one-time-code" value={setupCode} onChange={(event) => setSetupCode(event.target.value)} aria-describedby={error ? 'auth-error' : undefined} /></> : null}
             {error ? <div className="auth-error" id="auth-error" role="alert"><Warning size={17} />{error}</div> : null}
             <Button type="submit" disabled={(firstSetup && !setupCode) || (!firstSetup && !recoverySetupResult?.csrf_token) || busy}><Fingerprint size={18} />{busy ? '正在创建' : firstSetup ? '创建通行密钥' : recoverySetupResult?.csrf_token ? '创建新的通行密钥' : '正在恢复安全会话'}</Button>
+            {!firstSetup ? <p className="auth-inline-status">退出会保留恢复锁定，并需要使用另一枚恢复码才能继续。</p> : null}
             {!firstSetup ? <Button type="button" variant="outline" disabled={busy || !recoverySetupResult?.csrf_token} onClick={() => void cancelRecoverySession()}>退出本次恢复会话</Button> : null}
           </form>
         </section>

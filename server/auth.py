@@ -33,7 +33,7 @@ from webauthn.helpers.structs import (
 )
 
 
-AUTH_SCHEMA_VERSION = 1
+AUTH_SCHEMA_VERSION = 2
 SESSION_LIFETIME = timedelta(hours=12)
 CEREMONY_LIFETIME_SECONDS = 300
 MAX_ACTIVE_CEREMONIES = 128
@@ -131,6 +131,10 @@ class AuthStore:
             versions = [int(row[0]) for row in connection.execute("SELECT version FROM auth_schema")]
             if any(version != AUTH_SCHEMA_VERSION for version in versions):
                 raise RuntimeError("unsupported authentication schema version")
+            if not versions and connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auth_user'"
+            ).fetchone():
+                raise RuntimeError("authentication schema metadata is missing")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS auth_user (
@@ -170,6 +174,7 @@ class AuthStore:
                 CREATE TABLE IF NOT EXISTS auth_sessions (
                     token_hash BLOB PRIMARY KEY,
                     csrf_hash BLOB NOT NULL,
+                    previous_csrf_hash BLOB,
                     created_at TEXT NOT NULL,
                     expires_at INTEGER NOT NULL,
                     authenticated_with TEXT NOT NULL
@@ -185,14 +190,16 @@ class AuthStore:
                 ) STRICT
                 """
             )
-            connection.execute(
-                "INSERT OR IGNORE INTO auth_state(singleton, auth_epoch, recovery_pending) VALUES (1, 0, 0)"
-            )
             if not versions:
+                connection.execute(
+                    "INSERT INTO auth_state(singleton, auth_epoch, recovery_pending) VALUES (1, 0, 0)"
+                )
                 connection.execute(
                     "INSERT INTO auth_schema(version, applied_at) VALUES (?, ?)",
                     (AUTH_SCHEMA_VERSION, _utc_iso()),
                 )
+            elif connection.execute("SELECT 1 FROM auth_state WHERE singleton = 1").fetchone() is None:
+                raise RuntimeError("authentication state row is missing")
             connection.commit()
         except BaseException:
             connection.rollback()
@@ -486,7 +493,7 @@ class AuthStore:
             csrf_token = secrets.token_urlsafe(32)
             if rotate_csrf:
                 connection.execute(
-                    "UPDATE auth_sessions SET csrf_hash = ? WHERE token_hash = ?",
+                    "UPDATE auth_sessions SET previous_csrf_hash = csrf_hash, csrf_hash = ? WHERE token_hash = ?",
                     (_token_hash(csrf_token), digest),
                 )
             connection.commit()
@@ -504,10 +511,17 @@ class AuthStore:
     def validate_csrf(self, token: str, csrf_token: str) -> bool:
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT csrf_hash FROM auth_sessions WHERE token_hash = ? AND expires_at > ?",
+                "SELECT csrf_hash, previous_csrf_hash FROM auth_sessions WHERE token_hash = ? AND expires_at > ?",
                 (_token_hash(token), int(time.time())),
             ).fetchone()
-        return bool(row and hmac.compare_digest(bytes(row[0]), _token_hash(csrf_token)))
+        digest = _token_hash(csrf_token)
+        return bool(
+            row
+            and (
+                hmac.compare_digest(bytes(row[0]), digest)
+                or (row[1] is not None and hmac.compare_digest(bytes(row[1]), digest))
+            )
+        )
 
     def session_method(self, token: str) -> str | None:
         with self.connection() as connection:

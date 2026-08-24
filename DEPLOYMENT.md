@@ -55,6 +55,8 @@ docker compose down
 
 WebAuthn 不能在普通局域网 IP 的 HTTP 页面工作。Passkey 模式必须通过固定域名的 HTTPS 反向代理访问，并把 RP ID 和 exact origin 固定为部署配置，不能从请求头动态推导。
 
+认证容器默认只监听主机回环 `127.0.0.1:8781`，与仍可保留的无认证合成预览 `8780` 分离。
+
 1. 将 linux/amd64 wheelhouse 同步到 `wheelhouse/`，离线安装到只读挂载的 `vendor/`：
 
    ```bash
