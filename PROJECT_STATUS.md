@@ -26,7 +26,7 @@ local immutable snapshots, deferred scope checks, and owner-only append-only
 tables. They create no reader role, views, grants, or production read path. The
 R1 branch CI coverage floor is temporarily 90% while
 the synthetic contract grows its database-backed implementation tests; the
-latest Linux/PostgreSQL replay passed 612 tests with 91.53% coverage. This is a
+latest Linux/PostgreSQL replay passed 615 tests, 1 skipped, with 91.53% coverage. This is a
 test-policy detail only and does not authorize production enablement. See
 `docs/tasks/2026-08-24-r1-migration-a-candidate-evidence.md` and
 `docs/tasks/2026-08-24-r1-migration-b-ledger-reconciliation.md`.

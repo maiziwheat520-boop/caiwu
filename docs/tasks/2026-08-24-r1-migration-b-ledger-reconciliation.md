@@ -15,12 +15,14 @@
   固定 audit watermark、`PRIMARY_LEG` 金额基准和本地 scope/month revision。
 - 所有新表只 revoke 权限，不授予 API/worker/app/reader；尚未创建 snapshot builder、
   writer command 或 reader view。
+- `posting_attribution` 的 POSTED 不可变保护按触发器操作类型分别读取 `OLD`/`NEW`，
+  避免 INSERT 路径访问未赋值的 `OLD` 记录。
 
 ## 验证
 
 - WSL disposable PostgreSQL：完整 `0011→0013`、降级回 `0011`、再升级到 head 通过。
-- 新增 migration contract tests、Ruff 和 Python compile 通过；Windows 全量在
-  Migration A 后为 `466 passed / 149 skipped / 1 warning`。
+- Linux/WSL PostgreSQL 完整回归：`615 passed / 1 skipped / 1 warning`，覆盖率
+  `91.53%`（门槛 `90%`）；Ruff、strict mypy、Migration A/B contract tests 通过。
 
 ## 未做事项
 
