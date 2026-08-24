@@ -26,6 +26,7 @@ class _Session(AbstractContextManager["_Session"]):
     def __init__(self) -> None:
         self.committed = False
         self.params: dict[str, object] = {}
+        self.statement: object | None = None
 
     def __enter__(self) -> _Session:
         return self
@@ -37,6 +38,7 @@ class _Session(AbstractContextManager["_Session"]):
         self.committed = True
 
     def execute(self, _statement: object, params: dict[str, object]) -> _Result:
+        self.statement = _statement
         self.params = params
         return _Result()
 
@@ -125,6 +127,8 @@ def test_database_receipt_sink_calls_allowlisted_function_and_commits() -> None:
     assert session.committed is True
     assert session.params["principal_ref"] == "workload:r1-audit-test"
     assert session.params["policy_generation"] == "policy-11"
+    assert ":policy_generation" in str(session.statement)
+    assert ":key_generation" not in str(session.statement)
     assert session.params["blob_ref"] == UUID("30000000-0000-4000-8000-000000000001")
     assert session.params["sha256"] == bytes.fromhex("aa" * 32)
 
