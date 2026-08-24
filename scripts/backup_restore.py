@@ -286,6 +286,7 @@ R1_INTERNAL_READ_FUNCTIONS = (
     "list_candidates_as_of",
     "get_reconciliation_as_of",
     "resolve_active_evidence_blob",
+    "get_ledger_summary_as_of",
     "append_internal_evidence_read_audit",
 )
 R1_SECURITY_REVISION = "20260824_0015"
