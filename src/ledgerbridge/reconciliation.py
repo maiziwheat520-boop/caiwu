@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import date
 from enum import StrEnum
+from threading import RLock
 from uuid import UUID
 
 from ledgerbridge.connectors import CANONICAL_SOURCE_PATTERN
@@ -189,6 +190,54 @@ class DedupIndex:
         if record.external_identity is not None:
             self._by_external[record.external_identity] = record
         return result
+
+
+class ConcurrentDedupIndex:
+    """Atomic candidate-admission boundary for concurrent importer workers.
+
+    ``DedupIndex.classify()`` and ``register()`` are intentionally separate for
+    pure, single-threaded callers.  Import workers need one operation that cannot
+    interleave the classify/register pair: exactly one concurrent copy may be
+    admitted, while equivalent copies are duplicates and conflicting copies stay
+    reviewable.  The lock is process-local; a database unique constraint remains
+    the durable cross-process boundary.
+    """
+
+    def __init__(self, records: Iterable[DedupRecord] = ()) -> None:
+        self._index = DedupIndex(records)
+        self._lock = RLock()
+
+    @property
+    def record_count(self) -> int:
+        with self._lock:
+            return self._index.record_count
+
+    def classify(self, record: DedupRecord) -> DedupResult:
+        """Return a snapshot decision without admitting the record."""
+
+        with self._lock:
+            return self._index.classify(record)
+
+    def admit(self, record: DedupRecord) -> DedupResult:
+        """Classify and, only for ``NEW``, register atomically."""
+
+        with self._lock:
+            result = self._index.classify(record)
+            if result.decision is DedupDecision.NEW:
+                self._index.register(record)
+            return result
+
+    def admit_many(self, records: Iterable[DedupRecord]) -> tuple[DedupResult, ...]:
+        """Admit a bounded caller batch under one lock, preserving input order."""
+
+        with self._lock:
+            results: list[DedupResult] = []
+            for record in records:
+                result = self._index.classify(record)
+                if result.decision is DedupDecision.NEW:
+                    self._index.register(record)
+                results.append(result)
+            return tuple(results)
 
 
 @dataclass(frozen=True, slots=True)
