@@ -123,7 +123,9 @@ def _has_db_privilege(connection: Connection, role: str, privilege: str) -> bool
     )
 
 
-def _append_audit_event(connection: Connection, action: str) -> UUID:
+def _append_audit_event(
+    connection: Connection, action: str, payload: dict[str, object]
+) -> UUID:
     value = connection.execute(
         text(
             "SELECT public.append_audit_event(:actor, :action, :reason, :rule_version, "
@@ -132,9 +134,9 @@ def _append_audit_event(connection: Connection, action: str) -> UUID:
         {
             "actor": "r1-test",
             "action": action,
-            "reason": "Migration C isolated integration fixture",
-            "rule_version": "r1-test-v1",
-            "payload": "{}",
+            "reason": "R1 isolated integration fixture",
+            "rule_version": "r1-test-v2",
+            "payload": json.dumps(payload, separators=(",", ":")),
         },
     ).scalar_one()
     return cast(UUID, value)
@@ -165,7 +167,15 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
         ),
         {"id": business_unit_id, "entity": entity_id},
     )
-    evidence_event = _append_audit_event(connection, "r1.evidence.create")
+    evidence_event = _append_audit_event(
+        connection,
+        "evidence.object.create",
+        {
+            "evidence_ref": str(evidence_ref),
+            "entity_id": str(entity_id),
+            "business_unit_id": str(business_unit_id),
+        },
+    )
     connection.execute(
         text(
             "INSERT INTO public.evidence_object "
@@ -377,6 +387,71 @@ def test_r1_migration_b_keeps_attribution_and_snapshot_facts_owner_written() -> 
     assert "v_posting_id := OLD.posting_id" in source
     assert "v_posting_id := NEW.posting_id" in source
     assert "COALESCE(NEW.posting_id, OLD.posting_id)" not in source
+
+
+def test_r1_fact_hardening_binds_legacy_facts_and_rejects_bad_history() -> None:
+    source = MIGRATION_HARDENING.read_text(encoding="utf-8")
+    assert 'revision: str = "20260824_0014"' in source
+    assert 'down_revision: str | None = "20260824_0013"' in source
+    for literal in (
+        "encrypted_object_identity",
+        "fk_encrypted_blob_object_identity",
+        "candidate_entity_id",
+        "evidence_business_unit_id",
+        "candidate evidence scope cannot be inferred",
+        "candidate event audit binding is invalid",
+        "candidate transition has no unique predecessor event",
+        "candidate creation requires at least one evidence link",
+        "candidate reporting category scope or snapshot is invalid",
+        "POSTED journal entry requires exactly one attribution",
+        "POSTED posting requires exactly one category attribution",
+        "reconciliation group requires exactly one scoped primary leg",
+        "snapshot audit binding is invalid",
+        "blob predecessor would branch",
+        "blob predecessor chain contains a cycle",
+        "encrypted evidence must have exactly one genesis",
+        "encrypted evidence must have exactly one active tip",
+        "R1 fact hardening data prevents destructive downgrade",
+    ):
+        assert literal in source
+    # Every deferred validator must be allowed to see the audit row in the
+    # same transaction; a test-only r1.* escape hatch would mask bad facts.
+    assert "IF v_action LIKE 'r1.%'" not in source
+
+
+def test_r1_internal_read_surface_has_typed_receipt_and_dynamic_owner_contract() -> None:
+    source = MIGRATION_C.read_text(encoding="utf-8")
+    assert 'revision: str = "20260824_0015"' in source
+    assert 'down_revision: str | None = "20260824_0014"' in source
+    for literal in (
+        "evidence_read_receipt",
+        "operation_id",
+        "UNIQUE",
+        "current_database()",
+        "pg_get_userbyid",
+        "current_audit_horizon",
+        "list_candidates_as_of",
+        "get_reconciliation_as_of",
+        "resolve_active_evidence_blob",
+        "append_internal_evidence_read_audit",
+        "R1 internal-read data prevents destructive downgrade",
+    ):
+        assert literal in source
+
+
+def test_r1_reader_surface_explicitly_rejects_cross_scope_cursor_and_malformed_blob() -> None:
+    source = MIGRATION_C.read_text(encoding="utf-8")
+    for literal in (
+        "invalid candidate read parameters",
+        "invalid reconciliation read parameters",
+        "audit horizon is not an exact chain row",
+        "business unit does not belong to entity",
+        "candidate cursor is outside requested scope",
+        "evidence audit receipt",
+        "active blob",
+        "plaintext digest or size does not match immutable evidence",
+    ):
+        assert literal in source
 
 
 def test_r1_migration_c_declares_closed_reader_surface_and_fail_closed_downgrade() -> None:
