@@ -296,8 +296,7 @@ R1_INTERNAL_READ_FUNCTIONS = (
 R1_INTERNAL_READ_FUNCTION_SIGNATURES = {
     "current_audit_horizon": "",
     "list_candidates_as_of": (
-        "uuid, uuid, character varying, bigint, bytea, "
-        "timestamp with time zone, uuid, integer"
+        "uuid, uuid, character varying, bigint, bytea, timestamp with time zone, uuid, integer"
     ),
     "get_reconciliation_as_of": "uuid, uuid, date, bigint, bytea",
     "resolve_active_evidence_blob": "uuid",
@@ -485,11 +484,21 @@ WITH expected_roles(role_name) AS (
     ) ORDER BY n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)), '[]'::json) AS value
      FROM pg_proc AS p
       JOIN pg_namespace AS n ON n.oid = p.pronamespace
-     WHERE (n.nspname = 'internal_read' AND EXISTS (
-                SELECT 1
-                  FROM expected_r1_functions AS expected
-                 WHERE expected.function_name = p.proname
-                   AND expected.identity_arguments = pg_get_function_identity_arguments(p.oid)
+     WHERE (n.nspname = 'internal_read' AND (
+                -- Exact allowlist matches are the normal observation path.
+                EXISTS (
+                    SELECT 1
+                      FROM expected_r1_functions AS expected
+                     WHERE expected.function_name = p.proname
+                       AND expected.identity_arguments = pg_get_function_identity_arguments(p.oid)
+                )
+                -- Keep same-name signature drift visible so the verifier can
+                -- reject a wrong signature or an extra overload fail-closed.
+                OR EXISTS (
+                    SELECT 1
+                      FROM expected_r1_functions AS expected
+                     WHERE expected.function_name = p.proname
+                )
             ))
         OR (n.nspname = 'public' AND p.proname LIKE 'r1_%')
 ), effective_table_privileges AS (
@@ -517,11 +526,18 @@ WITH expected_roles(role_name) AS (
       FROM present_roles AS e
       CROSS JOIN pg_proc AS p
       JOIN pg_namespace AS n ON n.oid = p.pronamespace
-     WHERE (n.nspname = 'internal_read' AND EXISTS (
-                SELECT 1
-                  FROM expected_r1_functions AS expected
-                 WHERE expected.function_name = p.proname
-                   AND expected.identity_arguments = pg_get_function_identity_arguments(p.oid)
+     WHERE (n.nspname = 'internal_read' AND (
+                EXISTS (
+                    SELECT 1
+                      FROM expected_r1_functions AS expected
+                     WHERE expected.function_name = p.proname
+                       AND expected.identity_arguments = pg_get_function_identity_arguments(p.oid)
+                )
+                OR EXISTS (
+                    SELECT 1
+                      FROM expected_r1_functions AS expected
+                     WHERE expected.function_name = p.proname
+                )
             ))
         OR (n.nspname = 'public' AND p.proname LIKE 'r1_%')
 ), effective_schema_privileges AS (
@@ -2005,8 +2021,7 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
         for name, identity_arguments in R1_INTERNAL_READ_FUNCTION_SIGNATURES.items()
     }
     actual_internal_function_keys = {
-        (item["schema"], item["name"], item["identity_arguments"])
-        for item in internal_functions
+        (item["schema"], item["name"], item["identity_arguments"]) for item in internal_functions
     }
     if (
         len(actual_internal_function_keys) != len(internal_functions)
@@ -2073,7 +2088,7 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
     expected_function_keys = {
         (role, schema, name, identity_arguments)
         for role in active_roles
-        for _, schema, name, identity_arguments in expected_function_objects
+        for schema, name, identity_arguments in expected_function_objects
     }
     if any(
         not isinstance(item.get("role"), str)
