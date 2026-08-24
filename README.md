@@ -68,6 +68,35 @@ docker compose --profile tools run --rm migrate
 docker compose up -d api worker
 ```
 
+### Quick R1 synthetic demo
+
+The six R1 internal-read GET routes can be exercised locally without Docker or
+PostgreSQL.  The demo uses only the packaged synthetic fixture, a fixed
+loopback-only principal, and a process-local evidence-read audit sink; it does
+not enable production mTLS, connect to a database, or read real data.
+
+```bash
+uv run --frozen --extra dev python scripts/r1_synthetic_demo.py
+```
+
+For a one-command smoke check that starts no listener:
+
+```bash
+uv run --frozen --extra dev python scripts/r1_synthetic_demo.py --check
+```
+
+In another terminal:
+
+```bash
+curl http://127.0.0.1:8651/internal/v1/capabilities
+curl "http://127.0.0.1:8651/internal/v1/candidates?month=2026-08&business_unit=unit-demo-a"
+curl "http://127.0.0.1:8651/internal/v1/reconciliations/2026-08?entity_ref=10000000-0000-4000-8000-000000000001&business_unit=unit-demo-a"
+curl "http://127.0.0.1:8651/internal/v1/ledger-summary?entity_ref=10000000-0000-4000-8000-000000000001&business_unit=unit-demo-a&from_month=2026-08&to_month=2026-08"
+```
+
+This launcher is for a local walkthrough only and must not be treated as an
+operational authentication or audit deployment.
+
 Quality gate:
 
 ```bash
