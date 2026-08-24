@@ -15,8 +15,10 @@ import {
   Check,
   CheckCircle,
   CloudArrowUp,
+  Copy,
   Database,
   FileText,
+  Fingerprint,
   FolderOpen,
   House,
   Info,
@@ -24,6 +26,7 @@ import {
   MagnifyingGlass,
   Paperclip,
   ShieldCheck,
+  SignOut,
   SlidersHorizontal,
   Table,
   Warning,
@@ -38,6 +41,8 @@ import {
 import { api, majorToMinor, minorToMajor } from './api'
 import type {
   ApiCandidate,
+  AuthResult,
+  AuthStatus,
   Candidate,
   CandidateCorrections,
   ConnectionStatus,
@@ -102,6 +107,9 @@ function toCandidate(candidate: ApiCandidate): Candidate {
 }
 
 function App() {
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null)
+  const [authLoading, setAuthLoading] = useState(true)
+  const [authError, setAuthError] = useState<string | null>(null)
   const [page, setPage] = useState<Page>('overview')
   const [candidates, setCandidates] = useState<Candidate[]>([])
   const [session, setSession] = useState<Session | null>(null)
@@ -112,8 +120,26 @@ function App() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [decisionBusyId, setDecisionBusyId] = useState<string | null>(null)
   const [draftBusy, setDraftBusy] = useState(false)
+  const [logoutBusy, setLogoutBusy] = useState(false)
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
+
+  const loadAuthStatus = useCallback(async () => {
+    setAuthLoading(true)
+    setAuthError(null)
+    try {
+      setAuthStatus(await api.getAuthStatus())
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : '无法读取认证状态')
+    } finally {
+      setAuthLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const authTimer = window.setTimeout(() => void loadAuthStatus(), 0)
+    return () => window.clearTimeout(authTimer)
+  }, [loadAuthStatus])
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -137,9 +163,10 @@ function App() {
   }, [selectedMonth])
 
   useEffect(() => {
+    if (!authStatus?.authenticated || authStatus.recovery_setup_required) return
     const loadTimer = window.setTimeout(() => void loadData(), 0)
     return () => window.clearTimeout(loadTimer)
-  }, [loadData])
+  }, [authStatus?.authenticated, authStatus?.recovery_setup_required, loadData])
 
   const changeMonth = (month: string) => setSelectedMonth(month)
 
@@ -214,6 +241,42 @@ function App() {
     }
   }
 
+  const completeAuthentication = (result: AuthResult) => {
+    setAuthStatus({
+      authenticated: result.authenticated,
+      setup_required: result.setup_required,
+      passkey_registered: result.passkey_registered,
+      recovery_setup_required: result.recovery_setup_required,
+      recovery_pending: result.recovery_pending,
+      principal: result.principal,
+    })
+    setAuthError(null)
+    setLoading(true)
+  }
+
+  const logout = async () => {
+    if (!session) {
+      setNotice({ tone: 'error', message: '会话信息尚未就绪，无法安全退出' })
+      return
+    }
+    setLogoutBusy(true)
+    try {
+      await api.logout(session.csrf_token)
+      setAuthStatus({ authenticated: false, setup_required: false, passkey_registered: true, recovery_setup_required: false, recovery_pending: false })
+      setSession(null)
+      setCandidates([])
+      setReconciliation(null)
+      setConnections([])
+      setPage('overview')
+      setLoading(true)
+      setNotice(null)
+    } catch (error) {
+      setNotice({ tone: 'error', message: error instanceof Error ? error.message : '退出失败，请重试' })
+    } finally {
+      setLogoutBusy(false)
+    }
+  }
+
   const renderPage = () => {
     if (page === 'overview') {
       return (
@@ -240,6 +303,12 @@ function App() {
       return <Reconciliation data={reconciliation} confirmed={confirmedCandidates} selectedMonth={selectedMonth} onMonthChange={changeMonth} onGenerate={generateDraft} generating={draftBusy} onNavigate={setPage} />
     }
     return <FilesAndConnections connections={connections} onRefresh={loadData} />
+  }
+
+  if (authLoading) return <AuthFrame><LoadingState title="正在检查访问状态" description="正在确认此设备的单用户会话。" /></AuthFrame>
+  if (authError) return <AuthFrame><ErrorState message={authError} onRetry={loadAuthStatus} /></AuthFrame>
+  if (!authStatus?.authenticated || authStatus.recovery_setup_required) {
+    return <AuthScreen status={authStatus} onAuthenticated={completeAuthentication} onRecoveryCancelled={loadAuthStatus} />
   }
 
   return (
@@ -292,6 +361,8 @@ function App() {
             <DropdownMenu.Content align="end">
               <DropdownMenu.Item>通行密钥设置</DropdownMenu.Item>
               <DropdownMenu.Item>操作记录</DropdownMenu.Item>
+              <DropdownMenu.Separator />
+              <DropdownMenu.Item color="red" disabled={logoutBusy} onSelect={() => void logout()}><SignOut size={15} />{logoutBusy ? '正在退出' : '安全退出'}</DropdownMenu.Item>
             </DropdownMenu.Content>
           </DropdownMenu.Root>
         </header>
@@ -368,12 +439,216 @@ function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; 
   )
 }
 
-function LoadingState() {
+function AuthFrame({ children }: { children: React.ReactNode }) {
+  return (
+    <main className="auth-shell">
+      <div className="auth-brand"><Brand /></div>
+      {children}
+      <p className="auth-footnote"><ShieldCheck size={15} />认证凭据由当前设备与同源服务完成验证</p>
+    </main>
+  )
+}
+
+function authErrorMessage(error: unknown) {
+  if (error instanceof DOMException && error.name === 'AbortError') return '通行密钥操作已取消，可以重新尝试。'
+  if (error instanceof DOMException && error.name === 'NotAllowedError') return '未完成通行密钥验证。请确认系统提示后重试。'
+  return error instanceof Error ? error.message : '认证失败，请重试。'
+}
+
+function AuthScreen({ status, onAuthenticated, onRecoveryCancelled }: {
+  status: AuthStatus | null
+  onAuthenticated: (result: AuthResult) => void
+  onRecoveryCancelled: () => Promise<void>
+}) {
+  const [setupCode, setSetupCode] = useState('')
+  const [recoveryCode, setRecoveryCode] = useState('')
+  const [showRecovery, setShowRecovery] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([])
+  const [registrationResult, setRegistrationResult] = useState<AuthResult | null>(null)
+  const [recoverySetupResult, setRecoverySetupResult] = useState<AuthResult | null>(null)
+  const [copyStatus, setCopyStatus] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!status?.recovery_setup_required || recoverySetupResult?.csrf_token) return
+    let active = true
+    void api.getRecoverySession().then((sessionData) => {
+      if (!active) return
+      setRecoverySetupResult({ ...status, csrf_token: sessionData.csrf_token, expires_at: sessionData.expires_at })
+    }).catch((sessionError) => {
+      if (active) setError(authErrorMessage(sessionError))
+    })
+    return () => { active = false }
+  }, [recoverySetupResult?.csrf_token, status])
+
+  const register = async (event: React.FormEvent) => {
+    event.preventDefault()
+    const firstSetup = Boolean(status?.setup_required)
+    if (firstSetup && !setupCode) return
+    if (!firstSetup && !recoverySetupResult?.csrf_token) {
+      setError('恢复会话尚未就绪，请稍后重试。')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await api.registerPasskey(
+        firstSetup ? setupCode : '',
+        firstSetup ? undefined : recoverySetupResult?.csrf_token,
+      )
+      setSetupCode('')
+      if (result.recovery_codes?.length) {
+        setRecoveryCodes(result.recovery_codes)
+        setRegistrationResult(result)
+      } else {
+        onAuthenticated(result)
+      }
+    } catch (authError) {
+      setError(authErrorMessage(authError))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const login = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      onAuthenticated(await api.loginWithPasskey())
+    } catch (authError) {
+      setError(authErrorMessage(authError))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const recover = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!recoveryCode) return
+    setBusy(true)
+    setError(null)
+    try {
+      const code = recoveryCode
+      setRecoveryCode('')
+      const result = await api.recoverSession(code)
+      if (result.recovery_setup_required) {
+        setRecoverySetupResult(result)
+        setShowRecovery(false)
+      } else {
+        onAuthenticated(result)
+      }
+    } catch (authError) {
+      setRecoveryCode('')
+      setError(authErrorMessage(authError))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const cancelRecoverySession = async () => {
+    const csrfToken = recoverySetupResult?.csrf_token
+    if (!csrfToken) return
+    setBusy(true)
+    setError(null)
+    try {
+      await api.logout(csrfToken)
+      setRecoverySetupResult(null)
+      await onRecoveryCancelled()
+    } catch (logoutError) {
+      setError(authErrorMessage(logoutError))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const copyRecoveryCodes = async () => {
+    try {
+      if (!navigator.clipboard) throw new Error('当前浏览器不允许复制，请手动保存。')
+      await navigator.clipboard.writeText(recoveryCodes.join('\n'))
+      setCopyStatus('恢复码已复制，请保存到安全位置。')
+    } catch (copyError) {
+      setCopyStatus(copyError instanceof Error ? copyError.message : '复制失败，请手动保存。')
+    }
+  }
+
+  if (recoveryCodes.length > 0 && registrationResult) {
+    return (
+      <AuthFrame>
+        <section className="auth-card recovery-codes-card" aria-labelledby="recovery-codes-title">
+          <div className="auth-icon success"><ShieldCheck size={27} weight="fill" /></div>
+          <span className="eyebrow">仅显示一次</span>
+          <h1 id="recovery-codes-title">保存一次性恢复码</h1>
+          <p>每个恢复码只能使用一次。请保存在密码管理器或其他安全位置，离开此页后不再显示。</p>
+          <ol className="recovery-code-list" aria-label="一次性恢复码">
+            {recoveryCodes.map((code) => <li key={code}><code>{code}</code></li>)}
+          </ol>
+          {copyStatus ? <p className="auth-inline-status" role="status">{copyStatus}</p> : null}
+          <div className="auth-actions">
+            <Button type="button" variant="outline" onClick={() => void copyRecoveryCodes()}><Copy size={17} />复制恢复码</Button>
+            <Button type="button" onClick={() => onAuthenticated(registrationResult)}>我已安全保存</Button>
+          </div>
+        </section>
+      </AuthFrame>
+    )
+  }
+
+  if (status?.setup_required || status?.recovery_setup_required || recoverySetupResult?.recovery_setup_required) {
+    const firstSetup = Boolean(status?.setup_required)
+    return (
+      <AuthFrame>
+        <section className="auth-card" aria-labelledby="passkey-setup-title">
+          <div className="auth-icon"><Fingerprint size={29} /></div>
+          <span className="eyebrow">{firstSetup ? '首次安全设置' : '恢复后安全轮换'}</span>
+          <h1 id="passkey-setup-title">{firstSetup ? '创建你的通行密钥' : '创建新的通行密钥'}</h1>
+          <p>{firstSetup ? '输入部署时生成的设置码，然后使用此设备的指纹、面容或系统解锁方式完成登记。' : '恢复码只用于恢复访问。请立即创建新的通行密钥，完成后旧恢复码将被轮换。'}</p>
+          <form onSubmit={(event) => void register(event)}>
+            {firstSetup ? <><label htmlFor="setup-code">首次设置码</label><TextField.Root id="setup-code" type="password" autoComplete="one-time-code" value={setupCode} onChange={(event) => setSetupCode(event.target.value)} aria-describedby={error ? 'auth-error' : undefined} /></> : null}
+            {error ? <div className="auth-error" id="auth-error" role="alert"><Warning size={17} />{error}</div> : null}
+            <Button type="submit" disabled={(firstSetup && !setupCode) || (!firstSetup && !recoverySetupResult?.csrf_token) || busy}><Fingerprint size={18} />{busy ? '正在创建' : firstSetup ? '创建通行密钥' : recoverySetupResult?.csrf_token ? '创建新的通行密钥' : '正在恢复安全会话'}</Button>
+            {!firstSetup ? <Button type="button" variant="outline" disabled={busy || !recoverySetupResult?.csrf_token} onClick={() => void cancelRecoverySession()}>退出本次恢复会话</Button> : null}
+          </form>
+        </section>
+      </AuthFrame>
+    )
+  }
+
+  const recoveryOnly = Boolean(status?.recovery_pending)
+
+  return (
+    <AuthFrame>
+      <section className="auth-card" aria-labelledby="passkey-login-title">
+        <div className="auth-icon"><Fingerprint size={29} /></div>
+        <span className="eyebrow">LedgerBridge 单用户访问</span>
+        <h1 id="passkey-login-title">{showRecovery || recoveryOnly ? recoveryOnly ? '继续账户恢复' : '使用一次性恢复码' : '使用通行密钥登录'}</h1>
+        <p>{showRecovery || recoveryOnly ? recoveryOnly ? '旧通行密钥已冻结。请使用另一枚一次性恢复码继续创建新通行密钥。' : '恢复码提交后立即从输入框清除，且成功使用后失效。' : '使用此设备的指纹、面容或系统解锁方式确认身份。'}</p>
+        {showRecovery || recoveryOnly ? (
+          <form onSubmit={(event) => void recover(event)}>
+            <label htmlFor="recovery-code">一次性恢复码</label>
+            <TextField.Root id="recovery-code" type="password" autoComplete="one-time-code" value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)} aria-describedby={error ? 'auth-error' : undefined} />
+            {error ? <div className="auth-error" id="auth-error" role="alert"><Warning size={17} />{error}</div> : null}
+            <Button type="submit" disabled={!recoveryCode || busy}><ShieldCheck size={18} />{busy ? '正在验证' : '使用恢复码登录'}</Button>
+          </form>
+        ) : (
+          <div className="auth-login-actions">
+            {error ? <div className="auth-error" id="auth-error" role="alert"><Warning size={17} />{error}</div> : null}
+            <Button type="button" disabled={busy} onClick={() => void login()}><Fingerprint size={18} />{busy ? '正在验证' : '使用通行密钥'}</Button>
+          </div>
+        )}
+        {!recoveryOnly ? <button className="auth-mode-switch" type="button" disabled={busy} onClick={() => { setShowRecovery((current) => !current); setError(null) }}>
+          {showRecovery ? '返回通行密钥登录' : '无法使用通行密钥？使用恢复码'}
+        </button> : null}
+      </section>
+    </AuthFrame>
+  )
+}
+
+function LoadingState({ title = '正在读取财务数据', description = '正在连接同源 API，并校验当前会话。' }: { title?: string; description?: string }) {
   return (
     <div className="state-panel" role="status" aria-live="polite">
       <ArrowsClockwise className="state-spinner" size={30} />
-      <h1>正在读取财务数据</h1>
-      <p>正在连接同源 API，并校验当前会话。</p>
+      <h1>{title}</h1>
+      <p>{description}</p>
     </div>
   )
 }

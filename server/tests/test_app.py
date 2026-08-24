@@ -364,7 +364,7 @@ class SyntheticBffTests(unittest.TestCase):
             tls_server.server_close()
             tls_thread.join(timeout=2)
         with patch.dict(os.environ, {"LEDGERBRIDGE_MODE": "real", "SITE_ROOT": self.temp_dir.name}, clear=False):
-            with self.assertRaisesRegex(SystemExit, "synthetic-preview"):
+            with self.assertRaisesRegex(SystemExit, "unsupported LedgerBridge mode"):
                 run()
 
 

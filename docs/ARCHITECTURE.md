@@ -4,7 +4,7 @@
 
 LedgerBridge Web 是部署在 Hermes 上的单用户财务工作台。浏览器不直接访问数据库、Hermes 消息库、OneDrive 或旧程序文件，而是通过同源的 Web API 完成候选审核、对账草稿生成和文件版本管理。
 
-当前 `8780` 端口只运行合成数据静态预览。真实数据路径尚未启用。
+当前数据仍全部为合成数据。BFF 提供无认证内存模式，以及通过固定 HTTPS origin 使用 Passkey 和本地 SQLite 的持久化模式；真实数据路径尚未启用。
 
 ## 已验证的现状
 
@@ -83,8 +83,15 @@ CONFIRMED -> SUPERSEDED（通过新事件更正，不覆盖旧记录）
 - 单用户 Passkey 为主认证方式，一次性恢复码只显示一次并只存哈希。
 - 会话使用 `Secure`、`HttpOnly`、`SameSite=Strict` Cookie。
 - 所有状态变更要求同源检查、CSRF 令牌、幂等键和候选版本号。
-- 内网通过 Hermes 地址访问；外部访问沿用家庭 Tailscale 子网，不直接开放公网端口。
-- 当前合成数据预览没有认证，不得接入真实数据。
+- WebAuthn RP ID 为固定域名，服务端精确匹配 HTTPS origin；普通局域网 IP HTTP 只保留为无认证合成演示，不能登记 Passkey。
+- HTTPS 由 tailnet-only 反向代理终止，使用 LedgerBridge 独占稳定主机名，不与 HA/Grafana 共用主机名后换端口；不启用 Funnel，不直接开放公网端口，认证版后端只绑定主机回环地址。
+- WebAuthn challenge 五分钟过期且一次性，要求 discoverable credential 与用户验证；attestation 为 `none`。
+- 首次设置码至少 128 bit、只存 SHA-256 摘要、最长十分钟；成功首次登记后永久关闭首次设置路径。
+- 恢复码为 160 bit 随机值，只存哈希。恢复成功撤销现有会话，并只允许登记新 Passkey；完成后轮换全部恢复码。
+- 恢复开始即持久化 `recovery_pending` 并递增认证代次，冻结旧 Passkey；登录计数更新和会话签发在同一事务中复核认证代次。刷新页面可通过受限恢复会话重新取得轮换后的 CSRF，但仍不能访问业务 API。
+- SQLite 使用 WAL、`foreign_keys`、`busy_timeout`、`synchronous=FULL` 和追加式审核触发器；状态目录权限与静态文件分离。
+- 首次数据库创建必须显式启用一次性 bootstrap；初始化后关闭。认证数据库缺失时服务失败关闭，避免卷挂载错误重新开放设置入口。
+- 当前认证持久化模式仍只承载合成财务数据，不得据此启用真实消息。
 
 ## 上线门槛
 

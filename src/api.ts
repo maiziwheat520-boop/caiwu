@@ -1,5 +1,8 @@
 import type {
   ApiCandidate,
+  AuthenticationOptionsJson,
+  AuthResult,
+  AuthStatus,
   CandidateCorrections,
   CandidateDecision,
   CandidateDetail,
@@ -9,6 +12,7 @@ import type {
   Reconciliation,
   ReviewEvent,
   Session,
+  RegistrationOptionsJson,
   WorkbookDraft,
 } from './types'
 
@@ -47,7 +51,133 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
+async function requestVoid(path: string, init: RequestInit): Promise<void> {
+  const response = await fetch(path, {
+    credentials: 'same-origin',
+    ...init,
+    headers: { Accept: 'application/json', ...init.headers },
+  })
+  if (!response.ok) {
+    let problem: Problem | undefined
+    try {
+      problem = await response.json() as Problem
+    } catch {
+      problem = undefined
+    }
+    throw new ApiError(problem?.detail || problem?.title || `请求失败（${response.status}）`, response.status, problem?.code)
+  }
+}
+
+export function base64UrlToArrayBuffer(value: string): ArrayBuffer {
+  const base64 = value.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=')
+  const binary = atob(padded)
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0)).buffer as ArrayBuffer
+}
+
+export function arrayBufferToBase64Url(value: ArrayBuffer | ArrayBufferView): string {
+  const bytes = value instanceof ArrayBuffer
+    ? new Uint8Array(value)
+    : new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+  let binary = ''
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte) })
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+
+function registrationOptionsFromJson(options: RegistrationOptionsJson): PublicKeyCredentialCreationOptions {
+  return {
+    ...options,
+    challenge: base64UrlToArrayBuffer(options.challenge),
+    user: { ...options.user, id: base64UrlToArrayBuffer(options.user.id) },
+    excludeCredentials: options.excludeCredentials?.map((credential) => ({
+      ...credential,
+      id: base64UrlToArrayBuffer(credential.id),
+    })),
+  }
+}
+
+function authenticationOptionsFromJson(options: AuthenticationOptionsJson): PublicKeyCredentialRequestOptions {
+  return {
+    ...options,
+    challenge: base64UrlToArrayBuffer(options.challenge),
+    allowCredentials: options.allowCredentials?.map((credential) => ({
+      ...credential,
+      id: base64UrlToArrayBuffer(credential.id),
+    })),
+  }
+}
+
+function serializeRegistrationCredential(credential: PublicKeyCredential) {
+  const response = credential.response as AuthenticatorAttestationResponse
+  return {
+    id: credential.id,
+    rawId: arrayBufferToBase64Url(credential.rawId),
+    type: credential.type,
+    response: {
+      clientDataJSON: arrayBufferToBase64Url(response.clientDataJSON),
+      attestationObject: arrayBufferToBase64Url(response.attestationObject),
+      transports: typeof response.getTransports === 'function' ? response.getTransports() : undefined,
+    },
+    clientExtensionResults: credential.getClientExtensionResults(),
+  }
+}
+
+function serializeAuthenticationCredential(credential: PublicKeyCredential) {
+  const response = credential.response as AuthenticatorAssertionResponse
+  return {
+    id: credential.id,
+    rawId: arrayBufferToBase64Url(credential.rawId),
+    type: credential.type,
+    response: {
+      clientDataJSON: arrayBufferToBase64Url(response.clientDataJSON),
+      authenticatorData: arrayBufferToBase64Url(response.authenticatorData),
+      signature: arrayBufferToBase64Url(response.signature),
+      userHandle: response.userHandle ? arrayBufferToBase64Url(response.userHandle) : null,
+    },
+    clientExtensionResults: credential.getClientExtensionResults(),
+  }
+}
+
+const jsonPost = (body: unknown, csrfToken?: string): RequestInit => ({
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}) },
+  body: JSON.stringify(body),
+})
+
 export const api = {
+  getAuthStatus: () => requestJson<AuthStatus>('/api/v1/auth/status'),
+
+  registerPasskey: async (setupCode: string, csrfToken?: string) => {
+    if (!navigator.credentials) throw new Error('当前浏览器不支持通行密钥')
+    const options = await requestJson<RegistrationOptionsJson>('/api/v1/auth/passkey/register/options', jsonPost({ setup_code: setupCode }, csrfToken))
+    const credential = await navigator.credentials.create({ publicKey: registrationOptionsFromJson(options) })
+    if (!credential || credential.type !== 'public-key' || !('rawId' in credential)) throw new Error('通行密钥创建未完成')
+    return requestJson<AuthResult>('/api/v1/auth/passkey/register/verify', jsonPost({
+      setup_code: setupCode,
+      credential: serializeRegistrationCredential(credential as PublicKeyCredential),
+    }, csrfToken))
+  },
+
+  loginWithPasskey: async () => {
+    if (!navigator.credentials) throw new Error('当前浏览器不支持通行密钥')
+    const options = await requestJson<AuthenticationOptionsJson>('/api/v1/auth/passkey/login/options', jsonPost({}))
+    const credential = await navigator.credentials.get({ publicKey: authenticationOptionsFromJson(options) })
+    if (!credential || credential.type !== 'public-key' || !('rawId' in credential)) throw new Error('通行密钥验证未完成')
+    return requestJson<AuthResult>('/api/v1/auth/passkey/login/verify', jsonPost({
+      credential: serializeAuthenticationCredential(credential as PublicKeyCredential),
+    }))
+  },
+
+  recoverSession: (recoveryCode: string) =>
+    requestJson<AuthResult>('/api/v1/auth/recovery', jsonPost({ recovery_code: recoveryCode })),
+
+  getRecoverySession: () => requestJson<Session>('/api/v1/auth/recovery/session'),
+
+  logout: (csrfToken: string) => requestVoid('/api/v1/session/logout', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': csrfToken },
+  }),
+
   getSession: () => requestJson<Session>('/api/v1/session'),
 
   listCandidates: (status?: string) => {

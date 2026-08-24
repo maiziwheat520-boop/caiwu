@@ -10,7 +10,7 @@
 - 文件与连接：展示 OneDrive App Folder、Hermes 消息入口和 LibreOffice 计算服务的预期边界。
 - 移动端：支持审核和摘要；完整科目网格保留给平板和电脑。
 
-所有示例数据均为合成数据。页面中的连接状态不代表真实服务已经配置；审核决定和草稿状态只保存在进程内存中，容器重启后恢复初始状态。
+所有示例数据均为合成数据。页面中的连接状态不代表真实服务已经配置。`synthetic-preview` 的状态只在内存中；`authenticated-preview` 使用本地 SQLite 保存审核事件、幂等响应、草稿、Passkey 公钥、恢复码哈希和会话哈希。
 
 ## 本地运行
 
@@ -42,6 +42,7 @@ Hermes 合成数据预览的容器部署方式见 [DEPLOYMENT.md](./DEPLOYMENT.m
 npm run lint
 npm run test
 npm run build
+python -m unittest discover -s server/tests
 ```
 
 ## 已锁定的业务边界
@@ -60,4 +61,4 @@ npm run build
 
 ## 下一阶段接口边界
 
-当前 BFF 只实现合成数据合同，用于验证会话、CSRF、幂等键、乐观并发、证据下载和草稿状态轮询。下一阶段才连接 LedgerBridge 的候选记录与只读汇总接口。Hermes 消息附件必须在消息入口即时摄取，避免依赖临时附件路径做历史轮询。真实消息启用前必须实现 Passkey 登录、持久化授权与审计、速率限制，并完成独立安全复核。
+当前 BFF 已实现合成数据合同、单用户 Passkey、一次性恢复码、持久化 SQLite 投影、CSRF、幂等键、乐观并发、证据下载和草稿状态轮询。恢复码登录是受限会话，必须登记新的 Passkey 并轮换恢复码后才能读取财务页面。下一阶段才连接 LedgerBridge 的候选记录与只读汇总接口。Hermes 消息附件必须在消息入口即时摄取，避免依赖临时附件路径做历史轮询；真实消息启用前仍须完成独立安全复核。

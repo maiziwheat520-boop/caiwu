@@ -7,6 +7,10 @@ coverage
 server/tests
 **/__pycache__
 *.pyc
+state
+vendor
+wheelhouse
+config
 *.local
 .env
 .env.*

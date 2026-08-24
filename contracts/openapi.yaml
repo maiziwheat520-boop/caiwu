@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: LedgerBridge Web API
-  version: 0.1.0-draft
+  version: 0.2.0-draft
   description: >-
     Hotel finance review and reconciliation contract. This draft intentionally
     has no endpoint that posts journal entries or enables real message ingestion.
@@ -10,6 +10,162 @@ servers:
 security:
   - sessionCookie: []
 paths:
+  /api/v1/auth/status:
+    get:
+      operationId: getAuthStatus
+      security: []
+      responses:
+        "200":
+          description: Public authentication readiness without credential metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthStatus"
+  /api/v1/auth/passkey/register/options:
+    post:
+      operationId: beginPasskeyRegistration
+      security: []
+      description: >-
+        Begin a one-use WebAuthn registration ceremony on the configured exact HTTPS origin.
+        Initial bootstrap requires the short-lived setup code. Recovery registration requires the
+        restricted recovery-session cookie and its X-CSRF-Token; normal sessions cannot add a credential.
+      parameters:
+        - $ref: "#/components/parameters/OptionalCsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [setup_code]
+              properties:
+                setup_code:
+                  type: string
+                  maxLength: 200
+      responses:
+        "200":
+          description: PublicKeyCredentialCreationOptions JSON and an HttpOnly ceremony cookie
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebAuthnOptions"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/auth/passkey/register/verify:
+    post:
+      operationId: finishPasskeyRegistration
+      security: []
+      description: >-
+        Finish the one-use ceremony. Bootstrap revalidates the setup code and expiry. Recovery
+        revalidates the exact authorizing recovery session and X-CSRF-Token before atomically replacing
+        old credentials, recovery codes, and sessions.
+      parameters:
+        - $ref: "#/components/parameters/OptionalCsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [setup_code, credential]
+              properties:
+                setup_code:
+                  type: string
+                  maxLength: 200
+                credential:
+                  $ref: "#/components/schemas/WebAuthnCredential"
+      responses:
+        "200":
+          description: Authenticated session; recovery codes are returned only for initial registration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/auth/passkey/login/options:
+    post:
+      operationId: beginPasskeyLogin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        "200":
+          description: PublicKeyCredentialRequestOptions JSON and an HttpOnly ceremony cookie
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebAuthnOptions"
+  /api/v1/auth/passkey/login/verify:
+    post:
+      operationId: finishPasskeyLogin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [credential]
+              properties:
+                credential:
+                  $ref: "#/components/schemas/WebAuthnCredential"
+      responses:
+        "200":
+          description: Authenticated single-user session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/auth/recovery:
+    post:
+      operationId: recoverSession
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [recovery_code]
+              properties:
+                recovery_code:
+                  type: string
+                  minLength: 32
+                  maxLength: 64
+      responses:
+        "200":
+          description: Restricted recovery session; it cannot access business APIs and can only replace the Passkey
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/auth/recovery/session:
+    get:
+      operationId: getRestrictedRecoverySession
+      description: Rotate and return CSRF state for a live restricted recovery session after a page refresh.
+      responses:
+        "200":
+          description: Restricted recovery session metadata; this does not authorize business APIs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /api/v1/session:
     get:
       operationId: getSession
@@ -22,6 +178,14 @@ paths:
                 $ref: "#/components/schemas/Session"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /api/v1/session/logout:
+    post:
+      operationId: logoutSession
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Session revoked and cookie expired
   /api/v1/candidates:
     get:
       operationId: listCandidates
@@ -272,6 +436,15 @@ components:
         type: string
         minLength: 32
         maxLength: 256
+    OptionalCsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: Required only when registration is authorized by a restricted recovery session.
+      schema:
+        type: string
+        minLength: 32
+        maxLength: 256
   responses:
     Unauthorized:
       description: Authentication required
@@ -286,6 +459,83 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
   schemas:
+    AuthStatus:
+      type: object
+      additionalProperties: false
+      required: [authenticated, setup_required, passkey_registered, recovery_setup_required, recovery_pending]
+      properties:
+        authenticated:
+          type: boolean
+        setup_required:
+          type: boolean
+        passkey_registered:
+          type: boolean
+        recovery_setup_required:
+          type: boolean
+        recovery_pending:
+          type: boolean
+          description: Old Passkeys are frozen until recovery finishes with a replacement credential.
+        principal:
+          type: string
+          maxLength: 200
+    AuthResult:
+      type: object
+      additionalProperties: false
+      required: [authenticated, setup_required, passkey_registered, recovery_setup_required, recovery_pending]
+      properties:
+        authenticated:
+          type: boolean
+        setup_required:
+          type: boolean
+        passkey_registered:
+          type: boolean
+        recovery_setup_required:
+          type: boolean
+        recovery_pending:
+          type: boolean
+        principal:
+          type: string
+          maxLength: 200
+        recovery_codes:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+            minLength: 32
+            maxLength: 64
+        csrf_token:
+          type: string
+          description: Returned with newly issued normal or restricted sessions; never persisted by the browser.
+        expires_at:
+          type: string
+          format: date-time
+    WebAuthnOptions:
+      type: object
+      description: Standards-shaped WebAuthn options; binary values use unpadded base64url.
+      additionalProperties: true
+      required: [challenge]
+      properties:
+        challenge:
+          type: string
+          minLength: 32
+    WebAuthnCredential:
+      type: object
+      description: Browser PublicKeyCredential JSON; ArrayBuffer fields use unpadded base64url.
+      additionalProperties: true
+      required: [id, rawId, type, response, clientExtensionResults]
+      properties:
+        id:
+          type: string
+        rawId:
+          type: string
+        type:
+          const: public-key
+        response:
+          type: object
+          additionalProperties: true
+        clientExtensionResults:
+          type: object
+          additionalProperties: true
     Session:
       type: object
       additionalProperties: false

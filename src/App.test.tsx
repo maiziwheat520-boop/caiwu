@@ -2,12 +2,21 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Theme } from '@radix-ui/themes'
 import App from './App'
-import type { ApiCandidate } from './types'
+import type { ApiCandidate, AuthStatus } from './types'
 
 const session = {
   principal: 'finance-admin',
   csrf_token: 'csrf-token-with-at-least-thirty-two-characters',
   expires_at: '2026-08-24T18:00:00+08:00',
+}
+
+const authenticatedStatus = {
+  authenticated: true,
+  setup_required: false,
+  passkey_registered: true,
+  recovery_setup_required: false,
+  recovery_pending: false,
+  principal: 'finance-admin',
 }
 
 const evidence = [{
@@ -56,15 +65,46 @@ function response(body: unknown, status = 200) {
   })
 }
 
-function installFetch({ items = candidates, failSessionOnce = false, failReconciliationAfterDecision = false }: {
+function installFetch(options: {
   items?: ApiCandidate[]
   failSessionOnce?: boolean
   failReconciliationAfterDecision?: boolean
+  authStatus?: AuthStatus
+  recoveryCodes?: string[]
+  recoverySetupRequired?: boolean
 } = {}) {
+  const {
+    items = candidates,
+    failSessionOnce = false,
+    failReconciliationAfterDecision = false,
+    authStatus = authenticatedStatus,
+    recoveryCodes = ['RECOVERY-ONE', 'RECOVERY-TWO'],
+    recoverySetupRequired = false,
+  } = options
   let shouldFailSession = failSessionOnce
   let decisionSaved = false
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input)
+    if (url === '/api/v1/auth/status') return response(authStatus)
+    if (url === '/api/v1/auth/recovery/session') return response(session)
+    if (url === '/api/v1/auth/passkey/login/options') return response({
+      challenge: 'AQ', timeout: 60000, rpId: 'ledgerbridge.local', userVerification: 'required',
+      allowCredentials: [{ type: 'public-key', id: 'Ag' }],
+    })
+    if (url === '/api/v1/auth/passkey/login/verify') return response(authenticatedStatus)
+    if (url === '/api/v1/auth/passkey/register/options') return response({
+      challenge: 'AQ', rp: { name: 'LedgerBridge', id: 'ledgerbridge.local' },
+      user: { id: 'Ag', name: 'finance-admin', displayName: 'Finance Admin' },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }], timeout: 60000,
+    })
+    if (url === '/api/v1/auth/passkey/register/verify') return response({ ...authenticatedStatus, recovery_codes: recoveryCodes })
+    if (url === '/api/v1/auth/recovery') return response({
+      ...authenticatedStatus,
+      recovery_setup_required: recoverySetupRequired,
+      recovery_pending: recoverySetupRequired,
+      csrf_token: 'recovery-csrf-token-with-at-least-thirty-two-characters',
+      expires_at: session.expires_at,
+    })
     if (url === '/api/v1/session') {
       if (shouldFailSession) {
         shouldFailSession = false
@@ -99,15 +139,151 @@ function renderApp() {
   return render(<Theme><App /></Theme>)
 }
 
+function mockCredentials(method: 'get' | 'create', implementation: (options?: CredentialCreationOptions | CredentialRequestOptions) => Promise<Credential | null>) {
+  const credentials = { [method]: vi.fn(implementation) }
+  Object.defineProperty(navigator, 'credentials', { configurable: true, value: credentials })
+  return credentials[method]
+}
+
+const buffer = (...bytes: number[]) => Uint8Array.from(bytes).buffer
+
 describe('LedgerBridge Web API client', () => {
-  beforeEach(() => vi.restoreAllMocks())
-  afterEach(() => vi.restoreAllMocks())
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    Object.defineProperty(navigator, 'credentials', { configurable: true, value: undefined })
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    Object.defineProperty(navigator, 'credentials', { configurable: true, value: undefined })
+  })
+
+  it('does not load business APIs before authentication', async () => {
+    const fetchMock = installFetch({ authStatus: { authenticated: false, setup_required: false, passkey_registered: true, recovery_setup_required: false, recovery_pending: false } })
+    renderApp()
+    expect(await screen.findByText('使用通行密钥登录')).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/auth/status', expect.anything())
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/session')).toBe(false)
+  })
+
+  it('logs in with converted WebAuthn assertion data before loading business APIs', async () => {
+    const credential = {
+      id: 'credential-1', rawId: buffer(3), type: 'public-key',
+      response: { clientDataJSON: buffer(4), authenticatorData: buffer(5), signature: buffer(6), userHandle: null },
+      getClientExtensionResults: () => ({}),
+    } as unknown as Credential
+    const getCredential = mockCredentials('get', async () => credential)
+    const fetchMock = installFetch({ authStatus: { authenticated: false, setup_required: false, passkey_registered: true, recovery_setup_required: false, recovery_pending: false } })
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: '使用通行密钥' }))
+    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+
+    const publicKey = (getCredential.mock.calls[0][0] as CredentialRequestOptions).publicKey!
+    expect(publicKey.challenge).toBeInstanceOf(ArrayBuffer)
+    expect(publicKey.allowCredentials?.[0].id).toBeInstanceOf(ArrayBuffer)
+    const verifyCall = fetchMock.mock.calls.find(([input]) => String(input) === '/api/v1/auth/passkey/login/verify')!
+    expect(JSON.parse(String(verifyCall[1]?.body))).toMatchObject({
+      credential: { rawId: 'Aw', response: { clientDataJSON: 'BA', authenticatorData: 'BQ', signature: 'Bg', userHandle: null } },
+    })
+  })
+
+  it('shows registration recovery codes once and waits before loading business data', async () => {
+    const credential = {
+      id: 'credential-new', rawId: buffer(3), type: 'public-key',
+      response: { clientDataJSON: buffer(4), attestationObject: buffer(5), getTransports: () => ['internal'] },
+      getClientExtensionResults: () => ({}),
+    } as unknown as Credential
+    mockCredentials('create', async () => credential)
+    const fetchMock = installFetch({ authStatus: { authenticated: false, setup_required: true, passkey_registered: false, recovery_setup_required: false, recovery_pending: false } })
+    renderApp()
+    const setupInput = await screen.findByLabelText('首次设置码')
+    expect(setupInput).toHaveAttribute('type', 'password')
+    fireEvent.change(setupInput, { target: { value: 'setup-secret' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建通行密钥' }))
+
+    expect(await screen.findByText('保存一次性恢复码')).toBeInTheDocument()
+    expect(screen.getByText('RECOVERY-ONE')).toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/session')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: '我已安全保存' }))
+    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(screen.queryByText('RECOVERY-ONE')).not.toBeInTheDocument()
+  })
+
+  it('explains a cancelled or denied passkey prompt and allows retry', async () => {
+    mockCredentials('get', async () => { throw new DOMException('denied', 'NotAllowedError') })
+    installFetch({ authStatus: { authenticated: false, setup_required: false, passkey_registered: true, recovery_setup_required: false, recovery_pending: false } })
+    renderApp()
+    const loginButton = await screen.findByRole('button', { name: '使用通行密钥' })
+    fireEvent.click(loginButton)
+    expect(await screen.findByText('未完成通行密钥验证。请确认系统提示后重试。')).toBeInTheDocument()
+    expect(loginButton).not.toBeDisabled()
+  })
+
+  it('requires a new passkey and rotated recovery codes before recovery reaches business data', async () => {
+    const credential = {
+      id: 'credential-rotated', rawId: buffer(7), type: 'public-key',
+      response: { clientDataJSON: buffer(8), attestationObject: buffer(9), getTransports: () => ['internal'] },
+      getClientExtensionResults: () => ({}),
+    } as unknown as Credential
+    mockCredentials('create', async () => credential)
+    const fetchMock = installFetch({ authStatus: { authenticated: false, setup_required: false, passkey_registered: true, recovery_setup_required: false, recovery_pending: false }, recoverySetupRequired: true })
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: '无法使用通行密钥？使用恢复码' }))
+    const recoveryInput = screen.getByLabelText('一次性恢复码')
+    expect(recoveryInput).toHaveAttribute('type', 'password')
+    fireEvent.change(recoveryInput, { target: { value: 'RECOVERY-SECRET' } })
+    fireEvent.click(screen.getByRole('button', { name: '使用恢复码登录' }))
+    expect(await screen.findByRole('heading', { name: '创建新的通行密钥' })).toBeInTheDocument()
+    const recoveryCall = fetchMock.mock.calls.find(([input]) => String(input) === '/api/v1/auth/recovery')!
+    expect(JSON.parse(String(recoveryCall[1]?.body))).toEqual({ recovery_code: 'RECOVERY-SECRET' })
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/session')).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: '创建新的通行密钥' }))
+    expect(await screen.findByText('保存一次性恢复码')).toBeInTheDocument()
+    const registerOptionCall = fetchMock.mock.calls.find(([input]) => String(input) === '/api/v1/auth/passkey/register/options')!
+    const registerVerifyCall = fetchMock.mock.calls.find(([input]) => String(input) === '/api/v1/auth/passkey/register/verify')!
+    expect(JSON.parse(String(registerOptionCall[1]?.body))).toEqual({ setup_code: '' })
+    expect(JSON.parse(String(registerVerifyCall[1]?.body))).toMatchObject({ setup_code: '' })
+    expect((registerOptionCall[1]?.headers as Record<string, string>)['X-CSRF-Token']).toBe('recovery-csrf-token-with-at-least-thirty-two-characters')
+    expect((registerVerifyCall[1]?.headers as Record<string, string>)['X-CSRF-Token']).toBe('recovery-csrf-token-with-at-least-thirty-two-characters')
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/session')).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: '我已安全保存' }))
+    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+  })
+
+  it('restores restricted recovery CSRF after a page refresh', async () => {
+    const credential = {
+      id: 'credential-refreshed', rawId: buffer(10), type: 'public-key',
+      response: { clientDataJSON: buffer(11), attestationObject: buffer(12), getTransports: () => ['internal'] },
+      getClientExtensionResults: () => ({}),
+    } as unknown as Credential
+    mockCredentials('create', async () => credential)
+    const fetchMock = installFetch({
+      authStatus: {
+        authenticated: false,
+        setup_required: false,
+        passkey_registered: true,
+        recovery_setup_required: true,
+        recovery_pending: true,
+      },
+    })
+    renderApp()
+    expect(await screen.findByRole('heading', { name: '创建新的通行密钥' })).toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/auth/recovery/session')).toBe(true)
+    const createButton = await screen.findByRole('button', { name: '创建新的通行密钥' })
+    expect(createButton).not.toBeDisabled()
+    fireEvent.click(createButton)
+    expect(await screen.findByText('保存一次性恢复码')).toBeInTheDocument()
+    const optionsCall = fetchMock.mock.calls.find(([input]) => String(input) === '/api/v1/auth/passkey/register/options')!
+    expect((optionsCall[1]?.headers as Record<string, string>)['X-CSRF-Token']).toBe(session.csrf_token)
+  })
 
   it('loads API projections and formats amount_minor as yuan', async () => {
     installFetch()
     renderApp()
-    expect(screen.getByText('正在读取财务数据')).toBeInTheDocument()
-    expect(screen.getByText('原型环境 · 合成 API 数据')).toBeInTheDocument()
+    expect(screen.getByText('正在检查访问状态')).toBeInTheDocument()
+    expect(await screen.findByText('原型环境 · 合成 API 数据')).toBeInTheDocument()
     expect(await screen.findByText('¥6,380.00')).toBeInTheDocument()
     expect(screen.getByText('3 条')).toBeInTheDocument()
   })

@@ -102,6 +102,32 @@ export type Session = {
   expires_at: string
 }
 
+export type AuthStatus = {
+  authenticated: boolean
+  setup_required: boolean
+  passkey_registered: boolean
+  recovery_setup_required: boolean
+  recovery_pending: boolean
+  principal?: string
+}
+
+export type AuthResult = AuthStatus & {
+  recovery_codes?: string[]
+  csrf_token?: string
+  expires_at?: string
+}
+
+export type RegistrationOptionsJson = Omit<PublicKeyCredentialCreationOptions, 'challenge' | 'user' | 'excludeCredentials'> & {
+  challenge: string
+  user: Omit<PublicKeyCredentialUserEntity, 'id'> & { id: string }
+  excludeCredentials?: Array<Omit<PublicKeyCredentialDescriptor, 'id'> & { id: string }>
+}
+
+export type AuthenticationOptionsJson = Omit<PublicKeyCredentialRequestOptions, 'challenge' | 'allowCredentials'> & {
+  challenge: string
+  allowCredentials?: Array<Omit<PublicKeyCredentialDescriptor, 'id'> & { id: string }>
+}
+
 export type Reconciliation = {
   accounting_month: string
   revision: number

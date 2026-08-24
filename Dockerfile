@@ -6,7 +6,7 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
 
 ENV LEDGERBRIDGE_MODE=synthetic-preview \
     PORT=8080 \
@@ -17,6 +17,8 @@ ENV LEDGERBRIDGE_MODE=synthetic-preview \
     SITE_ROOT=/site
 
 WORKDIR /app
+COPY requirements.lock /app/requirements.lock
+RUN python -m pip install --no-cache-dir --require-hashes -r /app/requirements.lock
 COPY deploy/server.py /app/run_preview.py
 COPY server /app/server
 COPY --from=build /app/dist /site

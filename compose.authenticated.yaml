@@ -1,0 +1,51 @@
+services:
+  web:
+    image: python@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
+    container_name: ledgerbridge-web-preview
+    restart: unless-stopped
+    user: "${LEDGERBRIDGE_WEB_UID:-1000}:${LEDGERBRIDGE_WEB_GID:-1000}"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      LEDGERBRIDGE_MODE: authenticated-preview
+      PORT: "8080"
+      BIND_ADDRESS: 0.0.0.0
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: /vendor
+      SESSION_COOKIE_SECURE: "1"
+      SITE_ROOT: /site
+      DATA_PATH: /data/ledgerbridge-preview.sqlite3
+      WEBAUTHN_RP_ID: "${WEBAUTHN_RP_ID:?WEBAUTHN_RP_ID is required}"
+      WEBAUTHN_EXPECTED_ORIGIN: "${WEBAUTHN_EXPECTED_ORIGIN:?WEBAUTHN_EXPECTED_ORIGIN is required}"
+      SETUP_CODE_SHA256: "${SETUP_CODE_SHA256:?SETUP_CODE_SHA256 is required}"
+      SETUP_CODE_EXPIRES_AT: "${SETUP_CODE_EXPIRES_AT:?SETUP_CODE_EXPIRES_AT is required}"
+      ALLOW_INITIAL_BOOTSTRAP: "${ALLOW_INITIAL_BOOTSTRAP:-0}"
+      INSTALLATION_MARKER_PATH: /config/enrolled-v1
+    command:
+      - python
+      - /app/run_preview.py
+    volumes:
+      - ./dist:/site:ro
+      - ./deploy/server.py:/app/run_preview.py:ro
+      - ./server:/app/server:ro
+      - ./vendor:/vendor:ro
+      - ./state:/data
+      - ./config:/config:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    ports:
+      - "127.0.0.1:${LEDGERBRIDGE_WEB_PORT:-8780}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
