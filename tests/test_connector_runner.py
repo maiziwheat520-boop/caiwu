@@ -529,6 +529,14 @@ async def test_supervisor_rejects_excess_connections_before_reading_control() ->
         await asyncio.sleep(0)
         second_reader, second_writer = await open_unix_connection(socket_path)
         try:
+            client = ConnectorRunnerClient(socket_path, timeout_seconds=0.5)
+            with pytest.raises(RunnerClientError) as error:
+                await asyncio.to_thread(
+                    client.parse,
+                    _request(b"ok"),
+                    _bytes(b"ok"),
+                )
+            assert error.value.error_code == "RUNNER_UNAVAILABLE"
             assert await asyncio.wait_for(second_reader.read(1), timeout=0.5) == b""
             assert supervisor._connection_slots.locked()
         finally:
@@ -642,6 +650,16 @@ async def test_supervisor_holds_spool_reservation_until_timed_out_thread_finishe
             assert supervisor._active_executions == 1
             assert supervisor._reserved_spool_bytes == len(content)
             assert not supervisor._connection_slots.locked()
+
+            with pytest.raises(RunnerClientError) as capacity_error:
+                await asyncio.to_thread(
+                    client.parse,
+                    _request(content),
+                    _bytes(content),
+                )
+            assert capacity_error.value.error_code == "RUNNER_UNAVAILABLE"
+            assert supervisor._active_executions == 1
+            assert supervisor._reserved_spool_bytes == len(content)
 
             finish.set()
             for _ in range(100):

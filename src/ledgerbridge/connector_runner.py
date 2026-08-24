@@ -58,6 +58,8 @@ DEFAULT_MAX_CONNECTIONS = 16
 MAX_CONNECTIONS = 64
 SPOOL_MEMORY_BYTES = 4 * 1024 * 1024
 DEFAULT_SPOOL_BUDGET_BYTES = MAX_ARTIFACT_BYTES
+# The production runner mounts a 96 MiB /tmp, leaving 32 MiB for filesystem
+# metadata, frame buffers, and interpreter overhead above this hard reservation.
 MAX_SPOOL_BUDGET_BYTES = 64 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
@@ -291,9 +293,14 @@ class ConnectorSupervisor:
         """
 
         if self._active_executions >= self._execution_workers:
-            artifact.close()
-            self._release_spool(reserved_spool_bytes)
-            raise RunnerExecutionError("TIMEOUT", "connector timed out")
+            try:
+                artifact.close()
+            finally:
+                self._release_spool(reserved_spool_bytes)
+            raise RunnerExecutionError(
+                "RUNNER_UNAVAILABLE",
+                "runner execution capacity is unavailable",
+            )
         self._active_executions += 1
         loop = asyncio.get_running_loop()
         try:
@@ -304,8 +311,10 @@ class ConnectorSupervisor:
             )
         except BaseException:
             self._active_executions -= 1
-            artifact.close()
-            self._release_spool(reserved_spool_bytes)
+            try:
+                artifact.close()
+            finally:
+                self._release_spool(reserved_spool_bytes)
             raise
 
         def release_slot(_future: object) -> None:

@@ -53,6 +53,9 @@ ROUTER_NAME = "ledgerbridge.router"
 ROUTER_VERSION = "1"
 PROVENANCE_NAME = "ledgerbridge.provenance"
 PROVENANCE_VERSION = "1"
+# Transport/capacity loss is transient and must bubble to the dispatch worker
+# so it can retry the operation.  Connector/protocol errors remain terminal.
+RETRYABLE_RUNNER_ERROR_CODES = frozenset({"RUNNER_UNAVAILABLE"})
 logger = logging.getLogger(__name__)
 
 
@@ -282,6 +285,8 @@ class EvidenceImporter:
                 reason=reason,
             )
         except RunnerClientError as exc:
+            if exc.error_code in RETRYABLE_RUNNER_ERROR_CODES:
+                raise EvidenceIngestionError(exc.error_code, exc.summary) from exc
             return self._route_terminal(
                 artifact,
                 ImportJobStatus.FAILED,
@@ -681,6 +686,8 @@ class EvidenceImporter:
                 reason=reason,
             )
         except RunnerClientError as exc:
+            if exc.error_code in RETRYABLE_RUNNER_ERROR_CODES:
+                raise EvidenceIngestionError(exc.error_code, exc.summary) from exc
             return self._terminalize(
                 artifact,
                 job_id,

@@ -647,6 +647,81 @@ def test_untrusted_runner_error_code_is_terminalized_and_audited(
         )
 
 
+def test_runner_capacity_failure_bubbles_for_dispatch_retry(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+) -> None:
+    class UnavailableRunnerClient:
+        def detect(self, request: object, stream: ReadableBinary) -> DetectionResult:
+            del request, stream
+            raise RunnerClientError("RUNNER_UNAVAILABLE", "runner capacity is unavailable")
+
+        def parse(self, request: object, stream: ReadableBinary) -> tuple[ParsedSourceRecord, ...]:
+            del request, stream
+            return ()
+
+    connector = RunnerConnector(
+        "synthetic",
+        "1",
+        "synthetic",
+        UnavailableRunnerClient(),  # type: ignore[arg-type]
+    )
+    with pytest.raises(EvidenceIngestionError) as error:
+        importer.ingest_and_import(
+            io.BytesIO(b"temporary runner capacity failure"),
+            IngestMetadata(
+                source="synthetic_upload",
+                original_filename="runner.txt",
+                media_type="text/plain",
+            ),
+            [connector],  # type: ignore[list-item]
+            actor="pytest",
+            reason="runner capacity retry",
+        )
+
+    assert error.value.error_code == "RUNNER_UNAVAILABLE"
+    with admin_engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM import_job")).scalar_one() == 0
+
+
+def test_runner_capacity_during_parse_keeps_job_retryable(
+    importer: EvidenceImporter,
+    admin_engine: Engine,
+) -> None:
+    class UnavailableRunnerClient:
+        def detect(self, request: object, stream: ReadableBinary) -> DetectionResult:
+            del request, stream
+            return DetectionResult.MATCH
+
+        def parse(self, request: object, stream: ReadableBinary) -> tuple[ParsedSourceRecord, ...]:
+            del request, stream
+            raise RunnerClientError("RUNNER_UNAVAILABLE", "runner capacity is unavailable")
+
+    connector = RunnerConnector(
+        "synthetic",
+        "1",
+        "synthetic",
+        UnavailableRunnerClient(),  # type: ignore[arg-type]
+    )
+    with pytest.raises(EvidenceIngestionError) as error:
+        importer.ingest_and_import(
+            io.BytesIO(b"temporary parse capacity failure"),
+            IngestMetadata(
+                source="synthetic_upload",
+                original_filename="runner.txt",
+                media_type="text/plain",
+            ),
+            [connector],  # type: ignore[list-item]
+            actor="pytest",
+            reason="runner parse capacity retry",
+        )
+
+    assert error.value.error_code == "RUNNER_UNAVAILABLE"
+    with admin_engine.connect() as connection:
+        assert connection.execute(text("SELECT status FROM import_job")).scalar_one() == "RUNNING"
+        assert connection.execute(text("SELECT count(*) FROM audit_event")).scalar_one() == 0
+
+
 @pytest.mark.parametrize(
     ("field", "bad_text"),
     [

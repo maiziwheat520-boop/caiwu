@@ -54,6 +54,24 @@ class RunnerClientError(RuntimeError):
         self.summary = normalized_summary
 
 
+def _is_truncated_response(error: RunnerProtocolError) -> bool:
+    """Treat an EOF while waiting for a terminal response as transport loss.
+
+    The runner deliberately closes connections rejected before a control frame
+    is admitted, because it has no request id with which to send a terminal
+    frame.  Depending on socket timing, the client observes that close either
+    as ``OSError`` while sending or as a truncated response while reading.
+    Both observations represent the same retryable capacity failure; other
+    protocol errors must remain non-retryable.
+    """
+
+    return str(error) in {
+        "truncated frame header",
+        "truncated frame kind",
+        "truncated frame payload",
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class RunnerResult:
     terminal: RunnerTerminal
@@ -105,6 +123,10 @@ class ConnectorRunnerClient:
         except RunnerClientError:
             raise
         except RunnerProtocolError as exc:
+            if _is_truncated_response(exc):
+                raise RunnerClientError(
+                    "RUNNER_UNAVAILABLE", "connector runner unavailable"
+                ) from exc
             raise RunnerClientError(
                 "RUNNER_PROTOCOL", "runner protocol rejected the request"
             ) from exc

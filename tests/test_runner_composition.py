@@ -249,9 +249,9 @@ async def test_runner_timeout_keeps_execution_slot_until_connector_finishes() ->
             await asyncio.wait_for(first, timeout=0.01)
         assert first.cancelled()
 
-        with pytest.raises(RunnerExecutionError, match="timed out") as error:
+        with pytest.raises(RunnerExecutionError, match="capacity is unavailable") as error:
             await supervisor._execute_with_artifact_bounded(request, BytesIO(content))
-        assert error.value.error_code == "TIMEOUT"
+        assert error.value.error_code == "RUNNER_UNAVAILABLE"
         assert supervisor._active_executions == 1
 
         connector.release.set()
