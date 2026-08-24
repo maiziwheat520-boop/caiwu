@@ -167,7 +167,23 @@ def _read_stable_file(path: Path) -> bytes:
         if descriptor is not None:
             with contextlib.suppress(OSError):
                 os.close(descriptor)
-    if len(raw) > MAX_MANIFEST_BYTES or before != after:
+    before_identity = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    after_identity = (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if len(raw) > MAX_MANIFEST_BYTES or before_identity != after_identity:
         raise ManifestVerificationError("manifest file changed while reading")
     return raw
 
