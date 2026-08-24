@@ -520,6 +520,23 @@ ingestion require their later explicit gates.
   strict mypy, and targeted backup/S1 tests pass. The final remote content
   also includes the exact PostgreSQL function-signature allowlist used by the
   backup verifier.
-- No production bootstrap, reader enablement, merge, deployment, or real-data
-  access is authorized. Production KeyProvider, durable receipt wiring, mTLS,
-  Hermes replay, and HTTP decryptor injection remain closed gates.
+- No production bootstrap, reader enablement, deployment, or real-data access
+  is authorized. Production KeyProvider, durable receipt wiring, mTLS, Hermes
+  replay, and HTTP decryptor injection remain closed gates.
+
+## Protected main merge and first runnable demo (2026-08-25)
+
+- PR #19 (`R1/S1 Core reader and demo-ready foundation`) was merged through the
+  protected pull-request path as `1714a7866ea3e85789db42c4c5f9929ea7994b07`.
+  The merge preserves the production-disabled boundaries; no reader bootstrap,
+  mTLS, real KeyProvider, or real-data access was enabled.
+- `scripts/r1_synthetic_demo.py` is now a one-command, loopback-only walkthrough
+  of all six R1 internal-read GET routes. It uses only packaged synthetic data,
+  a fixed demo principal, and an in-process audit sink. `--check` exits after
+  exercising the routes and prints a machine-readable proof record; without the
+  flag it starts the local demo listener on `127.0.0.1:8651`.
+- Local evidence: `uv run --frozen --extra dev python
+  scripts/r1_synthetic_demo.py --check` returned six successful routes,
+  three candidates, one evidence audit event, and ledger total `SUPPLIES=-12345`.
+  The dedicated regression test passed. Main CI run `32758962228` was still
+  in progress at the time of this status update.
