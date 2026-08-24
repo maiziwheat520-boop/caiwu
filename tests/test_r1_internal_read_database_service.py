@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
@@ -10,7 +11,7 @@ import pytest
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from ledgerbridge.artifacts import ArtifactStore
+from ledgerbridge.artifacts import ArtifactStore, storage_key_for_digest
 from ledgerbridge.crypto import SecretStreamCipher, _parse_envelope
 from ledgerbridge.encrypted_artifacts import EncryptedArtifactStore
 from ledgerbridge.internal_read_contract import (
@@ -88,6 +89,16 @@ class _Session:
         raise AssertionError(f"unexpected SQL: {sql} / {params}")
 
 
+class _FakeDecryptor:
+    def __init__(self, content: bytes) -> None:
+        self.content = content
+
+    @contextmanager
+    def open_verified(self, artifact: object, *, envelope_metadata: object) -> Iterator[io.BytesIO]:
+        _ = artifact, envelope_metadata
+        yield io.BytesIO(self.content)
+
+
 def _principal() -> WorkloadPrincipal:
     return WorkloadPrincipal(
         principal_ref="workload:database-test",
@@ -120,6 +131,33 @@ def _service(session: _Session) -> DatabaseInternalReadService:
         return cast(Session, session)
 
     return DatabaseInternalReadService(factory)
+
+
+def _metadata_row() -> dict[str, Any]:
+    ciphertext_sha256 = b"c" * 32
+    return {
+        "evidence_ref": UUID("20000000-0000-4000-8000-000000000001"),
+        "entity_id": ENTITY,
+        "business_unit_id": BUSINESS_UNIT,
+        "business_unit_ref": "unit-demo-a",
+        "media_type": "application/octet-stream",
+        "display_name": "receipt.bin",
+        "object_ref": "a" * 64,
+        "plaintext_sha256": b"p" * 32,
+        "plaintext_size": 1,
+        "ciphertext_sha256": ciphertext_sha256,
+        "ciphertext_size": 1,
+        "storage_key": storage_key_for_digest(ciphertext_sha256),
+        "envelope_schema": "ledgerbridge.secretstream.v1",
+        "algorithm": "xchacha20poly1305-secretstream",
+        "chunk_size": 17,
+        "stream_header": b"h" * 24,
+        "wrapped_key_generation": "test",
+        "wrapped_key_nonce": b"n" * 24,
+        "wrapped_key_ciphertext": b"w" * 48,
+        "purpose": "ledgerbridge-artifact-v2",
+        "aad_scheme": "ledgerbridge.artifact.object.v2",
+    }
 
 
 def test_database_candidate_reader_uses_horizon_and_scoped_function() -> None:
@@ -166,6 +204,44 @@ def test_database_reader_rejects_ref_only_grants_before_querying_facts() -> None
     assert session.statements == []
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("entity_id", "not-a-uuid"),
+        ("evidence_ref", "not-a-uuid"),
+        ("plaintext_sha256", b"short"),
+        ("object_ref", "A" * 64),
+        ("business_unit_ref", ""),
+        ("storage_key", "sha256/00/00/not-canonical"),
+        ("media_type", "text/plain"),
+        ("display_name", "../unsafe"),
+        ("plaintext_size", -1),
+        ("ciphertext_size", 268435457),
+        ("envelope_schema", "other"),
+        ("algorithm", "other"),
+        ("chunk_size", 0),
+        ("stream_header", b"short"),
+        ("wrapped_key_generation", "bad generation"),
+        ("wrapped_key_nonce", b"short"),
+        ("wrapped_key_ciphertext", b"short"),
+        ("purpose", "other"),
+        ("aad_scheme", "other"),
+    ],
+)
+def test_database_evidence_metadata_parser_fails_closed(field: str, value: object) -> None:
+    row = _metadata_row()
+    row[field] = value
+    with pytest.raises(ValueError):
+        DatabaseInternalReadService._evidence_metadata(row)
+
+
+def test_database_evidence_metadata_uses_safe_default_filename() -> None:
+    row = _metadata_row()
+    row["display_name"] = None
+    metadata = DatabaseInternalReadService._evidence_metadata(row)
+    assert metadata.filename == "evidence-20000000000040008000000000000001.bin"
+
+
 def test_database_reader_keeps_evidence_closed_without_decryptor() -> None:
     service = _service(_Session({}))
     principal = _principal()
@@ -202,6 +278,50 @@ def test_database_ledger_summary_projects_posted_category_totals() -> None:
     )
     assert summary.totals_minor == {"SUPPLIES": -12345}
     assert any("get_ledger_summary_as_of" in statement for statement in session.statements)
+
+
+def _ledger_principal() -> WorkloadPrincipal:
+    return _principal().model_copy(update={"capabilities": frozenset({Capability.LEDGER_READ})})
+
+
+def _ledger_row(**updates: object) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "entity_ref": ENTITY,
+        "business_unit_ref": "unit-demo-a",
+        "from_month": "2026-08",
+        "to_month": "2026-08",
+        "posting_status": "POSTED",
+        "currency": "CNY",
+        "category_code": "SUPPLIES",
+        "amount_minor": -12345,
+    }
+    row.update(updates)
+    return row
+
+
+def test_database_ledger_summary_rejects_bad_rows_and_database_errors() -> None:
+    for row in (
+        _ledger_row(entity_ref=UUID("10000000-0000-4000-8000-000000000002")),
+        _ledger_row(amount_minor="not-an-int"),
+        _ledger_row(category_code=""),
+        _ledger_row(amount_minor=10**30),
+    ):
+        with pytest.raises(InternalReadBackendUnavailable):
+            _service(_Session({}, ledger_rows=[row])).get_ledger_summary(
+                _ledger_principal(),
+                entity_ref=ENTITY,
+                business_unit_ref="unit-demo-a",
+                from_month="2026-08",
+                to_month="2026-08",
+            )
+    with pytest.raises(InternalReadBackendUnavailable, match="read failed"):
+        _service(_Session({}, fail=True)).get_ledger_summary(
+            _ledger_principal(),
+            entity_ref=ENTITY,
+            business_unit_ref="unit-demo-a",
+            from_month="2026-08",
+            to_month="2026-08",
+        )
 
 
 def test_database_evidence_decryptor_returns_verified_content(tmp_path: Any) -> None:
@@ -323,6 +443,49 @@ def test_database_evidence_rejects_noncanonical_storage_key(tmp_path: Any) -> No
     )
     with pytest.raises(InternalReadBackendUnavailable, match="payload is invalid"):
         service.get_evidence(_principal(), UUID("20000000-0000-4000-8000-000000000001"))
+
+
+def test_database_evidence_missing_and_identity_drift_are_not_decrypted() -> None:
+    decryptor = cast(Any, object())
+    missing = DatabaseInternalReadService(
+        lambda: cast(Session, _Session({})), encrypted_artifact_store=decryptor
+    )
+    with pytest.raises(ResourceNotVisible, match="resource was not found"):
+        missing.get_evidence(_principal(), UUID("20000000-0000-4000-8000-000000000001"))
+
+    row = _metadata_row()
+    row["evidence_ref"] = UUID("20000000-0000-4000-8000-000000000002")
+    drifted = DatabaseInternalReadService(
+        lambda: cast(Session, _Session({}, evidence_row=row)),
+        encrypted_artifact_store=decryptor,
+    )
+    with pytest.raises(InternalReadBackendUnavailable, match="identity"):
+        drifted.get_evidence(_principal(), UUID("20000000-0000-4000-8000-000000000001"))
+
+    failed = DatabaseInternalReadService(
+        lambda: cast(Session, _Session({}, fail=True)), encrypted_artifact_store=decryptor
+    )
+    with pytest.raises(InternalReadBackendUnavailable, match="read failed"):
+        failed.get_evidence(_principal(), UUID("20000000-0000-4000-8000-000000000001"))
+
+
+def test_database_evidence_scope_and_plaintext_drift_fail_closed() -> None:
+    row = _metadata_row()
+    row["business_unit_id"] = UUID("11000000-0000-4000-8000-000000000002")
+    scope_drift = DatabaseInternalReadService(
+        lambda: cast(Session, _Session({}, evidence_row=row)),
+        encrypted_artifact_store=cast(Any, object()),
+    )
+    with pytest.raises(InternalReadBackendUnavailable, match="scope binding"):
+        scope_drift.get_evidence(_principal(), row["evidence_ref"])
+
+    row = _metadata_row()
+    plaintext_drift = DatabaseInternalReadService(
+        lambda: cast(Session, _Session({}, evidence_row=row)),
+        encrypted_artifact_store=cast(Any, _FakeDecryptor(b"x")),
+    )
+    with pytest.raises(InternalReadBackendUnavailable, match="plaintext"):
+        plaintext_drift.get_evidence(_principal(), row["evidence_ref"])
 
 
 def test_database_candidate_reader_issues_and_verifies_a_keyset_cursor() -> None:
