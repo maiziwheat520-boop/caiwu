@@ -73,7 +73,7 @@ jobs:
       - run: >-
           psql -h localhost -U ledgerbridge_admin -d template1
           -v ON_ERROR_STOP=1
-          -c "GRANT USAGE, CREATE ON SCHEMA public TO ledgerbridge_owner; GRANT USAGE, CREATE ON SCHEMA public TO pg_database_owner; ALTER SCHEMA public OWNER TO pg_database_owner"
+          -c "REVOKE CREATE ON SCHEMA public FROM PUBLIC; GRANT USAGE, CREATE ON SCHEMA public TO pg_database_owner; ALTER SCHEMA public OWNER TO pg_database_owner"
       - run: >-
           psql -h localhost -U ledgerbridge_admin -d postgres
           -v ON_ERROR_STOP=1

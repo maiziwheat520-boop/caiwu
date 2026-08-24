@@ -2230,6 +2230,18 @@ def test_runtime_role_split_restricted_owner_validates_bootstrap_contract(
         )
         rendered = temporary_url.render_as_string(hide_password=False)
         restricted_rendered = restricted_url.render_as_string(hide_password=False)
+        temporary_admin_engine = create_engine(admin_url.set(database=database_name))
+        with temporary_admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "GRANT USAGE, CREATE ON SCHEMA public TO "
+                    f"{_quote_identifier(source_owner_name)}"
+                )
+            )
+            connection.execute(
+                text(f"ALTER SCHEMA public OWNER TO {_quote_identifier(source_owner_name)}")
+            )
+        temporary_admin_engine.dispose()
         _run_alembic(rendered, "20260823_0005")
 
         # Transfer the disposable migration objects to the restricted owner.
