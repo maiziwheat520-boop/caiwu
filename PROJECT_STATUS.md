@@ -554,6 +554,9 @@ ingestion require their later explicit gates.
   injection. It records the receipt after descriptor-bound decryption and
   plaintext digest verification, before returning evidence bytes; any sink
   failure is converted to a fail-closed backend-unavailable error.
+- The receipt binds the verified workload `policy_generation`; the envelope's
+  external key generation remains separately verified by the decryptor and is
+  not substituted into the audit policy field.
 - This is not production wiring: the default route composition remains
   unchanged, no reader bootstrap or production KeyProvider was added, and no
   real evidence was read. Focused audit/database-reader tests pass **48**.

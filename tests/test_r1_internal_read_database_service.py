@@ -414,7 +414,7 @@ def test_database_evidence_receipt_is_required_before_returning_content(tmp_path
     result = service.get_evidence(_principal(), row["evidence_ref"])
     assert result.content == b"verified-evidence"
     assert sink.receipts[0].blob_ref == row["blob_ref"]
-    assert sink.receipts[0].key_generation == "test"
+    assert sink.receipts[0].policy_generation == "1"
 
     class FailingSink:
         def append(self, _receipt: Any) -> None:

@@ -685,7 +685,7 @@ class DatabaseInternalReadService:
                         EvidenceReadReceipt(
                             principal_ref=principal.principal_ref,
                             principal_san_uri=principal.san_uri,
-                            key_generation=metadata.envelope_metadata.wrapped_key.generation,
+                            policy_generation=str(principal.policy_generation),
                             evidence_ref=metadata.evidence_ref,
                             entity_ref=metadata.entity_ref,
                             business_unit_id=metadata.business_unit_id,
