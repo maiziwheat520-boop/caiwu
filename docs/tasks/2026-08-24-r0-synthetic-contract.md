@@ -1,7 +1,7 @@
 # R0 synthetic Core contract
 
-日期：2026-08-24  
-结论：实现完成，待独立复核；未接线、未部署、未启用真实数据
+日期：2026-08-24
+结论：实现完成，独立复核通过；未接线、未部署、未启用真实数据
 
 ## 交付物
 
@@ -19,7 +19,7 @@
 - `docs/contracts/internal-read-v1.openapi.yaml` 是独立的 Core 内部 OpenAPI 3.1
   合同。它只包含规定的六类 GET 和 `mutualTLS` security scheme，不含浏览器
   cookie、CORS、写方法或通用查询。
-- `r0_contract_fixture.json` 和两份小型 evidence 文件全部为固定合成数据，覆盖六种
+- `r0_contract_fixture.json` 和三份小型 evidence 文件全部为固定合成数据，覆盖六种
   candidate 状态、两组 entity/营业单元、Hermes 三平台、Outlook、整数分币边界、
   POSTED 与非 POSTED 账簿数据、普通文本及活动 MIME 降级。fixture 中摘要、长度和
   实际 bytes 一致。
@@ -46,6 +46,5 @@
 - `tests/test_r0_internal_read_contract.py`：只读 OpenAPI、capability 非传递、worker/
   reviewer/supervisor 分权、mTLS 测试身份 fail-closed、entity/营业单元对象范围、
   evidence digest/MIME 和 POSTED-only 合成账簿汇总。
-- 定向测试、Ruff、strict mypy 与 Bandit 已通过；完整项目回归和独立审查结果在提交
-  前补入本任务卡。
-
+- 定向测试、Ruff、strict mypy 与 Bandit 已通过；完整项目回归通过。独立审查确认
+  无 BLOCKER/HIGH，且并行任务的迁移、Review API 与部署改动未进入 R0 提交。

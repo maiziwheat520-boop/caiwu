@@ -12,7 +12,7 @@ from enum import StrEnum
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ledgerbridge.candidate_contract import (
     JSON_SAFE_INTEGER,
@@ -148,6 +148,12 @@ class LedgerSummary(_FrozenModel):
     posting_status: Literal["POSTED"] = "POSTED"
     currency: Literal["CNY"] = "CNY"
     totals_minor: dict[str, ReadMoneyMinor]
+
+    @model_validator(mode="after")
+    def validate_month_order(self) -> LedgerSummary:
+        if self.from_month > self.to_month:
+            raise ValueError("from_month must be less than or equal to to_month")
+        return self
 
 
 class EntityGrant(_FrozenModel):

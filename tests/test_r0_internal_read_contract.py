@@ -296,6 +296,10 @@ def test_fixture_supports_object_scope_and_posted_only_summary() -> None:
     assert reconciliation.suspense[0].status == "OPEN"
     assert ledger.posting_status == "POSTED"
     assert ledger.totals_minor == {"SUPPLIES": -12345}
+    with pytest.raises(ValueError, match="from_month must be less than or equal to to_month"):
+        LedgerSummary.model_validate(
+            responses["ledger_summary"] | {"from_month": "2026-09", "to_month": "2026-08"}
+        )
 
     document = yaml.safe_load(OPENAPI.read_text(encoding="utf-8"))
     evidence_content = document["paths"]["/internal/v1/evidence/{id}/content"]["get"]["responses"][
@@ -308,6 +312,8 @@ def test_fixture_supports_object_scope_and_posted_only_summary() -> None:
     schemas = document["components"]["schemas"]
     assert schemas["ReconciliationProposal"]["additionalProperties"] is False
     assert schemas["SuspenseProjection"]["additionalProperties"] is False
+    ledger_parameters = document["paths"]["/internal/v1/ledger-summary"]["get"]["parameters"]
+    assert "must be greater than or equal to from_month" in ledger_parameters[-1]["description"]
 
 
 def test_capabilities_response_contract_has_no_deployment_details() -> None:
