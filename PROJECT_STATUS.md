@@ -393,7 +393,8 @@ ingestion require their later explicit gates.
   `SECURITY DEFINER SET search_path = pg_catalog` functions.  Reader has no public
   base-table, sequence, or append-audit access; runtime write roles have no
   internal-read access.
-- WSL disposable PostgreSQL R1 migration suite: **11 passed**.  Ruff, strict mypy,
-  offline lock, Bandit, and diff-check pass.  Hosted CI still needs to validate the
-  new reader bootstrap on the next push.
+- Disposable Hermes PostgreSQL 15 R1 migration suite: **14 passed** after final
+  hardening.  Windows full suite is **472 passed / 155 skipped / 1 warning**;
+  Ruff format/check, strict mypy, offline lock, Bandit, and diff-check pass.
+  Commit `67fcc7c` is pushed; Hosted CI run `32718742603` is in progress.
 - No merge, production role migration, real data read, or deployment is authorized.
