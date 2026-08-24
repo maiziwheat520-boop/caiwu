@@ -10,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ledgerbridge.internal_read_contract import (
+    CandidatePage,
     Capability,
     EntityGrant,
     ResourceNotVisible,
@@ -261,3 +262,105 @@ def test_database_reader_rejects_malformed_horizon_and_unbound_business_unit() -
         _service(_Session({})).get_reconciliation(
             unbound, month="2026-08", entity_ref=ENTITY, business_unit_ref="unit-demo-a"
         )
+
+
+def test_database_reader_rejects_multiple_scopes_and_missing_cursor_signer() -> None:
+    multi = _principal().model_copy(
+        update={
+            "grants": (
+                EntityGrant(
+                    entity_ref=ENTITY,
+                    business_unit_refs=frozenset({"unit-demo-a", "unit-demo-b"}),
+                    business_unit_ids=frozenset(
+                        {BUSINESS_UNIT, UUID("11000000-0000-4000-8000-000000000002")}
+                    ),
+                    business_unit_bindings=(
+                        ("unit-demo-a", BUSINESS_UNIT),
+                        ("unit-demo-b", UUID("11000000-0000-4000-8000-000000000002")),
+                    ),
+                ),
+            )
+        }
+    )
+    with pytest.raises(InternalReadBackendUnavailable, match="one bound"):
+        _service(_Session({})).list_candidates(multi)
+
+    unassigned = _principal().model_copy(
+        update={
+            "grants": (
+                _principal().grants[0].model_copy(update={"allow_unassigned_candidates": True}),
+            )
+        }
+    )
+    with pytest.raises(InternalReadBackendUnavailable, match="multiple scopes"):
+        _service(_Session({})).list_candidates(unassigned)
+
+    with pytest.raises(InternalReadBackendUnavailable, match="signed cursor"):
+        _service(_Session({})).list_candidates(_principal(), cursor="invalid")
+
+
+def test_database_reader_verifies_cursor_and_row_scope_before_returning() -> None:
+    candidate = SyntheticInternalReadService()._fixture.candidates[1]
+    row = candidate.model_dump()
+    row["entity_ref"] = ENTITY
+    row["business_unit_ref"] = "unit-demo-a"
+    session = _Session(row)
+    signer = ReadCursorSigner("k" * 32)
+    principal = _principal()
+    token = signer.issue(
+        principal,
+        month=None,
+        status=None,
+        business_unit=None,
+        horizon_sequence=7,
+        horizon_hash=b"h" * 32,
+        last_created_at=datetime(2026, 8, 23, tzinfo=UTC),
+        last_candidate_id=UUID("30000000-0000-4000-8000-000000000001"),
+    )
+    page = DatabaseInternalReadService(lambda: cast(Session, session), signer).list_candidates(
+        principal, cursor=token
+    )
+    assert len(page.items) == 1
+
+    row["business_unit_ref"] = "unit-demo-b"
+    with pytest.raises(InternalReadBackendUnavailable, match="scope binding"):
+        DatabaseInternalReadService(lambda: cast(Session, _Session(row)), signer).list_candidates(
+            principal
+        )
+
+
+def test_database_reader_scans_past_nonmatching_month_rows() -> None:
+    template = SyntheticInternalReadService()._fixture.candidates[1].model_dump()
+    rows = [dict(template) for _ in range(101)]
+    for index, row in enumerate(rows):
+        row["candidate_ref"] = UUID(f"30000000-0000-4000-8000-{index + 200:012d}")
+
+    class PagedSession(_Session):
+        calls = 0
+
+        def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Result:
+            if "list_candidates_as_of" in str(statement):
+                self.calls += 1
+                return _Result(rows if self.calls == 1 else [])
+            return super().execute(statement, params)
+
+    session = PagedSession(rows[0])
+    page = _service(session).list_candidates(_principal(), month="2026-09")
+    assert page.items == ()
+    assert session.calls == 2
+
+
+def test_database_candidate_detail_follows_issued_cursors() -> None:
+    candidate = SyntheticInternalReadService()._fixture.candidates[1]
+
+    class PagedService(DatabaseInternalReadService):
+        calls = 0
+
+        def list_candidates(self, principal: WorkloadPrincipal, **kwargs: Any) -> CandidatePage:
+            self.calls += 1
+            if self.calls == 1:
+                return CandidatePage(items=(), next_cursor="next")
+            return CandidatePage(items=(candidate,))
+
+    service = PagedService(lambda: cast(Session, _Session({})), ReadCursorSigner("k" * 32))
+    assert service.get_candidate(_principal(), candidate.candidate_ref) == candidate
