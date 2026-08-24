@@ -30,3 +30,21 @@ uv run --frozen --extra dev pytest -q tests/test_r1_synthetic_demo.py
 This is a demo/test boundary only. It is not an authentication deployment,
 does not provide production audit durability, and must not be pointed at real
 data.
+
+## Provenance
+
+- The demo launcher and regression test were developed locally on
+  `codex/r1-synthetic-demo`, introduced in `f53a8d0`; the initial task record
+  was documented in `551277f`.
+- The protected R1/S1 baseline is [PR #19](https://github.com/maiziwheat520-boop/caiwu/pull/19),
+  merged as `1714a7866ea3e85789db42c4c5f9929ea7994b07` from feature head
+  `4d9ed117d11503a0c29f702ce5de13b504578433`. Its [Hosted run
+  `32758962228`](https://github.com/maiziwheat520-boop/caiwu/actions/runs/32758962228)
+  finalized as `completed/success`.
+- The demo was delivered through [PR #20](https://github.com/maiziwheat520-boop/caiwu/pull/20),
+  merged into protected `main` as `3122610236755294eeac505d7e2bee47a4f97a69`
+  from head `aed3ce6df5368275494daf7ffabedd38f0d90225`. Its [Hosted run
+  `32759774150`](https://github.com/maiziwheat520-boop/caiwu/actions/runs/32759774150)
+  is `completed/success`; `secrets`, `quality`, and `compose` all succeeded.
+- The local proof above is reproducible evidence for the synthetic-only demo;
+  it is separate from, and does not expand, the production deployment gate.
