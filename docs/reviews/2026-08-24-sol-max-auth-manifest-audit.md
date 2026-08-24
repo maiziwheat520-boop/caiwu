@@ -114,8 +114,9 @@ assert p1.actor == p2.actor == "idp/a/b"
 
 too_long = AuthenticatedPrincipal(provider="p" * 64, subject="s" * 136, **common)
 assert len(too_long.actor) == 201
-assert authorize_principal(too_long, "evidence:write",
-                           expected_policy_generation="policy-1", now=now)
+assert authorize_principal(
+    too_long, "evidence:write", expected_policy_generation="policy-1", now=now
+)
 
 control_text = AuthenticatedPrincipal(provider="idp\nforged", subject="user", **common)
 assert "\n" in control_text.actor
