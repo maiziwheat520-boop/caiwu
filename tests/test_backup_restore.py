@@ -276,6 +276,7 @@ def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
                     "insert": False,
                     "update": False,
                     "delete": False,
+                    "truncate": False,
                     "references": False,
                     "trigger": False,
                 }
@@ -291,6 +292,7 @@ def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
                     "insert": False,
                     "update": False,
                     "delete": False,
+                    "truncate": False,
                     "references": False,
                     "trigger": False,
                 }
@@ -305,6 +307,7 @@ def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
                 "insert": False,
                 "update": False,
                 "delete": False,
+                "truncate": False,
                 "references": False,
                 "trigger": False,
             }
@@ -679,6 +682,23 @@ def test_r1_database_metadata_matches_receipt_writer_acl_matrix() -> None:
     }
     with pytest.raises(BackupError, match="fact table"):
         _validate_restored_database(api_receipt_write_drift, api_receipt_write_drift.copy())
+
+
+def test_r1_database_metadata_rejects_truncate_privilege() -> None:
+    expected = _r1_database_metadata()
+    drifted = {
+        **expected,
+        "r1_effective_table_privileges": [
+            {**row, "truncate": True}
+            if row.get("role") == "ledgerbridge_api"
+            and row.get("schema") == "internal_read"
+            and row.get("object") == "evidence_read_receipt"
+            else row
+            for row in cast(list[dict[str, object]], expected["r1_effective_table_privileges"])
+        ],
+    }
+    with pytest.raises(BackupError, match="fact table"):
+        _validate_restored_database(drifted, drifted.copy())
 
 
 def test_r1_security_sql_and_verifier_cover_optional_backup_role() -> None:

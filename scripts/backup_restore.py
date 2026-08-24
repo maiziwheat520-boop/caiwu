@@ -530,6 +530,7 @@ WITH expected_roles(role_name) AS (
         'insert', has_table_privilege(e.role_name::text, format('%I.%I', o.schema_name, o.object_name), 'INSERT'),
         'update', has_table_privilege(e.role_name::text, format('%I.%I', o.schema_name, o.object_name), 'UPDATE'),
         'delete', has_table_privilege(e.role_name::text, format('%I.%I', o.schema_name, o.object_name), 'DELETE'),
+        'truncate', has_table_privilege(e.role_name::text, format('%I.%I', o.schema_name, o.object_name), 'TRUNCATE'),
         'references', has_table_privilege(e.role_name::text, format('%I.%I', o.schema_name, o.object_name), 'REFERENCES'),
         'trigger', has_table_privilege(e.role_name::text, format('%I.%I', o.schema_name, o.object_name), 'TRIGGER')
     ) ORDER BY e.role_name, o.schema_name, o.object_name), '[]'::json) AS value
@@ -2074,7 +2075,15 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
     }
     if len(actual_keys) != len(table_privileges) or actual_keys != expected_keys:
         raise BackupError("restored R1 effective table privilege matrix is incomplete")
-    privilege_names = ("select", "insert", "update", "delete", "references", "trigger")
+    privilege_names = (
+        "select",
+        "insert",
+        "update",
+        "delete",
+        "truncate",
+        "references",
+        "trigger",
+    )
     for item in table_privileges:
         role = item.get("role")
         schema = item.get("schema")
