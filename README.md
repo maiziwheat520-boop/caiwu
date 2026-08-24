@@ -26,7 +26,10 @@ and release-readiness hardening through `e2c31be`, including forward migration
 Connector is registered. Phase 4 framework commit `bbe776f` adds a default-disabled,
 fail-closed Microsoft Graph provider adapter and explicit Connector factory
 registry; it still has no OAuth client, manifest, real parser, or production
-switch. The deployed service remains on Slice A with no real evidence imported.
+switch. The current Phase 5 framework adds side-effect-free deduplication,
+zero-sum reconciliation proposals, and explicit Suspense resolution contracts;
+it also has no persistence or production switch. The deployed service remains
+on Slice A with no real evidence imported.
 See [PROJECT_STATUS.md](PROJECT_STATUS.md) and
 [docs/architecture/IMPLEMENTATION_BASELINE.md](docs/architecture/IMPLEMENTATION_BASELINE.md).
 
