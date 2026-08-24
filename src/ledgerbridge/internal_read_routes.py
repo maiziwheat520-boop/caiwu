@@ -44,6 +44,7 @@ from ledgerbridge.internal_read_contract import (
     authorize_read,
     require_capability,
 )
+from ledgerbridge.internal_read_cursor import CursorInvalid, ReadCursorSigner
 from ledgerbridge.internal_read_service import (
     DatabaseInternalReadService,
     InternalReadBackendUnavailable,
@@ -103,6 +104,8 @@ class InternalReadRoute(APIRoute):
                 return response
             except InternalReadProblem as exc:
                 return _problem_response(exc.status_code, exc.code)
+            except CursorInvalid:
+                return _problem_response(status.HTTP_400_BAD_REQUEST, "INVALID_QUERY")
             except AuthenticationDenied:
                 return _problem_response(status.HTTP_401_UNAUTHORIZED, "AUTH_REQUIRED")
             except AuthorizationDenied:
@@ -171,8 +174,12 @@ def get_synthetic_internal_read_service(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> SyntheticInternalReadService | DatabaseInternalReadService:
     if settings.internal_read_backend == "database":
+        cursor_key = settings.internal_read_cursor_key
+        if cursor_key is None:
+            raise InternalReadBackendUnavailable("signed cursor key is unavailable")
         return DatabaseInternalReadService(
-            get_session_factory(settings.resolved_reader_database_url())
+            get_session_factory(settings.resolved_reader_database_url()),
+            ReadCursorSigner(cursor_key),
         )
     return SyntheticInternalReadService()
 
@@ -182,6 +189,7 @@ class _CandidateListParams:
     month: str | None
     status: CandidateStatus | None
     business_unit: str | None
+    cursor: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,14 +216,14 @@ def _parse_candidate_list_params(request: Request) -> _CandidateListParams:
         request,
         allowed=frozenset({"month", "status", "business_unit", "cursor"}),
     )
-    if "cursor" in query:
-        # The bounded R1 fixture never issues a cursor, so accepting one would
-        # create an unverified integrity/scope binding contract.
+    cursor = query.get("cursor")
+    if cursor is not None and not 1 <= len(cursor) <= 512:
         raise InternalReadProblem(status.HTTP_400_BAD_REQUEST, "INVALID_QUERY")
     return _CandidateListParams(
         month=_optional_month(query, "month"),
         status=_optional_candidate_status(query, "status"),
         business_unit=_optional_business_unit(query, "business_unit"),
+        cursor=cursor,
     )
 
 
@@ -326,11 +334,14 @@ def list_candidates(
     service: Service,
 ) -> CandidatePage:
     authorize_collection_read(principal, Capability.CANDIDATE_READ)
+    if params.cursor is not None and not isinstance(service, DatabaseInternalReadService):
+        raise InternalReadProblem(status.HTTP_400_BAD_REQUEST, "INVALID_QUERY")
     return service.list_candidates(
         principal,
         month=params.month,
         status=params.status,
         business_unit=params.business_unit,
+        cursor=params.cursor,
     )
 
 

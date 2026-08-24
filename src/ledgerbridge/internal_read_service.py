@@ -35,6 +35,7 @@ from ledgerbridge.internal_read_contract import (
     require_candidate_visible_scope,
     require_capability,
 )
+from ledgerbridge.internal_read_cursor import CursorInvalid, ReadCursorSigner
 
 _RESOURCE_PACKAGE = "ledgerbridge.synthetic_read_data"
 _FIXTURE_NAME = "r0_contract_fixture.json"
@@ -193,8 +194,11 @@ class SyntheticInternalReadService:
         month: str | None = None,
         status: CandidateStatus | None = None,
         business_unit: str | None = None,
+        cursor: str | None = None,
     ) -> CandidatePage:
         authorize_collection_read(principal, Capability.CANDIDATE_READ)
+        if cursor is not None:
+            raise ValueError("synthetic reader does not accept cursors")
         if month is not None:
             _validate_month(month)
         if business_unit is not None and not (1 <= len(business_unit) <= 100):
@@ -382,8 +386,13 @@ class DatabaseInternalReadService:
     until their reviewed application boundary is installed.
     """
 
-    def __init__(self, session_factory: Callable[[], Session]) -> None:
+    def __init__(
+        self,
+        session_factory: Callable[[], Session],
+        cursor_signer: ReadCursorSigner | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        self._cursor_signer = cursor_signer
 
     def capabilities(self, principal: WorkloadPrincipal) -> CapabilitiesResponse:
         authorize_read(principal, Capability.SYSTEM_READ)
@@ -399,6 +408,7 @@ class DatabaseInternalReadService:
         month: str | None = None,
         status: CandidateStatus | None = None,
         business_unit: str | None = None,
+        cursor: str | None = None,
     ) -> CandidatePage:
         authorize_collection_read(principal, Capability.CANDIDATE_READ)
         if month is not None:
@@ -411,9 +421,32 @@ class DatabaseInternalReadService:
                     "database grants must include immutable business-unit UUIDs"
                 )
 
+        if cursor is not None and self._cursor_signer is None:
+            raise InternalReadBackendUnavailable("signed cursor key is unavailable")
         try:
             with self._session_factory() as session:
-                sequence, horizon_hash = self._audit_horizon(session)
+                if cursor is None:
+                    sequence, horizon_hash = self._audit_horizon(session)
+                    last_created_at = None
+                    last_candidate_id = None
+                else:
+                    try:
+                        assert self._cursor_signer is not None
+                        cursor_claims = self._cursor_signer.verify(
+                            cursor,
+                            principal,
+                            month=month,
+                            status=status.value if status is not None else None,
+                            business_unit=business_unit,
+                        )
+                    except AssertionError as exc:
+                        raise InternalReadBackendUnavailable(
+                            "signed cursor key is unavailable"
+                        ) from exc
+                    sequence = cursor_claims["horizon_sequence"]
+                    horizon_hash = cursor_claims["horizon_hash"]
+                    last_created_at = cursor_claims["last_created_at"]
+                    last_candidate_id = cursor_claims["last_candidate_id"]
                 rows: list[Mapping[str, object]] = []
                 seen: set[UUID] = set()
                 for grant in principal.grants:
@@ -429,8 +462,8 @@ class DatabaseInternalReadService:
                             "status": status.value if status is not None else None,
                             "horizon_sequence": sequence,
                             "horizon_hash": horizon_hash,
-                            "last_created_at": None,
-                            "last_candidate_id": None,
+                            "last_created_at": last_created_at,
+                            "last_candidate_id": last_candidate_id,
                             "limit": 100,
                         }
                         result = session.execute(
@@ -460,13 +493,33 @@ class DatabaseInternalReadService:
                             seen.add(candidate.candidate_ref)
                             rows.append(row_map)
                 candidates = [self._candidate(row) for row in rows]
-        except InternalReadBackendUnavailable:
+        except (InternalReadBackendUnavailable, CursorInvalid):
             raise
         except (SQLAlchemyError, ValueError, TypeError, KeyError) as exc:
             raise InternalReadBackendUnavailable("database candidate read failed") from exc
 
         candidates.sort(key=lambda item: (item.created_at, item.candidate_ref.int))
-        return CandidatePage(items=tuple(candidates[:100]), next_cursor=None)
+        has_more = len(candidates) > 100
+        page_items = tuple(candidates[:100])
+        next_cursor = None
+        if has_more:
+            if self._cursor_signer is None:
+                raise InternalReadBackendUnavailable("signed cursor key is unavailable")
+            boundary = page_items[-1]
+            try:
+                next_cursor = self._cursor_signer.issue(
+                    principal,
+                    month=month,
+                    status=status.value if status is not None else None,
+                    business_unit=business_unit,
+                    horizon_sequence=sequence,
+                    horizon_hash=horizon_hash,
+                    last_created_at=boundary.created_at,
+                    last_candidate_id=boundary.candidate_ref,
+                )
+            except CursorInvalid as exc:
+                raise InternalReadBackendUnavailable("signed cursor could not be issued") from exc
+        return CandidatePage(items=page_items, next_cursor=next_cursor)
 
     def get_candidate(
         self,

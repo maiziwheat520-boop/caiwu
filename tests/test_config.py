@@ -83,6 +83,7 @@ def test_internal_read_api_is_generation_bound_and_reader_url_is_explicit(tmp_pa
         artifact_root=tmp_path.resolve(),
         enable_internal_read_api=True,
         internal_read_backend="database",
+        internal_read_cursor_key="k" * 32,
         internal_read_policy_generation=7,
     )
     assert database_reader.resolved_reader_database_url().endswith("/app")
@@ -135,7 +136,14 @@ def test_mail_provider_defaults_disabled_and_bounded(tmp_path: Path) -> None:
 
 def test_database_role_urls_fallback_outside_production_and_split_in_production(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    for variable in (
+        "LEDGERBRIDGE_API_DATABASE_URL",
+        "LEDGERBRIDGE_WORKER_DATABASE_URL",
+        "LEDGERBRIDGE_READER_DATABASE_URL",
+    ):
+        monkeypatch.delenv(variable, raising=False)
     shared = "sqlite+pysqlite:///:memory:"
     settings = Settings(database_url=shared, artifact_root=tmp_path.resolve())
     assert settings.resolved_api_database_url() == shared

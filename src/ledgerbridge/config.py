@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     enable_internal_async_dispatch: bool = False
     enable_internal_read_api: bool = False
     internal_read_backend: Literal["synthetic", "database"] = "synthetic"
+    internal_read_cursor_key: str | None = Field(default=None, min_length=32, max_length=256)
     enable_internal_read_persistent_audit: bool = False
     enable_review_api: bool = False
     enable_real_ingest: bool = False
@@ -83,6 +84,10 @@ class Settings(BaseSettings):
             if self.internal_read_backend == "database" and self.reader_database_url is None:
                 raise ValueError(
                     "reader_database_url is required when internal_read_backend=database"
+                )
+            if self.internal_read_backend == "database" and self.internal_read_cursor_key is None:
+                raise ValueError(
+                    "internal_read_cursor_key is required when internal_read_backend=database"
                 )
         if self.enable_internal_read_persistent_audit:
             if self.env == "production":

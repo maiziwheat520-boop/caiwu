@@ -14,6 +14,10 @@
   horizon、策略 UUID 绑定异常时 fail closed。
 - `EntityGrant` 保留 HTTP 使用的营业单元 stable ref，同时可携带不可变 UUID；数据库
   reader 拒绝仅有字符串 ref 的 grant，避免应用层通过宽表解析权限。
+- 新增 HMAC + 压缩 canonical JSON cursor。cursor 绑定 contract、principal 摘要、策略
+  代次、grant 摘要、过滤条件、审计 horizon 和 `(created_at, candidate_ref)` 边界；
+  验签失败为 400，过期/权限变更不会静默刷新 horizon。合成 backend 继续拒绝非空
+  cursor。
 - Evidence content 仍等待已审核的 S1 decryptor/ArtifactStore 边界；LedgerSummary
   仍等待带 scope/horizon 的专用聚合函数。两者在数据库 backend 下返回固定 503，
   不降级到宽表或文件系统读取。
@@ -22,7 +26,8 @@
 
 - 新增数据库 reader 单元测试覆盖 horizon 固定、函数调用、无 `public.*` SQL、UUID
   绑定和未完成边界的 fail-closed 行为。
-- Windows 全量：`478 passed, 189 skipped, 1 warning`。
+- Windows 定向 cursor/reader 回归：`39 passed, 1 warning`；上一轮 Windows 全量：
+  `478 passed, 189 skipped, 1 warning`。
 - Ruff check、strict mypy、compileall 通过；未连接生产数据库、未创建 reader 凭据、
   未启用生产路由或真实数据读取。
 

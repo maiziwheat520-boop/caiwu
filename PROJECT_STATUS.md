@@ -13,6 +13,9 @@ Evidence decryption and LedgerSummary remain fixed 503 gates until the reviewed
 S1 decryptor and scoped aggregate function exist. No reader credential, real
 data, Hermes production change, merge, or deployment was performed. See
 `docs/tasks/2026-08-24-r1-database-core-read-adapter.md`.
+The adapter also now has a compressed, HMAC-signed keyset cursor bound to the
+principal/grant digest, normalized filters, and immutable audit horizon; the
+synthetic backend continues to reject cursors.
 
 ## Current phase
 

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
+from sqlalchemy.orm import Session
 
 from ledgerbridge.internal_read_contract import (
     Capability,
@@ -75,13 +76,23 @@ def _principal() -> WorkloadPrincipal:
     )
 
 
+def _service(session: _Session) -> DatabaseInternalReadService:
+    # The production adapter depends only on the small context-manager/execute
+    # surface exercised here; cast the fake to SQLAlchemy's runtime factory
+    # type without making the fixture inherit a live database session.
+    def factory() -> Session:
+        return cast(Session, session)
+
+    return DatabaseInternalReadService(factory)
+
+
 def test_database_candidate_reader_uses_horizon_and_scoped_function() -> None:
-    candidate = SyntheticInternalReadService()._fixture.candidates[1]  # type: ignore[attr-defined]
+    candidate = SyntheticInternalReadService()._fixture.candidates[1]
     row = candidate.model_dump()
     row["entity_ref"] = ENTITY
     row["business_unit_ref"] = "unit-demo-a"
     session = _Session(row)
-    service = DatabaseInternalReadService(lambda: session)
+    service = _service(session)
 
     page = service.list_candidates(_principal(), month=candidate.accounting_month)
 
@@ -105,12 +116,12 @@ def test_database_reader_rejects_ref_only_grants_before_querying_facts() -> None
     session = _Session({})
 
     with pytest.raises(InternalReadBackendUnavailable, match="immutable business-unit UUIDs"):
-        DatabaseInternalReadService(lambda: session).list_candidates(principal)
+        _service(session).list_candidates(principal)
     assert session.statements == []
 
 
 def test_database_reader_exposes_no_unreviewed_evidence_or_ledger_boundary() -> None:
-    service = DatabaseInternalReadService(lambda: _Session({}))
+    service = _service(_Session({}))
     principal = _principal()
 
     with pytest.raises(InternalReadBackendUnavailable, match="S1 decryptor"):
