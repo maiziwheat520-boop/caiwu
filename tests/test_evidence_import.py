@@ -703,6 +703,10 @@ def test_runner_capacity_during_parse_keeps_job_retryable(
         "synthetic",
         UnavailableRunnerClient(),  # type: ignore[arg-type]
     )
+    with admin_engine.connect() as connection:
+        audit_events_before = connection.execute(
+            text("SELECT count(*) FROM audit_event")
+        ).scalar_one()
     with pytest.raises(EvidenceIngestionError) as error:
         importer.ingest_and_import(
             io.BytesIO(b"temporary parse capacity failure"),
@@ -719,7 +723,10 @@ def test_runner_capacity_during_parse_keeps_job_retryable(
     assert error.value.error_code == "RUNNER_UNAVAILABLE"
     with admin_engine.connect() as connection:
         assert connection.execute(text("SELECT status FROM import_job")).scalar_one() == "RUNNING"
-        assert connection.execute(text("SELECT count(*) FROM audit_event")).scalar_one() == 0
+        assert (
+            connection.execute(text("SELECT count(*) FROM audit_event")).scalar_one()
+            == audit_events_before
+        )
 
 
 @pytest.mark.parametrize(
