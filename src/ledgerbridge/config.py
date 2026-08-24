@@ -1,4 +1,5 @@
 import os
+import stat
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -68,6 +69,10 @@ class Settings(BaseSettings):
             raise ValueError(
                 "runner_manifest_path and runner_verification_keys_path must be configured together"
             )
+        for field_name in ("runner_manifest_path", "runner_verification_keys_path"):
+            value = getattr(self, field_name)
+            if value is not None and not value.is_absolute():
+                raise ValueError(f"{field_name} must be an absolute path")
         if self.runner_manifest_path is not None and self.runner_verification_keys_path is not None:
             manifest_path = self.runner_manifest_path.resolve()
             keys_path = self.runner_verification_keys_path.resolve()
@@ -92,10 +97,8 @@ class Settings(BaseSettings):
             # attacker-controlled parent-symlink spelling.
             self.runner_manifest_path = manifest_path
             self.runner_verification_keys_path = keys_path
-        for field_name in ("runner_manifest_path", "runner_verification_keys_path"):
-            value = getattr(self, field_name)
-            if value is not None and not value.is_absolute():
-                raise ValueError(f"{field_name} must be an absolute path")
+            if self.env == "production":
+                _require_immutable_verification_key_path(keys_path)
         if (
             self.env == "production"
             and self.runner_manifest_path is not None
@@ -173,6 +176,40 @@ class Settings(BaseSettings):
 
 def escape_alembic_ini_value(value: str) -> str:
     return value.replace("%", "%%")
+
+
+def _require_immutable_verification_key_path(path: Path) -> None:
+    """Require a POSIX production key bundle and parent chain to be root-owned."""
+
+    if os.name != "posix":
+        return
+    try:
+        key_stat = path.stat()
+    except OSError as exc:
+        raise ValueError("production runner verification keys must exist") from exc
+    if not stat.S_ISREG(key_stat.st_mode):
+        raise ValueError("production runner verification keys must be a regular file")
+    current = path
+    allowed_owners = {0}
+    while True:
+        try:
+            current_stat = current.lstat()
+        except OSError as exc:
+            raise ValueError("production runner verification key path is unavailable") from exc
+        if current.is_symlink():
+            raise ValueError("production runner verification key path must not use symlinks")
+        if current != path and not stat.S_ISDIR(current_stat.st_mode):
+            raise ValueError("production runner verification key parents must be directories")
+        if current_stat.st_mode & 0o022:
+            raise ValueError(
+                "production runner verification key path is writable by group or others"
+            )
+        if current_stat.st_uid not in allowed_owners:
+            raise ValueError("production runner verification key path has an untrusted owner")
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
 
 
 @lru_cache

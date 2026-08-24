@@ -1,9 +1,15 @@
+import os
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from ledgerbridge.config import Settings, escape_alembic_ini_value, get_settings
+from ledgerbridge.config import (
+    Settings,
+    _require_immutable_verification_key_path,
+    escape_alembic_ini_value,
+    get_settings,
+)
 
 
 def test_database_url_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -202,3 +208,26 @@ def test_runner_manifest_and_verification_keys_need_separate_trust_domains(
     )
     assert settings.runner_manifest_path == anchor / "ledgerbridge-manifest" / "manifest.json"
     assert settings.runner_verification_keys_path == anchor / "ledgerbridge-keys" / "keys.json"
+
+
+def test_runner_manifest_paths_must_be_absolute_before_resolution(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="runner_manifest_path must be an absolute path"):
+        Settings(
+            database_url="sqlite+pysqlite:///:memory:",
+            artifact_root=tmp_path.resolve(),
+            runner_manifest_path=Path("relative-manifest.json"),
+            runner_verification_keys_path=Path("relative-keys.json"),
+        )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX ownership and mode checks only")
+def test_production_verification_key_path_is_immutable(tmp_path: Path) -> None:
+    key_path = tmp_path / "keys.json"
+    key_path.write_text("{}", encoding="utf-8")
+    key_path.chmod(0o600)
+    with pytest.raises(ValueError, match=r"untrusted owner|writable by group or others"):
+        _require_immutable_verification_key_path(key_path)
+
+    key_path.chmod(0o666)
+    with pytest.raises(ValueError, match="writable by group or others"):
+        _require_immutable_verification_key_path(key_path)

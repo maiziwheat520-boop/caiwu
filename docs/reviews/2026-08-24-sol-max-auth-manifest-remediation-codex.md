@@ -22,7 +22,7 @@ or signing key was enabled or created.
 | --- | --- | --- |
 | `SOL-A1` MEDIUM — ambiguous/control-text/overlong actor | Principal text now rejects non-printable format/control characters and leading/trailing whitespace. Provider and subject reserve `/`, and the canonical `provider/subject` actor is bounded to the 200-character persistence limit before route admission. | `tests/test_auth.py`: delimiter/control/whitespace rejection and exact 200/201 boundary tests. Existing route dependency tests remain green. |
 | `SOL-A2` LOW — stale typed principal survives resolver failure | HTTP middleware installs the cleaned state map before invoking the resolver, removes the private principal slot, and reinstalls it only for an exact `AuthenticatedPrincipal`. Resolver `None`, exceptions, and invalid return objects all leave the request unauthenticated; the resolver cannot read the stale value. | `tests/test_auth.py`: resolver sees no stale state, stale typed/raw state, resolver exception, `None`, and invalid return tests. |
-| `SOL-M1` MEDIUM — key bundle shares manifest delivery trust domain | Settings resolve both paths, persist those canonical paths, reject same-file/same-directory/nested paths, and require the two deployment roots to have only the filesystem anchor in common. A manifest delivery tree and key custody tree therefore cannot be sibling directories under one writable root. | `tests/test_config.py`: same-directory, nested-directory, same-delivery-root sibling rejection, and separate top-level trust-root acceptance. |
+| `SOL-M1` MEDIUM — key bundle shares manifest delivery trust domain | Settings require both original inputs to be absolute before resolution, persist canonical paths, reject same-file/same-directory/nested paths, and require the two deployment roots to have only the filesystem anchor in common. On POSIX production, the verification key and every parent are additionally required to be regular/root-owned, non-symlink, and not group/world writable, so the runtime UID cannot overwrite its trust root. | `tests/test_config.py`: relative-path rejection, same-directory/nested/same-delivery-root sibling rejection, separate top-level trust-root acceptance, and POSIX key-custody mode/owner regression. |
 
 ## Changed files
 
@@ -43,7 +43,7 @@ Passed locally with the frozen environment:
 - `uv run --frozen --extra dev ruff format ...`
 - `uv run --frozen --extra dev ruff check ...`
 - `uv run --frozen --extra dev mypy src tests`
-- Focused tests: `23 passed, 1 warning` after the follow-up hardening
+- Focused tests: `24 passed, 1 skipped, 1 warning` after the follow-up hardening
 - Full Windows suite: `315 passed, 149 skipped, 1 warning`
 - `git diff --check`
 
