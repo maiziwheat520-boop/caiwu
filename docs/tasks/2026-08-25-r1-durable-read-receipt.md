@@ -49,3 +49,23 @@ route may opt in with `enable_internal_read_persistent_receipt`; the API writer
 sink is then injected while the reader role remains read-only. A future
 production enablement still requires a real KeyProvider, reader bootstrap,
 mTLS verifier, PostgreSQL 15 replay, and an independent security review.
+
+## Final review closure
+
+- Fixed local chain: `198df79..a82928c`; no push or production connection.
+- Sol read-only verdict on `a82928c`: **BLOCKER 0 / HIGH 0 / MEDIUM 0 / LOW 1 /
+  INFO 1**. The final LOW is the non-production `api_database_url` fallback;
+  production persistent receipt remains rejected by configuration.
+- The restore verifier now includes `TRUNCATE` in its table-privilege metadata,
+  allowlist, and drift rejection, matching Migration 0015's `REVOKE ALL`.
+- Minimal local evidence: backup/restore `42 passed`; audit/reader/config
+  `57 passed`; compilation, Ruff, mypy, and diff-check passed. PostgreSQL 15
+  integration was not run; the remaining real-DB evidence is deferred trigger
+  commit/rollback, duplicate `operation_id`, migration ACL/function identity,
+  and `TRUNCATE` privilege behavior.
+
+For the deferred manual check, use a disposable PostgreSQL 15 instance with
+`LEDGERBRIDGE_TEST_ADMIN_DATABASE_URL` only for temporary DB/role lifecycle and
+`LEDGERBRIDGE_MIGRATION_DATABASE_URL` as the non-privileged database owner, then
+run `uv run --frozen --extra dev pytest -q tests/test_r1_database_migration.py`.
+Keep both URLs process-local; do not record credentials or use production.
