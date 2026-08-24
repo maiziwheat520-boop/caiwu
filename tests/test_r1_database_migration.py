@@ -57,3 +57,6 @@ def test_r1_migration_b_keeps_attribution_and_snapshot_facts_owner_written() -> 
     assert "PRIMARY_LEG" in source
     assert "REVOKE ALL ON TABLE" in source
     assert "GRANT INSERT" not in source
+    assert "v_posting_id := OLD.posting_id" in source
+    assert "v_posting_id := NEW.posting_id" in source
+    assert "COALESCE(NEW.posting_id, OLD.posting_id)" not in source

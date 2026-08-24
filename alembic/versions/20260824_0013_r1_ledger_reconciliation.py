@@ -244,11 +244,18 @@ def upgrade() -> None:
         CREATE FUNCTION public.r1_posted_attribution_immutable()
         RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
         AS $function$
-        DECLARE v_status public.journal_status;
+        DECLARE
+            v_status public.journal_status;
+            v_posting_id uuid;
         BEGIN
+            IF TG_OP = 'DELETE' THEN
+                v_posting_id := OLD.posting_id;
+            ELSE
+                v_posting_id := NEW.posting_id;
+            END IF;
             SELECT status INTO v_status FROM public.journal_entry AS j
              JOIN public.posting AS p ON p.entry_id = j.id
-            WHERE p.id = COALESCE(NEW.posting_id, OLD.posting_id);
+            WHERE p.id = v_posting_id;
             IF v_status = 'POSTED' THEN
                 RAISE EXCEPTION 'posting attribution is immutable after POSTED'
                     USING ERRCODE = 'integrity_constraint_violation';
