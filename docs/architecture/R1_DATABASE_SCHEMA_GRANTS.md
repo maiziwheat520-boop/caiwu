@@ -1498,3 +1498,19 @@ alone is not evidence of authenticated ciphertext recovery.
 Until all applicable gates pass, `LEDGERBRIDGE_ENABLE_INTERNAL_READ_API=true`
 continues to be rejected in production and real ingest remains unconditionally
 disabled.
+
+## Implementation verification note (2026-08-25)
+
+The design remains non-authorizing: this note records implementation evidence
+without changing the approved D-016 boundary or opening production gates. The
+current local implementation head is `7534fdf`. Independent Sol recheck of
+`0014`, `0015`, the complete migration chain, and the CI/bootstrap delta found
+no validated BLOCKER/HIGH/MEDIUM. Local disposable WSL PostgreSQL **18.6**
+passed the R1 migration suite (**49 passed**) and a CI-like full run (**696
+passed / 1 warning**, **91.36%** coverage) with the unchanged 90% floor; full
+Alembic head→base→head also passed. PG18.6 is not PG15, and no latest-HEAD
+Hosted PG15 result is claimed. Reader scope/cursor/horizon bindings,
+candidate/reconciliation revalidation, restore role/ACL checks, and the
+template-schema owner bootstrap are implemented and tested, while mTLS,
+reader bootstrap, decryptor/aggregate, fresh-host recovery, merge, deployment,
+and real-data access remain separate closed gates.

@@ -120,6 +120,20 @@ def _quote_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def _prepare_temporary_schema(admin_url: Any, database_name: str, owner_name: str) -> None:
+    engine = create_engine(admin_url.set(database=database_name))
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(f"GRANT USAGE, CREATE ON SCHEMA public TO {_quote_identifier(owner_name)}")
+            )
+            connection.execute(
+                text(f"ALTER SCHEMA public OWNER TO {_quote_identifier(owner_name)}")
+            )
+    finally:
+        engine.dispose()
+
+
 def _database_name(database_url: str) -> str:
     database = make_url(database_url).database
     if not isinstance(database, str) or not database:
@@ -176,6 +190,7 @@ def _legacy_r1_database(*, reader: bool = True) -> Iterator[str]:
                 ).scalar_one()
                 == owner_name
             )
+        _prepare_temporary_schema(admin_url, database_name, owner_name)
         temporary_url = owner_url.set(database=database_name)
         config = Config("alembic.ini")
         config.attributes["database_url"] = temporary_url.render_as_string(hide_password=False)
@@ -774,6 +789,7 @@ def isolated_r1_database() -> Iterator[str]:
                 ).scalar_one()
                 == owner_name
             )
+        _prepare_temporary_schema(admin_url, database_name, owner_name)
 
         temporary_url = owner_url.set(database=database_name)
         config = Config("alembic.ini")

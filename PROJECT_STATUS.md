@@ -464,3 +464,31 @@ ingestion require their later explicit gates.
 - Database collection union across multiple scopes remains deliberately disabled
   until a per-scope cursor contract is reviewed; such grants return a fixed
   backend-unavailable response rather than risk cross-scope pagination leakage.
+
+## R1 database hardening final local gate (2026-08-25)
+
+- Fixed implementation head is `7534fdf` on the local
+  `ai/chatgpt/r1-db-schema-grants-design` branch. Sol's independent short
+  recheck of `0014`, `0015`, the complete migration chain, and the CI/bootstrap
+  change found no validated BLOCKER/HIGH/MEDIUM. This is not merge or production
+  authorization.
+- `0014` preserves the `VARCHAR(32)` Candidate contract width and the
+  `0013→0015→0013` regression. `0015` retains the reader-only,
+  security-barrier, fixed-owner/function-search-path surface with fail-closed
+  ACLs. Database reads bind immutable entity/business-unit scope, signed
+  canonical cursors, and audit horizons; candidate and reconciliation results
+  are revalidated against entity/scope/month. Multiple-scope union remains
+  disabled. Backup restore verification covers role membership, ownership,
+  object/default ACLs, internal-read privileges, and the restricted owner schema
+  creation exception.
+- Local WSL PostgreSQL **18.6** evidence: R1 migration **49 passed**; CI-like
+  full suite **696 passed / 1 warning**, **91.36%** coverage (`6860` statements,
+  `593` missed) with the unchanged `--cov-fail-under=90`; full Alembic
+  head→base→head passed; focused R1/backup/reader tests **59 passed / 40
+  skipped**. Ruff format/check, strict mypy, Bandit, sensitive-path checks,
+  pip-audit, and diff-check passed.
+- PG18.6 is not PG15. No latest-HEAD Hosted PG15 result is claimed; prior
+  hosted runs remained green for secrets/compose but failed only the coverage
+  step. No coverage threshold, skip/omit rule, or pragma bypass was added.
+  Production reader bootstrap, mTLS, S1 decryptor, scoped ledger aggregate,
+  recovery rehearsal, merge, deployment, and real-data access remain closed.
