@@ -557,6 +557,17 @@ ingestion require their later explicit gates.
 - The receipt binds the verified workload `policy_generation`; the envelope's
   external key generation remains separately verified by the decryptor and is
   not substituted into the audit policy field.
+- Migration 0015 now enforces a trusted-writer boundary for durable receipts:
+  only authenticated `ledgerbridge_api` connections have schema `USAGE` and
+  exact receipt-function `EXECUTE`; `ledgerbridge_reader` cannot call the
+  `SECURITY DEFINER` receipt function, and the API role has no direct receipt
+  or fact-table write privilege. Principal/SAN/policy fields are therefore
+  writer assertions, not reader-authorized claims.
+- The explicit `enable_internal_read_persistent_receipt` test-only gate now
+  injects the receipt sink from the API writer database URL; the default route
+  and production settings remain unchanged.
 - This is not production wiring: the default route composition remains
   unchanged, no reader bootstrap or production KeyProvider was added, and no
-  real evidence was read. Focused audit/database-reader tests pass **48**.
+  real evidence was read. Focused audit/database-reader/migration-source tests
+  pass **58**; 41 PostgreSQL integration cases remain skipped without the
+  disposable database URL.

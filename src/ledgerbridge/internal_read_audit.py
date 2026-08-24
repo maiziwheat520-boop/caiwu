@@ -83,6 +83,14 @@ class InternalReadReceiptSink(Protocol):
         """Persist the receipt or raise without returning evidence bytes."""
 
 
+class UnavailableInternalReadReceiptSink:
+    """Fail-closed receipt sink used until an explicit writer gate is enabled."""
+
+    def append(self, receipt: EvidenceReadReceipt) -> None:
+        _ = receipt
+        raise AuditSinkUnavailable("internal read receipt sink is unavailable")
+
+
 class UnavailableInternalReadAuditSink:
     """Fail-closed default used until a reviewed durable sink is injected."""
 
@@ -124,7 +132,13 @@ class DatabaseInternalReadAuditSink:
 
 
 class DatabaseInternalReadReceiptSink:
-    """Append a database reader receipt through the allowlisted internal function."""
+    """Append through the database's trusted ``ledgerbridge_api`` writer boundary.
+
+    The supplied session factory must authenticate as the API writer role.  A
+    reader-role factory is intentionally rejected by Migration 0015 because
+    receipt identity fields are writer assertions, not reader-authenticated
+    facts.
+    """
 
     def __init__(self, session_factory: Callable[[], Session]) -> None:
         self._session_factory = session_factory
@@ -172,3 +186,21 @@ def get_internal_read_audit_sink(
     except Exception:
         return UnavailableInternalReadAuditSink()
     return DatabaseInternalReadAuditSink(session_factory)
+
+
+def get_internal_read_receipt_sink(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> InternalReadReceiptSink | None:
+    """Resolve the explicit API-writer receipt sink for test-only DB reads."""
+
+    if (
+        settings.env == "production"
+        or not settings.enable_internal_read_persistent_receipt
+        or settings.internal_read_backend != "database"
+    ):
+        return None
+    try:
+        session_factory = get_session_factory(settings.resolved_api_database_url())
+    except Exception:
+        return UnavailableInternalReadReceiptSink()
+    return DatabaseInternalReadReceiptSink(session_factory)
