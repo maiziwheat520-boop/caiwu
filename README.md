@@ -118,6 +118,18 @@ curl http://127.0.0.1:8652/v1/reviews?review_status=OPEN
 The fixture is synthetic-only; it does not write a database, read real
 financial evidence, or enable the production review API.
 
+### Synthetic Hermes private-message boundary
+
+The next intake seam can be replayed without Hermes or network credentials:
+
+```bash
+uv run --frozen --extra dev python scripts/r1_synthetic_hermes_message_demo.py
+```
+
+The output keeps only an eligible primary-profile private message for later
+triage, ignores pre-activation history, and tombstones group/assistant traffic.
+It does not classify financial intent or delete anything itself.
+
 Quality gate:
 
 ```bash
