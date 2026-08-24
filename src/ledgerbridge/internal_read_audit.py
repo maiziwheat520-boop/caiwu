@@ -63,7 +63,7 @@ class EvidenceReadReceipt(BaseModel):
     operation_id: UUID = Field(default_factory=uuid4)
     principal_ref: str = Field(min_length=1, max_length=200)
     principal_san_uri: str = Field(pattern=r"^spiffe://ledgerbridge\.test/[a-z0-9/_-]+$")
-    key_generation: str = Field(
+    policy_generation: str = Field(
         min_length=1,
         max_length=128,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
@@ -146,7 +146,7 @@ class DatabaseInternalReadReceiptSink:
                         "operation_id": receipt.operation_id,
                         "principal_ref": receipt.principal_ref,
                         "principal_san_uri": receipt.principal_san_uri,
-                        "key_generation": receipt.key_generation,
+                        "policy_generation": receipt.policy_generation,
                         "evidence_ref": receipt.evidence_ref,
                         "entity_ref": receipt.entity_ref,
                         "business_unit_id": receipt.business_unit_id,
