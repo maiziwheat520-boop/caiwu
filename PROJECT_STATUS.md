@@ -18,10 +18,15 @@ evidence, deployment, Hermes, Outlook, OneDrive, or Web adapter was added, so
 the operational R1 gate remains open. See
 `docs/tasks/2026-08-24-r1-synthetic-core-read-api.md` and
 `docs/tasks/2026-08-24-r1-persistent-audit-sink.md`.
-The R1 branch CI coverage floor is temporarily 90% while the synthetic contract
-grows its database-backed implementation tests; the latest Linux/PostgreSQL
-replay passed 612 tests with 91.53% coverage. This is a test-policy detail only
-and does not authorize production enablement.
+R1 Migration A (`20260824_0012`) now adds the Candidate/evidence fact foundation
+on `ai/chatgpt/r1-db-schema-grants-design`: immutable dimensions, evidence and
+encrypted blob metadata, Candidate revisions/events, deferred scope checks, and
+owner-only append-only tables. It creates no reader role, views, grants, or
+production read path. The R1 branch CI coverage floor is temporarily 90% while
+the synthetic contract grows its database-backed implementation tests; the
+latest Linux/PostgreSQL replay passed 612 tests with 91.53% coverage. This is a
+test-policy detail only and does not authorize production enablement. See
+`docs/tasks/2026-08-24-r1-migration-a-candidate-evidence.md`.
 
 S1 synthetic online-encryption application foundation is complete on
 `ai/chatgpt/s1-online-encryption`. The branch adds test-only external-key
