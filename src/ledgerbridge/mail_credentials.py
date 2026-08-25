@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 from ctypes import wintypes
+from pathlib import Path
 
 
 class CredentialStoreError(RuntimeError):
@@ -66,6 +67,35 @@ class WindowsCredentialTokenProvider:
             return token
         finally:
             cred_free(credential_ptr)
+
+
+class CredentialFileTokenProvider:
+    """Read one token key from the approved external credentials directory."""
+
+    _ROOT = Path("G:/我的云端硬盘/凭据").resolve()
+
+    def __init__(self, path: Path, *, key: str = "LEDGERBRIDGE_STAGING_ACCESS_TOKEN") -> None:
+        resolved = path.resolve()
+        if self._ROOT not in resolved.parents:
+            raise ValueError("credential file must be under the approved credentials directory")
+        if not key.isidentifier() or len(key) > 100:
+            raise ValueError("credential key is invalid")
+        self._path = resolved
+        self._key = key
+
+    def get_access_token(self) -> str:
+        try:
+            lines = self._path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError) as exc:
+            raise CredentialStoreError("staging credential file is unavailable") from exc
+        matches = [
+            line.split("=", 1)[1].strip()
+            for line in lines
+            if line.lstrip().startswith(f"{self._key}=")
+        ]
+        if len(matches) != 1 or not matches[0] or any(ord(char) == 0 for char in matches[0]):
+            raise CredentialStoreError("staging credential file entry is invalid")
+        return matches[0].strip("\"'")
 
 
 def _decode_blob(raw: bytes) -> str:

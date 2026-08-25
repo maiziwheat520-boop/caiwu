@@ -13,6 +13,7 @@ import json
 import os
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -21,11 +22,15 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from ledgerbridge.mail_collector import (
     GRAPH_HOST,
+    AccessTokenProvider,
     GraphTransport,
     MailMessage,
     MicrosoftGraphMailProvider,
 )
-from ledgerbridge.mail_credentials import WindowsCredentialTokenProvider
+from ledgerbridge.mail_credentials import (
+    CredentialFileTokenProvider,
+    WindowsCredentialTokenProvider,
+)
 
 MAX_STAGING_EVIDENCE_BYTES = 1_048_576
 DEFAULT_GATEWAY = "http://127.0.0.1:8653/v1/intake"
@@ -130,11 +135,17 @@ def run_staging() -> dict[str, Any]:
         )
     token = os.environ.get("LEDGERBRIDGE_STAGING_ACCESS_TOKEN")
     credential_target = os.environ.get("LEDGERBRIDGE_STAGING_CREDENTIAL_TARGET")
+    credential_file = os.environ.get("LEDGERBRIDGE_STAGING_CREDENTIAL_FILE")
     mailbox = os.environ.get("LEDGERBRIDGE_STAGING_MAILBOX")
     entity_raw = os.environ.get("LEDGERBRIDGE_STAGING_ENTITY_REF")
-    if bool(token) == bool(credential_target) or not mailbox or not entity_raw:
+    if (
+        sum(bool(value) for value in (token, credential_target, credential_file)) != 1
+        or not mailbox
+        or not entity_raw
+    ):
         raise RuntimeError(
-            "set exactly one of _ACCESS_TOKEN or _CREDENTIAL_TARGET, plus _MAILBOX and _ENTITY_REF"
+            "set exactly one credential source (_ACCESS_TOKEN, _CREDENTIAL_TARGET, "
+            "or _CREDENTIAL_FILE), plus _MAILBOX and _ENTITY_REF"
         )
     try:
         entity_ref = UUID(entity_raw)
@@ -143,11 +154,13 @@ def run_staging() -> dict[str, Any]:
     gateway_url = _require_loopback_gateway(
         os.environ.get("LEDGERBRIDGE_STAGING_GATEWAY_URL", DEFAULT_GATEWAY)
     )
-    token_provider = (
-        EnvironmentTokenProvider(token)
-        if token is not None
-        else WindowsCredentialTokenProvider(credential_target or "")
-    )
+    token_provider: AccessTokenProvider
+    if token is not None:
+        token_provider = EnvironmentTokenProvider(token)
+    elif credential_target is not None:
+        token_provider = WindowsCredentialTokenProvider(credential_target)
+    else:
+        token_provider = CredentialFileTokenProvider(Path(credential_file or ""))
     provider = MicrosoftGraphMailProvider(
         UrllibGraphTransport(),
         token_provider,

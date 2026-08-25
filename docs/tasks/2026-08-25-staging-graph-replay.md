@@ -23,6 +23,16 @@ transfers the credential. Do not put a token in `.env`, Git, task notes, shell
 history, or captured logs. A long-lived credential remains on the local machine
 and does not authorize production enablement.
 
+To use the existing Google Drive credentials directory instead, set
+`LEDGERBRIDGE_STAGING_CREDENTIAL_FILE` to a file under
+`G:\我的云端硬盘\凭据\` and add exactly one line in that external file:
+
+```text
+LEDGERBRIDGE_STAGING_ACCESS_TOKEN=<token held only in the credentials file>
+```
+
+The provider rejects files outside that directory and never writes the file.
+
 ## Bounds and safety
 
 - Graph host is pinned to `graph.microsoft.com`; one page, five messages.

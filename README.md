@@ -237,12 +237,15 @@ $env:LEDGERBRIDGE_STAGING_NETWORK = "1"
 $env:LEDGERBRIDGE_STAGING_ACCESS_TOKEN = "<short-lived-token>"
 # Alternative to the line above (use exactly one):
 # $env:LEDGERBRIDGE_STAGING_CREDENTIAL_TARGET = "LedgerBridge/Staging/Graph"
+# or: $env:LEDGERBRIDGE_STAGING_CREDENTIAL_FILE = "G:\\我的云端硬盘\\凭据\\home-infra-credentials.md"
 $env:LEDGERBRIDGE_STAGING_MAILBOX = "staging@example.test"
 $env:LEDGERBRIDGE_STAGING_ENTITY_REF = "10000000-0000-4000-8000-000000000001"
 uv run --frozen --extra dev python scripts/r1_staging_graph_replay.py
 ```
 
-This mode fetches at most five inbox messages from Microsoft Graph and posts
+For the credential-file option, add one unique line with the key
+`LEDGERBRIDGE_STAGING_ACCESS_TOKEN=...` to the external credentials file; do
+not copy that value into this repository. This mode fetches at most five inbox messages from Microsoft Graph and posts
 only bounded projections to `127.0.0.1:8653`. The environment token or
 Credential Manager value is read once in-process and is never written or
 logged. The default remains no network;
