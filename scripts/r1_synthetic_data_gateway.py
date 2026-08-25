@@ -14,9 +14,9 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -27,6 +27,7 @@ from ledgerbridge.hermes_triage import (
     SyntheticKeywordHermesTriageClassifier,
     triage_admitted_message,
 )
+from ledgerbridge.mail_eml import ParsedEml, parse_eml
 
 MAX_EVIDENCE_BYTES = 1_048_576
 PRIMARY_PROFILE = "profile:primary"
@@ -100,6 +101,72 @@ def _decode_evidence(item: IntakeEvidence) -> tuple[bytes, str]:
     return content, hashlib.sha256(content).hexdigest()
 
 
+def _build_output(
+    message: HermesPrivateMessage,
+    *,
+    source_event_ref: UUID,
+    entity_ref: UUID,
+    evidence: tuple[tuple[UUID, str, bytes, str | None], ...],
+    activated_at: datetime = ACTIVATED_AT,
+) -> IntakeOutput:
+    admission = classify_private_message(
+        message,
+        primary_profile_ref=PRIMARY_PROFILE,
+        activated_at=activated_at,
+    )
+    triage = triage_admitted_message(
+        message,
+        admission,
+        classifier=SyntheticKeywordHermesTriageClassifier(),
+    )
+    bindings = tuple(
+        EvidenceBinding(
+            evidence_ref,
+            entity_ref,
+            business_unit_ref,
+            hashlib.sha256(content).digest(),
+            media_type,
+        )
+        for evidence_ref, media_type, content, business_unit_ref in evidence
+    )
+    output_evidence = tuple(
+        EvidenceOutput(
+            evidence_ref=evidence_ref,
+            media_type=media_type,
+            sha256=hashlib.sha256(content).hexdigest(),
+            size_bytes=len(content),
+            business_unit_ref=business_unit_ref,
+        )
+        for evidence_ref, media_type, content, business_unit_ref in evidence
+    )
+    candidate_ref: UUID | None = None
+    if triage.action is HermesTriageAction.CANDIDATE:
+        candidate = create_candidate_intent(
+            message,
+            triage,
+            candidate_ref=uuid4(),
+            source_event_ref=source_event_ref,
+            entity_ref=entity_ref,
+            evidence=bindings,
+            created_at=message.sent_at,
+        )
+        candidate_ref = candidate.candidate_ref
+    output = IntakeOutput(
+        disposition=admission.disposition.value,
+        triage_label=triage.label.value,
+        triage_action=triage.action.value,
+        triage_reason=triage.reason,
+        candidate_ref=candidate_ref,
+        source_message_id=message.message_id,
+        source_event_ref=source_event_ref,
+        entity_ref=entity_ref,
+        evidence=output_evidence,
+    )
+    if candidate_ref is not None:
+        STORE[candidate_ref] = output
+    return output
+
+
 @app.post("/v1/intake", response_model=IntakeOutput, status_code=status.HTTP_201_CREATED)
 def intake(request: IntakeRequest) -> IntakeOutput:
     try:
@@ -112,69 +179,75 @@ def intake(request: IntakeRequest) -> IntakeOutput:
             request.sent_at,
             request.text,
         )
-        admission = classify_private_message(
-            message,
-            primary_profile_ref=PRIMARY_PROFILE,
-            activated_at=ACTIVATED_AT,
-        )
-        triage = triage_admitted_message(
-            message,
-            admission,
-            classifier=SyntheticKeywordHermesTriageClassifier(),
-        )
         decoded: list[tuple[IntakeEvidence, bytes, str]] = [
             (item, *_decode_evidence(item)) for item in request.evidence
         ]
-        bindings = tuple(
-            EvidenceBinding(
-                item.evidence_ref,
-                request.entity_ref,
-                item.business_unit_ref,
-                bytes.fromhex(digest),
-                item.media_type,
-            )
-            for item, _, digest in decoded
-        )
-        output_evidence = tuple(
-            EvidenceOutput(
-                evidence_ref=item.evidence_ref,
-                media_type=item.media_type,
-                sha256=digest,
-                size_bytes=len(content),
-                business_unit_ref=item.business_unit_ref,
-            )
-            for item, content, digest in decoded
-        )
-        candidate_ref: UUID | None = None
-        if triage.action is HermesTriageAction.CANDIDATE:
-            candidate = create_candidate_intent(
-                message,
-                triage,
-                candidate_ref=uuid4(),
-                source_event_ref=request.source_event_ref,
-                entity_ref=request.entity_ref,
-                evidence=bindings,
-                created_at=request.sent_at,
-            )
-            candidate_ref = candidate.candidate_ref
-        output = IntakeOutput(
-            disposition=admission.disposition.value,
-            triage_label=triage.label.value,
-            triage_action=triage.action.value,
-            triage_reason=triage.reason,
-            candidate_ref=candidate_ref,
-            source_message_id=message.message_id,
+        return _build_output(
+            message,
             source_event_ref=request.source_event_ref,
             entity_ref=request.entity_ref,
-            evidence=output_evidence,
+            evidence=tuple(
+                (item.evidence_ref, item.media_type, content, item.business_unit_ref)
+                for item, content, _ in decoded
+            ),
         )
     except HTTPException:
         raise
     except (TypeError, ValueError) as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-    if candidate_ref is not None:
-        STORE[candidate_ref] = output
-    return output
+
+
+@app.post("/v1/intake/eml", response_model=IntakeOutput, status_code=status.HTTP_201_CREATED)
+async def intake_eml(request: Request) -> IntakeOutput:
+    entity_header = request.headers.get("x-ledgerbridge-entity-ref")
+    try:
+        entity_ref = UUID(entity_header or "")
+        parsed = parse_eml(await request.body())
+        return _build_eml_output(parsed, entity_ref=entity_ref)
+    except HTTPException:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+
+def _build_eml_output(parsed: ParsedEml, *, entity_ref: UUID) -> IntakeOutput:
+    message = HermesPrivateMessage(
+        parsed.message_id,
+        PRIMARY_PROFILE,
+        "primary",
+        "private",
+        "user",
+        parsed.received_at,
+        f"{parsed.subject}\n{parsed.text}".strip(),
+    )
+    source_event_ref = uuid5(NAMESPACE_URL, f"ledgerbridge:eml:event:{parsed.message_id}")
+    evidence: list[tuple[UUID, str, bytes, str | None]] = []
+    if parsed.attachments:
+        for attachment in parsed.attachments:
+            evidence.append(
+                (
+                    uuid5(NAMESPACE_URL, f"ledgerbridge:eml:evidence:{attachment.attachment_id}"),
+                    attachment.media_type,
+                    attachment.content,
+                    None,
+                )
+            )
+    else:
+        evidence.append(
+            (
+                uuid5(NAMESPACE_URL, f"ledgerbridge:eml:evidence:{parsed.message_id}"),
+                "message/rfc822",
+                f"Subject: {parsed.subject}\n\n{parsed.text}".encode(),
+                None,
+            )
+        )
+    return _build_output(
+        message,
+        source_event_ref=source_event_ref,
+        entity_ref=entity_ref,
+        evidence=tuple(evidence),
+        activated_at=parsed.received_at,
+    )
 
 
 @app.get("/v1/candidates", response_model=list[IntakeOutput])

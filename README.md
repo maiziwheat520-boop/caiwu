@@ -170,6 +170,19 @@ The gateway is synthetic and process-local: it does not persist bytes or
 create postings. Its response is the input/output contract for the next Core
 persistence adapter.
 
+An exported RFC 5322 message can use the same boundary. Supply the target
+entity explicitly; the parser derives a stable source event from `Message-ID`:
+
+```bash
+curl -X POST http://127.0.0.1:8653/v1/intake/eml \
+  -H 'content-type: message/rfc822' \
+  -H 'X-LedgerBridge-Entity-Ref: 10000000-0000-4000-8000-000000000001' \
+  --data-binary '@message.eml'
+```
+
+The EML route is still synthetic and process-local; it does not connect to
+Outlook or persist the original message.
+
 The Outlook/Microsoft Graph authentication seam is kept separate and disabled:
 `src/ledgerbridge/mail_oauth.py` builds PKCE authorization URLs and validates an
 injected token exchange, but does not create network clients, read secrets, or
