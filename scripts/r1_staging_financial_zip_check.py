@@ -15,9 +15,9 @@ from ledgerbridge.mail_credentials import CredentialFileSecretProvider
 from ledgerbridge.mail_imap import ImapMailProvider
 
 try:
-    from scripts.r1_staging_imap_replay import ImapSslTransport
+    from scripts.r1_staging_imap_replay import ImapSslTransport as _ImapSslTransport
 except ModuleNotFoundError:
-    from r1_staging_imap_replay import ImapSslTransport
+    from r1_staging_imap_replay import ImapSslTransport as _ImapSslTransport  # type: ignore[import-not-found,no-redef]
 
 DEFAULT_CREDENTIAL_FILE = Path("G:/我的云端硬盘/凭据/hermes-163-mail.env")
 MAX_ENTRY_BYTES = 50 * 1024 * 1024
@@ -26,7 +26,7 @@ MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
 
 def _load_message(message_index: int) -> MailMessage:
     provider = ImapMailProvider(
-        ImapSslTransport(host="imap.163.com", port=993),
+        _ImapSslTransport(host="imap.163.com", port=993),
         CredentialFileSecretProvider(DEFAULT_CREDENTIAL_FILE, key="authorization_code"),
         mailbox="redeatt@163.com",
         auth_mode="password",
