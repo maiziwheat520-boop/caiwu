@@ -13,7 +13,11 @@ from typing import Any
 from ledgerbridge.mail_collector import MailMessage
 from ledgerbridge.mail_credentials import CredentialFileSecretProvider
 from ledgerbridge.mail_imap import ImapMailProvider
-from scripts.r1_staging_imap_replay import ImapSslTransport
+
+try:
+    from scripts.r1_staging_imap_replay import ImapSslTransport
+except ModuleNotFoundError:
+    from r1_staging_imap_replay import ImapSslTransport
 
 DEFAULT_CREDENTIAL_FILE = Path("G:/我的云端硬盘/凭据/hermes-163-mail.env")
 MAX_ENTRY_BYTES = 50 * 1024 * 1024
