@@ -32,3 +32,14 @@ python -m compileall -q src/ledgerbridge/candidate_persistence.py
 ```
 
 No production database or credentials were used for this slice.
+
+## Isolated PostgreSQL replay
+
+On 2026-08-25 a disposable PostgreSQL 15 container on Hermes was used only for
+verification. After creating test-only roles and applying Alembic through
+`20260824_0015`, one synthetic entity/business unit/category/evidence fixture
+was inserted and `persist_initial_candidate` committed successfully. The
+observed counts were one candidate, one revision, one evidence link, one typed
+CREATE event, and two audit events (evidence + candidate). The tunnel and
+container were removed immediately afterward; the running LedgerBridge
+database was not accessed.

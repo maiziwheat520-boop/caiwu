@@ -20,6 +20,11 @@ business grants, mTLS, durable artifact storage, and real-data enablement
 remain closed. See `docs/tasks/2026-08-25-staging-graph-replay.md` and
 `docs/tasks/2026-08-25-candidate-persistence-adapter.md`.
 
+The adapter was replayed against a disposable PostgreSQL 15 container after a
+full Alembic head upgrade: one synthetic candidate, revision, evidence link,
+typed CREATE event, and two audit events committed successfully. The temporary
+tunnel/container were removed; no running LedgerBridge database was used.
+
 ## R1 database Core read adapter checkpoint (2026-08-24)
 
 The default-disabled Core route now has an explicit database reader backend on

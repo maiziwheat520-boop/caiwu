@@ -12,7 +12,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import date
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -28,6 +28,7 @@ class CandidatePersistenceError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class CandidatePersistReceipt:
     candidate_ref: UUID
+    event_ref: UUID
     audit_event_id: UUID
     revision: int
 
@@ -56,12 +57,34 @@ def persist_initial_candidate(
     _insert_revision(session, candidate)
     _insert_blockers_and_evidence(session, candidate)
 
-    payload = {
+    event_ref = uuid4()
+    command = {
         "candidate_ref": str(candidate.candidate_ref),
         "revision": candidate.revision,
         "source_event_ref": str(candidate.source.source_event_ref),
         "source_system": source_system_id,
         "status": candidate.status.value,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(command, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).digest()
+    payload: dict[str, object] = {
+        "event_ref": str(event_ref),
+        "candidate_id": str(candidate.candidate_ref),
+        "candidate_ref": str(candidate.candidate_ref),
+        "operation_id": str(candidate.candidate_ref),
+        "command_fingerprint": fingerprint.hex(),
+        "event_type": "CREATE",
+        "action": None,
+        "from_revision": None,
+        "to_revision": candidate.revision,
+        "from_status": None,
+        "to_status": candidate.status.value,
+        "field_changes": [],
+        "conflict_resolutions": [],
+        "actor_ref": actor_ref,
+        "reason": reason,
+        "derived_candidate_id": None,
     }
     audit_event_id = append_audit_event(
         session,
@@ -71,24 +94,22 @@ def persist_initial_candidate(
         rule_version=candidate.contract_version,
         payload=payload,
     )
-    fingerprint = hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).digest()
     session.execute(
         text(
             """
             INSERT INTO public.candidate_event
-                (candidate_id, operation_id, command_fingerprint, event_type, action,
+                (event_ref, candidate_id, operation_id, command_fingerprint, event_type, action,
                  from_revision, to_revision, from_status, to_status, actor_ref, reason,
                  occurred_at, audit_event_id)
             VALUES
-                (:candidate_id, :operation_id, :fingerprint, 'CREATE', NULL,
+                (:event_ref, :candidate_id, :operation_id, :fingerprint, 'CREATE', NULL,
                  NULL, :revision, NULL, :status, :actor_ref, :reason,
                  :occurred_at, :audit_event_id)
             """
         ),
         {
             "candidate_id": candidate.candidate_ref,
+            "event_ref": event_ref,
             "operation_id": candidate.candidate_ref,
             "fingerprint": fingerprint,
             "revision": candidate.revision,
@@ -99,7 +120,9 @@ def persist_initial_candidate(
             "audit_event_id": audit_event_id,
         },
     )
-    return CandidatePersistReceipt(candidate.candidate_ref, audit_event_id, candidate.revision)
+    return CandidatePersistReceipt(
+        candidate.candidate_ref, event_ref, audit_event_id, candidate.revision
+    )
 
 
 def _validate_initial(
@@ -240,15 +263,20 @@ def _insert_blockers_and_evidence(session: Session, candidate: CandidateProjecti
                 """
                 INSERT INTO public.candidate_evidence
                     (candidate_id, ordinal, evidence_ref, kind, media_type_snapshot,
-                     display_name_snapshot, download_available)
-                VALUES (:candidate_id, :ordinal, :evidence_ref, :kind, :media_type,
-                        :display_name, :download_available)
+                     display_name_snapshot, download_available, candidate_entity_id,
+                     evidence_entity_id, evidence_business_unit_id)
+                SELECT :candidate_id, :ordinal, eo.evidence_ref, :kind, :media_type,
+                       :display_name, :download_available, :candidate_entity_id,
+                       eo.entity_id, eo.business_unit_id
+                  FROM public.evidence_object AS eo
+                 WHERE eo.evidence_ref = :evidence_ref
                 """
             ),
             {
                 "candidate_id": candidate.candidate_ref,
                 "ordinal": ordinal,
                 "evidence_ref": evidence.evidence_ref,
+                "candidate_entity_id": candidate.entity_ref,
                 "kind": evidence.kind.value,
                 "media_type": evidence.media_type,
                 "display_name": evidence.display_name,
