@@ -149,6 +149,27 @@ uv run --frozen --extra dev python scripts/r1_synthetic_candidate_intent_demo.py
 It binds the triaged message, source event, entity, and evidence digest into an
 immutable intent and explicitly reports `writes_posting: false`.
 
+### Quick synthetic data gateway
+
+For a usable local input/output loop, start the loopback-only JSON gateway:
+
+```bash
+uv run --frozen --extra dev python scripts/r1_synthetic_data_gateway.py
+```
+
+Submit one bounded message and base64 evidence:
+
+```bash
+curl -X POST http://127.0.0.1:8653/v1/intake \
+  -H 'content-type: application/json' \
+  -d '{"message_id":"demo-1","source_event_ref":"40000000-0000-4000-8000-000000000099","entity_ref":"10000000-0000-4000-8000-000000000001","text":"请处理发票","evidence":[{"evidence_ref":"20000000-0000-4000-8000-000000000099","media_type":"text/plain","content_base64":"c3ludGhldGljIGludm9pY2U="}]}'
+curl http://127.0.0.1:8653/v1/candidates
+```
+
+The gateway is synthetic and process-local: it does not persist bytes or
+create postings. Its response is the input/output contract for the next Core
+persistence adapter.
+
 Quality gate:
 
 ```bash
