@@ -85,4 +85,10 @@ try {
     if ($null -ne $gatewayProcess -and -not $gatewayProcess.HasExited) {
         Stop-Process -Id $gatewayProcess.Id -Force
     }
+    if ($null -ne $gatewayProcess) {
+        $listeners = Get-NetTCPConnection -LocalPort 8653 -State Listen -ErrorAction SilentlyContinue
+        foreach ($listener in $listeners) {
+            Stop-Process -Id $listener.OwningProcess -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
