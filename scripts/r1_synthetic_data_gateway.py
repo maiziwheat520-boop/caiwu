@@ -75,6 +75,7 @@ class IntakeRequest(BaseModel):
     # configured deployment watermark rather than allowing caller control.
     activation_at: datetime = ACTIVATED_AT
     text: str = Field(default="", max_length=1_000_000)
+    source_subject: str | None = Field(default=None, max_length=500)
     entity_ref: UUID
     evidence: tuple[IntakeEvidence, ...] = Field(min_length=1, max_length=32)
 
@@ -234,7 +235,7 @@ def intake(request: IntakeRequest) -> IntakeOutput:
                 for item, content, _ in decoded
             ),
             activated_at=request.activation_at,
-            source_subject=None,
+            source_subject=request.source_subject,
         )
     except SyntheticPersistenceError as exc:
         raise HTTPException(
