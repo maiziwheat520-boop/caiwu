@@ -72,3 +72,11 @@ approved staging mailbox/entity defaults, starts a loopback gateway when one is
 not already listening, and tears down only the gateway process it started. It
 does not display or persist the token. Production mail, posting, and durable
 artifact writes remain disabled.
+
+If the token does not exist, create a Microsoft Entra public-client app once,
+grant delegated `Mail.Read` only, enable public-client/device-code flow, and
+run `scripts/r1_graph_device_login.ps1 -ClientId <application-client-id>`.
+The helper displays only the Microsoft verification URL and one-time code,
+then writes the short-lived access token to the external credentials file.
+It never prints or stores a refresh token. Device-code flow is documented by
+[Microsoft](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-device-code).

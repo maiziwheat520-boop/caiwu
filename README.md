@@ -266,6 +266,21 @@ entity reference, loopback gateway, and explicit staging-only network gate. It
 does not print or persist the token. Override `-CredentialFile`, `-Mailbox`,
 `-EntityRef`, or `-GatewayUrl` only for another approved staging fixture.
 
+If no token is available yet, create a Microsoft Entra public-client app once
+and use the device-code helper. Give it only delegated `Mail.Read` (plus the
+standard sign-in scopes), enable public-client/device-code flow, then run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/r1_graph_device_login.ps1 -ClientId '<application-client-id>'
+powershell -ExecutionPolicy Bypass -File scripts/r1_staging_run.ps1
+```
+
+The helper prints only Microsoft's verification URL and one-time code. It
+writes the short-lived access token to the external credentials file and never
+prints or stores a refresh token. Device-code authorization is for public
+clients; see Microsoft's [device-code flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-device-code)
+and [Graph permission reference](https://learn.microsoft.com/en-us/graph/permissions-reference).
+
 The first Core write seam is available as an explicit, un-wired adapter:
 `ledgerbridge.candidate_persistence.persist_initial_candidate` accepts an
 already validated Candidate aggregate and an injected SQLAlchemy session, then
