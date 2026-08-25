@@ -298,11 +298,13 @@ Open the printed authorization URL, sign in, and paste the resulting callback
 URL into the hidden prompt. The helper validates PKCE/state and stores only the
 access token outside the repository. Its public-client ID is documented by
 [Mozilla's Microsoft OAuth guide](https://support.mozilla.org/en-US/kb/microsoft-oauth-authentication-and-thunderbird-202);
+the helper uses Microsoft's `common` endpoint so personal Microsoft accounts
+are accepted (the `consumers` endpoint can return `AADSTS50020`).
 this convenience is staging-only and must be replaced by a separately audited
 application registration before production.
 
 If you want zero application registration and no token handling in this
-project, use the free Thunderbird client: add `redeatt@outlook.com` with its
+project, use the free Thunderbird client: add `redeatt@163.com` with its
 built-in OAuth2 login, allow it to synchronize the Inbox locally, then point
 the demo at Thunderbird's `INBOX` mbox file:
 
@@ -322,7 +324,7 @@ credentials file, run from the repository root:
 powershell -ExecutionPolicy Bypass -File scripts/r1_staging_run.ps1
 ```
 
-The wrapper supplies the approved mailbox (`redeatt@outlook.com`), synthetic
+The wrapper supplies the approved mailbox (`redeatt@163.com`), synthetic
 entity reference, loopback gateway, and explicit staging-only network gate. It
 does not print or persist the token. Override `-CredentialFile`, `-Mailbox`,
 `-EntityRef`, or `-GatewayUrl` only for another approved staging fixture.
@@ -331,7 +333,7 @@ If no token is available yet, the lowest-friction free path is Graph Explorer;
 it uses Microsoft's existing developer app, so no Azure subscription or new
 application registration is needed. Open
 <https://developer.microsoft.com/en-us/graph/graph-explorer>, sign in as
-`redeatt@outlook.com`, choose **Modify permissions**, consent to delegated
+`redeatt@163.com`, choose **Modify permissions**, consent to delegated
 `Mail.Read`, then open the **Access token** tab and copy the short-lived token
 only into the external credentials file. Graph Explorer documents both the
 permission-consent flow and the Access token tab.

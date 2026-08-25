@@ -7,12 +7,16 @@ are deliberately discarded. Production must register and audit its own app.
 #>
 [CmdletBinding()]
 param(
-    [string]$CredentialFile = 'G:\我的云端硬盘\凭据\home-infra-credentials.md'
+    [string]$CredentialFile = 'G:\我的云端硬盘\凭据\home-infra-credentials.md',
+    [string]$AccountHint = 'redeatt@163.com'
 )
 
 $ErrorActionPreference = 'Stop'
 $clientId = '9e5f94bc-e8a4-4e73-b8be-63364c29d753'
-$tenant = 'consumers'
+# Thunderbird's public Microsoft client is registered for the common endpoint.
+# The consumers-only endpoint can reject the same personal account with
+# AADSTS50020 ("personal Microsoft accounts are not supported").
+$tenant = 'common'
 $redirectUri = 'https://localhost'
 $scope = 'https://outlook.office.com/IMAP.AccessAsUser.All offline_access openid profile'
 $key = 'LEDGERBRIDGE_STAGING_IMAP_ACCESS_TOKEN'
@@ -62,12 +66,14 @@ $query['response_type'] = 'code'
 $query['redirect_uri'] = $redirectUri
 $query['response_mode'] = 'query'
 $query['scope'] = $scope
+$query['login_hint'] = $AccountHint
+$query['prompt'] = 'select_account'
 $query['state'] = $state
 $query['code_challenge'] = $challenge
 $query['code_challenge_method'] = 'S256'
 $authorizeUrl = "https://login.microsoftonline.com/$tenant/oauth2/v2.0/authorize?$query"
 
-Write-Output 'Open this URL in a browser and sign in as redeatt@outlook.com:'
+Write-Output "Open this URL in a browser and sign in as $AccountHint (or the Microsoft alias that owns the Outlook mailbox):"
 Write-Output $authorizeUrl
 Write-Output 'After consent, the browser may show a localhost error. Copy the full address bar URL and paste it into the hidden prompt below.'
 $callback = Read-HiddenText 'Paste callback URL (hidden)'

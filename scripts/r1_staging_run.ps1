@@ -7,7 +7,7 @@ sets process-local routing values and never writes or prints the token.
 [CmdletBinding()]
 param(
     [string]$CredentialFile = 'G:\我的云端硬盘\凭据\home-infra-credentials.md',
-    [string]$Mailbox = 'redeatt@outlook.com',
+    [string]$Mailbox = 'redeatt@163.com',
     [string]$EntityRef = '10000000-0000-4000-8000-000000000001',
     [string]$GatewayUrl = 'http://127.0.0.1:8653/v1/intake',
     [ValidateSet('imap', 'graph', 'mbox')]

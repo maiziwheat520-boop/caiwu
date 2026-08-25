@@ -39,7 +39,7 @@ if (-not $device.device_code -or -not $device.user_code -or -not $device.verific
 Write-Output 'Open the verification URL below and enter the one-time code:'
 Write-Output $device.verification_uri
 Write-Output "Code: $($device.user_code)"
-Write-Output 'Sign in as redeatt@outlook.com and consent only to Mail.Read.'
+Write-Output 'Sign in as redeatt@163.com and consent only to Mail.Read.'
 
 $interval = [Math]::Max([int]$device.interval, 5)
 $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
