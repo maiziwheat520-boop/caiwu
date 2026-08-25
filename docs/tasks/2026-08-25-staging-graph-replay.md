@@ -98,6 +98,12 @@ with the delegated scope
 not valid for IMAP. Both modes are read-only, bounded to five messages, and
 post only to the loopback synthetic gateway.
 
+The staging helper `scripts/r1_imap_oauth_login.ps1` obtains this token with
+PKCE using Thunderbird's documented public client configuration, without a
+paid Azure subscription. It validates state, stores only the access token in
+the external credentials file, and discards refresh tokens. This is not a
+production identity decision; production must use its own reviewed app.
+
 For a no-registration fallback, Thunderbird can perform the Microsoft OAuth
 login and synchronize the Inbox locally. `scripts/r1_staging_mbox_replay.py`
 reads that mbox read-only and never handles the OAuth token:

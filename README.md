@@ -287,6 +287,20 @@ adapter retains password mode only for other compatible providers. See
 [Outlook IMAP settings](https://support.microsoft.com/en-US/Outlook/pop-imap-and-smtp-settings-for-outlook-com)
 and [IMAP OAuth](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth).
 
+To obtain that token without a paid Azure subscription, use the staging-only
+helper (it follows Thunderbird's public OAuth client configuration):
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/r1_imap_oauth_login.ps1
+```
+
+Open the printed authorization URL, sign in, and paste the resulting callback
+URL into the hidden prompt. The helper validates PKCE/state and stores only the
+access token outside the repository. Its public-client ID is documented by
+[Mozilla's Microsoft OAuth guide](https://support.mozilla.org/en-US/kb/microsoft-oauth-authentication-and-thunderbird-202);
+this convenience is staging-only and must be replaced by a separately audited
+application registration before production.
+
 If you want zero application registration and no token handling in this
 project, use the free Thunderbird client: add `redeatt@outlook.com` with its
 built-in OAuth2 login, allow it to synchronize the Inbox locally, then point
