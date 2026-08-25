@@ -60,6 +60,7 @@ class IntakeRequest(BaseModel):
 
 class EvidenceOutput(BaseModel):
     evidence_ref: UUID
+    filename: str | None
     media_type: str
     sha256: str
     size_bytes: int
@@ -68,6 +69,9 @@ class EvidenceOutput(BaseModel):
 
 class IntakeOutput(BaseModel):
     mode: str = "synthetic"
+    source_format: str
+    source_subject: str | None
+    source_received_at: datetime
     disposition: str
     triage_label: str
     triage_action: str
@@ -106,8 +110,10 @@ def _build_output(
     *,
     source_event_ref: UUID,
     entity_ref: UUID,
-    evidence: tuple[tuple[UUID, str, bytes, str | None], ...],
+    evidence: tuple[tuple[UUID, str, bytes, str | None, str | None], ...],
     activated_at: datetime = ACTIVATED_AT,
+    source_format: str = "json",
+    source_subject: str | None = None,
 ) -> IntakeOutput:
     admission = classify_private_message(
         message,
@@ -127,17 +133,18 @@ def _build_output(
             hashlib.sha256(content).digest(),
             media_type,
         )
-        for evidence_ref, media_type, content, business_unit_ref in evidence
+        for evidence_ref, media_type, content, business_unit_ref, _ in evidence
     )
     output_evidence = tuple(
         EvidenceOutput(
             evidence_ref=evidence_ref,
+            filename=filename,
             media_type=media_type,
             sha256=hashlib.sha256(content).hexdigest(),
             size_bytes=len(content),
             business_unit_ref=business_unit_ref,
         )
-        for evidence_ref, media_type, content, business_unit_ref in evidence
+        for evidence_ref, media_type, content, business_unit_ref, filename in evidence
     )
     candidate_ref: UUID | None = None
     if triage.action is HermesTriageAction.CANDIDATE:
@@ -152,6 +159,9 @@ def _build_output(
         )
         candidate_ref = candidate.candidate_ref
     output = IntakeOutput(
+        source_format=source_format,
+        source_subject=source_subject,
+        source_received_at=message.sent_at,
         disposition=admission.disposition.value,
         triage_label=triage.label.value,
         triage_action=triage.action.value,
@@ -187,9 +197,10 @@ def intake(request: IntakeRequest) -> IntakeOutput:
             source_event_ref=request.source_event_ref,
             entity_ref=request.entity_ref,
             evidence=tuple(
-                (item.evidence_ref, item.media_type, content, item.business_unit_ref)
+                (item.evidence_ref, item.media_type, content, item.business_unit_ref, None)
                 for item, content, _ in decoded
             ),
+            source_subject=None,
         )
     except HTTPException:
         raise
@@ -221,7 +232,7 @@ def _build_eml_output(parsed: ParsedEml, *, entity_ref: UUID) -> IntakeOutput:
         f"{parsed.subject}\n{parsed.text}".strip(),
     )
     source_event_ref = uuid5(NAMESPACE_URL, f"ledgerbridge:eml:event:{parsed.message_id}")
-    evidence: list[tuple[UUID, str, bytes, str | None]] = []
+    evidence: list[tuple[UUID, str, bytes, str | None, str | None]] = []
     if parsed.attachments:
         for attachment in parsed.attachments:
             evidence.append(
@@ -230,6 +241,7 @@ def _build_eml_output(parsed: ParsedEml, *, entity_ref: UUID) -> IntakeOutput:
                     attachment.media_type,
                     attachment.content,
                     None,
+                    attachment.filename,
                 )
             )
     else:
@@ -239,6 +251,7 @@ def _build_eml_output(parsed: ParsedEml, *, entity_ref: UUID) -> IntakeOutput:
                 "message/rfc822",
                 f"Subject: {parsed.subject}\n\n{parsed.text}".encode(),
                 None,
+                "message.eml",
             )
         )
     return _build_output(
@@ -247,6 +260,8 @@ def _build_eml_output(parsed: ParsedEml, *, entity_ref: UUID) -> IntakeOutput:
         entity_ref=entity_ref,
         evidence=tuple(evidence),
         activated_at=parsed.received_at,
+        source_format="eml",
+        source_subject=parsed.subject,
     )
 
 

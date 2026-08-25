@@ -181,7 +181,9 @@ curl -X POST http://127.0.0.1:8653/v1/intake/eml \
 ```
 
 The EML route is still synthetic and process-local; it does not connect to
-Outlook or persist the original message.
+Outlook or persist the original message. Its output includes the source
+subject/time/format and each attachment filename, media type, byte size, and
+SHA-256 digest.
 
 The Outlook/Microsoft Graph authentication seam is kept separate and disabled:
 `src/ledgerbridge/mail_oauth.py` builds PKCE authorization URLs and validates an

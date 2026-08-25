@@ -10,8 +10,10 @@ decoded content. Inline parts are ignored; normal attachments become bounded
 The synthetic gateway exposes `POST /v1/intake/eml`. It requires an explicit
 `X-LedgerBridge-Entity-Ref`, derives a deterministic source event/evidence
 identity from `Message-ID`, and reuses the same candidate-intent output as the
-JSON route. A message with no file attachment uses a bounded RFC822 evidence
-representation so financial text cannot create a candidate without evidence.
+JSON route. The output maps `source_format`, `source_subject`,
+`source_received_at`, and each attachment's filename/media type/byte size/SHA-256.
+A message with no file attachment uses a bounded RFC822 evidence representation
+so financial text cannot create a candidate without evidence.
 
 ## Safety boundary
 
