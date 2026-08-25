@@ -97,3 +97,8 @@ OAuth2, place a token with the delegated scope
 `scripts/r1_staging_run.ps1 -ImapAuth xoauth2`. A Graph `Mail.Read` token is
 not valid for IMAP. Both modes are read-only, bounded to five messages, and
 post only to the loopback synthetic gateway.
+
+Use `scripts/r1_set_staging_credential.ps1` when the operator wants a hidden
+local prompt instead of manually editing the external credentials file. The
+secret is not a command-line argument, is not echoed, and is written only to
+the approved credentials directory.

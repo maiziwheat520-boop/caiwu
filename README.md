@@ -268,6 +268,15 @@ Run the same wrapper; it now defaults to IMAP/password staging:
 powershell -ExecutionPolicy Bypass -File scripts/r1_staging_run.ps1
 ```
 
+To avoid editing the credentials file manually, use the hidden local prompt:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/r1_set_staging_credential.ps1
+```
+
+Paste the app password only into that prompt; it is not echoed and is never a
+command-line argument.
+
 For IMAP OAuth2, store
 `LEDGERBRIDGE_STAGING_IMAP_ACCESS_TOKEN=...` and run
 `scripts/r1_staging_run.ps1 -ImapAuth xoauth2`. The token must carry
