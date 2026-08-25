@@ -42,6 +42,7 @@ from ledgerbridge.hermes_message import HermesPrivateMessage, classify_private_m
 from ledgerbridge.hermes_triage import (
     HermesTriageAction,
     SyntheticKeywordHermesTriageClassifier,
+    UnavailableHermesTriageClassifier,
     triage_admitted_message,
 )
 from ledgerbridge.mail_eml import ParsedEml, parse_eml
@@ -76,6 +77,7 @@ class IntakeRequest(BaseModel):
     activation_at: datetime = ACTIVATED_AT
     text: str = Field(default="", max_length=1_000_000)
     source_subject: str | None = Field(default=None, max_length=500)
+    has_attachments: bool = False
     entity_ref: UUID
     evidence: tuple[IntakeEvidence, ...] = Field(min_length=1, max_length=32)
 
@@ -144,17 +146,19 @@ def _build_output(
     activated_at: datetime = ACTIVATED_AT,
     source_format: str = "json",
     source_subject: str | None = None,
+    has_attachments: bool = False,
 ) -> IntakeOutput:
     admission = classify_private_message(
         message,
         primary_profile_ref=PRIMARY_PROFILE,
         activated_at=activated_at,
     )
-    triage = triage_admitted_message(
-        message,
-        admission,
-        classifier=SyntheticKeywordHermesTriageClassifier(),
+    classifier = (
+        UnavailableHermesTriageClassifier()
+        if has_attachments
+        else SyntheticKeywordHermesTriageClassifier()
     )
+    triage = triage_admitted_message(message, admission, classifier=classifier)
     bindings = tuple(
         EvidenceBinding(
             evidence_ref,
@@ -236,6 +240,7 @@ def intake(request: IntakeRequest) -> IntakeOutput:
             ),
             activated_at=request.activation_at,
             source_subject=request.source_subject,
+            has_attachments=request.has_attachments,
         )
     except SyntheticPersistenceError as exc:
         raise HTTPException(

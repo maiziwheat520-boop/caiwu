@@ -57,6 +57,7 @@ def replay_message(message: MailMessage, *, entity_ref: UUID, gateway_url: str) 
         "sent_at": received_at.isoformat(),
         "activation_at": received_at.isoformat(),
         "source_subject": message.subject,
+        "has_attachments": bool(message.attachments),
         "text": f"{message.subject}\n{message.body_preview}".strip(),
         "evidence": evidence,
     }
