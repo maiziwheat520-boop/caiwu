@@ -13,12 +13,12 @@ param(
     [ValidateSet('imap', 'graph')]
     [string]$Transport = 'imap',
     [ValidateSet('password', 'xoauth2')]
-    [string]$ImapAuth = 'password'
+    [string]$ImapAuth = 'xoauth2'
 )
 
 $ErrorActionPreference = 'Stop'
 
-if (-not [System.IO.Path]::IsPathFullyQualified($CredentialFile)) {
+if (-not [System.IO.Path]::IsPathRooted($CredentialFile)) {
     throw 'CredentialFile must be an absolute path outside the repository'
 }
 if (-not (Test-Path -LiteralPath $CredentialFile -PathType Leaf)) {

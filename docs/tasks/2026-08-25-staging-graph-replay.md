@@ -88,10 +88,10 @@ public-client registration, not required for this demo.
 The provider-neutral boundary also includes `ImapMailProvider`. For the
 no-new-app-registration path, enable IMAP in Outlook.com and place a separately
 generated app password in the external file as
-`LEDGERBRIDGE_STAGING_IMAP_APP_PASSWORD=...`; the one-command wrapper defaults
-to this mode. This is only a legacy-compatibility fallback: Outlook.com
-documents Modern Auth/OAuth2 as the normal IMAP authentication method. For
-OAuth2, place a token with the delegated scope
+`LEDGERBRIDGE_STAGING_IMAP_APP_PASSWORD=...`; this is only an explicit
+compatibility mode. The tested mailbox rejects it with `Basic authentication is
+disabled`. The one-command wrapper therefore defaults to OAuth2. Place a token
+with the delegated scope
 `https://outlook.office.com/IMAP.AccessAsUser.All` under
 `LEDGERBRIDGE_STAGING_IMAP_ACCESS_TOKEN` and run
 `scripts/r1_staging_run.ps1 -ImapAuth xoauth2`. A Graph `Mail.Read` token is

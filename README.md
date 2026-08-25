@@ -262,10 +262,10 @@ IMAP**, then place a separately generated app password in the external file:
 LEDGERBRIDGE_STAGING_IMAP_APP_PASSWORD=<app-password>
 ```
 
-Run the same wrapper; it now defaults to IMAP/password staging:
+Run the same wrapper; it now defaults to IMAP OAuth2 staging:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/r1_staging_run.ps1
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/r1_staging_run.ps1
 ```
 
 To avoid editing the credentials file manually, use the hidden local prompt:
@@ -281,8 +281,9 @@ For IMAP OAuth2, store
 `LEDGERBRIDGE_STAGING_IMAP_ACCESS_TOKEN=...` and run
 `scripts/r1_staging_run.ps1 -ImapAuth xoauth2`. The token must carry
 `https://outlook.office.com/IMAP.AccessAsUser.All`, not Graph `Mail.Read`.
-Outlook.com documents `outlook.office365.com:993` and Modern Auth/OAuth2 for
-IMAP; app passwords are only a compatibility fallback. See
+Outlook.com rejects basic authentication for this mailbox (`Basic
+authentication is disabled`), so app passwords are not usable here. The
+adapter retains password mode only for other compatible providers. See
 [Outlook IMAP settings](https://support.microsoft.com/en-US/Outlook/pop-imap-and-smtp-settings-for-outlook-com)
 and [IMAP OAuth](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth).
 
