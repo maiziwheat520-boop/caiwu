@@ -58,6 +58,7 @@ class IntakeEvidence(BaseModel):
 
     evidence_ref: UUID
     media_type: str = Field(min_length=1, max_length=200)
+    filename: str | None = Field(default=None, max_length=255)
     content_base64: str = Field(min_length=1, max_length=2_000_000)
     business_unit_ref: str | None = Field(default=None, max_length=200)
 
@@ -235,7 +236,7 @@ def intake(request: IntakeRequest) -> IntakeOutput:
             source_event_ref=request.source_event_ref,
             entity_ref=request.entity_ref,
             evidence=tuple(
-                (item.evidence_ref, item.media_type, content, item.business_unit_ref, None)
+                (item.evidence_ref, item.media_type, content, item.business_unit_ref, item.filename)
                 for item, content, _ in decoded
             ),
             activated_at=request.activation_at,

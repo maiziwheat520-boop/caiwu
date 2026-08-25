@@ -32,6 +32,7 @@ def replay_message(message: MailMessage, *, entity_ref: UUID, gateway_url: str) 
                     )
                 ),
                 "media_type": attachment.media_type,
+                "filename": attachment.filename,
                 "content_base64": base64.b64encode(attachment.content).decode("ascii"),
                 "business_unit_ref": None,
             }
