@@ -204,6 +204,8 @@ uv run --frozen --extra dev python scripts/r1_staging_cli.py command <CANDIDATE_
 
 `intake-json` also accepts `-` for stdin. The CLI rejects non-loopback URLs and
 caps file/response sizes; it is a staging convenience, not an auth boundary.
+The complete copy/paste acceptance flow is in
+`docs/tasks/2026-08-25-r1-synthetic-staging-release-candidate.md`.
 
 An exported RFC 5322 message can use the same boundary. Supply the target
 entity explicitly; the parser derives a stable source event from `Message-ID`:
