@@ -266,20 +266,28 @@ entity reference, loopback gateway, and explicit staging-only network gate. It
 does not print or persist the token. Override `-CredentialFile`, `-Mailbox`,
 `-EntityRef`, or `-GatewayUrl` only for another approved staging fixture.
 
-If no token is available yet, create a Microsoft Entra public-client app once
-and use the device-code helper. Give it only delegated `Mail.Read` (plus the
-standard sign-in scopes), enable public-client/device-code flow, then run:
+If no token is available yet, the lowest-friction free path is Graph Explorer;
+it uses Microsoft's existing developer app, so no Azure subscription or new
+application registration is needed. Open
+<https://developer.microsoft.com/en-us/graph/graph-explorer>, sign in as
+`redeatt@outlook.com`, choose **Modify permissions**, consent to delegated
+`Mail.Read`, then open the **Access token** tab and copy the short-lived token
+only into the external credentials file. Graph Explorer documents both the
+permission-consent flow and the Access token tab.
+
+Then run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/r1_graph_device_login.ps1 -ClientId '<application-client-id>'
 powershell -ExecutionPolicy Bypass -File scripts/r1_staging_run.ps1
 ```
 
-The helper prints only Microsoft's verification URL and one-time code. It
-writes the short-lived access token to the external credentials file and never
-prints or stores a refresh token. Device-code authorization is for public
-clients; see Microsoft's [device-code flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-device-code)
-and [Graph permission reference](https://learn.microsoft.com/en-us/graph/permissions-reference).
+The Graph Explorer token normally expires; repeat only the Access token step
+when it expires. Do not use `Mail.Send`, `Mail.ReadWrite`, or any application
+permission. The optional `r1_graph_device_login.ps1` helper remains available
+for a later, separately approved public-client registration; it is not needed
+for the free staging path. See Microsoft's [Graph Explorer access-token
+guide](https://learn.microsoft.com/en-us/graph/graph-explorer/graph-explorer-features)
+and [permission reference](https://learn.microsoft.com/en-us/graph/permissions-reference).
 
 The first Core write seam is available as an explicit, un-wired adapter:
 `ledgerbridge.candidate_persistence.persist_initial_candidate` accepts an

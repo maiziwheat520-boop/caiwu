@@ -73,10 +73,12 @@ not already listening, and tears down only the gateway process it started. It
 does not display or persist the token. Production mail, posting, and durable
 artifact writes remain disabled.
 
-If the token does not exist, create a Microsoft Entra public-client app once,
-grant delegated `Mail.Read` only, enable public-client/device-code flow, and
-run `scripts/r1_graph_device_login.ps1 -ClientId <application-client-id>`.
-The helper displays only the Microsoft verification URL and one-time code,
-then writes the short-lived access token to the external credentials file.
-It never prints or stores a refresh token. Device-code flow is documented by
-[Microsoft](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-device-code).
+If the token does not exist, use the free Graph Explorer path: sign in at
+<https://developer.microsoft.com/en-us/graph/graph-explorer>, choose **Modify
+permissions**, consent to delegated `Mail.Read`, and copy the short-lived
+value from the **Access token** tab into the external credentials file. No
+Azure subscription or new app registration is needed. Microsoft documents
+this tab and consent flow at
+[Graph Explorer features](https://learn.microsoft.com/en-us/graph/graph-explorer/graph-explorer-features).
+The optional device-code helper is retained for a future separately approved
+public-client registration, not required for this demo.
