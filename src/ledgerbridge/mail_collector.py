@@ -77,11 +77,13 @@ class MailMessage:
     subject: str
     received_at: str
     attachments: tuple[MailAttachment, ...]
+    body_preview: str = ""
 
     def __post_init__(self) -> None:
         _require_text("message_id", self.message_id, MAX_MAILBOX_TEXT)
         _require_text("subject", self.subject, MAX_MAILBOX_TEXT)
         _require_text("received_at", self.received_at, 100)
+        _require_text("body_preview", self.body_preview, MAX_MAILBOX_TEXT, allow_empty=True)
         if len(self.attachments) > MAX_ATTACHMENTS_PER_MESSAGE:
             raise MailCollectorError(
                 "MAIL_ATTACHMENT_LIMIT", "mail message has too many attachments"
@@ -157,7 +159,10 @@ class MicrosoftGraphMailProvider:
         if not isinstance(has_attachments, bool):
             raise MailCollectorError("MAIL_PROVIDER_RESPONSE", "attachment flag is invalid")
         attachments = tuple(self._iter_attachments(message_id)) if has_attachments else ()
-        return MailMessage(message_id, subject, received_at, attachments)
+        body_preview = raw.get("bodyPreview", "")
+        if not isinstance(body_preview, str):
+            raise MailCollectorError("MAIL_PROVIDER_RESPONSE", "mail body preview is invalid")
+        return MailMessage(message_id, subject, received_at, attachments, body_preview)
 
     def _iter_attachments(self, message_id: str) -> Iterator[MailAttachment]:
         path = self._attachments_path(message_id)
@@ -250,7 +255,7 @@ class MicrosoftGraphMailProvider:
             + urlencode(
                 {
                     "$top": self._page_size,
-                    "$select": "id,subject,receivedDateTime,hasAttachments",
+                    "$select": "id,subject,receivedDateTime,hasAttachments,bodyPreview",
                 }
             )
         )
@@ -318,10 +323,10 @@ def _required_string(
     return value
 
 
-def _require_text(field: str, value: str, maximum: int) -> None:
+def _require_text(field: str, value: str, maximum: int, *, allow_empty: bool = False) -> None:
     if (
         not isinstance(value, str)
-        or not value.strip()
+        or (not allow_empty and not value.strip())
         or len(value) > maximum
         or contains_unstorable_text(value)
     ):

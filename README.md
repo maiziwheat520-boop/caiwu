@@ -191,6 +191,25 @@ injected token exchange, but does not create network clients, read secrets, or
 persist refresh tokens. See
 `docs/tasks/2026-08-25-outlook-oauth-framework.md` before enabling any mailbox.
 
+For an explicitly enabled, isolated staging replay, start the loopback gateway
+and provide a short-lived Graph access token through the process environment:
+
+```powershell
+$env:LEDGERBRIDGE_STAGING_NETWORK = "1"
+$env:LEDGERBRIDGE_STAGING_ACCESS_TOKEN = "<short-lived-token>"
+$env:LEDGERBRIDGE_STAGING_MAILBOX = "staging@example.test"
+$env:LEDGERBRIDGE_STAGING_ENTITY_REF = "10000000-0000-4000-8000-000000000001"
+uv run --frozen --extra dev python scripts/r1_staging_graph_replay.py
+```
+
+This mode fetches at most five inbox messages from Microsoft Graph and posts
+only bounded projections to `127.0.0.1:8653`. The token is read once from the
+environment and is never written or logged. The default remains no network;
+run `...r1_staging_graph_replay.py --check` for a no-network self-check. This
+is not production mail ingestion: it has no refresh-token store, persistence,
+posting write path, or authenticated entity grant. See
+`docs/tasks/2026-08-25-staging-graph-replay.md` for the boundary and cleanup.
+
 Quality gate:
 
 ```bash

@@ -53,6 +53,9 @@ class IntakeRequest(BaseModel):
     chat_kind: str = "private"
     sender_kind: str = "user"
     sent_at: datetime = ACTIVATED_AT
+    # Synthetic-only admission watermark. Real connectors must use the
+    # configured deployment watermark rather than allowing caller control.
+    activation_at: datetime = ACTIVATED_AT
     text: str = Field(default="", max_length=1_000_000)
     entity_ref: UUID
     evidence: tuple[IntakeEvidence, ...] = Field(min_length=1, max_length=32)
@@ -200,6 +203,7 @@ def intake(request: IntakeRequest) -> IntakeOutput:
                 (item.evidence_ref, item.media_type, content, item.business_unit_ref, None)
                 for item, content, _ in decoded
             ),
+            activated_at=request.activation_at,
             source_subject=None,
         )
     except HTTPException:
