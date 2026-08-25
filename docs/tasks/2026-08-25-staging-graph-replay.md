@@ -62,3 +62,13 @@ python -m compileall -q src scripts
 ```
 
 No real token or mailbox was used during repository verification.
+
+## Short operator flow
+
+After adding exactly one `LEDGERBRIDGE_STAGING_ACCESS_TOKEN=...` line to the
+external credentials file, run `powershell -ExecutionPolicy Bypass -File
+scripts/r1_staging_run.ps1` from the repository root. The wrapper supplies the
+approved staging mailbox/entity defaults, starts a loopback gateway when one is
+not already listening, and tears down only the gateway process it started. It
+does not display or persist the token. Production mail, posting, and durable
+artifact writes remain disabled.

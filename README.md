@@ -254,6 +254,18 @@ is not production mail ingestion: it has no refresh-token store, persistence,
 posting write path, or authenticated entity grant. See
 `docs/tasks/2026-08-25-staging-graph-replay.md` for the boundary and cleanup.
 
+For the shortest operator flow, after placing that one line in the external
+credentials file, run from the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/r1_staging_run.ps1
+```
+
+The wrapper supplies the approved mailbox (`redeatt@outlook.com`), synthetic
+entity reference, loopback gateway, and explicit staging-only network gate. It
+does not print or persist the token. Override `-CredentialFile`, `-Mailbox`,
+`-EntityRef`, or `-GatewayUrl` only for another approved staging fixture.
+
 The first Core write seam is available as an explicit, un-wired adapter:
 `ledgerbridge.candidate_persistence.persist_initial_candidate` accepts an
 already validated Candidate aggregate and an injected SQLAlchemy session, then
