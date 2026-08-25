@@ -25,6 +25,7 @@ from ledgerbridge.mail_collector import (
     MailMessage,
     MicrosoftGraphMailProvider,
 )
+from ledgerbridge.mail_credentials import WindowsCredentialTokenProvider
 
 MAX_STAGING_EVIDENCE_BYTES = 1_048_576
 DEFAULT_GATEWAY = "http://127.0.0.1:8653/v1/intake"
@@ -128,11 +129,12 @@ def run_staging() -> dict[str, Any]:
             "set LEDGERBRIDGE_STAGING_NETWORK=1 to enable Graph staging network access"
         )
     token = os.environ.get("LEDGERBRIDGE_STAGING_ACCESS_TOKEN")
+    credential_target = os.environ.get("LEDGERBRIDGE_STAGING_CREDENTIAL_TARGET")
     mailbox = os.environ.get("LEDGERBRIDGE_STAGING_MAILBOX")
     entity_raw = os.environ.get("LEDGERBRIDGE_STAGING_ENTITY_REF")
-    if not token or not mailbox or not entity_raw:
+    if bool(token) == bool(credential_target) or not mailbox or not entity_raw:
         raise RuntimeError(
-            "LEDGERBRIDGE_STAGING_ACCESS_TOKEN, _MAILBOX, and _ENTITY_REF are required"
+            "set exactly one of _ACCESS_TOKEN or _CREDENTIAL_TARGET, plus _MAILBOX and _ENTITY_REF"
         )
     try:
         entity_ref = UUID(entity_raw)
@@ -141,9 +143,14 @@ def run_staging() -> dict[str, Any]:
     gateway_url = _require_loopback_gateway(
         os.environ.get("LEDGERBRIDGE_STAGING_GATEWAY_URL", DEFAULT_GATEWAY)
     )
+    token_provider = (
+        EnvironmentTokenProvider(token)
+        if token is not None
+        else WindowsCredentialTokenProvider(credential_target or "")
+    )
     provider = MicrosoftGraphMailProvider(
         UrllibGraphTransport(),
-        EnvironmentTokenProvider(token),
+        token_provider,
         mailbox=mailbox,
         page_size=5,
         max_pages=1,

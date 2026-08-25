@@ -34,6 +34,11 @@ The current release-candidate handoff and copy/paste acceptance flow are in
 `docs/tasks/2026-08-25-r1-synthetic-staging-release-candidate.md`; the branch
 HEAD for this handoff is `8988bed`.
 
+For staging-only Graph replay, `mail_credentials.py` now reads a configured
+Windows Credential Manager generic target without writing or exporting it;
+exactly one process token or credential target is required. This does not
+change the production real-ingest gate.
+
 ## R1 database Core read adapter checkpoint (2026-08-24)
 
 The default-disabled Core route now has an explicit database reader backend on
