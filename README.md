@@ -278,6 +278,18 @@ The hidden prompt defaults to the authorization-code key; the value is not
 echoed and is never a command-line argument. Override `-ImapHost`, `-ImapPort`,
 `-ImapAuth`, or `-ImapCredentialKey` for another compatible provider.
 
+For forwarded financial ZIPs that need one-by-one password confirmation, use
+the memory-only checker. Each password is hidden locally, verified against one
+archive, and discarded; no archive is extracted to disk:
+
+```powershell
+uv run --frozen --extra dev python scripts/r1_staging_financial_zip_check.py `
+  --message-index 2
+```
+
+Blank input skips an archive. The checker reports only verification status and
+bounded entry metadata; never paste a ZIP password into chat.
+
 The adapter still supports Outlook.com OAuth2 for separately obtained tokens:
 
 ```powershell
