@@ -12,7 +12,9 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -28,6 +30,7 @@ from ledgerbridge.hermes_triage import (
     triage_admitted_message,
 )
 from ledgerbridge.mail_eml import ParsedEml, parse_eml
+from ledgerbridge.synthetic_persistence import SyntheticOutputStore, SyntheticPersistenceError
 
 MAX_EVIDENCE_BYTES = 1_048_576
 PRIMARY_PROFILE = "profile:primary"
@@ -88,6 +91,7 @@ class IntakeOutput(BaseModel):
 
 
 STORE: dict[UUID, IntakeOutput] = {}
+PERSISTENCE_STORE: SyntheticOutputStore | None = None
 app = FastAPI(
     title="LedgerBridge R1 Synthetic Data Gateway",
     docs_url=None,
@@ -177,6 +181,8 @@ def _build_output(
     )
     if candidate_ref is not None:
         STORE[candidate_ref] = output
+        if PERSISTENCE_STORE is not None:
+            PERSISTENCE_STORE.save(output.model_dump(mode="json"))
     return output
 
 
@@ -206,6 +212,10 @@ def intake(request: IntakeRequest) -> IntakeOutput:
             activated_at=request.activation_at,
             source_subject=None,
         )
+    except SyntheticPersistenceError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "staging persistence unavailable"
+        ) from exc
     except HTTPException:
         raise
     except (TypeError, ValueError) as exc:
@@ -219,6 +229,10 @@ async def intake_eml(request: Request) -> IntakeOutput:
         entity_ref = UUID(entity_header or "")
         parsed = parse_eml(await request.body())
         return _build_eml_output(parsed, entity_ref=entity_ref)
+    except SyntheticPersistenceError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "staging persistence unavailable"
+        ) from exc
     except HTTPException:
         raise
     except (TypeError, ValueError) as exc:
@@ -271,7 +285,24 @@ def _build_eml_output(parsed: ParsedEml, *, entity_ref: UUID) -> IntakeOutput:
 
 @app.get("/v1/candidates", response_model=list[IntakeOutput])
 def candidates() -> list[IntakeOutput]:
-    return list(STORE.values())
+    if PERSISTENCE_STORE is None:
+        return list(STORE.values())
+    persisted = [IntakeOutput.model_validate(item) for item in PERSISTENCE_STORE.list()]
+    persisted_refs = {item.candidate_ref for item in persisted}
+    return [*persisted, *(item for ref, item in STORE.items() if ref not in persisted_refs)]
+
+
+def _build_persistence_store() -> SyntheticOutputStore | None:
+    raw_path = os.environ.get("LEDGERBRIDGE_SYNTHETIC_PERSISTENCE_PATH")
+    if not raw_path:
+        return None
+    try:
+        return SyntheticOutputStore(Path(raw_path))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("invalid synthetic persistence path") from exc
+
+
+PERSISTENCE_STORE = _build_persistence_store()
 
 
 def run_self_check() -> dict[str, Any]:

@@ -166,9 +166,21 @@ curl -X POST http://127.0.0.1:8653/v1/intake \
 curl http://127.0.0.1:8653/v1/candidates
 ```
 
-The gateway is synthetic and process-local: it does not persist bytes or
-create postings. Its response is the input/output contract for the next Core
-persistence adapter.
+The gateway is synthetic and, by default, process-local: it does not persist
+raw bytes or create postings. Its response is the input/output contract for the
+next Core persistence adapter.
+
+For a restart-persistent local staging view, opt in to metadata-only SQLite
+(the directory is ignored by Git):
+
+```powershell
+$env:LEDGERBRIDGE_SYNTHETIC_PERSISTENCE_PATH = "$(Join-Path (Get-Location) 'var\synthetic-gateway.sqlite3')"
+uv run --frozen --extra dev python scripts/r1_synthetic_data_gateway.py
+```
+
+This stores only candidate JSON projections and evidence digests/metadata; it
+does not store raw message bytes, create PostgreSQL rows, or enable production
+Core writes. Remove the file when the staging review is complete.
 
 An exported RFC 5322 message can use the same boundary. Supply the target
 entity explicitly; the parser derives a stable source event from `Message-ID`:

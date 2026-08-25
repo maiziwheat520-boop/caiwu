@@ -19,6 +19,15 @@ admission, deterministic synthetic triage, and candidate-intent validation.
   process.
 - Every response carries `writes_posting: false`.
 
+## Optional staging persistence
+
+Set `LEDGERBRIDGE_SYNTHETIC_PERSISTENCE_PATH` to an absolute `.sqlite3` path
+under the ignored `var/` directory to retain candidate projections across
+gateway restarts. The SQLite store contains only the structured response,
+source identity, timestamps, and evidence digests/metadata; it never stores
+base64 evidence bytes, raw EML, OAuth tokens, or database credentials. The
+default remains process-local memory.
+
 ## Explicit non-goals
 
 This launcher does not write PostgreSQL, the ArtifactStore, AuditEvent,
