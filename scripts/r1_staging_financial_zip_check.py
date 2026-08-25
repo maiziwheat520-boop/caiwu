@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import importlib
 import io
 import json
 import zipfile
@@ -15,11 +16,10 @@ from ledgerbridge.mail_credentials import CredentialFileSecretProvider
 from ledgerbridge.mail_imap import ImapMailProvider
 
 try:
-    from scripts.r1_staging_imap_replay import ImapSslTransport as _ImapSslTransport
+    _transport_module = importlib.import_module("scripts.r1_staging_imap_replay")
 except ModuleNotFoundError:
-    from r1_staging_imap_replay import (
-        ImapSslTransport as _ImapSslTransport,  # type: ignore[import-not-found,no-redef]
-    )
+    _transport_module = importlib.import_module("r1_staging_imap_replay")
+_ImapSslTransport = _transport_module.ImapSslTransport
 
 DEFAULT_CREDENTIAL_FILE = Path("G:/我的云端硬盘/凭据/hermes-163-mail.env")
 MAX_ENTRY_BYTES = 50 * 1024 * 1024
