@@ -194,6 +194,17 @@ curl -X POST "http://127.0.0.1:8653/v1/candidates/<CANDIDATE_UUID>/command" `
 The endpoint is disabled without SQLite persistence and remains synthetic-only;
 production authentication, Core PostgreSQL writes, and Posting remain closed.
 
+For the same loopback flow without hand-written curl, use the CLI:
+
+```powershell
+uv run --frozen --extra dev python scripts/r1_staging_cli.py intake-eml message.eml --entity-ref <ENTITY_UUID>
+uv run --frozen --extra dev python scripts/r1_staging_cli.py list
+uv run --frozen --extra dev python scripts/r1_staging_cli.py command <CANDIDATE_UUID> --action IGNORE --expected-revision 1 --reason "not relevant" --actor-ref operator:staging
+```
+
+`intake-json` also accepts `-` for stdin. The CLI rejects non-loopback URLs and
+caps file/response sizes; it is a staging convenience, not an auth boundary.
+
 An exported RFC 5322 message can use the same boundary. Supply the target
 entity explicitly; the parser derives a stable source event from `Message-ID`:
 

@@ -25,6 +25,11 @@ full Alembic head upgrade: one synthetic candidate, revision, evidence link,
 typed CREATE event, and two audit events committed successfully. The temporary
 tunnel/container were removed; no running LedgerBridge database was used.
 
+The loopback staging gateway now has an operator CLI for JSON/EML intake,
+candidate listing, and versioned review commands. CLI input/response bounds and
+loopback-only URL validation are enforced; production authentication and Core
+write enablement remain closed.
+
 ## R1 database Core read adapter checkpoint (2026-08-24)
 
 The default-disabled Core route now has an explicit database reader backend on
