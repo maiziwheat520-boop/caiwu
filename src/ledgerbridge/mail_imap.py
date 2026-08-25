@@ -159,5 +159,9 @@ def _normalize_received_at(value: str) -> str:
 
 
 def _safe_filename(value: str) -> str:
+    try:
+        value = str(make_header(decode_header(value))).strip()
+    except (UnicodeError, ValueError):
+        value = value.strip()
     cleaned = value.replace("\\", "/").rsplit("/", 1)[-1].strip()
     return cleaned[:255] or "attachment.bin"
