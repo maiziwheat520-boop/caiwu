@@ -210,6 +210,15 @@ is not production mail ingestion: it has no refresh-token store, persistence,
 posting write path, or authenticated entity grant. See
 `docs/tasks/2026-08-25-staging-graph-replay.md` for the boundary and cleanup.
 
+The first Core write seam is available as an explicit, un-wired adapter:
+`ledgerbridge.candidate_persistence.persist_initial_candidate` accepts an
+already validated Candidate aggregate and an injected SQLAlchemy session, then
+appends the revision-1 candidate/evidence links and `candidate.create` audit
+binding in the caller's transaction. It never accepts raw bytes or creates a
+posting. See `docs/tasks/2026-08-25-candidate-persistence-adapter.md`; runtime
+database grants remain closed until the write API and workload gate are
+reviewed.
+
 Quality gate:
 
 ```bash
