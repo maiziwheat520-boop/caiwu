@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from ledgerbridge.mail_attachment_inspection import inspect_attachment
 from ledgerbridge.mail_collector import MailMessage
 
 MAX_STAGING_EVIDENCE_BYTES = 1_048_576
@@ -81,8 +82,25 @@ def replay_message(message: MailMessage, *, entity_ref: UUID, gateway_url: str) 
         "triage_action": result.get("triage_action"),
         "candidate_ref": result.get("candidate_ref"),
         "evidence_count": len(result.get("evidence", [])),
+        "attachment_formats": _attachment_format_counts(message),
+        "encrypted_attachment_count": sum(
+            inspection.encrypted is True
+            for inspection in map(inspect_attachment, message.attachments)
+        ),
+        "requires_review": any(
+            inspection.requires_review
+            for inspection in map(inspect_attachment, message.attachments)
+        ),
         "writes_posting": result.get("writes_posting"),
     }
+
+
+def _attachment_format_counts(message: MailMessage) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for attachment in message.attachments:
+        format_name = inspect_attachment(attachment).format
+        counts[format_name] = counts.get(format_name, 0) + 1
+    return counts
 
 
 def _parse_received_at(value: str) -> datetime:
