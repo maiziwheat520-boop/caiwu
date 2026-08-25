@@ -182,6 +182,18 @@ This stores only candidate JSON projections and evidence digests/metadata; it
 does not store raw message bytes, create PostgreSQL rows, or enable production
 Core writes. Remove the file when the staging review is complete.
 
+With that opt-in store, review a candidate through the same versioned command
+state machine:
+
+```powershell
+curl -X POST "http://127.0.0.1:8653/v1/candidates/<CANDIDATE_UUID>/command" `
+  -H 'content-type: application/json' `
+  -d '{"actor_ref":"operator:staging","command":{"operation_id":"<OPERATION_UUID>","action":"IGNORE","expected_revision":1,"reason":"not relevant","decided_at":"2026-08-25T04:00:00Z"}}'
+```
+
+The endpoint is disabled without SQLite persistence and remains synthetic-only;
+production authentication, Core PostgreSQL writes, and Posting remain closed.
+
 An exported RFC 5322 message can use the same boundary. Supply the target
 entity explicitly; the parser derives a stable source event from `Message-ID`:
 

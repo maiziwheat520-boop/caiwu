@@ -28,6 +28,13 @@ source identity, timestamps, and evidence digests/metadata; it never stores
 base64 evidence bytes, raw EML, OAuth tokens, or database credentials. The
 default remains process-local memory.
 
+When SQLite persistence is enabled, the local review seam also accepts
+`POST /v1/candidates/{candidate_ref}/command` with an `actor_ref` and the
+versioned `CandidateCommand` body. It applies the existing append-only state
+machine, enforces expected-revision/idempotency, and stores the aggregate
+history. The actor value is trusted only because this is loopback staging; it
+is not an authentication or mTLS boundary.
+
 ## Explicit non-goals
 
 This launcher does not write PostgreSQL, the ArtifactStore, AuditEvent,

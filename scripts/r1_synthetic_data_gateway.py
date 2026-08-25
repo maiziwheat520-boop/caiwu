@@ -15,13 +15,28 @@ import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ConfigDict, Field
 
+from ledgerbridge.candidate_contract import (
+    Blocker,
+    BlockerCode,
+    CandidateAggregate,
+    CandidateCommand,
+    CandidateContractError,
+    CandidateProjection,
+    CandidateStatus,
+    EvidenceKind,
+    EvidenceReference,
+    IngestChannel,
+    ReviewSummary,
+    SourceProjection,
+    apply_candidate_command,
+)
 from ledgerbridge.candidate_intent import EvidenceBinding, create_candidate_intent
 from ledgerbridge.hermes_message import HermesPrivateMessage, classify_private_message
 from ledgerbridge.hermes_triage import (
@@ -88,6 +103,13 @@ class IntakeOutput(BaseModel):
     entity_ref: UUID
     evidence: tuple[EvidenceOutput, ...]
     writes_posting: bool = False
+
+
+class CandidateCommandRequest(BaseModel):
+    """Local staging command plus the explicitly trusted actor identity."""
+
+    command: dict[str, object]
+    actor_ref: str = Field(min_length=1, max_length=200)
 
 
 STORE: dict[UUID, IntakeOutput] = {}
@@ -182,7 +204,9 @@ def _build_output(
     if candidate_ref is not None:
         STORE[candidate_ref] = output
         if PERSISTENCE_STORE is not None:
-            PERSISTENCE_STORE.save(output.model_dump(mode="json"))
+            PERSISTENCE_STORE.save(
+                output.model_dump(mode="json"), aggregate=_initial_aggregate(output)
+            )
     return output
 
 
@@ -292,6 +316,32 @@ def candidates() -> list[IntakeOutput]:
     return [*persisted, *(item for ref, item in STORE.items() if ref not in persisted_refs)]
 
 
+@app.post(
+    "/v1/candidates/{candidate_ref}/command",
+    response_model=CandidateAggregate,
+    status_code=status.HTTP_200_OK,
+)
+def candidate_command(candidate_ref: UUID, request: CandidateCommandRequest) -> CandidateAggregate:
+    if PERSISTENCE_STORE is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "staging persistence is disabled")
+    aggregate = PERSISTENCE_STORE.get_aggregate(str(candidate_ref))
+    if aggregate is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "candidate not found")
+    try:
+        command = CandidateCommand.model_validate(request.command)
+        outcome = apply_candidate_command(aggregate, command, actor_ref=request.actor_ref)
+        PERSISTENCE_STORE.update_aggregate(outcome.aggregate)
+        return outcome.aggregate
+    except SyntheticPersistenceError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "staging persistence unavailable"
+        ) from exc
+    except CandidateContractError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+
 def _build_persistence_store() -> SyntheticOutputStore | None:
     raw_path = os.environ.get("LEDGERBRIDGE_SYNTHETIC_PERSISTENCE_PATH")
     if not raw_path:
@@ -303,6 +353,61 @@ def _build_persistence_store() -> SyntheticOutputStore | None:
 
 
 PERSISTENCE_STORE = _build_persistence_store()
+
+
+def _initial_aggregate(output: IntakeOutput) -> CandidateAggregate:
+    if output.candidate_ref is None:
+        raise ValueError("only candidate outputs can be persisted")
+    evidence = tuple(
+        EvidenceReference(
+            evidence_ref=item.evidence_ref,
+            kind=(
+                EvidenceKind.ATTACHMENT
+                if item.filename is not None
+                else EvidenceKind.MESSAGE_ENVELOPE
+            ),
+            media_type=item.media_type,
+            display_name=item.filename,
+            download_available=False,
+        )
+        for item in output.evidence
+    )
+    missing: tuple[
+        tuple[
+            BlockerCode,
+            str,
+            Literal["business_unit", "category", "amount_minor", "accounting_month"],
+        ],
+        ...,
+    ] = (
+        (BlockerCode.MISSING_BUSINESS_UNIT, "business unit is required", "business_unit"),
+        (BlockerCode.MISSING_CATEGORY, "category is required", "category"),
+        (BlockerCode.MISSING_AMOUNT, "amount is required", "amount_minor"),
+        (BlockerCode.MISSING_ACCOUNTING_MONTH, "accounting month is required", "accounting_month"),
+    )
+    projection = CandidateProjection(
+        candidate_ref=output.candidate_ref,
+        short_id=f"C-{output.candidate_ref.hex[:6].upper()}",
+        revision=1,
+        status=CandidateStatus.INCOMPLETE,
+        entity_ref=output.entity_ref,
+        summary=(output.source_subject or output.source_message_id)[:500],
+        confidence_basis_points=0,
+        source=SourceProjection(
+            ingest_channel=IngestChannel.SYNTHETIC,
+            source_system="synthetic",
+            source_event_ref=output.source_event_ref,
+            display_label=(output.source_subject or output.source_message_id)[:100],
+        ),
+        evidence=evidence,
+        blockers=tuple(
+            Blocker(code=code, message=message, field=field) for code, message, field in missing
+        ),
+        review_summary=ReviewSummary(event_count=0, current_revision=1),
+        created_at=output.source_received_at,
+        updated_at=output.source_received_at,
+    )
+    return CandidateAggregate(projection=projection)
 
 
 def run_self_check() -> dict[str, Any]:

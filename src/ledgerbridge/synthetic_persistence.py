@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
+from ledgerbridge.candidate_contract import CandidateAggregate
+
 
 class SyntheticPersistenceError(RuntimeError):
     """The local staging projection cannot be persisted safely."""
@@ -34,8 +36,18 @@ class SyntheticOutputStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS candidate_aggregate (
+                    candidate_ref TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
 
-    def save(self, output: Mapping[str, object]) -> None:
+    def save(
+        self, output: Mapping[str, object], *, aggregate: CandidateAggregate | None = None
+    ) -> None:
         candidate_ref = _required_key(output, "candidate_ref")
         source_event_ref = _required_key(output, "source_event_ref")
         payload = json.dumps(
@@ -54,12 +66,29 @@ class SyntheticOutputStore:
                         raise SyntheticPersistenceError(
                             "staging source identity already has different output"
                         )
+                    if aggregate is not None:
+                        connection.execute(
+                            "INSERT OR IGNORE INTO candidate_aggregate "
+                            "(candidate_ref, payload) VALUES (?, ?)",
+                            (
+                                candidate_ref,
+                                json.dumps(aggregate.model_dump(mode="json"), sort_keys=True),
+                            ),
+                        )
                     return
                 connection.execute(
                     "INSERT INTO candidate_projection "
                     "(candidate_ref, source_event_ref, payload, created_at) VALUES (?, ?, ?, ?)",
                     (candidate_ref, source_event_ref, payload, created_at),
                 )
+                if aggregate is not None:
+                    connection.execute(
+                        "INSERT INTO candidate_aggregate (candidate_ref, payload) VALUES (?, ?)",
+                        (
+                            candidate_ref,
+                            json.dumps(aggregate.model_dump(mode="json"), sort_keys=True),
+                        ),
+                    )
         except sqlite3.Error as exc:
             raise SyntheticPersistenceError("staging persistence is unavailable") from exc
 
@@ -78,6 +107,37 @@ class SyntheticOutputStore:
                 raise SyntheticPersistenceError("staging persistence contains invalid output")
             values.append(cast(dict[str, object], parsed))
         return values
+
+    def get_aggregate(self, candidate_ref: str) -> CandidateAggregate | None:
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT payload FROM candidate_aggregate WHERE candidate_ref = ?",
+                    (candidate_ref,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise SyntheticPersistenceError("staging persistence is unavailable") from exc
+        if row is None:
+            return None
+        try:
+            return CandidateAggregate.model_validate(json.loads(row[0]))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise SyntheticPersistenceError(
+                "staging persistence contains invalid aggregate"
+            ) from exc
+
+    def update_aggregate(self, aggregate: CandidateAggregate) -> None:
+        payload = json.dumps(aggregate.model_dump(mode="json"), sort_keys=True)
+        try:
+            with self._connect() as connection:
+                result = connection.execute(
+                    "UPDATE candidate_aggregate SET payload = ? WHERE candidate_ref = ?",
+                    (payload, str(aggregate.projection.candidate_ref)),
+                )
+                if result.rowcount != 1:
+                    raise SyntheticPersistenceError("staging candidate aggregate is missing")
+        except sqlite3.Error as exc:
+            raise SyntheticPersistenceError("staging persistence is unavailable") from exc
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._path, timeout=5)
