@@ -90,6 +90,12 @@ class MailMessage:
             )
 
 
+class MailProvider(Protocol):
+    """Provider-neutral mailbox boundary shared by Graph and IMAP adapters."""
+
+    def iter_messages(self) -> Iterator[MailMessage]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class CollectedAttachment:
     """A bounded handoff value for the later ArtifactStore integration."""
@@ -286,7 +292,7 @@ class MailCollector:
 
     def __init__(
         self,
-        provider: MicrosoftGraphMailProvider | None = None,
+        provider: MailProvider | None = None,
         *,
         max_messages: int = MAX_MESSAGES_PER_RUN,
     ) -> None:

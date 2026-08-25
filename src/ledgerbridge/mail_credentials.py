@@ -84,18 +84,40 @@ class CredentialFileTokenProvider:
         self._key = key
 
     def get_access_token(self) -> str:
-        try:
-            lines = self._path.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeError) as exc:
-            raise CredentialStoreError("staging credential file is unavailable") from exc
-        matches = [
-            line.split("=", 1)[1].strip()
-            for line in lines
-            if line.lstrip().startswith(f"{self._key}=")
-        ]
-        if len(matches) != 1 or not matches[0] or any(ord(char) == 0 for char in matches[0]):
-            raise CredentialStoreError("staging credential file entry is invalid")
-        return matches[0].strip("\"'")
+        return _read_external_value(self._path, self._key)
+
+
+class CredentialFileSecretProvider:
+    """Read one non-logged secret (for example an IMAP app password)."""
+
+    _ROOT = CredentialFileTokenProvider._ROOT
+
+    def __init__(self, path: Path, *, key: str) -> None:
+        resolved = path.resolve()
+        if self._ROOT not in resolved.parents:
+            raise ValueError("credential file must be under the approved credentials directory")
+        if not key.isidentifier() or len(key) > 100:
+            raise ValueError("credential key is invalid")
+        self._path = resolved
+        self._key = key
+
+    def get_secret(self) -> str:
+        return _read_external_value(self._path, self._key)
+
+
+def _read_external_value(path: Path, key: str) -> str:
+    """Read exactly one external key without exposing its value in errors."""
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise CredentialStoreError("staging credential file is unavailable") from exc
+    matches = [
+        line.split("=", 1)[1].strip() for line in lines if line.lstrip().startswith(f"{key}=")
+    ]
+    if len(matches) != 1 or not matches[0] or any(ord(char) == 0 for char in matches[0]):
+        raise CredentialStoreError("staging credential file entry is invalid")
+    return matches[0].strip("\"'")
 
 
 def _decode_blob(raw: bytes) -> str:

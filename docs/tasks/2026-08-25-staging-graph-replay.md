@@ -82,3 +82,18 @@ this tab and consent flow at
 [Graph Explorer features](https://learn.microsoft.com/en-us/graph/graph-explorer/graph-explorer-features).
 The optional device-code helper is retained for a future separately approved
 public-client registration, not required for this demo.
+
+## IMAP staging alternative
+
+The provider-neutral boundary also includes `ImapMailProvider`. For the
+no-new-app-registration path, enable IMAP in Outlook.com and place a separately
+generated app password in the external file as
+`LEDGERBRIDGE_STAGING_IMAP_APP_PASSWORD=...`; the one-command wrapper defaults
+to this mode. This is only a legacy-compatibility fallback: Outlook.com
+documents Modern Auth/OAuth2 as the normal IMAP authentication method. For
+OAuth2, place a token with the delegated scope
+`https://outlook.office.com/IMAP.AccessAsUser.All` under
+`LEDGERBRIDGE_STAGING_IMAP_ACCESS_TOKEN` and run
+`scripts/r1_staging_run.ps1 -ImapAuth xoauth2`. A Graph `Mail.Read` token is
+not valid for IMAP. Both modes are read-only, bounded to five messages, and
+post only to the loopback synthetic gateway.

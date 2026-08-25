@@ -254,6 +254,29 @@ is not production mail ingestion: it has no refresh-token store, persistence,
 posting write path, or authenticated entity grant. See
 `docs/tasks/2026-08-25-staging-graph-replay.md` for the boundary and cleanup.
 
+The common `MailProvider` boundary also supports the lower-cost Outlook IMAP
+staging path. Enable IMAP in Outlook.com **Settings → Mail → Forwarding and
+IMAP**, then place a separately generated app password in the external file:
+
+```text
+LEDGERBRIDGE_STAGING_IMAP_APP_PASSWORD=<app-password>
+```
+
+Run the same wrapper; it now defaults to IMAP/password staging:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/r1_staging_run.ps1
+```
+
+For IMAP OAuth2, store
+`LEDGERBRIDGE_STAGING_IMAP_ACCESS_TOKEN=...` and run
+`scripts/r1_staging_run.ps1 -ImapAuth xoauth2`. The token must carry
+`https://outlook.office.com/IMAP.AccessAsUser.All`, not Graph `Mail.Read`.
+Outlook.com documents `outlook.office365.com:993` and Modern Auth/OAuth2 for
+IMAP; app passwords are only a compatibility fallback. See
+[Outlook IMAP settings](https://support.microsoft.com/en-US/Outlook/pop-imap-and-smtp-settings-for-outlook-com)
+and [IMAP OAuth](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth).
+
 For the shortest operator flow, after placing that one line in the external
 credentials file, run from the repository root:
 

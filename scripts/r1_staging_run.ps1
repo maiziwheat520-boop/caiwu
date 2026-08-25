@@ -9,7 +9,11 @@ param(
     [string]$CredentialFile = 'G:\我的云端硬盘\凭据\home-infra-credentials.md',
     [string]$Mailbox = 'redeatt@outlook.com',
     [string]$EntityRef = '10000000-0000-4000-8000-000000000001',
-    [string]$GatewayUrl = 'http://127.0.0.1:8653/v1/intake'
+    [string]$GatewayUrl = 'http://127.0.0.1:8653/v1/intake',
+    [ValidateSet('imap', 'graph')]
+    [string]$Transport = 'imap',
+    [ValidateSet('password', 'xoauth2')]
+    [string]$ImapAuth = 'password'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,6 +30,7 @@ $env:LEDGERBRIDGE_STAGING_CREDENTIAL_FILE = $CredentialFile
 $env:LEDGERBRIDGE_STAGING_MAILBOX = $Mailbox
 $env:LEDGERBRIDGE_STAGING_ENTITY_REF = $EntityRef
 $env:LEDGERBRIDGE_STAGING_GATEWAY_URL = $GatewayUrl
+$env:LEDGERBRIDGE_STAGING_IMAP_AUTH = $ImapAuth
 
 Write-Output 'Starting bounded Outlook staging replay (no production writes).'
 Write-Output "Mailbox: $Mailbox"
@@ -67,7 +72,12 @@ try {
     if (-not $gatewayReady) {
         throw 'loopback staging gateway did not become ready'
     }
-    uv run --frozen --extra dev python scripts/r1_staging_graph_replay.py
+    $replayScript = if ($Transport -eq 'imap') {
+        'scripts/r1_staging_imap_replay.py'
+    } else {
+        'scripts/r1_staging_graph_replay.py'
+    }
+    uv run --frozen --extra dev python $replayScript
     if ($LASTEXITCODE -ne 0) {
         throw "staging replay failed with exit code $LASTEXITCODE"
     }
