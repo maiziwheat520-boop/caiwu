@@ -170,6 +170,12 @@ The gateway is synthetic and process-local: it does not persist bytes or
 create postings. Its response is the input/output contract for the next Core
 persistence adapter.
 
+The Outlook/Microsoft Graph authentication seam is kept separate and disabled:
+`src/ledgerbridge/mail_oauth.py` builds PKCE authorization URLs and validates an
+injected token exchange, but does not create network clients, read secrets, or
+persist refresh tokens. See
+`docs/tasks/2026-08-25-outlook-oauth-framework.md` before enabling any mailbox.
+
 Quality gate:
 
 ```bash
