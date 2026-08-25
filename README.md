@@ -287,6 +287,20 @@ adapter retains password mode only for other compatible providers. See
 [Outlook IMAP settings](https://support.microsoft.com/en-US/Outlook/pop-imap-and-smtp-settings-for-outlook-com)
 and [IMAP OAuth](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth).
 
+If you want zero application registration and no token handling in this
+project, use the free Thunderbird client: add `redeatt@outlook.com` with its
+built-in OAuth2 login, allow it to synchronize the Inbox locally, then point
+the demo at Thunderbird's `INBOX` mbox file:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/r1_staging_run.ps1 `
+  -Transport mbox -MboxPath 'C:\Users\<you>\AppData\Roaming\Thunderbird\Profiles\<profile>\ImapMail\outlook.office365.com\INBOX'
+```
+
+The mbox adapter is read-only and never sees Thunderbird's OAuth token. This
+is the recommended no-subscription fallback when direct IMAP OAuth credentials
+are unavailable.
+
 For the shortest operator flow, after placing that one line in the external
 credentials file, run from the repository root:
 

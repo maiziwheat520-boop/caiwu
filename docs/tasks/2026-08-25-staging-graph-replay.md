@@ -98,6 +98,14 @@ with the delegated scope
 not valid for IMAP. Both modes are read-only, bounded to five messages, and
 post only to the loopback synthetic gateway.
 
+For a no-registration fallback, Thunderbird can perform the Microsoft OAuth
+login and synchronize the Inbox locally. `scripts/r1_staging_mbox_replay.py`
+reads that mbox read-only and never handles the OAuth token:
+
+```text
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/r1_staging_run.ps1 -Transport mbox -MboxPath <Thunderbird INBOX mbox>
+```
+
 Use `scripts/r1_set_staging_credential.ps1` when the operator wants a hidden
 local prompt instead of manually editing the external credentials file. The
 secret is not a command-line argument, is not echoed, and is written only to

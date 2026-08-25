@@ -10,10 +10,11 @@ param(
     [string]$Mailbox = 'redeatt@outlook.com',
     [string]$EntityRef = '10000000-0000-4000-8000-000000000001',
     [string]$GatewayUrl = 'http://127.0.0.1:8653/v1/intake',
-    [ValidateSet('imap', 'graph')]
+    [ValidateSet('imap', 'graph', 'mbox')]
     [string]$Transport = 'imap',
     [ValidateSet('password', 'xoauth2')]
-    [string]$ImapAuth = 'xoauth2'
+    [string]$ImapAuth = 'xoauth2',
+    [string]$MboxPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,8 +22,11 @@ $ErrorActionPreference = 'Stop'
 if (-not [System.IO.Path]::IsPathRooted($CredentialFile)) {
     throw 'CredentialFile must be an absolute path outside the repository'
 }
-if (-not (Test-Path -LiteralPath $CredentialFile -PathType Leaf)) {
+if ($Transport -ne 'mbox' -and -not (Test-Path -LiteralPath $CredentialFile -PathType Leaf)) {
     throw "Credential file not found: $CredentialFile"
+}
+if ($Transport -eq 'mbox' -and (-not $MboxPath -or -not (Test-Path -LiteralPath $MboxPath -PathType Leaf))) {
+    throw 'MboxPath must point to a Thunderbird mbox file when Transport=mbox'
 }
 
 $env:LEDGERBRIDGE_STAGING_NETWORK = '1'
@@ -34,7 +38,7 @@ $env:LEDGERBRIDGE_STAGING_IMAP_AUTH = $ImapAuth
 
 Write-Output 'Starting bounded Outlook staging replay (no production writes).'
 Write-Output "Mailbox: $Mailbox"
-Write-Output "Credential source: external file (value is not displayed)"
+Write-Output $(if ($Transport -eq 'mbox') { "Source: Thunderbird mbox ($MboxPath)" } else { "Credential source: external file (value is not displayed)" })
 $gatewayProcess = $null
 $gatewayReady = $false
 $tcp = [System.Net.Sockets.TcpClient]::new()
@@ -72,12 +76,13 @@ try {
     if (-not $gatewayReady) {
         throw 'loopback staging gateway did not become ready'
     }
-    $replayScript = if ($Transport -eq 'imap') {
-        'scripts/r1_staging_imap_replay.py'
+    if ($Transport -eq 'mbox') {
+        uv run --frozen --extra dev python scripts/r1_staging_mbox_replay.py --mbox $MboxPath
+    } elseif ($Transport -eq 'imap') {
+        uv run --frozen --extra dev python scripts/r1_staging_imap_replay.py
     } else {
-        'scripts/r1_staging_graph_replay.py'
+        uv run --frozen --extra dev python scripts/r1_staging_graph_replay.py
     }
-    uv run --frozen --extra dev python $replayScript
     if ($LASTEXITCODE -ne 0) {
         throw "staging replay failed with exit code $LASTEXITCODE"
     }
