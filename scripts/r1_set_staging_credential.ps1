@@ -5,9 +5,9 @@ The secret is never supplied as a command-line argument and is never printed.
 #>
 [CmdletBinding()]
 param(
-    [string]$CredentialFile = 'G:\我的云端硬盘\凭据\home-infra-credentials.md',
-    [ValidateSet('LEDGERBRIDGE_STAGING_IMAP_AUTHORIZATION_CODE', 'LEDGERBRIDGE_STAGING_IMAP_APP_PASSWORD', 'LEDGERBRIDGE_STAGING_IMAP_ACCESS_TOKEN')]
-    [string]$Key = 'LEDGERBRIDGE_STAGING_IMAP_AUTHORIZATION_CODE'
+    [string]$CredentialFile = 'G:\我的云端硬盘\凭据\hermes-163-mail.env',
+    [ValidateSet('authorization_code', 'LEDGERBRIDGE_STAGING_IMAP_AUTHORIZATION_CODE', 'LEDGERBRIDGE_STAGING_IMAP_APP_PASSWORD', 'LEDGERBRIDGE_STAGING_IMAP_ACCESS_TOKEN')]
+    [string]$Key = 'authorization_code'
 )
 
 $ErrorActionPreference = 'Stop'

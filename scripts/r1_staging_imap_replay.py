@@ -15,7 +15,7 @@ from ledgerbridge.mail_imap import ImapMailProvider, ImapTransport, parse_imap_m
 from ledgerbridge.staging_replay import replay_message, require_loopback_gateway
 
 DEFAULT_GATEWAY = "http://127.0.0.1:8653/v1/intake"
-DEFAULT_CREDENTIAL_FILE = Path("G:/我的云端硬盘/凭据/home-infra-credentials.md")
+DEFAULT_CREDENTIAL_FILE = Path("G:/我的云端硬盘/凭据/hermes-163-mail.env")
 DEFAULT_IMAP_HOST = "imap.163.com"
 DEFAULT_IMAP_PORT = 993
 
@@ -35,6 +35,16 @@ class ImapSslTransport(ImapTransport):
             self._client.login(mailbox, secret)
         else:
             raise ValueError("unsupported IMAP auth mode")
+        # 163网易邮箱 requires the RFC 2971 ID exchange before mailbox
+        # selection. Keep the client identification minimal and non-sensitive.
+        # Python's stdlib imaplib does not register RFC 2971 ID even though
+        # servers such as 163 require it, so add the command state locally.
+        imaplib.Commands.setdefault("ID", ("AUTH", "SELECTED"))
+        status, _ = self._client._simple_command(
+            "ID", '("name" "LedgerBridge" "version" "staging")'
+        )
+        if status != "OK":
+            raise RuntimeError("IMAP ID negotiation failed")
 
     def select_inbox(self) -> None:
         if self._client is None:
@@ -46,7 +56,9 @@ class ImapSslTransport(ImapTransport):
     def search_all(self) -> tuple[str, ...]:
         if self._client is None:
             raise RuntimeError("IMAP client is not authenticated")
-        status, data = self._client.uid("SEARCH", "", "ALL")
+        # Passing an empty string emits a trailing argument that 163 rejects
+        # with BAD; None omits the optional charset as required by IMAP.
+        status, data = self._client.uid("SEARCH", None, "ALL")  # type: ignore[arg-type]
         if status != "OK" or not data or not isinstance(data[0], bytes):
             raise RuntimeError("IMAP search failed")
         return tuple(value.decode("ascii") for value in data[0].split() if value.isdigit())
@@ -109,7 +121,7 @@ def run_staging() -> dict[str, Any]:
         credential_key = (
             "LEDGERBRIDGE_STAGING_IMAP_ACCESS_TOKEN"
             if auth_mode == "xoauth2"
-            else "LEDGERBRIDGE_STAGING_IMAP_AUTHORIZATION_CODE"
+            else "authorization_code"
         )
     if not mailbox or not entity_raw:
         raise RuntimeError("set _MAILBOX and _ENTITY_REF for IMAP staging")

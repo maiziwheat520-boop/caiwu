@@ -10,8 +10,10 @@ from __future__ import annotations
 import email
 from collections.abc import Iterator
 from contextlib import suppress
+from datetime import UTC
 from email.header import decode_header, make_header
 from email.message import Message
+from email.utils import parsedate_to_datetime
 from typing import Protocol
 
 from ledgerbridge.mail_collector import MailAttachment, MailCollectorError, MailMessage
@@ -97,7 +99,7 @@ def parse_imap_message(raw: bytes, *, fallback_id: str) -> MailMessage:
         raise MailCollectorError("MAIL_PROVIDER_RESPONSE", "IMAP message is invalid") from exc
     message_id = _header(message, "Message-ID") or fallback_id
     subject = _header(message, "Subject") or "(no subject)"
-    received_at = _header(message, "Date") or "1970-01-01T00:00:00+00:00"
+    received_at = _normalize_received_at(_header(message, "Date"))
     body_parts: list[str] = []
     attachments: list[MailAttachment] = []
     for part in message.walk():
@@ -142,6 +144,18 @@ def _header(message: Message, name: str) -> str:
         return str(make_header(decode_header(value))).strip()
     except (UnicodeError, ValueError):
         return value.strip()
+
+
+def _normalize_received_at(value: str) -> str:
+    if not value:
+        return "1970-01-01T00:00:00+00:00"
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return "1970-01-01T00:00:00+00:00"
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.isoformat()
 
 
 def _safe_filename(value: str) -> str:

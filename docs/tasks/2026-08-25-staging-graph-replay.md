@@ -87,8 +87,8 @@ public-client registration, not required for this demo.
 
 The provider-neutral boundary also includes `ImapMailProvider`. The verified
 no-new-app-registration path is the dedicated 163 mailbox: the wrapper defaults
-to `imap.163.com:993` TLS, password-mode auth, and the external key
-`LEDGERBRIDGE_STAGING_IMAP_AUTHORIZATION_CODE`. Both the mailbox and Hermes
+to `imap.163.com:993` TLS, password-mode auth, and the `authorization_code`
+key in the external `hermes-163-mail.env` file. Both the mailbox and Hermes
 have been login-tested without reading or modifying messages. The adapter is
 read-only, bounded to five messages, and posts only to the loopback synthetic
 gateway.

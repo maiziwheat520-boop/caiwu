@@ -6,7 +6,7 @@ sets process-local routing values and never writes or prints the token.
 #>
 [CmdletBinding()]
 param(
-    [string]$CredentialFile = 'G:\我的云端硬盘\凭据\home-infra-credentials.md',
+    [string]$CredentialFile = 'G:\我的云端硬盘\凭据\hermes-163-mail.env',
     [string]$Mailbox = 'redeatt@163.com',
     [string]$EntityRef = '10000000-0000-4000-8000-000000000001',
     [string]$GatewayUrl = 'http://127.0.0.1:8653/v1/intake',
@@ -16,7 +16,7 @@ param(
     [string]$ImapAuth = 'password',
     [string]$ImapHost = 'imap.163.com',
     [int]$ImapPort = 993,
-    [string]$ImapCredentialKey = 'LEDGERBRIDGE_STAGING_IMAP_AUTHORIZATION_CODE',
+    [string]$ImapCredentialKey = 'authorization_code',
     [string]$MboxPath = ''
 )
 

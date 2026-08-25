@@ -256,10 +256,10 @@ posting write path, or authenticated entity grant. See
 
 The common `MailProvider` boundary supports the verified 163 staging path.
 The default wrapper connects to `imap.163.com:993` over TLS and expects the
-163 authorization code in the external file:
+163 authorization code in `G:\我的云端硬盘\凭据\hermes-163-mail.env`:
 
 ```text
-LEDGERBRIDGE_STAGING_IMAP_AUTHORIZATION_CODE=<authorization-code>
+authorization_code=<authorization-code>
 ```
 
 Run the same wrapper:
