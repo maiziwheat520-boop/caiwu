@@ -1,6 +1,24 @@
 # Project status
 
-Updated: 2026-08-24
+Updated: 2026-08-25
+
+## R1/S1 usable staging and Core write seam (2026-08-25)
+
+The local `codex/r1-synthetic-demo` branch now provides a loopback-only JSON/EML
+gateway plus an explicitly enabled, non-production Microsoft Graph staging
+replay. Graph replay reads a short-lived token from process environment, caps
+the page at five messages and each evidence item at 1 MiB, and never writes a
+token or source bytes to disk. The gateway remains in-memory and
+`writes_posting=false`.
+
+`ledgerbridge.candidate_persistence.persist_initial_candidate` is the first
+explicit Core database write seam. With an injected, caller-owned SQLAlchemy
+transaction it persists only Candidate revision 1, registered source IDs,
+existing evidence links, and the matching `candidate.create` audit/CREATE
+receipt. It is not wired into the gateway or production routes; runtime
+business grants, mTLS, durable artifact storage, and real-data enablement
+remain closed. See `docs/tasks/2026-08-25-staging-graph-replay.md` and
+`docs/tasks/2026-08-25-candidate-persistence-adapter.md`.
 
 ## R1 database Core read adapter checkpoint (2026-08-24)
 
