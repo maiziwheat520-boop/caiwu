@@ -1,4 +1,4 @@
-"""Explicitly enabled, non-production Outlook.com IMAP -> local staging replay."""
+"""Explicitly enabled, non-production IMAP -> local staging replay."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ from ledgerbridge.staging_replay import replay_message, require_loopback_gateway
 
 DEFAULT_GATEWAY = "http://127.0.0.1:8653/v1/intake"
 DEFAULT_CREDENTIAL_FILE = Path("G:/我的云端硬盘/凭据/home-infra-credentials.md")
+DEFAULT_IMAP_HOST = "imap.163.com"
+DEFAULT_IMAP_PORT = 993
 
 
 class ImapSslTransport(ImapTransport):
@@ -91,15 +93,24 @@ def run_staging() -> dict[str, Any]:
         raise RuntimeError("set LEDGERBRIDGE_STAGING_NETWORK=1 to enable IMAP staging")
     mailbox = os.environ.get("LEDGERBRIDGE_STAGING_MAILBOX")
     entity_raw = os.environ.get("LEDGERBRIDGE_STAGING_ENTITY_REF")
-    auth_mode = os.environ.get("LEDGERBRIDGE_STAGING_IMAP_AUTH", "xoauth2")
+    auth_mode = os.environ.get("LEDGERBRIDGE_STAGING_IMAP_AUTH", "password")
+    imap_host = os.environ.get("LEDGERBRIDGE_STAGING_IMAP_HOST", DEFAULT_IMAP_HOST)
+    try:
+        imap_port = int(os.environ.get("LEDGERBRIDGE_STAGING_IMAP_PORT", str(DEFAULT_IMAP_PORT)))
+    except ValueError as exc:
+        raise RuntimeError("LEDGERBRIDGE_STAGING_IMAP_PORT must be an integer") from exc
+    if not 1 <= imap_port <= 65535:
+        raise RuntimeError("LEDGERBRIDGE_STAGING_IMAP_PORT must be between 1 and 65535")
     credential_file = Path(
         os.environ.get("LEDGERBRIDGE_STAGING_CREDENTIAL_FILE", str(DEFAULT_CREDENTIAL_FILE))
     )
-    credential_key = (
-        "LEDGERBRIDGE_STAGING_IMAP_ACCESS_TOKEN"
-        if auth_mode == "xoauth2"
-        else "LEDGERBRIDGE_STAGING_IMAP_APP_PASSWORD"
-    )
+    credential_key = os.environ.get("LEDGERBRIDGE_STAGING_IMAP_CREDENTIAL_KEY")
+    if not credential_key:
+        credential_key = (
+            "LEDGERBRIDGE_STAGING_IMAP_ACCESS_TOKEN"
+            if auth_mode == "xoauth2"
+            else "LEDGERBRIDGE_STAGING_IMAP_AUTHORIZATION_CODE"
+        )
     if not mailbox or not entity_raw:
         raise RuntimeError("set _MAILBOX and _ENTITY_REF for IMAP staging")
     try:
@@ -107,7 +118,7 @@ def run_staging() -> dict[str, Any]:
     except ValueError as exc:
         raise RuntimeError("LEDGERBRIDGE_STAGING_ENTITY_REF must be a UUID") from exc
     provider = ImapMailProvider(
-        ImapSslTransport(),
+        ImapSslTransport(host=imap_host, port=imap_port),
         CredentialFileSecretProvider(credential_file, key=credential_key),
         mailbox=mailbox,
         auth_mode=auth_mode,

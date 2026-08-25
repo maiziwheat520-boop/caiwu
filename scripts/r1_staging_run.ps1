@@ -1,5 +1,5 @@
 <#
-One-command, non-production Outlook staging replay.
+One-command, non-production IMAP staging replay.
 
 The access token remains in the external credentials file; this wrapper only
 sets process-local routing values and never writes or prints the token.
@@ -13,7 +13,10 @@ param(
     [ValidateSet('imap', 'graph', 'mbox')]
     [string]$Transport = 'imap',
     [ValidateSet('password', 'xoauth2')]
-    [string]$ImapAuth = 'xoauth2',
+    [string]$ImapAuth = 'password',
+    [string]$ImapHost = 'imap.163.com',
+    [int]$ImapPort = 993,
+    [string]$ImapCredentialKey = 'LEDGERBRIDGE_STAGING_IMAP_AUTHORIZATION_CODE',
     [string]$MboxPath = ''
 )
 
@@ -21,6 +24,9 @@ $ErrorActionPreference = 'Stop'
 
 if (-not [System.IO.Path]::IsPathRooted($CredentialFile)) {
     throw 'CredentialFile must be an absolute path outside the repository'
+}
+if ($ImapPort -lt 1 -or $ImapPort -gt 65535) {
+    throw 'ImapPort must be between 1 and 65535'
 }
 if ($Transport -ne 'mbox' -and -not (Test-Path -LiteralPath $CredentialFile -PathType Leaf)) {
     throw "Credential file not found: $CredentialFile"
@@ -35,8 +41,11 @@ $env:LEDGERBRIDGE_STAGING_MAILBOX = $Mailbox
 $env:LEDGERBRIDGE_STAGING_ENTITY_REF = $EntityRef
 $env:LEDGERBRIDGE_STAGING_GATEWAY_URL = $GatewayUrl
 $env:LEDGERBRIDGE_STAGING_IMAP_AUTH = $ImapAuth
+$env:LEDGERBRIDGE_STAGING_IMAP_HOST = $ImapHost
+$env:LEDGERBRIDGE_STAGING_IMAP_PORT = [string]$ImapPort
+$env:LEDGERBRIDGE_STAGING_IMAP_CREDENTIAL_KEY = $ImapCredentialKey
 
-Write-Output 'Starting bounded Outlook staging replay (no production writes).'
+Write-Output 'Starting bounded IMAP staging replay (no production writes).'
 Write-Output "Mailbox: $Mailbox"
 Write-Output $(if ($Transport -eq 'mbox') { "Source: Thunderbird mbox ($MboxPath)" } else { "Credential source: external file (value is not displayed)" })
 $gatewayProcess = $null

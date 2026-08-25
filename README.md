@@ -254,15 +254,15 @@ is not production mail ingestion: it has no refresh-token store, persistence,
 posting write path, or authenticated entity grant. See
 `docs/tasks/2026-08-25-staging-graph-replay.md` for the boundary and cleanup.
 
-The common `MailProvider` boundary also supports the lower-cost Outlook IMAP
-staging path. Enable IMAP in Outlook.com **Settings → Mail → Forwarding and
-IMAP**, then place a separately generated app password in the external file:
+The common `MailProvider` boundary supports the verified 163 staging path.
+The default wrapper connects to `imap.163.com:993` over TLS and expects the
+163 authorization code in the external file:
 
 ```text
-LEDGERBRIDGE_STAGING_IMAP_APP_PASSWORD=<app-password>
+LEDGERBRIDGE_STAGING_IMAP_AUTHORIZATION_CODE=<authorization-code>
 ```
 
-Run the same wrapper; it now defaults to IMAP OAuth2 staging:
+Run the same wrapper:
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/r1_staging_run.ps1
@@ -274,8 +274,17 @@ To avoid editing the credentials file manually, use the hidden local prompt:
 powershell -ExecutionPolicy Bypass -File scripts/r1_set_staging_credential.ps1
 ```
 
-Paste the app password only into that prompt; it is not echoed and is never a
-command-line argument.
+The hidden prompt defaults to the authorization-code key; the value is not
+echoed and is never a command-line argument. Override `-ImapHost`, `-ImapPort`,
+`-ImapAuth`, or `-ImapCredentialKey` for another compatible provider.
+
+The adapter still supports Outlook.com OAuth2 for separately obtained tokens:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/r1_staging_run.ps1 `
+  -Mailbox '<outlook-account>' -ImapHost outlook.office365.com `
+  -ImapAuth xoauth2 -ImapCredentialKey LEDGERBRIDGE_STAGING_IMAP_ACCESS_TOKEN
+```
 
 For IMAP OAuth2, store
 `LEDGERBRIDGE_STAGING_IMAP_ACCESS_TOKEN=...` and run

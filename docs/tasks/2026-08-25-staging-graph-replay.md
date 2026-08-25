@@ -85,18 +85,20 @@ public-client registration, not required for this demo.
 
 ## IMAP staging alternative
 
-The provider-neutral boundary also includes `ImapMailProvider`. For the
-no-new-app-registration path, enable IMAP in Outlook.com and place a separately
-generated app password in the external file as
-`LEDGERBRIDGE_STAGING_IMAP_APP_PASSWORD=...`; this is only an explicit
-compatibility mode. The tested mailbox rejects it with `Basic authentication is
-disabled`. The one-command wrapper therefore defaults to OAuth2. Place a token
-with the delegated scope
-`https://outlook.office.com/IMAP.AccessAsUser.All` under
+The provider-neutral boundary also includes `ImapMailProvider`. The verified
+no-new-app-registration path is the dedicated 163 mailbox: the wrapper defaults
+to `imap.163.com:993` TLS, password-mode auth, and the external key
+`LEDGERBRIDGE_STAGING_IMAP_AUTHORIZATION_CODE`. Both the mailbox and Hermes
+have been login-tested without reading or modifying messages. The adapter is
+read-only, bounded to five messages, and posts only to the loopback synthetic
+gateway.
+
+Outlook.com remains supported only through OAuth2. Place a token with the
+delegated scope `https://outlook.office.com/IMAP.AccessAsUser.All` under
 `LEDGERBRIDGE_STAGING_IMAP_ACCESS_TOKEN` and run
-`scripts/r1_staging_run.ps1 -ImapAuth xoauth2`. A Graph `Mail.Read` token is
-not valid for IMAP. Both modes are read-only, bounded to five messages, and
-post only to the loopback synthetic gateway.
+`scripts/r1_staging_run.ps1 -ImapHost outlook.office365.com -ImapAuth xoauth2`.
+A Graph `Mail.Read` token is not valid for IMAP. Outlook basic authentication
+was experimentally rejected with `Basic authentication is disabled`.
 
 The staging helper `scripts/r1_imap_oauth_login.ps1` obtains this token with
 PKCE using Thunderbird's documented public client configuration, without a
