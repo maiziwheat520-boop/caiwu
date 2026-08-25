@@ -2,7 +2,7 @@
 
 ## Candidate
 
-Branch: `codex/r1-synthetic-demo`  
+Branch: `codex/r1-synthetic-demo`
 HEAD: `8988bed feat: add staging operator CLI`
 
 This is a usable local/staging candidate, not a production release. It has no
