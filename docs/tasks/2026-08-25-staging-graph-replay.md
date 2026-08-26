@@ -120,8 +120,9 @@ secret is not a command-line argument, is not echoed, and is written only to
 the approved credentials directory.
 
 Forwarded financial ZIPs remain a review boundary. Run
-`scripts/r1_staging_financial_zip_check.py --message-index 2` to enter each
-password through a local hidden prompt. The helper verifies and reads entries
-only in memory, enforces per-entry/archive decompression limits, and discards
-the password and bytes after each archive; it does not decrypt automatically,
-write artifacts, or create postings.
+`scripts/r1_staging_financial_zip_check.py --message-index 2
+--visible-password-input` to enter each password visibly in the local terminal;
+omit the visible-input flag for a hidden prompt. The helper verifies and reads
+entries only in memory, enforces per-entry/archive decompression limits, and
+discards the password and bytes after each archive; it does not decrypt
+automatically, write artifacts, or create postings.

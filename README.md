@@ -284,11 +284,13 @@ archive, and discarded; no archive is extracted to disk:
 
 ```powershell
 uv run --frozen --extra dev python scripts/r1_staging_financial_zip_check.py `
-  --message-index 2
+  --message-index 2 --visible-password-input
 ```
 
-Blank input skips an archive. The checker reports only verification status and
-bounded entry metadata; never paste a ZIP password into chat.
+`--visible-password-input` makes terminal input visible while typing. Omit the
+flag for hidden input. Blank input skips an archive. The checker reports only
+verification status and bounded entry metadata; the password is never a
+command-line argument or stored by the program.
 
 The adapter still supports Outlook.com OAuth2 for separately obtained tokens:
 

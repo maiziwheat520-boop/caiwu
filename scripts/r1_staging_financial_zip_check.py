@@ -71,7 +71,7 @@ def _verify_zip(content: bytes, password: str | None) -> dict[str, Any]:
         return {"status": "wrong_password"}
 
 
-def run(message_index: int) -> dict[str, Any]:
+def run(message_index: int, *, visible_password_input: bool = False) -> dict[str, Any]:
     message = _load_message(message_index)
     results: list[dict[str, Any]] = []
     for position, attachment in enumerate(message.attachments, start=1):
@@ -86,10 +86,11 @@ def run(message_index: int) -> dict[str, Any]:
                 }
             )
             continue
-        password = getpass.getpass(
+        prompt = (
             f"Password for ZIP {position}/{len(message.attachments)} "
             f"({attachment.filename}) — blank skips: "
         )
+        password = input(prompt) if visible_password_input else getpass.getpass(prompt)
         results.append(
             {
                 "position": position,
@@ -112,5 +113,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--message-index", type=int, default=2, help="1-based index in latest-five view"
     )
+    parser.add_argument(
+        "--visible-password-input",
+        action="store_true",
+        help="echo each password while it is typed; still never store or log it",
+    )
     args = parser.parse_args()
-    print(json.dumps(run(args.message_index), ensure_ascii=False, sort_keys=True))
+    print(
+        json.dumps(
+            run(args.message_index, visible_password_input=args.visible_password_input),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
