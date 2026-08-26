@@ -7,6 +7,7 @@ import getpass
 import importlib
 import io
 import json
+import re
 import sys
 import zipfile
 from pathlib import Path
@@ -23,8 +24,10 @@ except ModuleNotFoundError:
 _ImapSslTransport = _transport_module.ImapSslTransport
 
 DEFAULT_CREDENTIAL_FILE = Path("G:/我的云端硬盘/凭据/hermes-163-mail.env")
+DEFAULT_COMPANY_REGISTRY = Path("data/company_registry.json")
 MAX_ENTRY_BYTES = 50 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
+MAX_COMPANY_REGISTRY_BYTES = 64 * 1024
 
 
 def _print_json(value: dict[str, Any]) -> None:
@@ -68,6 +71,63 @@ def list_messages() -> dict[str, Any]:
     }
 
 
+def _load_company_registry(path: Path) -> tuple[tuple[str, str], ...]:
+    try:
+        content = path.read_bytes()
+    except OSError as exc:
+        raise RuntimeError("company registry is unavailable") from exc
+    if len(content) > MAX_COMPANY_REGISTRY_BYTES:
+        raise RuntimeError("company registry exceeds the local size limit")
+    try:
+        payload = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("company registry is invalid") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise RuntimeError("company registry contract is invalid")
+    companies = payload.get("companies")
+    if not isinstance(companies, list):
+        raise RuntimeError("company registry companies are invalid")
+    result: list[tuple[str, str]] = []
+    seen_names: set[str] = set()
+    seen_codes: set[str] = set()
+    for company in companies:
+        if not isinstance(company, dict):
+            raise RuntimeError("company registry entry is invalid")
+        name = company.get("company_name")
+        code = company.get("unified_social_credit_code")
+        if not isinstance(name, str) or not name.strip() or len(name) > 200:
+            raise RuntimeError("company registry name is invalid")
+        if not isinstance(code, str) or re.fullmatch(r"[0-9A-Z]{18}", code) is None:
+            raise RuntimeError("company registry code is invalid")
+        if name in seen_names or code in seen_codes:
+            raise RuntimeError("company registry contains a duplicate")
+        seen_names.add(name)
+        seen_codes.add(code)
+        result.append((name, code))
+    return tuple(result)
+
+
+def _mybank_password(message: MailMessage, registry_path: Path) -> str:
+    prefix = "浙江网商银行电子凭证-"
+    if not message.subject.startswith(prefix):
+        raise RuntimeError("selected message is not a MyBank electronic voucher")
+    masked_name = message.subject.removeprefix(prefix)
+    if "*" in masked_name:
+        pattern = (
+            r"\A" + r".+".join(re.escape(part) for part in re.split(r"\*+", masked_name)) + r"\Z"
+        )
+        matches = [
+            entry for entry in _load_company_registry(registry_path) if re.match(pattern, entry[0])
+        ]
+    else:
+        matches = [
+            entry for entry in _load_company_registry(registry_path) if entry[0] == masked_name
+        ]
+    if len(matches) != 1:
+        raise RuntimeError("message subject does not uniquely match the company registry")
+    return matches[0][1][-6:].upper()
+
+
 def _verify_zip(content: bytes, password: str | None) -> dict[str, Any]:
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
@@ -99,8 +159,15 @@ def _verify_zip(content: bytes, password: str | None) -> dict[str, Any]:
         return {"status": "wrong_password"}
 
 
-def run(message_index: int, *, visible_password_input: bool = False) -> dict[str, Any]:
+def run(
+    message_index: int,
+    *,
+    visible_password_input: bool = False,
+    use_company_registry: bool = False,
+    company_registry: Path = DEFAULT_COMPANY_REGISTRY,
+) -> dict[str, Any]:
     message = _load_message(message_index)
+    stored_password = _mybank_password(message, company_registry) if use_company_registry else None
     results: list[dict[str, Any]] = []
     for position, attachment in enumerate(message.attachments, start=1):
         if not attachment.filename.casefold().endswith(".zip"):
@@ -118,12 +185,18 @@ def run(message_index: int, *, visible_password_input: bool = False) -> dict[str
             f"Password for ZIP {position}/{len(message.attachments)} "
             f"({attachment.filename}) — blank skips: "
         )
-        password = input(prompt) if visible_password_input else getpass.getpass(prompt)
+        if use_company_registry:
+            password = stored_password
+            password_source = "company_registry"
+        else:
+            password = input(prompt) if visible_password_input else getpass.getpass(prompt)
+            password_source = "terminal"
         results.append(
             {
                 "position": position,
                 "filename": attachment.filename,
                 "size_bytes": len(attachment.content),
+                "password_source": password_source,
                 **_verify_zip(attachment.content, password or None),
             }
         )
@@ -151,10 +224,23 @@ if __name__ == "__main__":
         action="store_true",
         help="echo each password while it is typed; still never store or log it",
     )
+    parser.add_argument(
+        "--use-company-registry",
+        action="store_true",
+        help="derive the MyBank ZIP password in memory from local company master data",
+    )
     args = parser.parse_args()
     if args.list_messages:
         _print_json(list_messages())
         raise SystemExit(0)
     if args.message_index is None:
         parser.error("--message-index is required unless --list-messages is used")
-    _print_json(run(args.message_index, visible_password_input=args.visible_password_input))
+    if args.visible_password_input and args.use_company_registry:
+        parser.error("--visible-password-input and --use-company-registry are mutually exclusive")
+    _print_json(
+        run(
+            args.message_index,
+            visible_password_input=args.visible_password_input,
+            use_company_registry=args.use_company_registry,
+        )
+    )

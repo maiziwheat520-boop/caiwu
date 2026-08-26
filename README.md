@@ -303,6 +303,18 @@ uv run --frozen --extra dev python scripts/r1_staging_financial_zip_check.py `
   --message-index 2 --visible-password-input
 ```
 
+When the local `data/company_registry.json` contains the company's legal name
+and unified social credit code, the MyBank password can instead be derived in
+memory after a unique match against the masked mail subject:
+
+```powershell
+uv run --frozen --extra dev python scripts/r1_staging_financial_zip_check.py `
+  --message-index 2 --use-company-registry
+```
+
+The `data/` directory is local runtime data and is excluded from Git. The
+derived password is not added to the registry or printed.
+
 `--visible-password-input` enables normal terminal echo while typing. Omit the
 flag for hidden input. Blank input skips an archive. Always run
 `--list-messages` again before choosing an index because new mail can change the
