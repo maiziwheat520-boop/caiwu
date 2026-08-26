@@ -135,7 +135,7 @@ def _load_company_registry(path: Path) -> tuple[tuple[str, str], ...]:
     return tuple(result)
 
 
-def _mybank_password(message: MailMessage, registry_path: Path) -> str:
+def _mybank_identity(message: MailMessage, registry_path: Path) -> tuple[str, str]:
     prefix = "浙江网商银行电子凭证-"
     if not message.subject.startswith(prefix):
         raise RuntimeError("selected message is not a MyBank electronic voucher")
@@ -153,7 +153,11 @@ def _mybank_password(message: MailMessage, registry_path: Path) -> str:
         ]
     if len(matches) != 1:
         raise RuntimeError("message subject does not uniquely match the company registry")
-    return matches[0][1][-6:].upper()
+    return matches[0]
+
+
+def _mybank_password(message: MailMessage, registry_path: Path) -> str:
+    return _mybank_identity(message, registry_path)[1][-6:].upper()
 
 
 def _verify_zip(content: bytes, password: str | None) -> dict[str, Any]:

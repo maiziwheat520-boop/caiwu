@@ -25,6 +25,7 @@ dev = [
   "httpx>=0.28,<1",
   "hypothesis>=6.120,<7",
   "mypy>=1.14,<2",
+  "openpyxl>=3.1,<4",
   "pip-audit>=2.7,<3",
   "pypdf>=6.10,<7",
   "pytest>=9.0.3,<10",

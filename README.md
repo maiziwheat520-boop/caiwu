@@ -325,6 +325,19 @@ uv run --frozen --extra dev python scripts/r1_staging_financial_zip_check.py `
 The `data/` directory is local runtime data and is excluded from Git. The
 derived password is not added to the registry or printed.
 
+After the attachments have been verified, parse the currently matched MyBank
+XLSX statements and Bank of China PDF into one local JSON file:
+
+```powershell
+uv run --frozen --extra dev python scripts/r1_parse_verified_financial_mail.py
+```
+
+The parser writes `data/parsed_mail/verified-financial-mail-2026-08-26.json`.
+It never writes decrypted source attachments or ledger postings. MyBank empty
+daily workbooks are retained as zero-transaction statements. Bank of China PDF
+rows are accepted only when every page's parsed row count and debit/credit sums
+match the values printed on that page; any mismatch rejects the whole output.
+
 `--visible-password-input` enables normal terminal echo while typing. Omit the
 flag for hidden input. Blank input skips an archive. Always run
 `--list-messages` again before choosing an index because new mail can change the
