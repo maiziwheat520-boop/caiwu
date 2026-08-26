@@ -71,6 +71,25 @@ def list_messages() -> dict[str, Any]:
     }
 
 
+def list_attachments(message_index: int) -> dict[str, Any]:
+    message = _load_message(message_index)
+    return {
+        "message_index": message_index,
+        "sender": message.sender_address,
+        "forwarder": message.resent_from_address,
+        "subject": message.subject,
+        "attachments": [
+            {
+                "position": position,
+                "filename": attachment.filename,
+                "media_type": attachment.media_type,
+                "size_bytes": len(attachment.content),
+            }
+            for position, attachment in enumerate(message.attachments, start=1)
+        ],
+    }
+
+
 def _load_company_registry(path: Path) -> tuple[tuple[str, str], ...]:
     try:
         content = path.read_bytes()
@@ -220,6 +239,11 @@ if __name__ == "__main__":
         help="list recent sender/subject/attachment metadata without asking for passwords",
     )
     parser.add_argument(
+        "--list-attachments",
+        action="store_true",
+        help="list attachment metadata for --message-index without asking for passwords",
+    )
+    parser.add_argument(
         "--visible-password-input",
         action="store_true",
         help="echo each password while it is typed; still never store or log it",
@@ -235,6 +259,9 @@ if __name__ == "__main__":
         raise SystemExit(0)
     if args.message_index is None:
         parser.error("--message-index is required unless --list-messages is used")
+    if args.list_attachments:
+        _print_json(list_attachments(args.message_index))
+        raise SystemExit(0)
     if args.visible_password_input and args.use_company_registry:
         parser.error("--visible-password-input and --use-company-registry are mutually exclusive")
     _print_json(

@@ -294,6 +294,14 @@ uv run --frozen --extra dev python scripts/r1_staging_financial_zip_check.py `
   --list-messages
 ```
 
+For a bundled forwarded message, inspect its attachment positions without
+opening or extracting them:
+
+```powershell
+uv run --frozen --extra dev python scripts/r1_staging_financial_zip_check.py `
+  --message-index 10 --list-attachments
+```
+
 Then run the memory-only checker for the selected index. Each password is
 verified against only that message's archive and discarded; no archive is
 extracted to disk:
