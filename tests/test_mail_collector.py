@@ -45,7 +45,7 @@ def test_disabled_collector_is_fail_closed() -> None:
 def test_graph_provider_streams_bounded_attachment_and_quotes_ids() -> None:
     message_path = (
         "/v1.0/users/ops%40example.test/mailFolders/inbox/messages?%24top=20&"
-        "%24select=id%2Csubject%2CreceivedDateTime%2ChasAttachments"
+        "%24select=id%2Csubject%2CreceivedDateTime%2ChasAttachments%2CbodyPreview"
     )
     attachment_path = "/v1.0/users/ops%40example.test/messages/msg%2F1/attachments?%24top=32"
     transport = MappingTransport(
@@ -107,7 +107,7 @@ def test_token_provider_failure_is_redacted_and_classified(
 def test_untrusted_pagination_host_is_rejected() -> None:
     path = (
         "/v1.0/users/ops%40example.test/mailFolders/inbox/messages?%24top=20&"
-        "%24select=id%2Csubject%2CreceivedDateTime%2ChasAttachments"
+        "%24select=id%2Csubject%2CreceivedDateTime%2ChasAttachments%2CbodyPreview"
     )
     transport = MappingTransport(
         {path: {"value": [], "@odata.nextLink": "https://evil.test/v1.0/next"}}
@@ -119,7 +119,7 @@ def test_untrusted_pagination_host_is_rejected() -> None:
 def test_attachment_pagination_is_rejected_instead_of_dropping_files() -> None:
     message_path = (
         "/v1.0/users/ops%40example.test/mailFolders/inbox/messages?%24top=20&"
-        "%24select=id%2Csubject%2CreceivedDateTime%2ChasAttachments"
+        "%24select=id%2Csubject%2CreceivedDateTime%2ChasAttachments%2CbodyPreview"
     )
     attachment_path = "/v1.0/users/ops%40example.test/messages/m/attachments?%24top=32"
     transport = MappingTransport(
@@ -166,7 +166,7 @@ def test_attachment_pagination_is_rejected_instead_of_dropping_files() -> None:
 def test_unsafe_attachment_payload_is_rejected(attachment: dict[str, object]) -> None:
     message_path = (
         "/v1.0/users/ops%40example.test/mailFolders/inbox/messages?%24top=20&"
-        "%24select=id%2Csubject%2CreceivedDateTime%2ChasAttachments"
+        "%24select=id%2Csubject%2CreceivedDateTime%2ChasAttachments%2CbodyPreview"
     )
     attachment_path = "/v1.0/users/ops%40example.test/messages/m/attachments?%24top=32"
     transport = MappingTransport(
