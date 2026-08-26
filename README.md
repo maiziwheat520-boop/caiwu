@@ -310,7 +310,7 @@ that message's attachment and discarded; no archive or PDF is written to disk:
 
 ```powershell
 uv run --frozen --extra dev python scripts/r1_staging_financial_zip_check.py `
-  --message-index 2 --visible-password-input
+  --message-index 2 --visible-password-input --record-verification
 ```
 
 When the local `data/company_registry.json` contains the company's legal name
@@ -319,24 +319,28 @@ memory after a unique match against the masked mail subject:
 
 ```powershell
 uv run --frozen --extra dev python scripts/r1_staging_financial_zip_check.py `
-  --message-index 2 --use-company-registry
+  --message-index 2 --use-company-registry --record-verification
 ```
 
 The `data/` directory is local runtime data and is excluded from Git. The
-derived password is not added to the registry or printed.
+derived password is not added to the registry or printed. `--record-verification`
+adds only encrypted attachments that passed decryption to a local manifest,
+bound to the exact mail message ID and attachment SHA-256; it stores no password.
 
-After the attachments have been verified, parse the currently matched MyBank
-XLSX statements and Bank of China PDF into one local JSON file:
+After the attachments have been verified, parse every record in that exact-bound
+manifest into one local JSON file:
 
 ```powershell
 uv run --frozen --extra dev python scripts/r1_parse_verified_financial_mail.py
 ```
 
 The parser writes `data/parsed_mail/verified-financial-mail-2026-08-26.json`.
-It never writes decrypted source attachments or ledger postings. MyBank empty
-daily workbooks are retained as zero-transaction statements. Bank of China PDF
-rows are accepted only when every page's parsed row count and debit/credit sums
-match the values printed on that page; any mismatch rejects the whole output.
+It never writes decrypted source attachments or ledger postings. MyBank rows are
+read beyond the workbook's unreliable declared dimension and are accepted only
+when the internal company, account, counts, totals, dates, ordering, and balance
+chain agree. Bank of China PDF rows are accepted only when every page's parsed
+row count and debit/credit sums match the values printed on that page. A missing,
+changed, ambiguous, or unconsumed manifest attachment rejects the whole output.
 
 `--visible-password-input` enables normal terminal echo while typing. Omit the
 flag for hidden input. Blank input skips an archive. Always run
