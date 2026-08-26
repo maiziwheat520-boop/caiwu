@@ -13,7 +13,7 @@ from contextlib import suppress
 from datetime import UTC
 from email.header import decode_header, make_header
 from email.message import Message
-from email.utils import parsedate_to_datetime
+from email.utils import getaddresses, parsedate_to_datetime
 from typing import Protocol
 
 from ledgerbridge.mail_collector import MailAttachment, MailCollectorError, MailMessage
@@ -100,6 +100,8 @@ def parse_imap_message(raw: bytes, *, fallback_id: str) -> MailMessage:
     message_id = _header(message, "Message-ID") or fallback_id
     subject = _header(message, "Subject") or "(no subject)"
     received_at = _normalize_received_at(_header(message, "Date"))
+    sender_address = _address(message, "From")
+    resent_from_address = _address(message, "Resent-From")
     body_parts: list[str] = []
     attachments: list[MailAttachment] = []
     for part in message.walk():
@@ -133,6 +135,8 @@ def parse_imap_message(raw: bytes, *, fallback_id: str) -> MailMessage:
         received_at=received_at[:100],
         attachments=tuple(attachments),
         body_preview="\n".join(body_parts).strip()[:500],
+        sender_address=sender_address,
+        resent_from_address=resent_from_address,
     )
 
 
@@ -156,6 +160,19 @@ def _normalize_received_at(value: str) -> str:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.isoformat()
+
+
+def _address(message: Message, name: str) -> str:
+    decoded = _header(message, name)
+    if not decoded:
+        return ""
+    addresses = getaddresses([decoded])
+    if not addresses:
+        return ""
+    address = addresses[0][1].strip().casefold()
+    if not address or len(address) > 500 or any(character in address for character in "\r\n"):
+        return ""
+    return address
 
 
 def _safe_filename(value: str) -> str:

@@ -278,19 +278,37 @@ The hidden prompt defaults to the authorization-code key; the value is not
 echoed and is never a command-line argument. Override `-ImapHost`, `-ImapPort`,
 `-ImapAuth`, or `-ImapCredentialKey` for another compatible provider.
 
-For forwarded financial ZIPs that need one-by-one password confirmation, use
-the memory-only checker. Each password is hidden locally, verified against one
-archive, and discarded; no archive is extracted to disk:
+Forwarded mail is routed by the decoded original sender, subject, and attachment
+presence. The forwarder is retained separately; inbox position is not treated
+as source identity. The staging output currently distinguishes MyBank daily
+statements (`MYBANK_DAILY_STATEMENT`), Ctrip invoices (`CTRIP_INVOICE`), other
+attachments (`ATTACHMENT_REVIEW`), and mail without attachments (`GENERAL_MAIL`).
+All attachment-bearing categories remain manual-review-only and cannot create
+postings.
+
+For financial ZIPs that need one-by-one password confirmation, first list the
+recent messages and choose the row by sender and subject:
+
+```powershell
+uv run --frozen --extra dev python scripts/r1_staging_financial_zip_check.py `
+  --list-messages
+```
+
+Then run the memory-only checker for the selected index. Each password is
+verified against only that message's archive and discarded; no archive is
+extracted to disk:
 
 ```powershell
 uv run --frozen --extra dev python scripts/r1_staging_financial_zip_check.py `
   --message-index 2 --visible-password-input
 ```
 
-`--visible-password-input` makes terminal input visible while typing. Omit the
-flag for hidden input. Blank input skips an archive. The checker reports only
-verification status and bounded entry metadata; the password is never a
-command-line argument or stored by the program.
+`--visible-password-input` enables normal terminal echo while typing. Omit the
+flag for hidden input. Blank input skips an archive. Always run
+`--list-messages` again before choosing an index because new mail can change the
+ordering. The checker reports only verification status and bounded entry
+metadata; the password is never a command-line argument or stored by the
+program.
 
 The adapter still supports Outlook.com OAuth2 for separately obtained tokens:
 

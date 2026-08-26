@@ -78,6 +78,8 @@ class IntakeRequest(BaseModel):
     activation_at: datetime = ACTIVATED_AT
     text: str = Field(default="", max_length=1_000_000)
     source_subject: str | None = Field(default=None, max_length=500)
+    source_sender: str | None = Field(default=None, max_length=500)
+    source_forwarder: str | None = Field(default=None, max_length=500)
     has_attachments: bool = False
     entity_ref: UUID
     evidence: tuple[IntakeEvidence, ...] = Field(min_length=1, max_length=32)
@@ -96,6 +98,9 @@ class IntakeOutput(BaseModel):
     mode: str = "synthetic"
     source_format: str
     source_subject: str | None
+    source_sender: str | None
+    source_forwarder: str | None
+    source_category: str
     source_received_at: datetime
     disposition: str
     triage_label: str
@@ -138,6 +143,24 @@ def _decode_evidence(item: IntakeEvidence) -> tuple[bytes, str]:
     return content, hashlib.sha256(content).hexdigest()
 
 
+def _mail_category(
+    source_sender: str | None, source_subject: str | None, has_attachments: bool
+) -> str:
+    sender = (source_sender or "").casefold()
+    subject = (source_subject or "").strip()
+    if (
+        sender == "service@mail.mybank.cn"
+        and subject.startswith("浙江网商银行电子凭证-")
+        and has_attachments
+    ):
+        return "MYBANK_DAILY_STATEMENT"
+    if sender == "hsprocess@trip.com" and "发票" in subject and has_attachments:
+        return "CTRIP_INVOICE"
+    if has_attachments:
+        return "ATTACHMENT_REVIEW"
+    return "GENERAL_MAIL"
+
+
 def _build_output(
     message: HermesPrivateMessage,
     *,
@@ -147,6 +170,8 @@ def _build_output(
     activated_at: datetime = ACTIVATED_AT,
     source_format: str = "json",
     source_subject: str | None = None,
+    source_sender: str | None = None,
+    source_forwarder: str | None = None,
     has_attachments: bool = False,
 ) -> IntakeOutput:
     admission = classify_private_message(
@@ -196,6 +221,9 @@ def _build_output(
     output = IntakeOutput(
         source_format=source_format,
         source_subject=source_subject,
+        source_sender=source_sender,
+        source_forwarder=source_forwarder,
+        source_category=_mail_category(source_sender, source_subject, has_attachments),
         source_received_at=message.sent_at,
         disposition=admission.disposition.value,
         triage_label=triage.label.value,
@@ -241,6 +269,8 @@ def intake(request: IntakeRequest) -> IntakeOutput:
             ),
             activated_at=request.activation_at,
             source_subject=request.source_subject,
+            source_sender=request.source_sender,
+            source_forwarder=request.source_forwarder,
             has_attachments=request.has_attachments,
         )
     except SyntheticPersistenceError as exc:

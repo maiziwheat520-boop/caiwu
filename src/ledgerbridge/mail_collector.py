@@ -78,12 +78,18 @@ class MailMessage:
     received_at: str
     attachments: tuple[MailAttachment, ...]
     body_preview: str = ""
+    sender_address: str = ""
+    resent_from_address: str = ""
 
     def __post_init__(self) -> None:
         _require_text("message_id", self.message_id, MAX_MAILBOX_TEXT)
         _require_text("subject", self.subject, MAX_MAILBOX_TEXT)
         _require_text("received_at", self.received_at, 100)
         _require_text("body_preview", self.body_preview, MAX_MAILBOX_TEXT, allow_empty=True)
+        _require_text("sender_address", self.sender_address, MAX_MAILBOX_TEXT, allow_empty=True)
+        _require_text(
+            "resent_from_address", self.resent_from_address, MAX_MAILBOX_TEXT, allow_empty=True
+        )
         if len(self.attachments) > MAX_ATTACHMENTS_PER_MESSAGE:
             raise MailCollectorError(
                 "MAIL_ATTACHMENT_LIMIT", "mail message has too many attachments"

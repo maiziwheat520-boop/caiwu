@@ -59,6 +59,8 @@ def replay_message(message: MailMessage, *, entity_ref: UUID, gateway_url: str) 
         "sent_at": received_at.isoformat(),
         "activation_at": received_at.isoformat(),
         "source_subject": message.subject,
+        "source_sender": message.sender_address or None,
+        "source_forwarder": message.resent_from_address or None,
         "has_attachments": bool(message.attachments),
         "text": f"{message.subject}\n{message.body_preview}".strip(),
         "evidence": evidence,
@@ -79,6 +81,8 @@ def replay_message(message: MailMessage, *, entity_ref: UUID, gateway_url: str) 
     return {
         "source_message_id": result.get("source_message_id"),
         "source_subject": result.get("source_subject"),
+        "source_sender": result.get("source_sender"),
+        "source_category": result.get("source_category"),
         "triage_action": result.get("triage_action"),
         "candidate_ref": result.get("candidate_ref"),
         "evidence_count": len(result.get("evidence", [])),

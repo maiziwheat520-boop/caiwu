@@ -7,6 +7,7 @@ import getpass
 import importlib
 import io
 import json
+import sys
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -26,18 +27,45 @@ MAX_ENTRY_BYTES = 50 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
 
 
-def _load_message(message_index: int) -> MailMessage:
+def _print_json(value: dict[str, Any]) -> None:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    sys.stdout.buffer.write(payload.encode("utf-8") + b"\n")
+
+
+def _load_messages() -> tuple[MailMessage, ...]:
     provider = ImapMailProvider(
         _ImapSslTransport(host="imap.163.com", port=993),
         CredentialFileSecretProvider(DEFAULT_CREDENTIAL_FILE, key="authorization_code"),
         mailbox="redeatt@163.com",
         auth_mode="password",
-        max_messages=5,
+        max_messages=20,
     )
-    messages = list(provider.iter_messages())
+    return tuple(provider.iter_messages())
+
+
+def _load_message(message_index: int) -> MailMessage:
+    messages = _load_messages()
     if message_index < 1 or message_index > len(messages):
         raise RuntimeError(f"message index must be between 1 and {len(messages)}")
     return messages[message_index - 1]
+
+
+def list_messages() -> dict[str, Any]:
+    messages = _load_messages()
+    return {
+        "messages": [
+            {
+                "index": index,
+                "sender": message.sender_address,
+                "forwarder": message.resent_from_address,
+                "subject": message.subject,
+                "received_at": message.received_at,
+                "attachments": len(message.attachments),
+            }
+            for index, message in enumerate(messages, start=1)
+        ],
+        "selection": "use --message-index with the selected index",
+    }
 
 
 def _verify_zip(content: bytes, password: str | None) -> dict[str, Any]:
@@ -101,6 +129,8 @@ def run(message_index: int, *, visible_password_input: bool = False) -> dict[str
         )
     return {
         "message_index": message_index,
+        "sender": message.sender_address,
+        "forwarder": message.resent_from_address,
         "subject": message.subject,
         "attachments_checked": len(results),
         "results": results,
@@ -110,8 +140,11 @@ def run(message_index: int, *, visible_password_input: bool = False) -> dict[str
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--message-index", type=int, help="1-based index from --list-messages")
     parser.add_argument(
-        "--message-index", type=int, default=2, help="1-based index in latest-five view"
+        "--list-messages",
+        action="store_true",
+        help="list recent sender/subject/attachment metadata without asking for passwords",
     )
     parser.add_argument(
         "--visible-password-input",
@@ -119,10 +152,9 @@ if __name__ == "__main__":
         help="echo each password while it is typed; still never store or log it",
     )
     args = parser.parse_args()
-    print(
-        json.dumps(
-            run(args.message_index, visible_password_input=args.visible_password_input),
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-    )
+    if args.list_messages:
+        _print_json(list_messages())
+        raise SystemExit(0)
+    if args.message_index is None:
+        parser.error("--message-index is required unless --list-messages is used")
+    _print_json(run(args.message_index, visible_password_input=args.visible_password_input))
