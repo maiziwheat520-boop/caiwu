@@ -71,6 +71,14 @@ def list_messages() -> dict[str, Any]:
     }
 
 
+def _redacted_body_preview(value: str) -> str:
+    return re.sub(
+        r"(?<![0-9A-Za-z])[0-9A-Za-z]{4,}(?![0-9A-Za-z])",
+        "[REDACTED]",
+        value,
+    )
+
+
 def list_attachments(message_index: int) -> dict[str, Any]:
     message = _load_message(message_index)
     return {
@@ -78,6 +86,7 @@ def list_attachments(message_index: int) -> dict[str, Any]:
         "sender": message.sender_address,
         "forwarder": message.resent_from_address,
         "subject": message.subject,
+        "body_preview": _redacted_body_preview(message.body_preview),
         "attachments": [
             {
                 "position": position,
@@ -178,6 +187,28 @@ def _verify_zip(content: bytes, password: str | None) -> dict[str, Any]:
         return {"status": "wrong_password"}
 
 
+def _verify_pdf(content: bytes, password: str | None) -> dict[str, Any]:
+    try:
+        pypdf = importlib.import_module("pypdf")
+    except ModuleNotFoundError:
+        return {"status": "pdf_dependency_unavailable"}
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(content))
+        encrypted = bool(reader.is_encrypted)
+        if encrypted:
+            if password is None:
+                return {"status": "skipped", "encrypted": True}
+            if not reader.decrypt(password):
+                return {"status": "wrong_password", "encrypted": True}
+        return {
+            "status": "verified",
+            "encrypted": encrypted,
+            "pages": len(reader.pages),
+        }
+    except Exception:
+        return {"status": "pdf_error"}
+
+
 def run(
     message_index: int,
     *,
@@ -187,9 +218,23 @@ def run(
 ) -> dict[str, Any]:
     message = _load_message(message_index)
     stored_password = _mybank_password(message, company_registry) if use_company_registry else None
+    interactive_password_needed = not use_company_registry and any(
+        attachment.filename.casefold().endswith((".zip", ".pdf"))
+        for attachment in message.attachments
+    )
+    if interactive_password_needed and message.body_preview:
+        preview = (
+            "Mail body preview (sensitive sequences redacted):\n"
+            f"{_redacted_body_preview(message.body_preview)}\n\n"
+        )
+        sys.stderr.buffer.write(preview.encode("utf-8"))
+        sys.stderr.buffer.flush()
     results: list[dict[str, Any]] = []
     for position, attachment in enumerate(message.attachments, start=1):
-        if not attachment.filename.casefold().endswith(".zip"):
+        filename = attachment.filename.casefold()
+        is_zip = filename.endswith(".zip")
+        is_pdf = filename.endswith(".pdf")
+        if not is_zip and not is_pdf:
             results.append(
                 {
                     "position": position,
@@ -200,9 +245,10 @@ def run(
                 }
             )
             continue
+        document_type = "ZIP" if is_zip else "PDF"
         prompt = (
-            f"Password for ZIP {position}/{len(message.attachments)} "
-            f"({attachment.filename}) — blank skips: "
+            f"Password for {document_type} attachment "
+            f"{position}/{len(message.attachments)} - blank skips: "
         )
         if use_company_registry:
             password = stored_password
@@ -216,7 +262,11 @@ def run(
                 "filename": attachment.filename,
                 "size_bytes": len(attachment.content),
                 "password_source": password_source,
-                **_verify_zip(attachment.content, password or None),
+                **(
+                    _verify_zip(attachment.content, password or None)
+                    if is_zip
+                    else _verify_pdf(attachment.content, password or None)
+                ),
             }
         )
     return {

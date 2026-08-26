@@ -286,8 +286,9 @@ attachments (`ATTACHMENT_REVIEW`), and mail without attachments (`GENERAL_MAIL`)
 All attachment-bearing categories remain manual-review-only and cannot create
 postings.
 
-For financial ZIPs that need one-by-one password confirmation, first list the
-recent messages and choose the row by sender and subject:
+For encrypted financial ZIP or PDF attachments that need one-by-one password
+confirmation, first list the recent messages and choose the row by sender and
+subject:
 
 ```powershell
 uv run --frozen --extra dev python scripts/r1_staging_financial_zip_check.py `
@@ -302,9 +303,10 @@ uv run --frozen --extra dev python scripts/r1_staging_financial_zip_check.py `
   --message-index 10 --list-attachments
 ```
 
-Then run the memory-only checker for the selected index. Each password is
-verified against only that message's archive and discarded; no archive is
-extracted to disk:
+Then run the memory-only checker for the selected index. Before prompting, it
+reads and displays a redacted preview of that message's body so the operator can
+follow the bank's password instructions. Each password is verified against only
+that message's attachment and discarded; no archive or PDF is written to disk:
 
 ```powershell
 uv run --frozen --extra dev python scripts/r1_staging_financial_zip_check.py `
