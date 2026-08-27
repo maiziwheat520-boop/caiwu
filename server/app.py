@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -681,7 +682,12 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                     raise AuthError(422, "INVALID_AUTH_REQUEST", "setup_code 字段无效")
                 if manager.store.initialized() and not self._require_csrf():
                     return True
-                options, flow_token = manager.start_registration(request["setup_code"], self._session_token())
+                options, flow_token = manager.start_registration(
+                    request["setup_code"],
+                    self._session_token(),
+                    caller_key=self._auth_caller_key(),
+                    previous_flow_token=self._cookie_value(FLOW_COOKIE_NAME),
+                )
                 self._send_json(200, options, cookies=[self._flow_cookie(flow_token)])
                 return True
             if path == "/api/v1/auth/passkey/register/verify":
@@ -715,7 +721,10 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             if path == "/api/v1/auth/passkey/login/options":
                 if request:
                     raise AuthError(422, "INVALID_AUTH_REQUEST", "登录选项请求必须为空对象")
-                options, flow_token = manager.start_login()
+                options, flow_token = manager.start_login(
+                    caller_key=self._auth_caller_key(),
+                    previous_flow_token=self._cookie_value(FLOW_COOKIE_NAME),
+                )
                 self._send_json(200, options, cookies=[self._flow_cookie(flow_token)])
                 return True
             if path == "/api/v1/auth/passkey/login/verify":
@@ -729,12 +738,31 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 return True
             if set(request) != {"recovery_code"} or not isinstance(request["recovery_code"], str):
                 raise AuthError(422, "INVALID_AUTH_REQUEST", "恢复码请求无效")
-            session = manager.recover(request["recovery_code"])
+            session = manager.recover(request["recovery_code"], caller_key=self._auth_caller_key())
             self._send_json(200, {"authenticated": False, "setup_required": False, "passkey_registered": True, "recovery_setup_required": True, "recovery_pending": True, "csrf_token": session.csrf_token, "expires_at": session.expires_at}, cookies=[self._session_cookie(session.token)])
             return True
         except AuthError as error:
             self._send_json(error.status, _problem(error.status, error.code, error.detail))
             return True
+
+    def _auth_caller_key(self) -> str:
+        try:
+            peer = ipaddress.ip_address(self.client_address[0])
+        except ValueError as error:
+            raise AuthError(400, "CLIENT_IDENTITY_INVALID", "无法识别认证请求来源") from error
+        if isinstance(peer, ipaddress.IPv6Address) and peer.ipv4_mapped is not None:
+            peer = peer.ipv4_mapped
+        if any(peer in network for network in self.preview_server.trusted_proxy_networks):
+            forwarded_values = self.headers.get_all("X-Forwarded-For", [])
+            if len(forwarded_values) != 1 or "," in forwarded_values[0]:
+                raise AuthError(400, "CLIENT_IDENTITY_INVALID", "受信代理必须提供单一客户端地址")
+            try:
+                peer = ipaddress.ip_address(forwarded_values[0].strip())
+            except ValueError as error:
+                raise AuthError(400, "CLIENT_IDENTITY_INVALID", "受信代理提供的客户端地址无效") from error
+        if isinstance(peer, ipaddress.IPv6Address) and peer.ipv4_mapped is not None:
+            peer = peer.ipv4_mapped
+        return f"ip:{peer.compressed}"
 
     def do_POST(self) -> None:
         # A rejected POST can leave an unread body. Close the connection so those
@@ -837,11 +865,13 @@ class PreviewServer(ThreadingHTTPServer):
         *,
         auth_manager: AuthManager | None = None,
         mode: str = "synthetic-preview",
+        trusted_proxy_networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (),
     ) -> None:
         self.site_root = site_root.resolve()
         self.state = state or SyntheticState()
         self.auth_manager = auth_manager
         self.mode = mode
+        self.trusted_proxy_networks = trusted_proxy_networks
         super().__init__(server_address, PreviewHandler)
 
     def handle_error(self, request: object, client_address: tuple[str, int]) -> None:
@@ -859,11 +889,31 @@ def create_server(
     state: SyntheticState | None = None,
     auth_manager: AuthManager | None = None,
     mode: str = "synthetic-preview",
+    trusted_proxy_cidrs: str = "",
 ) -> PreviewServer:
     root = Path(site_root).resolve()
     if not (root / "index.html").is_file() or (root / "index.html").is_symlink():
         raise FileNotFoundError(f"Missing regular built site: {root / 'index.html'}")
-    return PreviewServer((host, port), root, state, auth_manager=auth_manager, mode=mode)
+    try:
+        trusted_proxy_networks = tuple(
+            ipaddress.ip_network(value.strip(), strict=True)
+            for value in trusted_proxy_cidrs.split(",")
+            if value.strip()
+        )
+    except ValueError as error:
+        raise ValueError("TRUSTED_PROXY_CIDRS must contain exact IP networks") from error
+    if mode == "authenticated-preview" and not trusted_proxy_networks:
+        raise ValueError("authenticated-preview requires at least one trusted proxy host")
+    if any(network.prefixlen != network.max_prefixlen for network in trusted_proxy_networks):
+        raise ValueError("TRUSTED_PROXY_CIDRS must contain only IPv4 /32 or IPv6 /128 hosts")
+    return PreviewServer(
+        (host, port),
+        root,
+        state,
+        auth_manager=auth_manager,
+        mode=mode,
+        trusted_proxy_networks=trusted_proxy_networks,
+    )
 
 
 def run() -> None:
@@ -875,11 +925,15 @@ def run() -> None:
     port = int(os.environ.get("PORT", "8080"))
     cookie_secure = os.environ.get("SESSION_COOKIE_SECURE", "1") not in {"0", "false", "False"}
     auth_manager: AuthManager | None = None
+    trusted_proxy_cidrs = ""
     persistence: SQLitePersistence | None = None
     actor = "prototype-single-user"
     if mode == "authenticated-preview":
         if not cookie_secure:
             raise SystemExit("Refusing to start authenticated-preview without Secure cookies")
+        trusted_proxy_cidrs = os.environ.get("TRUSTED_PROXY_CIDRS", "").strip()
+        if not trusted_proxy_cidrs:
+            raise SystemExit("TRUSTED_PROXY_CIDRS is required in authenticated-preview mode")
         data_path = os.environ.get("DATA_PATH")
         if not data_path:
             raise SystemExit("DATA_PATH is required in authenticated-preview mode")
@@ -917,7 +971,15 @@ def run() -> None:
         except OSError:
             pass
     state = SyntheticState(cookie_secure=cookie_secure, persistence=persistence, actor=actor)
-    with create_server(host=bind_address, port=port, site_root=site_root, state=state, auth_manager=auth_manager, mode=mode) as server:
+    with create_server(
+        host=bind_address,
+        port=port,
+        site_root=site_root,
+        state=state,
+        auth_manager=auth_manager,
+        mode=mode,
+        trusted_proxy_cidrs=trusted_proxy_cidrs,
+    ) as server:
         print(f"Serving {Path(site_root).resolve()} in {mode} mode on {bind_address}:{port}", flush=True)
         try:
             server.serve_forever()

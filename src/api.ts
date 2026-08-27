@@ -188,11 +188,12 @@ export const api = {
   getCandidate: (candidateId: string) =>
     requestJson<CandidateDetail>(`/api/v1/candidates/${encodeURIComponent(candidateId)}`),
 
-  appendDecision: ({ candidate, decision, reason, corrections, csrfToken }: {
+  appendDecision: ({ candidate, decision, reason, corrections, conflictResolution, csrfToken }: {
     candidate: ApiCandidate
     decision: CandidateDecision
     reason: string
     corrections?: CandidateCorrections
+    conflictResolution?: string
     csrfToken: string
   }) => requestJson<{ candidate: ApiCandidate; event: ReviewEvent }>(
     `/api/v1/candidates/${encodeURIComponent(candidate.id)}/decisions`,
@@ -208,6 +209,7 @@ export const api = {
         expected_revision: candidate.revision,
         reason,
         ...(corrections ? { corrections } : {}),
+        ...(conflictResolution ? { conflict_resolution: conflictResolution } : {}),
       }),
     },
   ),

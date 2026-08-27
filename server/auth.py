@@ -37,6 +37,9 @@ AUTH_SCHEMA_VERSION = 2
 SESSION_LIFETIME = timedelta(hours=12)
 CEREMONY_LIFETIME_SECONDS = 300
 MAX_ACTIVE_CEREMONIES = 128
+MAX_ACTIVE_PUBLIC_CEREMONIES = 120
+MAX_ACTIVE_CEREMONIES_PER_CALLER = 5
+MAX_FAILURE_BUCKETS = 4096
 RECOVERY_CODE_COUNT = 10
 RECOVERY_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 RECOVERY_CODE_LENGTH = 32
@@ -86,6 +89,7 @@ class Ceremony:
     challenge: bytes
     user_id: bytes
     expires_at: float
+    caller_key: str
     initial_registration: bool = False
     recovery_registration: bool = False
     authorization_session_hash: bytes | None = None
@@ -549,21 +553,29 @@ class FailureGate:
         self._failures: dict[str, list[float]] = {}
         self._lock = threading.Lock()
 
-    def require_available(self, key: str) -> None:
+    def begin_attempt(self, key: str) -> None:
         now = time.monotonic()
         with self._lock:
-            recent = [stamp for stamp in self._failures.get(key, []) if now - stamp < self.window_seconds]
-            self._failures[key] = recent
+            self._prune(now)
+            recent = self._failures.get(key, [])
             if len(recent) >= self.attempts:
                 raise AuthError(429, "AUTH_RATE_LIMITED", "认证尝试过多，请稍后重试")
-
-    def failure(self, key: str) -> None:
-        with self._lock:
-            self._failures.setdefault(key, []).append(time.monotonic())
+            if key not in self._failures and len(self._failures) >= MAX_FAILURE_BUCKETS:
+                oldest = min(self._failures, key=lambda item: self._failures[item][-1])
+                self._failures.pop(oldest, None)
+            self._failures.setdefault(key, []).append(now)
 
     def success(self, key: str) -> None:
         with self._lock:
             self._failures.pop(key, None)
+
+    def _prune(self, now: float) -> None:
+        for key in list(self._failures):
+            recent = [stamp for stamp in self._failures[key] if now - stamp < self.window_seconds]
+            if recent:
+                self._failures[key] = recent
+            else:
+                self._failures.pop(key, None)
 
 
 class AuthManager:
@@ -637,7 +649,14 @@ class AuthManager:
             return None
         return self.store.session_payload(session_token)
 
-    def start_registration(self, setup_code: str, session_token: str | None) -> tuple[dict[str, object], str]:
+    def start_registration(
+        self,
+        setup_code: str,
+        session_token: str | None,
+        *,
+        caller_key: str,
+        previous_flow_token: str | None = None,
+    ) -> tuple[dict[str, object], str]:
         initialized = self.store.initialized()
         recovery_registration = False
         if initialized:
@@ -651,14 +670,14 @@ class AuthManager:
             if user_id is None:
                 raise AuthError(500, "AUTH_STATE_INVALID", "认证状态不完整")
         else:
-            self.failures.require_available("setup")
+            failure_key = f"setup:{caller_key}"
             if int(time.time()) >= self.setup_code_expires_at:
                 raise AuthError(401, "SETUP_CODE_EXPIRED", "初始设置码已过期")
+            self.failures.begin_attempt(failure_key)
             supplied = hashlib.sha256(_normalise_code(setup_code).encode("utf-8")).hexdigest()
             if not hmac.compare_digest(supplied, self.setup_code_sha256):
-                self.failures.failure("setup")
                 raise AuthError(401, "SETUP_CODE_INVALID", "初始设置码无效")
-            self.failures.success("setup")
+            self.failures.success(failure_key)
             user_id = secrets.token_bytes(32)
         credentials = self.store.credentials()
         options = generate_registration_options(
@@ -685,11 +704,13 @@ class AuthManager:
                 min(time.time() + CEREMONY_LIFETIME_SECONDS, float(self.setup_code_expires_at))
                 if not initialized
                 else time.time() + CEREMONY_LIFETIME_SECONDS,
+                caller_key,
                 not initialized,
                 recovery_registration,
                 _token_hash(session_token) if recovery_registration and session_token else None,
                 None,
             ),
+            previous_flow_token=previous_flow_token,
         )
         return json.loads(options_to_json(options)), flow_token
 
@@ -752,7 +773,12 @@ class AuthManager:
             session = self.store.create_session("passkey-registration")
         return session, recovery_codes
 
-    def start_login(self) -> tuple[dict[str, object], str]:
+    def start_login(
+        self,
+        *,
+        caller_key: str,
+        previous_flow_token: str | None = None,
+    ) -> tuple[dict[str, object], str]:
         auth_epoch = self.store.login_epoch()
         credentials = self.store.credentials()
         if not credentials:
@@ -771,8 +797,10 @@ class AuthManager:
                 options.challenge,
                 user_id,
                 time.time() + CEREMONY_LIFETIME_SECONDS,
+                caller_key,
                 auth_epoch=auth_epoch,
             ),
+            previous_flow_token=previous_flow_token,
         )
         return json.loads(options_to_json(options)), flow_token
 
@@ -821,23 +849,70 @@ class AuthManager:
             expected_auth_epoch=ceremony.auth_epoch,
         )
 
-    def recover(self, recovery_code: str) -> AuthSession:
-        self.failures.require_available("recovery")
+    def recover(self, recovery_code: str, *, caller_key: str) -> AuthSession:
+        failure_key = f"recovery:{caller_key}"
+        self.failures.begin_attempt(failure_key)
         session = (
             self.store.recover_with_code(recovery_code)
             if len(_normalise_code(recovery_code)) == RECOVERY_CODE_LENGTH
             else None
         )
         if session is None:
-            self.failures.failure("recovery")
             raise AuthError(401, "RECOVERY_CODE_INVALID", "恢复码无效或已经使用")
-        self.failures.success("recovery")
+        self.failures.success(failure_key)
         return session
 
-    def _remember_ceremony(self, flow_token: str, ceremony: Ceremony) -> None:
+    def _remember_ceremony(
+        self,
+        flow_token: str,
+        ceremony: Ceremony,
+        *,
+        previous_flow_token: str | None = None,
+    ) -> None:
         now = time.time()
         with self._ceremony_lock:
             self._ceremonies = {key: value for key, value in self._ceremonies.items() if value.expires_at > now}
+            if previous_flow_token:
+                previous_key = _token_hash(previous_flow_token)
+                previous = self._ceremonies.get(previous_key)
+                if previous is not None and previous.caller_key == ceremony.caller_key and previous.kind == ceremony.kind:
+                    self._ceremonies.pop(previous_key, None)
+            caller_count = sum(
+                value.caller_key == ceremony.caller_key and value.kind == ceremony.kind
+                for value in self._ceremonies.values()
+            )
+            if caller_count >= MAX_ACTIVE_CEREMONIES_PER_CALLER:
+                raise AuthError(429, "AUTH_RATE_LIMITED", "认证尝试过多，请稍后重试")
+            public_ceremonies = [
+                (key, value) for key, value in self._ceremonies.items() if value.kind == "login"
+            ]
+            if ceremony.kind == "login" and len(public_ceremonies) >= MAX_ACTIVE_PUBLIC_CEREMONIES:
+                caller_counts: dict[str, int] = {}
+                for _, value in public_ceremonies:
+                    caller_counts[value.caller_key] = caller_counts.get(value.caller_key, 0) + 1
+                busiest_count = max(caller_counts.values())
+                eviction_key, _ = min(
+                    ((key, value) for key, value in public_ceremonies if caller_counts[value.caller_key] == busiest_count),
+                    key=lambda item: item[1].expires_at,
+                )
+                self._ceremonies.pop(eviction_key, None)
+            if len(self._ceremonies) >= MAX_ACTIVE_CEREMONIES:
+                public_ceremonies = [
+                    (key, value) for key, value in self._ceremonies.items() if value.kind == "login"
+                ]
+                if public_ceremonies:
+                    caller_counts: dict[str, int] = {}
+                    for _, value in public_ceremonies:
+                        caller_counts[value.caller_key] = caller_counts.get(value.caller_key, 0) + 1
+                    busiest_count = max(caller_counts.values())
+                    eviction_key, _ = min(
+                        ((key, value) for key, value in public_ceremonies if caller_counts[value.caller_key] == busiest_count),
+                        key=lambda item: item[1].expires_at,
+                    )
+                    self._ceremonies.pop(eviction_key, None)
+                elif ceremony.kind == "register":
+                    eviction_key = min(self._ceremonies, key=lambda key: self._ceremonies[key].expires_at)
+                    self._ceremonies.pop(eviction_key, None)
             if len(self._ceremonies) >= MAX_ACTIVE_CEREMONIES:
                 raise AuthError(429, "AUTH_CEREMONY_CAPACITY", "认证请求过多，请稍后重试")
             self._ceremonies[_token_hash(flow_token)] = ceremony

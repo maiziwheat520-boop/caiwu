@@ -26,6 +26,7 @@ class AuthenticatedPreviewHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         root = Path(self.temp_dir.name)
+        self.root = root
         (root / "index.html").write_text("<html>authenticated preview</html>", encoding="utf-8")
         self.database = root / "state.sqlite3"
         self.persistence = SQLitePersistence(self.database)
@@ -45,6 +46,7 @@ class AuthenticatedPreviewHttpTests(unittest.TestCase):
             state=self.state,
             auth_manager=self.manager,
             mode="authenticated-preview",
+            trusted_proxy_cidrs="127.0.0.1/32",
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -66,6 +68,7 @@ class AuthenticatedPreviewHttpTests(unittest.TestCase):
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
         encoded = json.dumps(body).encode() if body is not None else None
         request_headers = dict(headers or {})
+        request_headers.setdefault("X-Forwarded-For", "192.0.2.10")
         if encoded is not None:
             request_headers["Content-Type"] = "application/json"
         connection.request(method, path, body=encoded, headers=request_headers)
@@ -173,6 +176,66 @@ class AuthenticatedPreviewHttpTests(unittest.TestCase):
         self.assertIn("; Secure", flow_cookie)
         self.assertIn("; HttpOnly", flow_cookie)
         self.assertIn("; SameSite=Strict", flow_cookie)
+
+    def test_trusted_proxy_identity_is_single_hop_and_isolates_setup_throttle(self) -> None:
+        common_headers = {"Origin": ORIGIN, "Sec-Fetch-Site": "same-origin"}
+        for _ in range(5):
+            status, problem, _ = self.request(
+                "POST",
+                "/api/v1/auth/passkey/register/options",
+                body={"setup_code": "wrong"},
+                headers={**common_headers, "X-Forwarded-For": "192.0.2.20"},
+            )
+            self.assertEqual(status, 401)
+            self.assertEqual(problem["code"], "SETUP_CODE_INVALID")  # type: ignore[index]
+        status, problem, _ = self.request(
+            "POST",
+            "/api/v1/auth/passkey/register/options",
+            body={"setup_code": SETUP_CODE},
+            headers={**common_headers, "X-Forwarded-For": "192.0.2.20"},
+        )
+        self.assertEqual(status, 429)
+        self.assertEqual(problem["code"], "AUTH_RATE_LIMITED")  # type: ignore[index]
+
+        status, options, _ = self.request(
+            "POST",
+            "/api/v1/auth/passkey/register/options",
+            body={"setup_code": SETUP_CODE},
+            headers={**common_headers, "X-Forwarded-For": "192.0.2.21"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(options["rp"]["id"], "ledgerbridge.example.ts.net")  # type: ignore[index]
+
+        status, problem, _ = self.request(
+            "POST",
+            "/api/v1/auth/passkey/register/options",
+            body={"setup_code": SETUP_CODE},
+            headers={**common_headers, "X-Forwarded-For": "192.0.2.21, 192.0.2.99"},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(problem["code"], "CLIENT_IDENTITY_INVALID")  # type: ignore[index]
+
+    def test_trusted_proxy_configuration_rejects_non_host_networks(self) -> None:
+        with self.assertRaisesRegex(ValueError, "IPv4 /32 or IPv6 /128"):
+            create_server(
+                "127.0.0.1",
+                0,
+                self.root,
+                state=self.state,
+                auth_manager=self.manager,
+                mode="authenticated-preview",
+                trusted_proxy_cidrs="127.0.0.0/24",
+            )
+        with self.assertRaisesRegex(ValueError, "at least one trusted proxy host"):
+            create_server(
+                "127.0.0.1",
+                0,
+                self.root,
+                state=self.state,
+                auth_manager=self.manager,
+                mode="authenticated-preview",
+                trusted_proxy_cidrs=" , ",
+            )
 
     def test_recovery_registration_requires_its_csrf_token(self) -> None:
         recovery_codes = self.manager.store.register_credential(

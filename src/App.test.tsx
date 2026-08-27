@@ -150,6 +150,7 @@ const buffer = (...bytes: number[]) => Uint8Array.from(bytes).buffer
 describe('LedgerBridge Web API client', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    window.history.replaceState({}, '', '/overview')
     Object.defineProperty(navigator, 'credentials', { configurable: true, value: undefined })
   })
   afterEach(() => {
@@ -315,16 +316,66 @@ describe('LedgerBridge Web API client', () => {
     expect(fetchMock.mock.calls.filter(([input, requestInit]) => String(input) === '/api/v1/reconciliations/2026-08' && requestInit?.method !== 'POST')).toHaveLength(2)
   })
 
-  it('keeps conflicts and missing months blocked', async () => {
+  it('keeps the selected section in the URL and filters the review queue', async () => {
+    installFetch()
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByRole('button', { name: /待审核/ })[0])
+    expect(window.location.pathname).toBe('/review')
+
+    fireEvent.change(screen.getByLabelText('搜索候选编号、门店或科目'), { target: { value: '机场店' } })
+    expect(screen.getByText('机场店水费，原消息未说明归属月份')).toBeInTheDocument()
+    expect(screen.queryByText('城南店 8 月布草清洗费用，供应商月结单')).not.toBeInTheDocument()
+  })
+
+  it('resolves a conflicted candidate with an auditable resolution note', async () => {
+    const fetchMock = installFetch()
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByRole('button', { name: /待审核/ })[0])
+    fireEvent.click(screen.getByText('城南店银行收款，与另一条候选冲突'))
+
+    const resolutionInput = await screen.findByLabelText('冲突处理依据')
+    const resolveButton = screen.getByRole('button', { name: '解决冲突并确认' })
+    expect(resolveButton).toBeDisabled()
+    fireEvent.change(resolutionInput, { target: { value: '以银行电子回单金额为准' } })
+    expect(resolveButton).not.toBeDisabled()
+    fireEvent.click(resolveButton)
+
+    expect(await screen.findByText(/C-5B17 冲突已解决/)).toBeInTheDocument()
+    const decisionCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/candidate-3/decisions'))
+    expect(JSON.parse(String(decisionCall?.[1]?.body))).toMatchObject({
+      decision: 'RESOLVE_CONFLICT',
+      expected_revision: 2,
+      conflict_resolution: '以银行电子回单金额为准',
+    })
+  })
+
+  it('routes blocked candidates to the required resolution flow', async () => {
     installFetch()
     renderApp()
     await screen.findByText('早上好，今天有几项需要确认')
     fireEvent.click(screen.getAllByText('待审核')[0])
-    const disabledButtons = screen.getAllByRole('button', { name: '确认' }).filter((button) => button.hasAttribute('disabled'))
-    expect(disabledButtons).toHaveLength(2)
+    expect(screen.getByRole('button', { name: '处理冲突' })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: '补全月份' })).not.toBeDisabled()
+    expect(screen.getAllByRole('button', { name: '确认' })).toHaveLength(1)
 
-    fireEvent.click(screen.getAllByText('机场店水费，原消息未说明归属月份')[0])
+    fireEvent.click(screen.getByRole('button', { name: '补全月份' }))
     expect(await screen.findByRole('button', { name: '保存更正并确认' })).toBeDisabled()
+  })
+
+  it('filters the queue by blocker status and keeps the counts visible', async () => {
+    installFetch()
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+
+    expect(screen.getByRole('button', { name: '冲突 1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '缺月份 1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '可确认 1' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '冲突 1' }))
+    expect(screen.getByText('城南店银行收款，与另一条候选冲突')).toBeInTheDocument()
+    expect(screen.queryByText('机场店水费，原消息未说明归属月份')).not.toBeInTheDocument()
   })
 
   it('does not report a saved decision as failed when reconciliation refresh fails', async () => {

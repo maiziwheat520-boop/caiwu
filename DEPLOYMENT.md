@@ -74,9 +74,9 @@ WebAuthn 不能在普通局域网 IP 的 HTTP 页面工作。Passkey 模式必�
 
 3. 用 `python deploy/generate_setup_code.py --ttl 600` 生成十分钟有效的首次设置码。原文只显示一次；只把摘要和到期时间传给 Compose，不写入仓库或环境文件。
 
-4. 必须使用 LedgerBridge 独占的稳定 DNS 主机名；不能复用 Home Assistant、Grafana 等服务的主机名后只换端口，因为 Cookie 不按端口隔离。HTTPS 反向代理只允许 tailnet 访问且不启用 Funnel。
+4. 必须使用 LedgerBridge 独占的稳定 DNS 主机名；不能复用 Home Assistant、Grafana 等服务的主机名后只换端口，因为 Cookie 不按端口隔离。HTTPS 反向代理只允许 tailnet 访问且不启用 Funnel。代理必须覆盖（不能追加或透传客户端提供的值）`X-Forwarded-For`，且值只能是一个已解析的客户端 IP；将应用看到的代理直连地址按单主机 CIDR（IPv4 `/32` 或 IPv6 `/128`）写入临时环境变量 `TRUSTED_PROXY_CIDRS`。不要信任整个 Docker 网段，也不要把客户端网段列为代理。
 
-5. 首次创建数据库时，在当前 shell 临时设置 `ALLOW_INITIAL_BOOTSTRAP=1`，并设置 `WEBAUTHN_RP_ID`、`WEBAUTHN_EXPECTED_ORIGIN`、`SETUP_CODE_SHA256`、`SETUP_CODE_EXPIRES_AT`、容器 UID/GID，然后启动：
+5. 首次创建数据库时，在当前 shell 临时设置 `ALLOW_INITIAL_BOOTSTRAP=1`，并设置 `WEBAUTHN_RP_ID`、`WEBAUTHN_EXPECTED_ORIGIN`、`TRUSTED_PROXY_CIDRS`、`SETUP_CODE_SHA256`、`SETUP_CODE_EXPIRES_AT`、容器 UID/GID，然后启动：
 
    ```bash
    docker compose -f compose.authenticated.yaml up -d --force-recreate

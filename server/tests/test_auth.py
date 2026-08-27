@@ -3,13 +3,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from server.auth import AuthError, AuthManager, AuthStore, RECOVERY_CODE_COUNT
+from server.auth import AuthError, AuthManager, AuthStore, FailureGate, RECOVERY_CODE_COUNT
 
 
 def b64url(value: bytes) -> str:
@@ -69,6 +70,8 @@ class AuthStoreTests(unittest.TestCase):
 
 
 class AuthManagerTests(unittest.TestCase):
+    caller_key = "ip:192.0.2.10"
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.database = Path(self.temp_dir.name) / "auth.sqlite3"
@@ -87,9 +90,9 @@ class AuthManagerTests(unittest.TestCase):
 
     def test_setup_code_is_required_and_registration_challenge_is_one_use(self) -> None:
         with self.assertRaises(AuthError) as wrong:
-            self.manager.start_registration("wrong", None)
+            self.manager.start_registration("wrong", None, caller_key=self.caller_key)
         self.assertEqual(wrong.exception.code, "SETUP_CODE_INVALID")
-        options, flow = self.manager.start_registration(self.setup_code, None)
+        options, flow = self.manager.start_registration(self.setup_code, None, caller_key=self.caller_key)
         self.assertEqual(options["rp"]["id"], "ledgerbridge.example.ts.net")
         verified = SimpleNamespace(
             credential_id=b"credential-one",
@@ -126,7 +129,7 @@ class AuthManagerTests(unittest.TestCase):
             backed_up=False,
             initial=True,
         )
-        _, flow = self.manager.start_login()
+        _, flow = self.manager.start_login(caller_key=self.caller_key)
         verified = SimpleNamespace(
             credential_id=b"credential-one",
             new_sign_count=2,
@@ -136,13 +139,13 @@ class AuthManagerTests(unittest.TestCase):
         with patch("server.auth.verify_authentication_response", return_value=verified):
             passkey_session = self.manager.finish_login(flow, {"id": b64url(b"credential-one")})
         self.assertEqual(self.manager.store.credential(b"credential-one").sign_count, 2)  # type: ignore[union-attr]
-        recovery_session = self.manager.recover(codes[0])
+        recovery_session = self.manager.recover(codes[0], caller_key=self.caller_key)
         self.assertIsNone(self.manager.store.session_payload(passkey_session.token, rotate_csrf=False))
         self.assertIsNotNone(self.manager.store.session_payload(recovery_session.token, rotate_csrf=False))
         self.assertFalse(self.manager.status(recovery_session.token)["authenticated"])
         self.assertTrue(self.manager.status(recovery_session.token)["recovery_setup_required"])
         self.assertIsNone(self.manager.session_payload(recovery_session.token))
-        _, recovery_flow = self.manager.start_registration("", recovery_session.token)
+        _, recovery_flow = self.manager.start_registration("", recovery_session.token, caller_key=self.caller_key)
         replacement = SimpleNamespace(
             credential_id=b"credential-two",
             credential_public_key=b"public-key-two",
@@ -171,11 +174,11 @@ class AuthManagerTests(unittest.TestCase):
             setup_code_expires_at=0,
         )
         with self.assertRaises(AuthError) as expired:
-            manager.start_registration("anything", None)
+            manager.start_registration("anything", None, caller_key=self.caller_key)
         self.assertEqual(expired.exception.code, "SETUP_CODE_EXPIRED")
 
     def test_initial_registration_cannot_finish_after_setup_code_expires(self) -> None:
-        _, flow = self.manager.start_registration(self.setup_code, None)
+        _, flow = self.manager.start_registration(self.setup_code, None, caller_key=self.caller_key)
         self.manager.setup_code_expires_at = 0
         with self.assertRaises(AuthError) as expired:
             self.manager.finish_registration(
@@ -197,8 +200,8 @@ class AuthManagerTests(unittest.TestCase):
             backed_up=False,
             initial=True,
         )
-        recovery_session = self.manager.recover(codes[0])
-        _, flow = self.manager.start_registration("", recovery_session.token)
+        recovery_session = self.manager.recover(codes[0], caller_key=self.caller_key)
+        _, flow = self.manager.start_registration("", recovery_session.token, caller_key=self.caller_key)
         self.manager.store.logout(recovery_session.token)
         replacement = SimpleNamespace(
             credential_id=b"credential-two",
@@ -229,11 +232,11 @@ class AuthManagerTests(unittest.TestCase):
             backed_up=False,
             initial=True,
         )
-        _, stale_flow = self.manager.start_login()
-        recovery_session = self.manager.recover(codes[0])
+        _, stale_flow = self.manager.start_login(caller_key=self.caller_key)
+        recovery_session = self.manager.recover(codes[0], caller_key=self.caller_key)
         self.assertTrue(self.manager.status(recovery_session.token)["recovery_pending"])
         with self.assertRaises(AuthError) as blocked:
-            self.manager.start_login()
+            self.manager.start_login(caller_key=self.caller_key)
         self.assertEqual(blocked.exception.code, "RECOVERY_IN_PROGRESS")
         verified = SimpleNamespace(
             credential_id=b"credential-one",
@@ -246,6 +249,168 @@ class AuthManagerTests(unittest.TestCase):
                 self.manager.finish_login(stale_flow, {"id": b64url(b"credential-one")})
         self.assertEqual(revoked.exception.code, "AUTH_CEREMONY_REVOKED")
         self.assertFalse(self.manager.status(None)["authenticated"])
+
+    def test_failure_throttles_are_isolated_by_resolved_caller(self) -> None:
+        attacker = "ip:192.0.2.20"
+        legitimate = "ip:192.0.2.21"
+        for _ in range(5):
+            with self.assertRaises(AuthError) as invalid:
+                self.manager.start_registration("wrong", None, caller_key=attacker)
+            self.assertEqual(invalid.exception.code, "SETUP_CODE_INVALID")
+        with self.assertRaises(AuthError) as limited:
+            self.manager.start_registration(self.setup_code, None, caller_key=attacker)
+        self.assertEqual(limited.exception.code, "AUTH_RATE_LIMITED")
+        _, setup_flow = self.manager.start_registration(self.setup_code, None, caller_key=legitimate)
+        self.assertTrue(setup_flow)
+        with self.assertRaises(AuthError) as still_limited:
+            self.manager.start_registration(self.setup_code, None, caller_key=attacker)
+        self.assertEqual(still_limited.exception.code, "AUTH_RATE_LIMITED")
+
+        codes = self.manager.store.register_credential(
+            user_id=b"u" * 32,
+            credential_id=b"credential-one",
+            public_key=b"public-key",
+            sign_count=0,
+            device_type="multi_device",
+            backed_up=True,
+            initial=True,
+        )
+        for _ in range(5):
+            with self.assertRaises(AuthError) as invalid:
+                self.manager.recover("wrong", caller_key=attacker)
+            self.assertEqual(invalid.exception.code, "RECOVERY_CODE_INVALID")
+        recovery_session = self.manager.recover(codes[0], caller_key=legitimate)
+        self.assertTrue(recovery_session.token)
+
+    def test_failure_gate_admission_is_atomic_and_bounded(self) -> None:
+        gate = FailureGate(attempts=5, window_seconds=900)
+        admitted: list[bool] = []
+        lock = threading.Lock()
+        barrier = threading.Barrier(40)
+
+        def attempt() -> None:
+            barrier.wait()
+            try:
+                gate.begin_attempt("setup:ip:192.0.2.20")
+            except AuthError:
+                result = False
+            else:
+                result = True
+            with lock:
+                admitted.append(result)
+
+        threads = [threading.Thread(target=attempt) for _ in range(40)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sum(admitted), 5)
+        self.assertEqual(len(gate._failures["setup:ip:192.0.2.20"]), 5)
+
+    def test_login_admission_is_per_caller_and_retry_replaces_abandoned_flow(self) -> None:
+        self.manager.store.register_credential(
+            user_id=b"u" * 32,
+            credential_id=b"credential-one",
+            public_key=b"public-key",
+            sign_count=0,
+            device_type="multi_device",
+            backed_up=True,
+            initial=True,
+        )
+        attacker = "ip:192.0.2.20"
+        for _ in range(5):
+            self.manager.start_login(caller_key=attacker)
+        with self.assertRaises(AuthError) as limited:
+            self.manager.start_login(caller_key=attacker)
+        self.assertEqual(limited.exception.code, "AUTH_RATE_LIMITED")
+
+        legitimate = "ip:192.0.2.21"
+        _, old_flow = self.manager.start_login(caller_key=legitimate)
+        _, replacement_flow = self.manager.start_login(
+            caller_key=legitimate,
+            previous_flow_token=old_flow,
+        )
+        self.assertNotEqual(old_flow, replacement_flow)
+        with self.assertRaises(AuthError) as replaced:
+            self.manager.finish_login(old_flow, {"id": b64url(b"credential-one")})
+        self.assertEqual(replaced.exception.code, "AUTH_CEREMONY_EXPIRED")
+
+    def test_public_login_capacity_cannot_consume_recovery_registration_reserve(self) -> None:
+        codes = self.manager.store.register_credential(
+            user_id=b"u" * 32,
+            credential_id=b"credential-one",
+            public_key=b"public-key",
+            sign_count=0,
+            device_type="multi_device",
+            backed_up=True,
+            initial=True,
+        )
+        for index in range(120):
+            self.manager.start_login(caller_key=f"ip:198.51.100.{index}")
+        legitimate_flows = [
+            self.manager.start_login(caller_key="ip:192.0.2.21")[1]
+            for _ in range(5)
+        ]
+        self.assertTrue(legitimate_flows[-1])
+        verified = SimpleNamespace(
+            credential_id=b"credential-one",
+            new_sign_count=1,
+            credential_device_type=SimpleNamespace(value="multi_device"),
+            credential_backed_up=True,
+        )
+        with patch("server.auth.verify_authentication_response", return_value=verified):
+            login_session = self.manager.finish_login(
+                legitimate_flows[-1],
+                {"id": b64url(b"credential-one")},
+            )
+        self.assertTrue(login_session.token)
+
+        recovery_session = self.manager.recover(codes[0], caller_key="ip:192.0.2.21")
+        _, recovery_flow = self.manager.start_registration(
+            "",
+            recovery_session.token,
+            caller_key="ip:192.0.2.21",
+        )
+        self.assertTrue(recovery_flow)
+
+    def test_mixed_full_capacity_still_admits_login_and_recovery_registration(self) -> None:
+        registration_flows = [
+            self.manager.start_registration(
+                self.setup_code,
+                None,
+                caller_key=f"ip:192.0.2.{20 + (index // 5)}",
+            )[1]
+            for index in range(10)
+        ]
+        registered = SimpleNamespace(
+            credential_id=b"credential-one",
+            credential_public_key=b"public-key",
+            sign_count=0,
+            credential_device_type=SimpleNamespace(value="multi_device"),
+            credential_backed_up=True,
+        )
+        with patch("server.auth.verify_registration_response", return_value=registered):
+            _, codes = self.manager.finish_registration(
+                registration_flows[0],
+                {"id": b64url(b"credential-one")},
+                setup_code=self.setup_code,
+                session_token=None,
+            )
+        for index in range(119):
+            self.manager.start_login(caller_key=f"ip:198.51.100.{index}")
+        self.assertEqual(len(self.manager._ceremonies), 128)
+
+        _, login_flow = self.manager.start_login(caller_key="ip:192.0.2.40")
+        self.assertTrue(login_flow)
+        self.assertEqual(len(self.manager._ceremonies), 128)
+        recovery_session = self.manager.recover(codes[0], caller_key="ip:192.0.2.40")
+        _, recovery_flow = self.manager.start_registration(
+            "",
+            recovery_session.token,
+            caller_key="ip:192.0.2.40",
+        )
+        self.assertTrue(recovery_flow)
+        self.assertEqual(len(self.manager._ceremonies), 128)
 
 
 if __name__ == "__main__":
