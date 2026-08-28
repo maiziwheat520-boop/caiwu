@@ -20,6 +20,12 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .auth import AuthError, AuthManager, AuthStore
+from .core_backend import (
+    CoreBackedState,
+    CoreBackendError,
+    CoreHttpClient,
+    sqlite_contains_business_facts,
+)
 from .persistence import (
     IdempotencyConflictError,
     IdempotencyRecord,
@@ -115,6 +121,13 @@ class SyntheticState:
 
     def session_active(self) -> bool:
         return datetime.now(timezone.utc) < self.expires_at
+
+    def evidence(self, evidence_id: str) -> dict[str, object] | None:
+        evidence = SYNTHETIC_EVIDENCE_CONTENT.get(evidence_id)
+        return deepcopy(evidence) if evidence is not None else None
+
+    def connections(self) -> list[dict[str, str]]:
+        return deepcopy(SYNTHETIC_CONNECTIONS)
 
     def candidate_detail(self, candidate_id: str) -> dict[str, object] | None:
         with self.lock:
@@ -590,7 +603,13 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             if month is not None and not MONTH_PATTERN.fullmatch(month):
                 self._send_json(400, _problem(400, "INVALID_ACCOUNTING_MONTH", "归属月份格式无效"))
                 return
-            if cursor is not None and (len(cursor) > 512 or not cursor.isascii() or not cursor.isdigit()):
+            opaque_cursors = bool(getattr(state, "opaque_cursors", False))
+            if cursor is not None and (
+                len(cursor) > 512
+                or not cursor.isascii()
+                or (not opaque_cursors and not cursor.isdigit())
+                or (opaque_cursors and re.fullmatch(r"[A-Za-z0-9_-]+", cursor) is None)
+            ):
                 self._send_json(400, _problem(400, "INVALID_CURSOR", "分页游标无效"))
                 return
             self._send_json(200, state.list_candidates(status=status, month=month, cursor=cursor))
@@ -610,7 +629,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             return
         match = EVIDENCE_PATH.fullmatch(path)
         if match:
-            evidence = SYNTHETIC_EVIDENCE_CONTENT.get(match.group(1))
+            evidence = state.evidence(match.group(1))
             if evidence is None:
                 self._send_json(404, _problem(404, "EVIDENCE_NOT_FOUND", "证据不存在"))
             else:
@@ -633,7 +652,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 self._send_json(200, draft)
             return
         if path == "/api/v1/connections":
-            self._send_json(200, {"items": deepcopy(SYNTHETIC_CONNECTIONS)})
+            self._send_json(200, {"items": state.connections()})
             return
         self._send_json(404, _problem(404, "API_ROUTE_NOT_FOUND", "API 路径不存在"))
 
@@ -670,7 +689,10 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             self.wfile.write(payload)
             return
         if split.path.startswith("/api/"):
-            self._api_get(split.path, split.query)
+            try:
+                self._api_get(split.path, split.query)
+            except CoreBackendError as error:
+                self._send_json(error.status, error.payload)
             return
         self._use_spa_fallback()
         if self._static_has_symlink(urlsplit(self.path).path):
@@ -893,7 +915,7 @@ class PreviewServer(ThreadingHTTPServer):
         self,
         server_address: tuple[str, int],
         site_root: Path,
-        state: SyntheticState | None = None,
+        state: SyntheticState | CoreBackedState | None = None,
         *,
         auth_manager: AuthManager | None = None,
         mode: str = "synthetic-preview",
@@ -918,7 +940,7 @@ def create_server(
     port: int = 8080,
     site_root: str | Path = "/site",
     *,
-    state: SyntheticState | None = None,
+    state: SyntheticState | CoreBackedState | None = None,
     auth_manager: AuthManager | None = None,
     mode: str = "synthetic-preview",
     trusted_proxy_cidrs: str = "",
@@ -934,8 +956,8 @@ def create_server(
         )
     except ValueError as error:
         raise ValueError("TRUSTED_PROXY_CIDRS must contain exact IP networks") from error
-    if mode == "authenticated-preview" and not trusted_proxy_networks:
-        raise ValueError("authenticated-preview requires at least one trusted proxy host")
+    if mode in {"authenticated-preview", "core-backed"} and not trusted_proxy_networks:
+        raise ValueError("authenticated modes require at least one trusted proxy host")
     if any(network.prefixlen != network.max_prefixlen for network in trusted_proxy_networks):
         raise ValueError("TRUSTED_PROXY_CIDRS must contain only IPv4 /32 or IPv6 /128 hosts")
     return PreviewServer(
@@ -950,7 +972,7 @@ def create_server(
 
 def run() -> None:
     mode = os.environ.get("LEDGERBRIDGE_MODE", "synthetic-preview")
-    if mode not in {"synthetic-preview", "authenticated-preview"}:
+    if mode not in {"synthetic-preview", "authenticated-preview", "core-backed"}:
         raise SystemExit("Refusing to start: unsupported LedgerBridge mode")
     site_root = os.environ.get("SITE_ROOT", "/site")
     bind_address = os.environ.get("BIND_ADDRESS", "127.0.0.1")
@@ -960,7 +982,8 @@ def run() -> None:
     trusted_proxy_cidrs = ""
     persistence: SQLitePersistence | None = None
     actor = "prototype-single-user"
-    if mode == "authenticated-preview":
+    state: SyntheticState | CoreBackedState
+    if mode in {"authenticated-preview", "core-backed"}:
         if not cookie_secure:
             raise SystemExit("Refusing to start authenticated-preview without Secure cookies")
         trusted_proxy_cidrs = os.environ.get("TRUSTED_PROXY_CIDRS", "").strip()
@@ -984,7 +1007,12 @@ def run() -> None:
             raise SystemExit("Refusing to start: enrolled installation database is missing")
         if not marker_exists and not allow_bootstrap:
             raise SystemExit("Refusing bootstrap without ALLOW_INITIAL_BOOTSTRAP=1 and a missing enrollment marker")
-        persistence = SQLitePersistence(data_path)
+        if mode == "authenticated-preview":
+            persistence = SQLitePersistence(data_path)
+        elif sqlite_contains_business_facts(data_path):
+            raise SystemExit(
+                "Refusing core-backed mode: Web SQLite contains preview business facts"
+            )
         auth_store = AuthStore(data_path)
         if marker_exists and not auth_store.initialized():
             raise SystemExit("Refusing to start: enrollment marker exists but no Passkey is registered")
@@ -1002,7 +1030,58 @@ def run() -> None:
             Path(data_path).chmod(0o600)
         except OSError:
             pass
-    state = SyntheticState(cookie_secure=cookie_secure, persistence=persistence, actor=actor)
+    if mode == "core-backed":
+        required = {
+            name: os.environ.get(name, "").strip()
+            for name in (
+                "CORE_BASE_URL",
+                "CORE_CA_FILE",
+                "CORE_CERT_FILE",
+                "CORE_KEY_FILE",
+                "CORE_USER_ASSERTION_KEY",
+                "CORE_ASSERTION_ISSUER",
+                "CORE_ASSERTION_AUDIENCE",
+                "CORE_WORKLOAD_PRINCIPAL",
+                "CORE_POLICY_GENERATION",
+                "CORE_USER_SUBJECT",
+                "CORE_AUTHENTICATION_GENERATION",
+                "CORE_ENTITY_REF",
+                "CORE_BUSINESS_UNIT_REF",
+            )
+        }
+        missing = sorted(name for name, value in required.items() if not value)
+        if missing:
+            raise SystemExit(
+                f"Refusing core-backed mode: required Core settings are missing: {', '.join(missing)}"
+            )
+        try:
+            client = CoreHttpClient(
+                base_url=required["CORE_BASE_URL"],
+                ca_file=required["CORE_CA_FILE"],
+                certificate_file=required["CORE_CERT_FILE"],
+                private_key_file=required["CORE_KEY_FILE"],
+                timeout_seconds=float(os.environ.get("CORE_TIMEOUT_SECONDS", "10")),
+            )
+            state = CoreBackedState(
+                client,
+                assertion_key=required["CORE_USER_ASSERTION_KEY"].encode("utf-8"),
+                assertion_issuer=required["CORE_ASSERTION_ISSUER"],
+                assertion_audience=required["CORE_ASSERTION_AUDIENCE"],
+                workload_principal=required["CORE_WORKLOAD_PRINCIPAL"],
+                policy_generation=int(required["CORE_POLICY_GENERATION"]),
+                user_subject=required["CORE_USER_SUBJECT"],
+                authentication_generation=int(required["CORE_AUTHENTICATION_GENERATION"]),
+                entity_ref=required["CORE_ENTITY_REF"],
+                business_unit_ref=required["CORE_BUSINESS_UNIT_REF"],
+            )
+        except (OSError, ValueError) as error:
+            raise SystemExit("Refusing core-backed mode: invalid Core settings") from error
+    else:
+        state = SyntheticState(
+            cookie_secure=cookie_secure,
+            persistence=persistence,
+            actor=actor,
+        )
     with create_server(
         host=bind_address,
         port=port,

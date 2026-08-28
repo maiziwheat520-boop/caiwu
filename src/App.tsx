@@ -88,6 +88,9 @@ const sourceLabels: Record<ApiCandidate['source_channel'], Candidate['source']> 
   telegram: 'Telegram',
   dingtalk: '钉钉',
   weixin: '微信',
+  hermes: 'Hermes',
+  outlook: '中行邮箱',
+  synthetic: '合成数据',
 }
 
 function toCandidate(candidate: ApiCandidate | CandidateDetail): Candidate {
@@ -1229,8 +1232,15 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId 
 }
 
 function SourceIcon({ source }: { source: Candidate['source'] }) {
-  const initials: Record<Candidate['source'], string> = { Telegram: 'T', 钉钉: '钉', 微信: '微' }
-  return <span className={`source-icon source-${source}`}>{initials[source]}</span>
+  const initials: Record<string, string> = {
+    Telegram: 'T',
+    钉钉: '钉',
+    微信: '微',
+    Hermes: 'H',
+    中行邮箱: '邮',
+    合成数据: '合',
+  }
+  return <span className={`source-icon source-${source}`}>{initials[source] || '?'}</span>
 }
 
 function CandidateDialog({ candidate, onClose, onUpdate, busy, detailLoading }: {

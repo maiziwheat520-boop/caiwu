@@ -8,22 +8,32 @@ export type CandidateStatus =
   | 'IGNORED'
   | 'SUPERSEDED'
 
-export type SourceChannel = 'telegram' | 'dingtalk' | 'weixin'
+export type SourceChannel =
+  | 'telegram'
+  | 'dingtalk'
+  | 'weixin'
+  | 'hermes'
+  | 'outlook'
+  | 'synthetic'
+
+export type SourceLabel =
+  | 'Telegram'
+  | '钉钉'
+  | '微信'
+  | 'Hermes'
+  | '中行邮箱'
+  | '合成数据'
 
 export type EvidenceReference = {
   id: string
   kind: 'message' | 'attachment'
   media_type: string
-  sha256: string
+  sha256: string | null
   original_filename: string | null
 }
 
 export type Blocker = {
-  code:
-    | 'MISSING_ACCOUNTING_MONTH'
-    | 'DUPLICATE_MESSAGE'
-    | 'DUPLICATE_ATTACHMENT'
-    | 'BUSINESS_KEY_CONFLICT'
+  code: string
   message: string
 }
 
@@ -54,7 +64,7 @@ export type Candidate = {
   id: string
   shortId: string
   revision: number
-  source: 'Telegram' | '钉钉' | '微信'
+  source: SourceLabel
   sourceChannel: SourceChannel
   receivedAt: string
   businessUnit: string
