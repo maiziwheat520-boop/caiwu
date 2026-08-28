@@ -129,7 +129,11 @@ def test_openapi_is_a_separate_read_only_mutual_tls_contract() -> None:
             methods = getattr(candidate, "methods", None)
             if isinstance(path, str) and path.startswith("/internal/v1"):
                 installed[path] = set(methods or ())
-    assert installed == {path: {"GET"} for path in document["paths"]}
+    # Later D1 routers may add separately gated internal command paths.  This
+    # R0 contract remains authoritative only for its frozen read-only surface.
+    assert {path: installed.get(path) for path in document["paths"]} == {
+        path: {"GET"} for path in document["paths"]
+    }
 
 
 def test_route_capability_matrix_is_exact_and_non_transitive() -> None:

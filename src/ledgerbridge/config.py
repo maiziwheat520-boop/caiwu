@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     internal_read_transport: Literal["disabled", "unix-mtls-proxy"] = "disabled"
     internal_read_mtls_policy_path: Path | None = None
     enable_internal_candidate_command_api: bool = False
+    internal_candidate_command_backend: Literal["synthetic", "database"] = "synthetic"
+    internal_candidate_command_operational_gate: Literal["closed", "d1-production-v1"] = "closed"
     internal_command_assertion_key: SecretStr | None = Field(
         default=None,
         min_length=32,
@@ -157,14 +159,28 @@ class Settings(BaseSettings):
                 )
         if self.enable_internal_candidate_command_api:
             if self.env == "production":
-                raise ValueError(
-                    "production candidate command API remains unavailable until the D1 gate"
-                )
+                if self.internal_candidate_command_operational_gate != "d1-production-v1":
+                    raise ValueError(
+                        "production candidate command API remains unavailable until the D1 gate"
+                    )
+                if self.internal_candidate_command_backend != "database":
+                    raise ValueError(
+                        "production candidate command API requires the database command backend"
+                    )
             if not self.enable_internal_read_api:
                 raise ValueError("candidate command API requires the internal read API")
-            if self.internal_read_backend != "synthetic":
+            if self.internal_candidate_command_backend == "synthetic" and (
+                self.internal_read_backend != "synthetic" or self.env == "production"
+            ):
                 raise ValueError(
-                    "candidate command API remains synthetic-only until database D1 is reviewed"
+                    "synthetic candidate commands require the synthetic read backend "
+                    "outside production"
+                )
+            if self.internal_candidate_command_backend == "database" and (
+                self.internal_read_backend != "database" or self.api_database_url is None
+            ):
+                raise ValueError(
+                    "database candidate commands require database reads and the API database role"
                 )
             if (
                 self.internal_command_assertion_key is None

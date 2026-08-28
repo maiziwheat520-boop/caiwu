@@ -156,7 +156,7 @@ def test_candidate_command_api_is_complete_synthetic_and_nonproduction(
     )
     assert enabled.enable_internal_candidate_command_api is True
 
-    with pytest.raises(ValidationError, match="synthetic-only"):
+    with pytest.raises(ValidationError, match="synthetic read backend"):
         Settings(
             **base,
             internal_read_backend="database",
@@ -178,6 +178,30 @@ def test_candidate_command_api_is_complete_synthetic_and_nonproduction(
             internal_command_assertion_issuer="ledgerbridge-web-test",
             internal_command_assertion_audience="ledgerbridge-core-test",
         )
+
+    production = Settings(
+        env="production",
+        runtime_role="api",
+        api_database_url="postgresql+psycopg://ledgerbridge_api@db/app",
+        reader_database_url="postgresql+psycopg://ledgerbridge_reader@db/app",
+        artifact_root=tmp_path.resolve(),
+        enable_internal_read_api=True,
+        internal_read_backend="database",
+        internal_read_cursor_key="c" * 32,
+        enable_internal_read_persistent_audit=True,
+        enable_internal_read_persistent_receipt=True,
+        internal_read_operational_gate="r1-production-v1",
+        internal_read_transport="unix-mtls-proxy",
+        internal_read_mtls_policy_path=(tmp_path / "mtls-policy.json").resolve(),
+        internal_read_policy_generation=7,
+        enable_internal_candidate_command_api=True,
+        internal_candidate_command_backend="database",
+        internal_candidate_command_operational_gate="d1-production-v1",
+        internal_command_assertion_key="k" * 32,
+        internal_command_assertion_issuer="ledgerbridge-web-test",
+        internal_command_assertion_audience="ledgerbridge-core-test",
+    )
+    assert production.internal_candidate_command_backend == "database"
 
 
 def test_mail_provider_defaults_disabled_and_bounded(tmp_path: Path) -> None:

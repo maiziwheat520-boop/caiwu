@@ -17,12 +17,15 @@ from ledgerbridge.candidate_contract import (
     CandidateRevisionConflict,
 )
 from ledgerbridge.config import Settings, get_settings
+from ledgerbridge.db import get_session_factory
 from ledgerbridge.internal_candidate_command import (
     CandidateCommandIdempotencyConflict,
     CandidateCommandRejected,
+    CandidateCommandUnavailable,
     CandidateDecisionReceipt,
     CandidateDecisionRequest,
     CandidateEventPage,
+    DatabaseInternalReviewService,
     SyntheticInternalReviewService,
     get_synthetic_review_service,
 )
@@ -39,6 +42,7 @@ from ledgerbridge.internal_read_contract import (
     WorkloadPrincipal,
     require_capability,
 )
+from ledgerbridge.internal_read_cursor import ReadCursorSigner
 
 
 class InternalCandidateCommandProblem(RuntimeError):
@@ -101,22 +105,39 @@ class InternalCandidateCommandRoute(APIRoute):
                     status.HTTP_422_UNPROCESSABLE_CONTENT,
                     "COMMAND_REJECTED",
                 )
+            except CandidateCommandUnavailable:
+                return _problem_response(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "CANDIDATE_COMMAND_UNAVAILABLE",
+                )
             except CandidateContractError:
                 return _problem_response(status.HTTP_409_CONFLICT, "INVALID_TRANSITION")
+
         return route_handler
 
 
 def require_internal_candidate_command_api(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> None:
-    if settings.env == "production" or not settings.enable_internal_candidate_command_api:
+    if not settings.enable_internal_candidate_command_api:
         raise InternalCandidateCommandProblem(
             status.HTTP_404_NOT_FOUND,
             "CANDIDATE_COMMAND_DISABLED",
         )
 
 
-def get_candidate_command_service() -> SyntheticInternalReviewService:
+def get_candidate_command_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> SyntheticInternalReviewService | DatabaseInternalReviewService:
+    if settings.internal_candidate_command_backend == "database":
+        cursor_key = settings.internal_read_cursor_key
+        if cursor_key is None:
+            raise CandidateCommandUnavailable("signed cursor key is unavailable")
+        return DatabaseInternalReviewService(
+            get_session_factory(settings.resolved_reader_database_url()),
+            get_session_factory(settings.resolved_api_database_url()),
+            ReadCursorSigner(cursor_key),
+        )
     return get_synthetic_review_service()
 
 
@@ -145,7 +166,10 @@ router = APIRouter(
 @router.get("/candidate-events", response_model=CandidateEventPage)
 def list_candidate_events(
     principal: Annotated[WorkloadPrincipal, Depends(require_candidate_events_read)],
-    service: Annotated[SyntheticInternalReviewService, Depends(get_candidate_command_service)],
+    service: Annotated[
+        SyntheticInternalReviewService | DatabaseInternalReviewService,
+        Depends(get_candidate_command_service),
+    ],
     candidate_ref: UUID | None = None,
 ) -> CandidateEventPage:
     return service.list_candidate_events(principal, candidate_ref=candidate_ref)
@@ -161,7 +185,10 @@ async def append_candidate_decision(
     request: Request,
     principal: Annotated[WorkloadPrincipal, Depends(require_candidate_decide)],
     settings: Annotated[Settings, Depends(get_settings)],
-    service: Annotated[SyntheticInternalReviewService, Depends(get_candidate_command_service)],
+    service: Annotated[
+        SyntheticInternalReviewService | DatabaseInternalReviewService,
+        Depends(get_candidate_command_service),
+    ],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=36, max_length=36)],
     user_assertion: Annotated[
         str,

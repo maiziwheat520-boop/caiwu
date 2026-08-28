@@ -10,13 +10,17 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from datetime import datetime
+from collections.abc import Callable
+from datetime import date, datetime
 from enum import StrEnum
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, NoReturn
 from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from ledgerbridge.candidate_contract import (
     JSON_SAFE_INTEGER,
@@ -41,7 +45,11 @@ from ledgerbridge.internal_read_contract import (
     require_candidate_visible_scope,
     require_capability,
 )
-from ledgerbridge.internal_read_service import SyntheticInternalReadService
+from ledgerbridge.internal_read_cursor import ReadCursorSigner
+from ledgerbridge.internal_read_service import (
+    DatabaseInternalReadService,
+    SyntheticInternalReadService,
+)
 
 
 class CandidateDecision(StrEnum):
@@ -270,6 +278,187 @@ class SyntheticInternalReviewService(SyntheticInternalReadService):
             return receipt
 
 
+class DatabaseInternalReviewService(DatabaseInternalReadService):
+    """Database-backed D1 adapter with a narrow SECURITY DEFINER write surface."""
+
+    def __init__(
+        self,
+        read_session_factory: Callable[[], Session],
+        command_session_factory: Callable[[], Session],
+        cursor_signer: ReadCursorSigner | None = None,
+    ) -> None:
+        super().__init__(read_session_factory, cursor_signer)
+        self._command_session_factory = command_session_factory
+
+    def list_candidate_events(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        candidate_ref: UUID | None = None,
+    ) -> CandidateEventPage:
+        authorize_collection_read(principal, Capability.CANDIDATE_READ)
+        entity_ref, business_unit_id = self._event_scope(principal, candidate_ref)
+        try:
+            with self._session_factory() as session:
+                sequence, horizon_hash = self._audit_horizon(session)
+                rows = session.execute(
+                    text(
+                        "SELECT event FROM internal_read.list_candidate_events_as_of("
+                        "CAST(:entity_ref AS uuid), CAST(:business_unit_id AS uuid), "
+                        "CAST(:candidate_ref AS uuid), :horizon_sequence, :horizon_hash, 100)"
+                    ),
+                    {
+                        "entity_ref": entity_ref,
+                        "business_unit_id": business_unit_id,
+                        "candidate_ref": candidate_ref,
+                        "horizon_sequence": sequence,
+                        "horizon_hash": horizon_hash,
+                    },
+                ).mappings()
+                events = tuple(CandidateEvent.model_validate(row["event"]) for row in rows)
+        except SQLAlchemyError as exc:
+            raise CandidateCommandUnavailable("candidate event reader is unavailable") from exc
+        return CandidateEventPage(items=events)
+
+    def append_decision(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        candidate_ref: UUID,
+        operation_id: UUID,
+        assertion_jti: UUID,
+        actor_ref: str,
+        request: CandidateDecisionRequest,
+        decided_at: datetime,
+    ) -> CandidateDecisionReceipt:
+        require_capability(principal, Capability.CANDIDATE_DECIDE)
+        candidate = self.get_candidate(principal, candidate_ref)
+        current_business_unit_id, target_business_unit_id = self._command_scope(
+            principal,
+            candidate,
+            request,
+        )
+        corrections = request.corrections
+        fields = corrections.model_fields_set if corrections is not None else set()
+        month = (
+            date.fromisoformat(f"{corrections.accounting_month}-01")
+            if corrections is not None and corrections.accounting_month is not None
+            else None
+        )
+        params = {
+            "operation_id": operation_id,
+            "assertion_jti": assertion_jti,
+            "candidate_ref": candidate_ref,
+            "actor_ref": actor_ref,
+            "workload_principal_ref": principal.principal_ref,
+            "verified_san": principal.san_uri,
+            "authorized_entity_id": candidate.entity_ref,
+            "current_business_unit_id": current_business_unit_id,
+            "target_business_unit_id": target_business_unit_id,
+            "decision": request.decision.value,
+            "expected_revision": request.expected_revision,
+            "reason": request.reason,
+            "set_business_unit": "business_unit" in fields,
+            "business_unit_ref": corrections.business_unit if corrections is not None else None,
+            "set_category": "category" in fields,
+            "category_code": corrections.category if corrections is not None else None,
+            "set_amount": "amount_minor" in fields,
+            "amount_minor": corrections.amount_minor if corrections is not None else None,
+            "set_month": "accounting_month" in fields,
+            "accounting_month": month,
+            "conflict_resolution": request.conflict_resolution,
+            "decided_at": decided_at,
+        }
+        sql = text(
+            "SELECT internal_command.apply_candidate_decision("
+            "CAST(:operation_id AS uuid), CAST(:assertion_jti AS uuid), "
+            "CAST(:candidate_ref AS uuid), CAST(:actor_ref AS varchar(200)), "
+            "CAST(:workload_principal_ref AS varchar(200)), "
+            "CAST(:verified_san AS varchar(200)), CAST(:authorized_entity_id AS uuid), "
+            "CAST(:current_business_unit_id AS uuid), CAST(:target_business_unit_id AS uuid), "
+            "CAST(:decision AS varchar(32)), :expected_revision, "
+            "CAST(:reason AS varchar(1000)), :set_business_unit, "
+            "CAST(:business_unit_ref AS varchar(100)), :set_category, "
+            "CAST(:category_code AS varchar(100)), :set_amount, :amount_minor, :set_month, "
+            "CAST(:accounting_month AS date), CAST(:conflict_resolution AS varchar(1000)), "
+            "CAST(:decided_at AS timestamptz)) AS receipt"
+        )
+        try:
+            with self._command_session_factory() as session:
+                row = session.execute(sql, params).mappings().first()
+                if row is None:
+                    raise CandidateCommandUnavailable("candidate command returned no receipt")
+                receipt = CandidateDecisionReceipt.model_validate(row["receipt"])
+                session.commit()
+                return receipt
+        except SQLAlchemyError as exc:
+            self._raise_database_command_error(exc)
+
+    def _event_scope(
+        self,
+        principal: WorkloadPrincipal,
+        candidate_ref: UUID | None,
+    ) -> tuple[UUID, UUID | None]:
+        if candidate_ref is not None:
+            candidate = self.get_candidate(principal, candidate_ref)
+            current, _ = self._command_scope(principal, candidate, None)
+            return candidate.entity_ref, current
+        bindings = [
+            (grant.entity_ref, binding_id)
+            for grant in principal.grants
+            for _, binding_id in grant.business_unit_bindings
+        ]
+        if len(bindings) != 1:
+            raise CandidateCommandUnavailable(
+                "database event listing requires exactly one bound business-unit scope"
+            )
+        return bindings[0]
+
+    @staticmethod
+    def _command_scope(
+        principal: WorkloadPrincipal,
+        candidate: CandidateProjection,
+        request: CandidateDecisionRequest | None,
+    ) -> tuple[UUID | None, UUID | None]:
+        matching = [grant for grant in principal.grants if grant.entity_ref == candidate.entity_ref]
+        if len(matching) != 1:
+            raise ResourceNotVisible("candidate entity is not visible")
+        grant = matching[0]
+        bindings = dict(grant.business_unit_bindings)
+        if candidate.business_unit_ref is None:
+            if not grant.allow_unassigned_candidates:
+                raise ResourceNotVisible("unassigned candidate is not visible")
+            current_id = None
+        else:
+            current_id = bindings.get(candidate.business_unit_ref)
+            if current_id is None:
+                raise ResourceNotVisible("candidate business unit is not visible")
+        target_id = current_id
+        corrections = request.corrections if request is not None else None
+        if corrections is not None and "business_unit" in corrections.model_fields_set:
+            if corrections.business_unit is None:
+                raise CandidateCommandRejected("business unit correction cannot be null")
+            target_id = bindings.get(corrections.business_unit)
+            if target_id is None:
+                raise ResourceNotVisible("target business unit is not visible")
+        return current_id, target_id
+
+    @staticmethod
+    def _raise_database_command_error(exc: SQLAlchemyError) -> NoReturn:
+        sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+        if sqlstate == "LB001":
+            raise CandidateCommandIdempotencyConflict("database idempotency conflict") from exc
+        if sqlstate == "LB002":
+            from ledgerbridge.candidate_contract import CandidateRevisionConflict
+
+            raise CandidateRevisionConflict("database revision conflict") from exc
+        if sqlstate == "LB003":
+            raise CandidateCommandRejected("database rejected candidate decision") from exc
+        if sqlstate == "LB004":
+            raise ResourceNotVisible("candidate is outside the authorized scope") from exc
+        raise CandidateCommandUnavailable("candidate command backend is unavailable") from exc
+
+
 @lru_cache(maxsize=1)
 def get_synthetic_review_service() -> SyntheticInternalReviewService:
     """Return the one process-local synthetic aggregate store used by reads and writes."""
@@ -291,13 +480,9 @@ def _commands_for_decision(
         raise CandidateRevisionConflict("expected_revision does not match current revision")
 
     if request.decision == CandidateDecision.CONFIRM:
-        return (
-            _command(operation_id, "confirm", CandidateAction.CONFIRM, request, decided_at),
-        )
+        return (_command(operation_id, "confirm", CandidateAction.CONFIRM, request, decided_at),)
     if request.decision == CandidateDecision.IGNORE:
-        return (
-            _command(operation_id, "ignore", CandidateAction.IGNORE, request, decided_at),
-        )
+        return (_command(operation_id, "ignore", CandidateAction.IGNORE, request, decided_at),)
     if request.decision == CandidateDecision.CORRECT_AND_CONFIRM:
         if current.status != CandidateStatus.INCOMPLETE or request.corrections is None:
             raise CandidateCommandRejected(
@@ -324,9 +509,7 @@ def _commands_for_decision(
         if current.status != CandidateStatus.CONFLICTED or request.conflict_resolution is None:
             raise CandidateCommandRejected("candidate has no resolvable conflict")
         conflict_refs = {
-            blocker.conflict_ref
-            for blocker in current.blockers
-            if blocker.conflict_ref is not None
+            blocker.conflict_ref for blocker in current.blockers if blocker.conflict_ref is not None
         }
         resolve = CandidateCommand(
             operation_id=uuid5(operation_id, "resolve-conflict"),
@@ -334,9 +517,7 @@ def _commands_for_decision(
             expected_revision=request.expected_revision,
             reason=request.reason,
             patch=(
-                _candidate_patch(request.corrections)
-                if request.corrections is not None
-                else None
+                _candidate_patch(request.corrections) if request.corrections is not None else None
             ),
             conflict_resolutions={
                 conflict_ref: request.conflict_resolution for conflict_ref in conflict_refs
