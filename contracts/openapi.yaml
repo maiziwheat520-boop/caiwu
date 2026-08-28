@@ -264,6 +264,35 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+  /api/v1/review-events:
+    get:
+      operationId: listReviewEvents
+      description: List append-only candidate review events in reverse chronological order.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Cursor-paginated review history. The synthetic preview contains only synthetic events.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ReviewEvent"
+                  next_cursor:
+                    type: [string, "null"]
+                    maxLength: 512
+        "400":
+          description: Cursor is malformed or exceeds the contract limit
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/evidence/{evidence_id}/content:
     get:
       operationId: downloadEvidence
@@ -420,6 +449,7 @@ components:
       in: query
       schema:
         type: string
+        pattern: "^[0-9]+$"
         maxLength: 512
     IdempotencyKey:
       name: Idempotency-Key
@@ -767,6 +797,7 @@ components:
         - actor
         - reason
         - changes
+        - conflict_resolution
         - created_at
       properties:
         id:

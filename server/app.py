@@ -140,6 +140,30 @@ class SyntheticState:
         next_offset = offset + len(page)
         return {"items": page, "next_cursor": str(next_offset) if next_offset < len(items) else None}
 
+    def list_review_events(self, *, cursor: str | None) -> dict[str, object]:
+        offset = int(cursor) if cursor is not None else 0
+        with self.lock:
+            if self.persistence is not None:
+                items = self.persistence.list_review_events()
+            else:
+                items = [
+                    deepcopy(event)
+                    for events in self.review_events.values()
+                    for event in events
+                ]
+        items.sort(
+            key=lambda item: (
+                str(item["created_at"]),
+                str(item["candidate_id"]),
+                int(item["sequence"]),
+            ),
+            reverse=True,
+        )
+        page_size = 50
+        page = items[offset : offset + page_size]
+        next_offset = offset + len(page)
+        return {"items": page, "next_cursor": str(next_offset) if next_offset < len(items) else None}
+
     def reconciliation(self, month: str) -> dict[str, object]:
         if month != SYNTHETIC_RECONCILIATION["accounting_month"]:
             return {"accounting_month": month, "revision": 1, "ready": True, "blockers": [], "business_units": []}
@@ -566,10 +590,18 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             if month is not None and not MONTH_PATTERN.fullmatch(month):
                 self._send_json(400, _problem(400, "INVALID_ACCOUNTING_MONTH", "归属月份格式无效"))
                 return
-            if cursor is not None and (not cursor.isdigit() or int(cursor) < 0):
+            if cursor is not None and (len(cursor) > 512 or not cursor.isascii() or not cursor.isdigit()):
                 self._send_json(400, _problem(400, "INVALID_CURSOR", "分页游标无效"))
                 return
             self._send_json(200, state.list_candidates(status=status, month=month, cursor=cursor))
+            return
+        if path == "/api/v1/review-events":
+            params = parse_qs(query, keep_blank_values=True)
+            cursor = params.get("cursor", [None])[0]
+            if cursor is not None and (len(cursor) > 512 or not cursor.isascii() or not cursor.isdigit()):
+                self._send_json(400, _problem(400, "INVALID_CURSOR", "分页游标无效"))
+                return
+            self._send_json(200, state.list_review_events(cursor=cursor))
             return
         match = CANDIDATE_PATH.fullmatch(path)
         if match:

@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Theme } from '@radix-ui/themes'
 import App from './App'
-import type { ApiCandidate, AuthStatus } from './types'
+import type { ApiCandidate, AuthStatus, ReviewEvent } from './types'
 
 const session = {
   principal: 'finance-admin',
@@ -58,6 +58,20 @@ const reconciliation = {
   business_units: [{ name: '城南店', amounts_minor: { water: 512080, linen: 638000, bank_receipts: 4286000 } }],
 }
 
+const reviewEvents: ReviewEvent[] = [{
+  id: 'event-seeded',
+  candidate_id: 'candidate-4',
+  sequence: 1,
+  from_revision: 3,
+  to_revision: 4,
+  decision: 'CONFIRM',
+  actor: 'finance-admin',
+  reason: '已核对电子缴款书',
+  changes: [{ field: 'status', previous_value: 'PENDING', new_value: 'CONFIRMED' }],
+  conflict_resolution: null,
+  created_at: '2026-08-21T11:35:00+08:00',
+}]
+
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -72,6 +86,9 @@ function installFetch(options: {
   authStatus?: AuthStatus
   recoveryCodes?: string[]
   recoverySetupRequired?: boolean
+  candidatePages?: Array<{ items: ApiCandidate[]; next_cursor: string | null }>
+  reviewEventPages?: Array<{ items: ReviewEvent[]; next_cursor: string | null }>
+  failReviewEvents?: boolean
 } = {}) {
   const {
     items = candidates,
@@ -80,6 +97,9 @@ function installFetch(options: {
     authStatus = authenticatedStatus,
     recoveryCodes = ['RECOVERY-ONE', 'RECOVERY-TWO'],
     recoverySetupRequired = false,
+    candidatePages = [{ items, next_cursor: null }],
+    reviewEventPages = [{ items: reviewEvents, next_cursor: null }],
+    failReviewEvents = false,
   } = options
   let shouldFailSession = failSessionOnce
   let decisionSaved = false
@@ -112,7 +132,15 @@ function installFetch(options: {
       }
       return response(session)
     }
-    if (url === '/api/v1/candidates') return response({ items, next_cursor: null })
+    if (url === '/api/v1/candidates' || url.startsWith('/api/v1/candidates?')) {
+      const cursor = new URL(url, 'http://ledgerbridge.local').searchParams.get('cursor')
+      return response(candidatePages[cursor ? 1 : 0] ?? { items: [], next_cursor: null })
+    }
+    if (url.startsWith('/api/v1/review-events')) {
+      if (failReviewEvents) return response({ title: '操作记录暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
+      const cursor = new URL(url, 'http://ledgerbridge.local').searchParams.get('cursor')
+      return response(reviewEventPages[cursor ? 1 : 0] ?? { items: [], next_cursor: null })
+    }
     if (url.startsWith('/api/v1/reconciliations/') && init?.method !== 'POST') {
       if (decisionSaved && failReconciliationAfterDecision) return response({ title: '对账投影暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
       return response(reconciliation)
@@ -124,7 +152,13 @@ function installFetch(options: {
       const original = candidates.find((candidate) => url.includes(candidate.id))!
       return response({
         candidate: { ...original, revision: original.revision + 1, status: body.decision === 'IGNORE' ? 'IGNORED' : 'CONFIRMED' },
-        event: { id: 'event-1', candidate_id: original.id, sequence: 1, decision: body.decision, actor: 'finance-admin', reason: 'review', created_at: '2026-08-24T10:00:00+08:00' },
+        event: {
+          id: 'event-1', candidate_id: original.id, sequence: 1,
+          from_revision: original.revision, to_revision: original.revision + 1,
+          decision: body.decision, actor: 'finance-admin', reason: 'review',
+          changes: [{ field: 'status', previous_value: original.status, new_value: body.decision === 'IGNORE' ? 'IGNORED' : 'CONFIRMED' }],
+          conflict_resolution: null, created_at: '2026-08-24T10:00:00+08:00',
+        },
       })
     }
     if (url.startsWith('/api/v1/candidates/')) {
@@ -326,6 +360,92 @@ describe('LedgerBridge Web API client', () => {
     fireEvent.change(screen.getByLabelText('搜索候选编号、门店或科目'), { target: { value: '机场店' } })
     expect(screen.getByText('机场店水费，原消息未说明归属月份')).toBeInTheDocument()
     expect(screen.queryByText('城南店 8 月布草清洗费用，供应商月结单')).not.toBeInTheDocument()
+  })
+
+  it('opens the append-only review history from the overview', async () => {
+    installFetch()
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getByRole('button', { name: '查看操作记录' }))
+
+    expect(window.location.pathname).toBe('/audit')
+    expect(screen.getByRole('heading', { name: '审核操作记录' })).toBeInTheDocument()
+    expect(await screen.findByText('C-49E3 · 江景店')).toBeInTheDocument()
+    expect(screen.getByText('已核对电子缴款书')).toBeInTheDocument()
+    expect(screen.getAllByText('待审核').length).toBeGreaterThan(0)
+    expect(screen.getByText('已确认')).toBeInTheDocument()
+  })
+
+  it('loads later review-history pages through the returned cursor', async () => {
+    const olderEvent: ReviewEvent = {
+      ...reviewEvents[0],
+      id: 'event-older',
+      sequence: 2,
+      reason: '较早的审核记录',
+      created_at: '2026-08-20T09:00:00+08:00',
+    }
+    const fetchMock = installFetch({
+      reviewEventPages: [
+        { items: reviewEvents, next_cursor: '50' },
+        { items: [olderEvent], next_cursor: null },
+      ],
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getByRole('button', { name: '查看操作记录' }))
+    await screen.findByText('已核对电子缴款书')
+    fireEvent.click(screen.getByRole('button', { name: '加载更多记录' }))
+
+    expect(await screen.findByText('较早的审核记录')).toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/review-events?cursor=50')).toBe(true)
+  })
+
+  it('loads later candidate pages for audit labels and search', async () => {
+    const olderCandidate: ApiCandidate = {
+      ...candidates[0],
+      id: 'candidate-older',
+      short_id: 'C-OLD1',
+      business_unit: '海景店',
+      category: '燃气费',
+      summary: '仅用于审核上下文的较早候选',
+    }
+    const olderEvent: ReviewEvent = {
+      ...reviewEvents[0],
+      id: 'event-candidate-older',
+      candidate_id: olderCandidate.id,
+      reason: '核对较早候选',
+    }
+    const fetchMock = installFetch({
+      candidatePages: [
+        { items: candidates, next_cursor: '50' },
+        { items: [olderCandidate], next_cursor: null },
+      ],
+      reviewEventPages: [{ items: [olderEvent], next_cursor: null }],
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getByRole('button', { name: '查看操作记录' }))
+
+    expect(await screen.findByText('C-OLD1 · 海景店')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('搜索操作记录'), { target: { value: '燃气费' } })
+    expect(screen.getByText('核对较早候选')).toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/candidates?cursor=50')).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: '返回概览' }))
+    fireEvent.click(screen.getAllByRole('button', { name: /待审核/ })[0])
+    expect(screen.queryByText('仅用于审核上下文的较早候选')).not.toBeInTheDocument()
+  })
+
+  it('isolates review-history failures from the core overview', async () => {
+    const fetchMock = installFetch({ failReviewEvents: true })
+    renderApp()
+    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith('/api/v1/review-events'))).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: '查看操作记录' }))
+    expect(await screen.findByText('审核记录读取失败')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '返回概览' }))
+    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
   })
 
   it('resolves a conflicted candidate with an auditable resolution note', async () => {

@@ -99,6 +99,43 @@ class SyntheticBffTests(unittest.TestCase):
         status, connections, _ = self.request("/api/v1/connections")
         self.assertEqual(status, 200)
         self.assertEqual(len(connections["items"]), 4)
+        status, events, _ = self.request("/api/v1/review-events")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(events["items"]), 1)
+        self.assertEqual(events["items"][0]["decision"], "CONFIRM")
+        self.assertIsNone(events["next_cursor"])
+        status, problem, _ = self.request("/api/v1/review-events?cursor=invalid")
+        self.assertEqual(status, 400)
+        self.assertEqual(problem["code"], "INVALID_CURSOR")
+        status, problem, _ = self.request("/api/v1/review-events?cursor=%C2%B2")
+        self.assertEqual(status, 400)
+        self.assertEqual(problem["code"], "INVALID_CURSOR")
+        status, problem, _ = self.request(f"/api/v1/review-events?cursor={'1' * 513}")
+        self.assertEqual(status, 400)
+        self.assertEqual(problem["code"], "INVALID_CURSOR")
+
+    def test_review_event_history_is_cursor_paginated(self) -> None:
+        candidate_id, seeded = next(iter(self.state.review_events.items()))
+        template = seeded[0]
+        with self.state.lock:
+            self.state.review_events = {
+                candidate_id: [
+                    template | {"id": str(uuid.uuid4()), "sequence": sequence}
+                    for sequence in range(1, 52)
+                ]
+            }
+
+        status, first_page, _ = self.request("/api/v1/review-events")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(first_page["items"]), 50)
+        self.assertEqual(first_page["items"][0]["sequence"], 51)
+        self.assertEqual(first_page["next_cursor"], "50")
+
+        status, second_page, _ = self.request("/api/v1/review-events?cursor=50")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(second_page["items"]), 1)
+        self.assertEqual(second_page["items"][0]["sequence"], 1)
+        self.assertIsNone(second_page["next_cursor"])
 
     def test_evidence_content_is_authenticated_safe_and_digest_matched(self) -> None:
         message_id = "1dedc967-753a-4c02-8409-e51c02e6cc18"
@@ -159,6 +196,9 @@ class SyntheticBffTests(unittest.TestCase):
         self.assertEqual(first["event"]["from_revision"], 1)
         self.assertEqual(first["event"]["to_revision"], 2)
         self.assertEqual(first["event"]["changes"][-1]["field"], "status")
+        status, events, _ = self.request("/api/v1/review-events")
+        self.assertEqual(status, 200)
+        self.assertEqual(events["items"][0]["id"], first["event"]["id"])
         status, replay, _ = self.request(
             f"/api/v1/candidates/{candidate_id}/decisions", method="POST", body=body,
             headers=self.decision_headers(key),

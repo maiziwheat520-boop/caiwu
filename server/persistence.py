@@ -380,6 +380,13 @@ class SQLitePersistence:
             ).fetchall()
         return [_json_object(row[0]) for row in rows]
 
+    def list_review_events(self) -> list[dict[str, object]]:
+        with self.transaction() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM review_events ORDER BY created_at DESC, event_id DESC"
+            ).fetchall()
+        return [_json_object(row[0]) for row in rows]
+
     def _insert_event(self, connection: sqlite3.Connection, event: dict[str, object]) -> None:
         connection.execute(
             """

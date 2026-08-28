@@ -190,6 +190,12 @@ class SQLitePersistenceTests(unittest.TestCase):
                 )
         self.assertEqual(len(self.store.get_review_events(candidate_id)), 1)
 
+    def test_review_events_can_be_listed_newest_first(self) -> None:
+        self.seed()
+        events = self.store.list_review_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["decision"], "CONFIRM")
+
     def test_failed_event_insert_rolls_back_projection_and_idempotency(self) -> None:
         self.seed()
         candidate_id = "cf8efc6d-5955-4f48-b52c-6bfa2e547a64"

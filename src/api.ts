@@ -11,6 +11,7 @@ import type {
   Problem,
   Reconciliation,
   ReviewEvent,
+  ReviewEventListResponse,
   Session,
   RegistrationOptionsJson,
   WorkbookDraft,
@@ -180,13 +181,20 @@ export const api = {
 
   getSession: () => requestJson<Session>('/api/v1/session'),
 
-  listCandidates: (status?: string) => {
-    const query = status ? `?status=${encodeURIComponent(status)}` : ''
-    return requestJson<CandidateListResponse>(`/api/v1/candidates${query}`)
+  listCandidates: ({ status, cursor }: { status?: string; cursor?: string } = {}) => {
+    const query = new URLSearchParams()
+    if (status) query.set('status', status)
+    if (cursor) query.set('cursor', cursor)
+    const suffix = query.size > 0 ? `?${query.toString()}` : ''
+    return requestJson<CandidateListResponse>(`/api/v1/candidates${suffix}`)
   },
 
   getCandidate: (candidateId: string) =>
     requestJson<CandidateDetail>(`/api/v1/candidates/${encodeURIComponent(candidateId)}`),
+
+  listReviewEvents: (cursor?: string) => requestJson<ReviewEventListResponse>(
+    `/api/v1/review-events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  ),
 
   appendDecision: ({ candidate, decision, reason, corrections, conflictResolution, csrfToken }: {
     candidate: ApiCandidate

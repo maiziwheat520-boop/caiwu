@@ -1,4 +1,4 @@
-export type Page = 'overview' | 'review' | 'reconciliation' | 'files'
+export type Page = 'overview' | 'review' | 'reconciliation' | 'files' | 'audit'
 
 export type CandidateStatus =
   | 'INCOMPLETE'
@@ -90,10 +90,23 @@ export type ReviewEvent = {
   id: string
   candidate_id: string
   sequence: number
-  decision: string
+  from_revision: number
+  to_revision: number
+  decision: CandidateDecision
   actor: string
   reason: string
+  changes: Array<{
+    field: 'business_unit' | 'category' | 'amount_minor' | 'accounting_month' | 'status'
+    previous_value: string | number | null
+    new_value: string | number | null
+  }>
+  conflict_resolution: string | null
   created_at: string
+}
+
+export type ReviewEventListResponse = {
+  items: ReviewEvent[]
+  next_cursor: string | null
 }
 
 export type Session = {
