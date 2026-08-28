@@ -99,6 +99,18 @@ class UnavailableInternalReadAuditSink:
         raise AuditSinkUnavailable("internal read audit sink is unavailable")
 
 
+class ReceiptBackedInternalReadAuditSink:
+    """Acknowledge a route audit already committed with its database receipt.
+
+    Database-backed evidence reads append the audit event and immutable receipt
+    together before returning bytes.  The route still calls its audit seam, but
+    must not append a second event through the broader public audit function.
+    """
+
+    def append(self, event: EvidenceReadAuditEvent) -> None:
+        _ = event
+
+
 class DatabaseInternalReadAuditSink:
     """Append evidence-read events through the existing database hash chain."""
 
@@ -177,10 +189,18 @@ class DatabaseInternalReadReceiptSink:
 def get_internal_read_audit_sink(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> InternalReadAuditSink:
-    """Resolve the durable sink only for an explicit non-production test profile."""
+    """Resolve the durable route sink for the selected evidence-read boundary."""
 
-    if settings.env == "production" or not settings.enable_internal_read_persistent_audit:
+    if not settings.enable_internal_read_persistent_audit:
         return UnavailableInternalReadAuditSink()
+    if settings.env == "production":
+        if (
+            settings.internal_read_operational_gate != "r1-production-v1"
+            or not settings.enable_internal_read_persistent_receipt
+            or settings.internal_read_backend != "database"
+        ):
+            return UnavailableInternalReadAuditSink()
+        return ReceiptBackedInternalReadAuditSink()
     try:
         session_factory = get_session_factory(settings.resolved_api_database_url())
     except Exception:
@@ -191,12 +211,15 @@ def get_internal_read_audit_sink(
 def get_internal_read_receipt_sink(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> InternalReadReceiptSink | None:
-    """Resolve the explicit API-writer receipt sink for test-only DB reads."""
+    """Resolve the explicit API-writer receipt sink for database-backed reads."""
 
     if (
-        settings.env == "production"
-        or not settings.enable_internal_read_persistent_receipt
+        not settings.enable_internal_read_persistent_receipt
         or settings.internal_read_backend != "database"
+        or (
+            settings.env == "production"
+            and settings.internal_read_operational_gate != "r1-production-v1"
+        )
     ):
         return None
     try:

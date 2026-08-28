@@ -17,6 +17,7 @@ from ledgerbridge.internal_read_audit import (
     DatabaseInternalReadReceiptSink,
     EvidenceReadAuditEvent,
     EvidenceReadReceipt,
+    ReceiptBackedInternalReadAuditSink,
     UnavailableInternalReadAuditSink,
     UnavailableInternalReadReceiptSink,
     get_internal_read_audit_sink,
@@ -227,3 +228,33 @@ def test_receipt_dependency_requires_explicit_database_writer_gate(
 
     broken = enabled.model_copy(update={"api_database_url": None, "database_url": None})
     assert isinstance(get_internal_read_receipt_sink(broken), UnavailableInternalReadReceiptSink)
+
+
+def test_production_database_read_uses_atomic_receipt_backed_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(
+        env="production",
+        runtime_role="api",
+        api_database_url="postgresql+psycopg://ledgerbridge_api@db/app",
+        reader_database_url="postgresql+psycopg://ledgerbridge_reader@db/app",
+        artifact_root=tmp_path.resolve(),
+        enable_internal_read_api=True,
+        internal_read_backend="database",
+        internal_read_cursor_key="c" * 32,
+        internal_read_evidence_key_file=(tmp_path / "evidence-key.json").resolve(),
+        internal_read_policy_generation=11,
+        internal_read_operational_gate="r1-production-v1",
+        internal_read_transport="unix-mtls-proxy",
+        internal_read_mtls_policy_path=(tmp_path / "policy.json").resolve(),
+        enable_internal_read_persistent_audit=True,
+        enable_internal_read_persistent_receipt=True,
+    )
+    monkeypatch.setattr(
+        audit_module,
+        "get_session_factory",
+        lambda _url: cast(Callable[[], Session], lambda: _Session()),
+    )
+
+    assert isinstance(get_internal_read_audit_sink(settings), ReceiptBackedInternalReadAuditSink)
+    assert isinstance(get_internal_read_receipt_sink(settings), DatabaseInternalReadReceiptSink)

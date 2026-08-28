@@ -25,6 +25,7 @@ RUN uv sync --frozen --no-dev --no-editable
 
 COPY alembic.ini ./
 COPY alembic ./alembic
+COPY --chmod=0755 docker/run-internal-reader.sh ./docker/run-internal-reader.sh
 
 USER ledgerbridge
 

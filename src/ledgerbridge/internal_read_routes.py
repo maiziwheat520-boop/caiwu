@@ -20,9 +20,13 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from ledgerbridge.artifacts import ArtifactStore
 from ledgerbridge.candidate_contract import CandidateProjection, CandidateStatus
 from ledgerbridge.config import Settings, get_settings
+from ledgerbridge.crypto import SecretStreamCipher
 from ledgerbridge.db import get_session_factory
+from ledgerbridge.encrypted_artifacts import EncryptedArtifactStore
+from ledgerbridge.file_key_provider import FileKeyProvider
 from ledgerbridge.internal_candidate_command import (
     DatabaseInternalReviewService,
     SyntheticInternalReviewService,
@@ -192,9 +196,25 @@ def get_synthetic_internal_read_service(
         cursor_key = settings.internal_read_cursor_key
         if cursor_key is None:
             raise InternalReadBackendUnavailable("signed cursor key is unavailable")
+        encrypted_store = None
+        if settings.internal_read_evidence_key_file is not None:
+            provider = FileKeyProvider(settings.internal_read_evidence_key_file)
+            provider.self_test()
+            encrypted_store = EncryptedArtifactStore(
+                ArtifactStore(
+                    settings.artifact_root,
+                    max_bytes=settings.artifact_max_bytes,
+                    total_max_bytes=settings.artifact_total_max_bytes,
+                    staging_max_bytes=settings.artifact_staging_max_bytes,
+                    staging_ttl_seconds=settings.artifact_staging_ttl_seconds,
+                ),
+                SecretStreamCipher(provider),
+                max_plaintext_bytes=settings.artifact_max_bytes,
+            )
         return DatabaseInternalReadService(
             get_session_factory(settings.resolved_reader_database_url()),
             ReadCursorSigner(cursor_key),
+            encrypted_artifact_store=encrypted_store,
             receipt_sink=receipt_sink,
         )
     return get_synthetic_review_service()

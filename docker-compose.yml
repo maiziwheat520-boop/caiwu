@@ -150,6 +150,7 @@ services:
       LEDGERBRIDGE_APP_DB_PASSWORD: ${LEDGERBRIDGE_APP_DB_PASSWORD:?runtime database password is required}
       LEDGERBRIDGE_API_DB_PASSWORD: ${LEDGERBRIDGE_API_DB_PASSWORD:?api runtime database password is required}
       LEDGERBRIDGE_WORKER_DB_PASSWORD: ${LEDGERBRIDGE_WORKER_DB_PASSWORD:?worker runtime database password is required}
+      LEDGERBRIDGE_READER_DB_PASSWORD: ${LEDGERBRIDGE_READER_DB_PASSWORD:?reader runtime database password is required}
     restart: unless-stopped
     mem_limit: 512m
     pids_limit: 128

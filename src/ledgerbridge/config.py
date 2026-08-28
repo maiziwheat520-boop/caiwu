@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     enable_internal_read_api: bool = False
     internal_read_backend: Literal["synthetic", "database"] = "synthetic"
     internal_read_cursor_key: str | None = Field(default=None, min_length=32, max_length=256)
+    internal_read_evidence_key_file: Path | None = None
     enable_internal_read_persistent_audit: bool = False
     enable_internal_read_persistent_receipt: bool = False
     internal_read_operational_gate: Literal["closed", "r1-production-v1"] = "closed"
@@ -117,6 +118,10 @@ class Settings(BaseSettings):
                 ):
                     raise ValueError(
                         "production internal read API requires persistent audit and receipt sinks"
+                    )
+                if self.internal_read_evidence_key_file is None:
+                    raise ValueError(
+                        "production internal read API requires the encrypted evidence key file"
                     )
             if self.internal_read_policy_generation is None:
                 raise ValueError(
@@ -206,6 +211,11 @@ class Settings(BaseSettings):
             and not self.internal_read_mtls_policy_path.is_absolute()
         ):
             raise ValueError("internal_read_mtls_policy_path must be an absolute path")
+        if (
+            self.internal_read_evidence_key_file is not None
+            and not self.internal_read_evidence_key_file.is_absolute()
+        ):
+            raise ValueError("internal_read_evidence_key_file must be an absolute path")
         if (
             self.env == "production"
             and self.runner_manifest_path is not None

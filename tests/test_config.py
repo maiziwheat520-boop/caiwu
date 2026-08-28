@@ -111,6 +111,7 @@ def test_internal_read_api_is_generation_bound_and_reader_url_is_explicit(tmp_pa
         internal_read_operational_gate="r1-production-v1",
         internal_read_transport="unix-mtls-proxy",
         internal_read_mtls_policy_path=(tmp_path / "policy.json").resolve(),
+        internal_read_evidence_key_file=(tmp_path / "evidence-key.json").resolve(),
         enable_internal_read_persistent_audit=True,
         enable_internal_read_persistent_receipt=True,
     )
@@ -193,6 +194,7 @@ def test_candidate_command_api_is_complete_synthetic_and_nonproduction(
         internal_read_operational_gate="r1-production-v1",
         internal_read_transport="unix-mtls-proxy",
         internal_read_mtls_policy_path=(tmp_path / "mtls-policy.json").resolve(),
+        internal_read_evidence_key_file=(tmp_path / "evidence-key.json").resolve(),
         internal_read_policy_generation=7,
         enable_internal_candidate_command_api=True,
         internal_candidate_command_backend="database",
