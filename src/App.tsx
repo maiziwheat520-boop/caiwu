@@ -1297,6 +1297,10 @@ function SourceIcon({ source }: { source: Candidate['source'] }) {
   return <span className={`source-icon source-${source}`}>{initials[source] || '?'}</span>
 }
 
+function evidenceLookupReference(candidate: Candidate): string {
+  return candidate.summary.match(/\bTX-[0-9]{4,8}\b/)?.[0] ?? candidate.shortId
+}
+
 function EvidencePreviewPanel({ evidence, reference }: {
   evidence: EvidenceReference
   reference: string
@@ -1471,7 +1475,7 @@ function CandidateDialog({ candidate, onClose, onUpdate, busy, detailLoading }: 
             <div className="evidence-box">
               <blockquote>{candidate.summary}</blockquote>
               <div className="evidence-previews">
-                {candidate.evidence.map((item) => <EvidencePreviewPanel evidence={item} reference={candidate.shortId} key={item.id} />)}
+                {candidate.evidence.map((item) => <EvidencePreviewPanel evidence={item} reference={evidenceLookupReference(candidate)} key={item.id} />)}
               </div>
             </div>
           </section>

@@ -462,7 +462,7 @@ describe('LedgerBridge Web API client', () => {
   it('renders spreadsheet evidence inline instead of presenting attachment chips', async () => {
     const workbookCandidate: ApiCandidate = {
       ...candidates[0],
-      short_id: 'TX-0139',
+      short_id: 'C-0139',
       summary: '中行邮箱账单待复核：TX-0139',
       evidence: [{
         id: 'evidence-workbook',

@@ -52,7 +52,14 @@ def main() -> None:
             raise SystemExit("candidate cursor was invalid")
         cursor = next_cursor
 
-    target = next((item for item in candidates if item.get("short_id") == "TX-0139"), None)
+    target = next(
+        (
+            item
+            for item in candidates
+            if "TX-0139" in str(item.get("summary", ""))
+        ),
+        None,
+    )
     if target is None:
         raise SystemExit("TX-0139 was not found")
     references = target.get("evidence")
