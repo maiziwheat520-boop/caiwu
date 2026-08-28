@@ -98,6 +98,24 @@ def test_internal_read_api_is_generation_bound_and_reader_url_is_explicit(tmp_pa
             internal_read_policy_generation=7,
         )
 
+    production_reader = Settings(
+        env="production",
+        runtime_role="api",
+        api_database_url="postgresql://ledgerbridge_api@db/app",
+        reader_database_url="postgresql://ledgerbridge_reader@db/app",
+        artifact_root=tmp_path.resolve(),
+        enable_internal_read_api=True,
+        internal_read_backend="database",
+        internal_read_cursor_key="c" * 32,
+        internal_read_policy_generation=7,
+        internal_read_operational_gate="r1-production-v1",
+        internal_read_transport="unix-mtls-proxy",
+        internal_read_mtls_policy_path=(tmp_path / "policy.json").resolve(),
+        enable_internal_read_persistent_audit=True,
+        enable_internal_read_persistent_receipt=True,
+    )
+    assert production_reader.internal_read_backend == "database"
+
     with pytest.raises(ValidationError, match="requires the database reader backend"):
         Settings(
             database_url="sqlite+pysqlite:///:memory:",

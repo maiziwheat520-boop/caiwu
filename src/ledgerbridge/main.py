@@ -40,6 +40,7 @@ from ledgerbridge.imports import EvidenceImporter, EvidenceIngestionError, Inges
 from ledgerbridge.internal_candidate_command_routes import (
     router as internal_candidate_command_router,
 )
+from ledgerbridge.internal_read_auth import VerifiedInternalReadPrincipalMiddleware
 from ledgerbridge.internal_read_routes import (
     InternalReadNoStoreMiddleware,
 )
@@ -47,6 +48,7 @@ from ledgerbridge.internal_read_routes import (
     router as internal_read_router,
 )
 from ledgerbridge.models import DispatchState, ImportJobStatus, ReviewItemKind
+from ledgerbridge.production_mtls import verify_configured_mtls_principal
 from ledgerbridge.review_service import ReviewConflict, ReviewNotFound, ReviewService
 from ledgerbridge.secure_spool import EncryptedSpool
 from ledgerbridge.text import contains_unstorable_text
@@ -70,6 +72,10 @@ app = FastAPI(
     openapi_url=None,
 )
 app.add_middleware(InternalReadNoStoreMiddleware)
+app.add_middleware(
+    VerifiedInternalReadPrincipalMiddleware,
+    verifier=lambda scope: verify_configured_mtls_principal(scope, get_settings()),
+)
 app.include_router(internal_read_router)
 app.include_router(internal_candidate_command_router)
 

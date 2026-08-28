@@ -189,7 +189,7 @@ class EntityGrant(_FrozenModel):
 
 class WorkloadPrincipal(_FrozenModel):
     principal_ref: str = Field(min_length=1, max_length=200)
-    san_uri: str = Field(pattern=r"^spiffe://ledgerbridge\.test/[a-z0-9/_-]+$")
+    san_uri: str = Field(pattern=r"^spiffe://ledgerbridge\.(?:test|local)/[a-z0-9/_-]+$")
     policy_generation: int = Field(ge=1)
     capabilities: frozenset[Capability]
     grants: tuple[EntityGrant, ...] = ()

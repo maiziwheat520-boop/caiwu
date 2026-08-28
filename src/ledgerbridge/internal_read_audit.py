@@ -34,7 +34,7 @@ class EvidenceReadAuditEvent(BaseModel):
     event_type: Literal["EVIDENCE_CONTENT_READ"] = "EVIDENCE_CONTENT_READ"
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     principal_ref: str = Field(min_length=1, max_length=200)
-    principal_san_uri: str = Field(pattern=r"^spiffe://ledgerbridge\.test/[a-z0-9/_-]+$")
+    principal_san_uri: str = Field(pattern=r"^spiffe://ledgerbridge\.(?:test|local)/[a-z0-9/_-]+$")
     policy_generation: int = Field(ge=1)
     evidence_ref: UUID
     entity_ref: UUID
@@ -62,7 +62,7 @@ class EvidenceReadReceipt(BaseModel):
 
     operation_id: UUID = Field(default_factory=uuid4)
     principal_ref: str = Field(min_length=1, max_length=200)
-    principal_san_uri: str = Field(pattern=r"^spiffe://ledgerbridge\.test/[a-z0-9/_-]+$")
+    principal_san_uri: str = Field(pattern=r"^spiffe://ledgerbridge\.(?:test|local)/[a-z0-9/_-]+$")
     policy_generation: str = Field(
         min_length=1,
         max_length=128,

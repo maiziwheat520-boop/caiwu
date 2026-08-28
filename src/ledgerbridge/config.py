@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     internal_read_cursor_key: str | None = Field(default=None, min_length=32, max_length=256)
     enable_internal_read_persistent_audit: bool = False
     enable_internal_read_persistent_receipt: bool = False
+    internal_read_operational_gate: Literal["closed", "r1-production-v1"] = "closed"
+    internal_read_transport: Literal["disabled", "unix-mtls-proxy"] = "disabled"
+    internal_read_mtls_policy_path: Path | None = None
     enable_internal_candidate_command_api: bool = False
     internal_command_assertion_key: SecretStr | None = Field(
         default=None,
@@ -90,9 +93,29 @@ class Settings(BaseSettings):
             )
         if self.enable_internal_read_api:
             if self.env == "production":
-                raise ValueError(
-                    "production internal read API remains unavailable until the R1 operational gate"
-                )
+                if self.internal_read_operational_gate != "r1-production-v1":
+                    raise ValueError(
+                        "production internal read API remains unavailable until the R1 "
+                        "operational gate"
+                    )
+                if self.internal_read_backend != "database":
+                    raise ValueError(
+                        "production internal read API requires the database reader backend"
+                    )
+                if (
+                    self.internal_read_transport != "unix-mtls-proxy"
+                    or self.internal_read_mtls_policy_path is None
+                ):
+                    raise ValueError(
+                        "production internal read API requires the Unix-socket mTLS policy"
+                    )
+                if (
+                    not self.enable_internal_read_persistent_audit
+                    or not self.enable_internal_read_persistent_receipt
+                ):
+                    raise ValueError(
+                        "production internal read API requires persistent audit and receipt sinks"
+                    )
             if self.internal_read_policy_generation is None:
                 raise ValueError(
                     "internal_read_policy_generation is required when the internal "
@@ -107,7 +130,10 @@ class Settings(BaseSettings):
                     "internal_read_cursor_key is required when internal_read_backend=database"
                 )
         if self.enable_internal_read_persistent_audit:
-            if self.env == "production":
+            if (
+                self.env == "production"
+                and self.internal_read_operational_gate != "r1-production-v1"
+            ):
                 raise ValueError(
                     "production internal read persistent audit remains unavailable "
                     "until the R1 operational gate"
@@ -115,7 +141,10 @@ class Settings(BaseSettings):
             if not self.enable_internal_read_api:
                 raise ValueError("persistent internal read audit requires the internal read API")
         if self.enable_internal_read_persistent_receipt:
-            if self.env == "production":
+            if (
+                self.env == "production"
+                and self.internal_read_operational_gate != "r1-production-v1"
+            ):
                 raise ValueError(
                     "production internal read persistent receipt remains unavailable "
                     "until the R1 operational gate"
@@ -156,6 +185,11 @@ class Settings(BaseSettings):
             value = getattr(self, field_name)
             if value is not None and not value.is_absolute():
                 raise ValueError(f"{field_name} must be an absolute path")
+        if (
+            self.internal_read_mtls_policy_path is not None
+            and not self.internal_read_mtls_policy_path.is_absolute()
+        ):
+            raise ValueError("internal_read_mtls_policy_path must be an absolute path")
         if (
             self.env == "production"
             and self.runner_manifest_path is not None

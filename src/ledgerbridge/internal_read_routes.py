@@ -172,7 +172,7 @@ def require_internal_read_api(
 ) -> None:
     """First route dependency: disabled and production modes are indistinguishable."""
 
-    if settings.env == "production" or not settings.enable_internal_read_api:
+    if not settings.enable_internal_read_api:
         raise InternalReadProblem(status.HTTP_404_NOT_FOUND, "INTERNAL_READ_DISABLED")
 
 
