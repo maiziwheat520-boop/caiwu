@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Theme } from '@radix-ui/themes'
 import App from './App'
@@ -162,8 +162,9 @@ function installFetch(options: {
       })
     }
     if (url.startsWith('/api/v1/candidates/')) {
-      const candidate = candidates.find((item) => url.endsWith(item.id))!
-      return response({ ...candidate, review_events: [] })
+      const candidate = candidatePages.flatMap((page) => page.items).find((item) => url.endsWith(item.id))!
+      const candidateEvents = reviewEventPages.flatMap((page) => page.items).filter((event) => event.candidate_id === candidate.id)
+      return response({ ...candidate, review_events: candidateEvents })
     }
     throw new Error(`Unexpected request: ${url}`)
   })
@@ -305,9 +306,11 @@ describe('LedgerBridge Web API client', () => {
     })
     renderApp()
     expect(await screen.findByRole('heading', { name: '创建新的通行密钥' })).toBeInTheDocument()
-    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/auth/recovery/session')).toBe(true)
     const createButton = await screen.findByRole('button', { name: '创建新的通行密钥' })
-    expect(createButton).not.toBeDisabled()
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/auth/recovery/session')).toBe(true)
+      expect(createButton).not.toBeDisabled()
+    })
     fireEvent.click(createButton)
     expect(await screen.findByText('保存一次性恢复码')).toBeInTheDocument()
     const optionsCall = fetchMock.mock.calls.find(([input]) => String(input) === '/api/v1/auth/passkey/register/options')!
@@ -374,6 +377,15 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.getByText('已核对电子缴款书')).toBeInTheDocument()
     expect(screen.getAllByText('待审核').length).toBeGreaterThan(0)
     expect(screen.getByText('已确认')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '查看候选与证据' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: '查看已确认候选' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('link', { name: '消息原文' })).toBeInTheDocument()
+    expect(await within(dialog).findByText('已核对电子缴款书')).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('营业单元')).toHaveAttribute('readonly')
+    expect(within(dialog).queryByRole('button', { name: '忽略候选' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: '保存更正并确认' })).not.toBeInTheDocument()
   })
 
   it('loads later review-history pages through the returned cursor', async () => {

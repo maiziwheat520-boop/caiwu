@@ -67,6 +67,7 @@ export type Candidate = {
   confidence: number
   status: CandidateStatus
   blockers: Blocker[]
+  reviewEvents: ReviewEvent[]
   incomplete: boolean
   conflict: boolean
   raw: ApiCandidate

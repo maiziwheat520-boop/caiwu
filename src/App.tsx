@@ -45,6 +45,7 @@ import type {
   AuthStatus,
   Candidate,
   CandidateCorrections,
+  CandidateDetail,
   ConnectionStatus,
   Notice,
   Page,
@@ -89,7 +90,7 @@ const sourceLabels: Record<ApiCandidate['source_channel'], Candidate['source']> 
   weixin: '微信',
 }
 
-function toCandidate(candidate: ApiCandidate): Candidate {
+function toCandidate(candidate: ApiCandidate | CandidateDetail): Candidate {
   const blockerCodes = new Set(candidate.blockers.map((blocker) => blocker.code))
   return {
     id: candidate.id,
@@ -108,6 +109,7 @@ function toCandidate(candidate: ApiCandidate): Candidate {
     confidence: candidate.confidence_basis_points / 10000,
     status: candidate.status,
     blockers: candidate.blockers,
+    reviewEvents: 'review_events' in candidate ? candidate.review_events : [],
     incomplete: candidate.status === 'INCOMPLETE' || blockerCodes.has('MISSING_ACCOUNTING_MONTH'),
     conflict: candidate.status === 'CONFLICTED' || blockerCodes.has('BUSINESS_KEY_CONFLICT') || blockerCodes.has('DUPLICATE_MESSAGE') || blockerCodes.has('DUPLICATE_ATTACHMENT'),
     raw: candidate,
@@ -144,12 +146,14 @@ function App() {
   const [reviewEventsLoading, setReviewEventsLoading] = useState(false)
   const [reviewEventsError, setReviewEventsError] = useState<string | null>(null)
   const candidateCursorRef = useRef<string | null>(null)
+  const candidateDetailRequestRef = useRef(0)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [decisionBusyId, setDecisionBusyId] = useState<string | null>(null)
   const [draftBusy, setDraftBusy] = useState(false)
   const [logoutBusy, setLogoutBusy] = useState(false)
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null)
+  const [candidateDetailLoadingId, setCandidateDetailLoadingId] = useState<string | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
 
   const navigate = useCallback((nextPage: Page, replace = false) => {
@@ -302,12 +306,16 @@ function App() {
   }
 
   const openCandidate = async (candidate: Candidate) => {
+    const requestId = ++candidateDetailRequestRef.current
     setSelectedCandidate(candidate)
+    setCandidateDetailLoadingId(candidate.id)
     try {
       const detail = await api.getCandidate(candidate.id)
       setSelectedCandidate((current) => current?.id === candidate.id ? toCandidate(detail) : current)
     } catch (error) {
       setNotice({ tone: 'error', message: error instanceof Error ? `证据详情读取失败：${error.message}` : '证据详情读取失败' })
+    } finally {
+      if (candidateDetailRequestRef.current === requestId) setCandidateDetailLoadingId(null)
     }
   }
 
@@ -362,6 +370,9 @@ function App() {
       setReviewEventCursor(null)
       setReviewEventsError(null)
       candidateCursorRef.current = null
+      setSelectedCandidate(null)
+      setCandidateDetailLoadingId(null)
+      candidateDetailRequestRef.current += 1
       navigate('overview', true)
       setLoading(true)
       setNotice(null)
@@ -412,6 +423,7 @@ function App() {
             reviewEvents.length > 0 ? reviewEventCursor ?? undefined : undefined,
             reviewEvents.length === 0,
           )}
+          onOpenCandidate={openCandidate}
           onNavigate={navigate}
         />
       )
@@ -522,6 +534,7 @@ function App() {
           onClose={() => setSelectedCandidate(null)}
           onUpdate={updateCandidate}
           busy={selectedCandidate.id === decisionBusyId}
+          detailLoading={candidateDetailLoadingId === selectedCandidate.id}
         />
       ) : null}
     </div>
@@ -923,7 +936,7 @@ function formatAuditValue(field: ReviewEvent['changes'][number]['field'], value:
   return String(value)
 }
 
-function AuditLog({ events, candidates, nextCursor, loading, error, onLoadMore, onRetry, onNavigate }: {
+function AuditLog({ events, candidates, nextCursor, loading, error, onLoadMore, onRetry, onOpenCandidate, onNavigate }: {
   events: ReviewEvent[]
   candidates: Candidate[]
   nextCursor: string | null
@@ -931,6 +944,7 @@ function AuditLog({ events, candidates, nextCursor, loading, error, onLoadMore, 
   error: string | null
   onLoadMore: (cursor: string) => void
   onRetry: () => void
+  onOpenCandidate: (candidate: Candidate) => void
   onNavigate: (page: Page) => void
 }) {
   const [query, setQuery] = useState('')
@@ -1020,6 +1034,7 @@ function AuditLog({ events, candidates, nextCursor, loading, error, onLoadMore, 
                         <span>{candidate?.category ?? '未知科目'}</span>
                         <span>修订 {event.from_revision} → {event.to_revision}</span>
                         <span>操作者：{event.actor}</span>
+                        {candidate ? <Button size="1" variant="ghost" color="gray" onClick={() => onOpenCandidate(candidate)}><FileText size={14} />查看候选与证据</Button> : null}
                       </div>
                       {event.changes.length > 0 ? (
                         <ul className="audit-changes">
@@ -1218,24 +1233,60 @@ function SourceIcon({ source }: { source: Candidate['source'] }) {
   return <span className={`source-icon source-${source}`}>{initials[source]}</span>
 }
 
-function CandidateDialog({ candidate, onClose, onUpdate, busy }: {
+function CandidateDialog({ candidate, onClose, onUpdate, busy, detailLoading }: {
   candidate: Candidate
   onClose: () => void
   onUpdate: (candidate: Candidate, intent: CandidateUpdateIntent, corrections?: CandidateCorrections, conflictResolution?: string) => void
   busy: boolean
+  detailLoading: boolean
 }) {
   const [businessUnit, setBusinessUnit] = useState(candidate.businessUnit)
   const [category, setCategory] = useState(candidate.category)
   const [amount, setAmount] = useState(candidate.amount.toFixed(2))
   const [accountingMonth, setAccountingMonth] = useState(candidate.accountingMonth ?? '')
   const [conflictResolution, setConflictResolution] = useState('')
+  const readOnly = ['CONFIRMED', 'IGNORED', 'SUPERSEDED'].includes(candidate.status)
+
+  const dialogTitle = readOnly
+    ? candidate.status === 'CONFIRMED'
+      ? '查看已确认候选'
+      : candidate.status === 'IGNORED'
+        ? '查看已忽略候选'
+        : '查看已被取代候选'
+    : candidate.conflict
+      ? '处理金额或凭证冲突'
+      : candidate.incomplete
+        ? '补全候选信息'
+        : '核对候选数据'
+  const statusTitle = readOnly
+    ? candidate.status === 'CONFIRMED'
+      ? '候选已确认'
+      : candidate.status === 'IGNORED'
+        ? '候选已忽略'
+        : '当前修订已被取代'
+    : candidate.conflict
+      ? '必须先说明采用哪份证据'
+      : candidate.incomplete
+        ? '必须补全归属月份'
+        : '字段完整，可以确认'
+  const statusDescription = readOnly
+    ? candidate.status === 'CONFIRMED'
+      ? '字段在此处只读；后续变化必须形成新的追加事件。'
+      : candidate.status === 'IGNORED'
+        ? '候选已从草稿数据中排除，原始证据和审核记录仍保留。'
+        : '该修订仅用于历史追溯，不能覆盖后续修订。'
+    : candidate.conflict
+      ? '处理依据会随审核事件一起留存。'
+      : candidate.incomplete
+        ? '系统建议仅供参考，请人工核对。'
+        : '确认后候选会进入月度对账草稿。'
 
   const parsedAmount = Number(amount)
   const formComplete = businessUnit.trim().length > 0
     && category.trim().length > 0
     && Number.isFinite(parsedAmount)
     && accountingMonth.length > 0
-  const confirmBlocked = busy || !formComplete || (candidate.conflict && conflictResolution.trim().length === 0)
+  const confirmBlocked = readOnly || busy || !formComplete || (candidate.conflict && conflictResolution.trim().length === 0)
 
   const submitCorrection = () => {
     if (confirmBlocked) return
@@ -1251,13 +1302,13 @@ function CandidateDialog({ candidate, onClose, onUpdate, busy }: {
     <Dialog.Root open onOpenChange={(open) => { if (!open) onClose() }}>
       <Dialog.Content className="candidate-dialog" maxWidth="900px">
         <div className="dialog-kicker"><SourceIcon source={candidate.source} /><span>{candidate.source} · {candidate.receivedAt} · {candidate.shortId}</span></div>
-        <Dialog.Title>{candidate.conflict ? '处理金额或凭证冲突' : candidate.incomplete ? '补全候选信息' : '核对候选数据'}</Dialog.Title>
-        <Dialog.Description>左侧核对原始证据，右侧确认入账字段。原始消息不会被覆盖。</Dialog.Description>
-        <div className={`dialog-status ${candidate.conflict ? 'danger' : candidate.incomplete ? 'warning' : 'ready'}`}>
-          {candidate.conflict ? <Warning size={19} weight="fill" /> : candidate.incomplete ? <Info size={19} weight="fill" /> : <CheckCircle size={19} weight="fill" />}
+        <Dialog.Title>{dialogTitle}</Dialog.Title>
+        <Dialog.Description>{readOnly ? '只读核对原始证据、当前字段与追加式审核历史。' : '左侧核对原始证据，右侧确认入账字段。原始消息不会被覆盖。'}</Dialog.Description>
+        <div className={`dialog-status ${readOnly ? candidate.status === 'CONFIRMED' ? 'ready' : 'terminal' : candidate.conflict ? 'danger' : candidate.incomplete ? 'warning' : 'ready'}`}>
+          {readOnly && candidate.status !== 'CONFIRMED' ? <Info size={19} weight="fill" /> : candidate.conflict ? <Warning size={19} weight="fill" /> : candidate.incomplete ? <Info size={19} weight="fill" /> : <CheckCircle size={19} weight="fill" />}
           <div>
-            <strong>{candidate.conflict ? '必须先说明采用哪份证据' : candidate.incomplete ? '必须补全归属月份' : '字段完整，可以确认'}</strong>
-            <span>{candidate.conflict ? '处理依据会随审核事件一起留存。' : candidate.incomplete ? '系统建议仅供参考，请人工核对。' : '确认后候选会进入月度对账草稿。'}</span>
+            <strong>{statusTitle}</strong>
+            <span>{statusDescription}</span>
           </div>
         </div>
         <div className="dialog-layout">
@@ -1277,31 +1328,60 @@ function CandidateDialog({ candidate, onClose, onUpdate, busy }: {
           <section className="dialog-fields-pane" aria-labelledby="fields-heading">
             <span className="section-label" id="fields-heading">提取字段</span>
             <div className="field-grid">
-              <label htmlFor="candidate-business-unit"><span>营业单元</span><TextField.Root id="candidate-business-unit" value={businessUnit} onChange={(event) => setBusinessUnit(event.target.value)} /></label>
-              <label htmlFor="candidate-category"><span>科目</span><TextField.Root id="candidate-category" value={category} onChange={(event) => setCategory(event.target.value)} /></label>
-              <label htmlFor="candidate-amount"><span>金额</span><TextField.Root id="candidate-amount" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} /></label>
+              <label htmlFor="candidate-business-unit"><span>营业单元</span><TextField.Root id="candidate-business-unit" readOnly={readOnly} value={businessUnit} onChange={(event) => setBusinessUnit(event.target.value)} /></label>
+              <label htmlFor="candidate-category"><span>科目</span><TextField.Root id="candidate-category" readOnly={readOnly} value={category} onChange={(event) => setCategory(event.target.value)} /></label>
+              <label htmlFor="candidate-amount"><span>金额</span><TextField.Root id="candidate-amount" inputMode="decimal" readOnly={readOnly} value={amount} onChange={(event) => setAmount(event.target.value)} /></label>
               <label>
                 <span id="candidate-month-label">归属月份</span>
-                <Select.Root value={accountingMonth} onValueChange={setAccountingMonth}>
+                <Select.Root disabled={readOnly} value={accountingMonth} onValueChange={setAccountingMonth}>
                   <Select.Trigger aria-labelledby="candidate-month-label" placeholder="请选择归属月份" />
                   <Select.Content><Select.Item value="2026-08">2026 年 8 月</Select.Item><Select.Item value="2026-07">2026 年 7 月</Select.Item></Select.Content>
                 </Select.Root>
               </label>
             </div>
-            {candidate.conflict ? <>
+            {candidate.conflict && !readOnly ? <>
               <label className="conflict-resolution-field" htmlFor="candidate-conflict-resolution">
                 <span>冲突处理依据</span>
                 <TextArea id="candidate-conflict-resolution" placeholder="例如：以银行电子回单金额为准" value={conflictResolution} onChange={(event) => setConflictResolution(event.target.value)} resize="vertical" />
               </label>
               <div className="blocking-note"><Warning size={18} weight="fill" /><span><strong>需要记录处理依据</strong>说明采用哪份证据以及原因，提交后将以追加事件保留。</span></div>
             </> : null}
-            {candidate.incomplete ? <div className="blocking-note amber"><Info size={18} weight="fill" /><span><strong>月份为系统建议</strong>请确认归属月份后再提交。</span></div> : null}
+            {candidate.incomplete && !readOnly ? <div className="blocking-note amber"><Info size={18} weight="fill" /><span><strong>月份为系统建议</strong>请确认归属月份后再提交。</span></div> : null}
           </section>
         </div>
+
+        <section className="candidate-history" aria-labelledby="candidate-history-heading">
+          <div className="candidate-history-heading">
+            <span className="section-label" id="candidate-history-heading">审核历史</span>
+            <span>{candidate.reviewEvents.length} 条追加记录</span>
+          </div>
+          {detailLoading ? (
+            <div className="candidate-history-loading" role="status"><ArrowsClockwise className="state-spinner" size={17} />正在读取审核历史</div>
+          ) : candidate.reviewEvents.length > 0 ? (
+            <ol>
+              {candidate.reviewEvents.map((event) => (
+                <li key={event.id}>
+                  <span className="candidate-history-sequence">{event.sequence}</span>
+                  <div>
+                    <div className="candidate-history-meta">
+                      <Badge color={decisionColors[event.decision]}>{decisionLabels[event.decision]}</Badge>
+                      <time dateTime={event.created_at}>{new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(event.created_at))}</time>
+                    </div>
+                    <strong>{event.reason}</strong>
+                    <span>修订 {event.from_revision} → {event.to_revision} · {event.changes.map((change) => auditFieldLabels[change.field]).join('、') || '无字段变化'}</span>
+                    {event.conflict_resolution ? <small>冲突依据：{event.conflict_resolution}</small> : null}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          ) : <p className="candidate-history-empty">此候选尚无审核事件。</p>}
+        </section>
         <div className="dialog-actions">
-          <Button variant="soft" color="gray" onClick={onClose}>取消</Button>
-          <Button disabled={busy} variant="outline" color="gray" onClick={() => onUpdate(candidate, 'IGNORE')}>忽略候选</Button>
-          <Button disabled={confirmBlocked} onClick={submitCorrection}>{candidate.conflict ? '解决冲突并确认' : '保存更正并确认'}</Button>
+          <Button variant="soft" color="gray" onClick={onClose}>{readOnly ? '关闭' : '取消'}</Button>
+          {!readOnly ? <>
+            <Button disabled={busy} variant="outline" color="gray" onClick={() => onUpdate(candidate, 'IGNORE')}>忽略候选</Button>
+            <Button disabled={confirmBlocked} onClick={submitCorrection}>{candidate.conflict ? '解决冲突并确认' : '保存更正并确认'}</Button>
+          </> : null}
         </div>
       </Dialog.Content>
     </Dialog.Root>
