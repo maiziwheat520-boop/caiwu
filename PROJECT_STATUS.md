@@ -2,6 +2,17 @@
 
 Updated: 2026-08-28
 
+## OCR and managed-account preprocessing checkpoint (2026-08-29)
+
+The real-data cutover branch now contains an offline bill OCR boundary and a statement-backed
+Managed Account model. RapidOCR 3.9.2 and ONNX Runtime 1.29.0 are optional, pinned dependencies
+used only by a networkless, secret-free one-shot container. Bill extraction records field-level
+confidence, refuses cropped dates, treats summary screenshots as context only, and can replace
+the legacy fixed-cell photo candidate builder through an explicit private OCR-observation input.
+Managed Account transfers require bilateral statement evidence; cross-company movements remain
+Related-Party Transfers rather than being silently eliminated. No OCR-derived production
+candidate replacement or automatic posting has been performed at this checkpoint.
+
 ## F-4 immutable image binding hotfix checkpoint (2026-08-28)
 
 An encrypted-storage cutover preflight exposed a fail-closed restore rehearsal

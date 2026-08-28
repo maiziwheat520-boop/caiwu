@@ -6,11 +6,15 @@ from uuid import uuid4
 import pytest
 
 from ledgerbridge.reconciliation import (
+    AccountOwnerKind,
     ConcurrentDedupIndex,
     DedupDecision,
     DedupIndex,
     DedupRecord,
     ExternalTransactionIdentity,
+    ManagedAccount,
+    ManagedAccountRegistry,
+    ManagedTransferKind,
     Phase5Error,
     ReconciliationLeg,
     ReconciliationProposal,
@@ -20,7 +24,10 @@ from ledgerbridge.reconciliation import (
     SuspenseReason,
     SuspenseStatus,
     TransactionFingerprint,
+    TransferEvidenceStatus,
+    TransferObservation,
     _normalize_optional,
+    assess_managed_transfer,
 )
 
 
@@ -271,3 +278,75 @@ def test_phase5_rejects_conflicts_invalid_cardinality_and_bad_amounts() -> None:
             resolution_reason="mistake",
         )
     assert _normalize_optional(None) is None
+
+
+def test_statement_backed_accounts_require_the_other_side_before_internal_match() -> None:
+    owner = "person:test-owner"
+    boc = ManagedAccount(
+        "bank:boc:2574",
+        owner,
+        AccountOwnerKind.PERSONAL,
+        ("boc-2574", "中国银行2574"),
+        (uuid4(),),
+    )
+    abc = ManagedAccount(
+        "bank:abc:7788",
+        owner,
+        AccountOwnerKind.PERSONAL,
+        ("abc-7788", "农业银行7788"),
+        (uuid4(),),
+    )
+    registry = ManagedAccountRegistry((boc, abc))
+    outgoing = TransferObservation(
+        "boc-row-1", boc.account_key, "农业银行7788", date(2026, 5, 18), -100_000, (uuid4(),)
+    )
+
+    missing = assess_managed_transfer(outgoing, registry=registry)
+
+    assert missing.kind is ManagedTransferKind.INTERNAL
+    assert missing.status is TransferEvidenceStatus.COUNTERPARTY_STATEMENT_REQUIRED
+    incoming = TransferObservation(
+        "abc-row-9", abc.account_key, "中国银行2574", date(2026, 5, 19), 100_000, (uuid4(),)
+    )
+    matched = assess_managed_transfer(
+        outgoing, registry=registry, possible_counterparts=(incoming,)
+    )
+    assert matched.status is TransferEvidenceStatus.BILATERAL_EVIDENCE_MATCHED
+    assert matched.matched_record_locator == "abc-row-9"
+
+
+def test_company_accounts_are_managed_but_cross_company_transfer_is_related_party() -> None:
+    company_a = ManagedAccount(
+        "bank:a:1111",
+        "company:a",
+        AccountOwnerKind.COMPANY,
+        ("a-1111",),
+        (uuid4(),),
+    )
+    company_b = ManagedAccount(
+        "bank:b:2222",
+        "company:b",
+        AccountOwnerKind.COMPANY,
+        ("b-2222",),
+        (uuid4(),),
+    )
+    registry = ManagedAccountRegistry((company_a, company_b))
+    transfer = TransferObservation(
+        "a-row", company_a.account_key, "b-2222", date(2026, 5, 20), -5_000, (uuid4(),)
+    )
+
+    result = assess_managed_transfer(transfer, registry=registry)
+
+    assert result.kind is ManagedTransferKind.RELATED_PARTY
+    assert result.status is TransferEvidenceStatus.COUNTERPARTY_STATEMENT_REQUIRED
+
+
+def test_account_without_statement_evidence_cannot_enter_managed_registry() -> None:
+    with pytest.raises(Phase5Error, match="statement evidence"):
+        ManagedAccount(
+            "bank:test:0000",
+            "person:test",
+            AccountOwnerKind.PERSONAL,
+            ("test-0000",),
+            (),
+        )

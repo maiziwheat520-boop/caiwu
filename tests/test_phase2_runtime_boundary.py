@@ -57,6 +57,22 @@ def test_connector_runner_is_networkless_and_has_no_application_secrets() -> Non
     assert "connector-runner.Dockerfile" in runner["build"]["dockerfile"]
 
 
+def test_ocr_preprocessor_is_networkless_read_only_and_has_no_secrets() -> None:
+    compose = yaml.safe_load(Path("docker-compose.yml").read_text(encoding="utf-8"))
+    service = compose["services"]["ocr-preprocessor"]
+
+    assert service["profiles"] == ["ocr-preprocessor"]
+    assert service["network_mode"] == "none"
+    assert service["read_only"] is True
+    assert service["security_opt"] == ["no-new-privileges:true"]
+    assert service["cap_drop"] == ["ALL"]
+    assert service["volumes"] == ["ocr-input:/input:ro", "ocr-output:/output"]
+    assert "environment" not in service
+    assert "networks" not in service
+    assert "depends_on" not in service
+    assert "ocr-preprocessor.Dockerfile" in service["build"]["dockerfile"]
+
+
 def test_only_worker_mounts_the_runner_socket() -> None:
     compose = yaml.safe_load(Path("docker-compose.yml").read_text(encoding="utf-8"))
     services = compose["services"]

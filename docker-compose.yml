@@ -140,6 +140,31 @@ services:
       retries: 3
       start_period: 10s
 
+  ocr-preprocessor:
+    image: ledgerbridge-ocr-preprocessor:${LEDGERBRIDGE_REVISION:-dev}
+    build:
+      context: .
+      dockerfile: docker/ocr-preprocessor.Dockerfile
+      args:
+        LEDGERBRIDGE_REVISION: ${DEPLOYED_REVISION:-dev}
+    profiles: ["ocr-preprocessor"]
+    network_mode: none
+    volumes:
+      - ocr-input:/input:ro
+      - ocr-output:/output
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    mem_limit: 768m
+    cpus: "1.50"
+    user: "10002:10002"
+    restart: "no"
+
   postgres:
     image: postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
     environment:
@@ -175,3 +200,5 @@ volumes:
   artifacts:
   postgres-data:
   connector-socket:
+  ocr-input:
+  ocr-output:

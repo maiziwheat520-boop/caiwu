@@ -48,6 +48,7 @@ def main() -> int:
     parser.add_argument("--combined-workbook", type=Path, required=True)
     parser.add_argument("--manual-review-workbook", type=Path, required=True)
     parser.add_argument("--photo-directory", type=Path, required=True)
+    parser.add_argument("--ocr-observations", type=Path)
     parser.add_argument("--output-directory", type=Path, required=True)
     args = parser.parse_args()
     manifest_path, manifest = build_bundle(
@@ -55,6 +56,7 @@ def main() -> int:
         manual_review_workbook=args.manual_review_workbook.resolve(),
         photo_directory=args.photo_directory.resolve(),
         output_directory=args.output_directory.resolve(),
+        ocr_observations=args.ocr_observations.resolve() if args.ocr_observations else None,
     )
     digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     print(
@@ -71,9 +73,10 @@ def build_bundle(
     manual_review_workbook: Path,
     photo_directory: Path,
     output_directory: Path,
+    ocr_observations: Path | None = None,
 ) -> tuple[Path, SourceManifest]:
     try:
-        from openpyxl import load_workbook
+        from openpyxl import load_workbook  # type: ignore[import-untyped]
     except ImportError as exc:
         raise BundleBuildError("openpyxl is required to build the controlled bundle") from exc
     _require_regular_file(combined_workbook)
@@ -96,6 +99,7 @@ def build_bundle(
 
     evidence: list[dict[str, object]] = []
     photo_evidence_refs: list[UUID] = []
+    photo_ref_by_source_name: dict[str, UUID] = {}
     source_paths = [*photos, combined_workbook, manual_review_workbook]
     if len({_digest(path) for path in photos}) != len(photos):
         raise BundleBuildError("source photos must have unique digests")
@@ -125,6 +129,7 @@ def build_bundle(
         )
         if normalized_name.startswith("photo-"):
             photo_evidence_refs.append(evidence_ref)
+            photo_ref_by_source_name[source.name] = evidence_ref
     combined_ref = UUID(str(evidence[-2]["evidence_ref"]))
     manual_review_ref = UUID(str(evidence[-1]["evidence_ref"]))
 
@@ -137,10 +142,16 @@ def build_bundle(
         if len(email_sheets) != 1:
             raise BundleBuildError("combined workbook must contain one email review sheet")
         email_sheet = email_sheets[0]
-        candidates = _photo_candidates(
-            photo_sheet,
-            evidence_refs=tuple((*photo_evidence_refs, combined_ref)),
-        )
+        if ocr_observations is None:
+            candidates = _photo_candidates(
+                photo_sheet,
+                evidence_refs=tuple((*photo_evidence_refs, combined_ref)),
+            )
+        else:
+            candidates = _ocr_photo_candidates(
+                ocr_observations,
+                evidence_ref_by_source_name=photo_ref_by_source_name,
+            )
         candidates.extend(
             _boc_candidates(
                 email_sheet,
@@ -149,8 +160,10 @@ def build_bundle(
         )
     finally:
         workbook.close()
-    if len(candidates) != 54:
-        raise BundleBuildError("controlled review bundle must contain exactly 54 candidates")
+    if ocr_observations is None and len(candidates) != 54:
+        raise BundleBuildError("legacy controlled review bundle must contain exactly 54 candidates")
+    if ocr_observations is not None and len(candidates) <= 42:
+        raise BundleBuildError("OCR review bundle did not produce any review-ready photo bills")
 
     input_fingerprint = ":".join(_digest(path) for path in source_paths)
     batch_ref = uuid5(_NAMESPACE, f"batch:2026-05:{input_fingerprint}")
@@ -221,6 +234,90 @@ def _photo_candidates(sheet: Any, *, evidence_refs: tuple[UUID, ...]) -> list[di
                 "evidence_refs": evidence_refs,
             }
         )
+    return candidates
+
+
+def _ocr_photo_candidates(
+    ocr_observations: Path,
+    *,
+    evidence_ref_by_source_name: dict[str, UUID],
+) -> list[dict[str, object]]:
+    try:
+        metadata = ocr_observations.lstat()
+    except OSError as exc:
+        raise BundleBuildError("OCR observations are unavailable") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise BundleBuildError("OCR observations must be a regular file")
+    if metadata.st_size > 16 * 1024 * 1024:
+        raise BundleBuildError("OCR observations exceed the size limit")
+    try:
+        raw = ocr_observations.read_bytes()
+    except OSError as exc:
+        raise BundleBuildError("OCR observations are unavailable") from exc
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BundleBuildError("OCR observations are invalid JSON") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != "ledgerbridge.bill-ocr.v1":
+        raise BundleBuildError("OCR observation schema is unsupported")
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise BundleBuildError("OCR observation results are invalid")
+    candidates: list[dict[str, object]] = []
+    for result in results:
+        if not isinstance(result, dict):
+            raise BundleBuildError("OCR observation result is invalid")
+        source_name = result.get("source_name")
+        bills = result.get("bills")
+        if not isinstance(source_name, str) or not isinstance(bills, list):
+            raise BundleBuildError("OCR observation source is invalid")
+        evidence_ref = evidence_ref_by_source_name.get(source_name)
+        if evidence_ref is None:
+            raise BundleBuildError("OCR observation does not match a source image")
+        for bill in bills:
+            if not isinstance(bill, dict):
+                raise BundleBuildError("OCR bill observation is invalid")
+            blockers = bill.get("blockers")
+            if not isinstance(blockers, list):
+                raise BundleBuildError("OCR bill blockers are invalid")
+            if blockers:
+                continue
+            bill_id = bill.get("bill_id")
+            period_start = bill.get("period_start")
+            period_end = bill.get("period_end")
+            amount_minor = bill.get("amount_minor")
+            confidence = bill.get("confidence_basis_points")
+            source_kind = bill.get("source_kind")
+            if (
+                not isinstance(bill_id, str)
+                or not isinstance(period_start, str)
+                or not isinstance(period_end, str)
+                or isinstance(amount_minor, bool)
+                or not isinstance(amount_minor, int)
+                or isinstance(confidence, bool)
+                or not isinstance(confidence, int)
+                or not isinstance(source_kind, str)
+            ):
+                raise BundleBuildError("review-ready OCR bill fields are incomplete")
+            if not (period_start.startswith("2026-05") or period_end.startswith("2026-05")):
+                continue
+            stable = f"ocr:{source_name}:{bill_id}:{period_start}:{period_end}"
+            candidates.append(
+                {
+                    "candidate_ref": uuid5(_NAMESPACE, f"candidate:{stable}"),
+                    "operation_id": uuid5(_NAMESPACE, f"operation:{stable}"),
+                    "ingest_channel": "CONTROLLED_UPLOAD",
+                    "source_system": "hotel_bill_ocr",
+                    "source_event_ref": uuid5(_NAMESPACE, f"source-event:{stable}"),
+                    "display_label": "OCR bill pending review",
+                    "category_code": "PHOTO_RECONCILIATION",
+                    "amount_minor": amount_minor,
+                    "accounting_month": "2026-05",
+                    "summary": f"OCR账单待复核: {source_kind} {bill_id}",
+                    "confidence_basis_points": confidence,
+                    "evidence_refs": (evidence_ref,),
+                }
+            )
     return candidates
 
 

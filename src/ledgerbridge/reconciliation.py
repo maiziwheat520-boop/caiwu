@@ -12,7 +12,7 @@ import hashlib
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, timedelta
 from enum import StrEnum
 from threading import RLock
 from uuid import UUID
@@ -58,6 +58,154 @@ class SuspenseReason(StrEnum):
 class SuspenseStatus(StrEnum):
     OPEN = "OPEN"
     RESOLVED = "RESOLVED"
+
+
+class AccountOwnerKind(StrEnum):
+    PERSONAL = "PERSONAL"
+    COMPANY = "COMPANY"
+
+
+class ManagedTransferKind(StrEnum):
+    EXTERNAL = "EXTERNAL"
+    INTERNAL = "INTERNAL"
+    RELATED_PARTY = "RELATED_PARTY"
+
+
+class TransferEvidenceStatus(StrEnum):
+    NOT_MANAGED_COUNTERPARTY = "NOT_MANAGED_COUNTERPARTY"
+    COUNTERPARTY_STATEMENT_REQUIRED = "COUNTERPARTY_STATEMENT_REQUIRED"
+    BILATERAL_EVIDENCE_MATCHED = "BILATERAL_EVIDENCE_MATCHED"
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedAccount:
+    """An account admitted because at least one statement was provided."""
+
+    account_key: str
+    owner_ref: str
+    owner_kind: AccountOwnerKind
+    aliases: tuple[str, ...]
+    statement_evidence_refs: tuple[UUID, ...]
+
+    def __post_init__(self) -> None:
+        _require_text("account_key", self.account_key, MAX_IDENTIFIER_TEXT)
+        _require_text("owner_ref", self.owner_ref, MAX_IDENTIFIER_TEXT)
+        if not self.aliases or not self.statement_evidence_refs:
+            raise Phase5Error("managed account requires an alias and statement evidence")
+        normalized = [_normalize_account_alias(value) for value in self.aliases]
+        if len(set(normalized)) != len(normalized):
+            raise Phase5Error("managed account aliases must be unique")
+
+
+class ManagedAccountRegistry:
+    """Append-only in-memory registry for statement-backed accounts."""
+
+    def __init__(self, accounts: Iterable[ManagedAccount] = ()) -> None:
+        self._by_key: dict[str, ManagedAccount] = {}
+        self._by_alias: dict[str, ManagedAccount] = {}
+        for account in accounts:
+            self.register(account)
+
+    def register(self, account: ManagedAccount) -> None:
+        if account.account_key in self._by_key:
+            raise Phase5Error("managed account key already exists")
+        aliases = {
+            _normalize_account_alias(account.account_key),
+            *map(_normalize_account_alias, account.aliases),
+        }
+        if any(alias in self._by_alias for alias in aliases):
+            raise Phase5Error("managed account alias already exists")
+        self._by_key[account.account_key] = account
+        for alias in aliases:
+            self._by_alias[alias] = account
+
+    def resolve(self, alias: str) -> ManagedAccount | None:
+        return self._by_alias.get(_normalize_account_alias(alias))
+
+
+@dataclass(frozen=True, slots=True)
+class TransferObservation:
+    record_locator: str
+    source_account_key: str
+    counterparty_account_alias: str
+    occurred_on: date
+    amount_minor: int
+    evidence_refs: tuple[UUID, ...]
+
+    def __post_init__(self) -> None:
+        _require_text("record_locator", self.record_locator, MAX_IDENTIFIER_TEXT)
+        _require_text("source_account_key", self.source_account_key, MAX_IDENTIFIER_TEXT)
+        _require_text(
+            "counterparty_account_alias", self.counterparty_account_alias, MAX_IDENTIFIER_TEXT
+        )
+        _require_amount("amount_minor", self.amount_minor, allow_zero=False)
+        if not self.evidence_refs:
+            raise Phase5Error("transfer observation requires source statement evidence")
+
+
+@dataclass(frozen=True, slots=True)
+class TransferEvidenceAssessment:
+    kind: ManagedTransferKind
+    status: TransferEvidenceStatus
+    source_account_key: str
+    counterparty_account_key: str | None
+    matched_record_locator: str | None = None
+
+
+def assess_managed_transfer(
+    observation: TransferObservation,
+    *,
+    registry: ManagedAccountRegistry,
+    possible_counterparts: Iterable[TransferObservation] = (),
+    maximum_day_gap: int = 3,
+) -> TransferEvidenceAssessment:
+    """Require opposite, equal evidence for transfers between managed accounts."""
+
+    if maximum_day_gap < 0 or maximum_day_gap > 31:
+        raise Phase5Error("transfer matching day gap is out of bounds")
+    source = registry.resolve(observation.source_account_key)
+    if source is None:
+        raise Phase5Error("source account is not registered from statement evidence")
+    counterparty = registry.resolve(observation.counterparty_account_alias)
+    if counterparty is None:
+        return TransferEvidenceAssessment(
+            ManagedTransferKind.EXTERNAL,
+            TransferEvidenceStatus.NOT_MANAGED_COUNTERPARTY,
+            source.account_key,
+            None,
+        )
+    kind = (
+        ManagedTransferKind.INTERNAL
+        if source.owner_ref == counterparty.owner_ref
+        else ManagedTransferKind.RELATED_PARTY
+    )
+    earliest = observation.occurred_on - timedelta(days=maximum_day_gap)
+    latest = observation.occurred_on + timedelta(days=maximum_day_gap)
+    for counterpart in possible_counterparts:
+        counterpart_source = registry.resolve(counterpart.source_account_key)
+        counterpart_destination = registry.resolve(counterpart.counterparty_account_alias)
+        if (
+            counterpart.record_locator != observation.record_locator
+            and counterpart_source is not None
+            and counterpart_destination is not None
+            and counterpart_source.account_key == counterparty.account_key
+            and counterpart_destination.account_key == source.account_key
+            and counterpart.amount_minor == -observation.amount_minor
+            and earliest <= counterpart.occurred_on <= latest
+        ):
+            return TransferEvidenceAssessment(
+                kind,
+                TransferEvidenceStatus.BILATERAL_EVIDENCE_MATCHED,
+                source.account_key,
+                counterparty.account_key,
+                counterpart.record_locator,
+            )
+    return TransferEvidenceAssessment(
+        kind,
+        TransferEvidenceStatus.COUNTERPARTY_STATEMENT_REQUIRED,
+        source.account_key,
+        counterparty.account_key,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,3 +561,11 @@ def _normalize_optional(value: str | None) -> str | None:
     if value is None:
         return None
     return " ".join(value.split()).casefold()
+
+
+def _normalize_account_alias(value: str) -> str:
+    _require_text("account alias", value, MAX_IDENTIFIER_TEXT)
+    normalized = "".join(character for character in value.casefold() if character.isalnum())
+    if not normalized:
+        raise Phase5Error("account alias is invalid")
+    return normalized

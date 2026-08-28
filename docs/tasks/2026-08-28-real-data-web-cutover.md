@@ -58,3 +58,18 @@ as evidence-bound candidates that remain pending human review.
   data or Core facts as synthetic data.
 - The original live gate turns green only when the deployed Web container reports
   `core-backed` and Core returns the imported pending candidates.
+
+## OCR and managed-account preprocessing checkpoint (2026-08-29)
+
+- The user expanded the authorized preprocessing scope to offline OCR and declared every
+  personal/company account with supplied statement evidence a Managed Account.
+- `bill_preprocessing.py` uses field-level confidence and deterministic layout parsers. It
+  refuses to guess cropped periods, treats annual summaries as context-only, and binds each
+  ready candidate to its single source image.
+- The optional RapidOCR/ONNX Runtime versions are pinned. The one-shot OCR container has no
+  network, environment secrets, database dependency, or writable application filesystem.
+- Same-owner Managed Account movement is an Internal Transfer; cross-owner/company movement
+  is a Related-Party Transfer. Both require equal opposite bilateral statement evidence.
+- The existing controlled-bundle command accepts private OCR observations and bypasses its
+  legacy fixed-cell photo candidates when they are supplied. Production candidates are not
+  silently replaced until the superseding import gate is run and reviewed.
