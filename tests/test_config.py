@@ -117,6 +117,51 @@ def test_internal_read_api_is_generation_bound_and_reader_url_is_explicit(tmp_pa
         )
 
 
+def test_candidate_command_api_is_complete_synthetic_and_nonproduction(
+    tmp_path: Path,
+) -> None:
+    base = {
+        "database_url": "sqlite+pysqlite:///:memory:",
+        "artifact_root": tmp_path.resolve(),
+        "enable_internal_read_api": True,
+        "internal_read_policy_generation": 7,
+        "enable_internal_candidate_command_api": True,
+    }
+    with pytest.raises(ValidationError, match="assertion key, issuer, and audience"):
+        Settings(**base)
+
+    enabled = Settings(
+        **base,
+        internal_command_assertion_key="k" * 32,
+        internal_command_assertion_issuer="ledgerbridge-web-test",
+        internal_command_assertion_audience="ledgerbridge-core-test",
+    )
+    assert enabled.enable_internal_candidate_command_api is True
+
+    with pytest.raises(ValidationError, match="synthetic-only"):
+        Settings(
+            **base,
+            internal_read_backend="database",
+            reader_database_url="postgresql+psycopg://ledgerbridge_reader@db/app",
+            internal_read_cursor_key="c" * 32,
+            internal_command_assertion_key="k" * 32,
+            internal_command_assertion_issuer="ledgerbridge-web-test",
+            internal_command_assertion_audience="ledgerbridge-core-test",
+        )
+
+    with pytest.raises(ValidationError, match="production candidate command API"):
+        Settings(
+            env="production",
+            runtime_role="api",
+            api_database_url="postgresql://ledgerbridge_api@db/app",
+            artifact_root=tmp_path.resolve(),
+            enable_internal_candidate_command_api=True,
+            internal_command_assertion_key="k" * 32,
+            internal_command_assertion_issuer="ledgerbridge-web-test",
+            internal_command_assertion_audience="ledgerbridge-core-test",
+        )
+
+
 def test_mail_provider_defaults_disabled_and_bounded(tmp_path: Path) -> None:
     settings = Settings(
         database_url="sqlite+pysqlite:///:memory:", artifact_root=tmp_path.resolve()

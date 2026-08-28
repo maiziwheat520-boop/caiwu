@@ -37,6 +37,9 @@ from ledgerbridge.dispatch import (
     DispatchService,
 )
 from ledgerbridge.imports import EvidenceImporter, EvidenceIngestionError, IngestMetadata
+from ledgerbridge.internal_candidate_command_routes import (
+    router as internal_candidate_command_router,
+)
 from ledgerbridge.internal_read_routes import (
     InternalReadNoStoreMiddleware,
 )
@@ -68,6 +71,7 @@ app = FastAPI(
 )
 app.add_middleware(InternalReadNoStoreMiddleware)
 app.include_router(internal_read_router)
+app.include_router(internal_candidate_command_router)
 
 
 class UploadReadTimeoutError(TimeoutError):

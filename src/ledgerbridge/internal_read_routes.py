@@ -23,6 +23,10 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from ledgerbridge.candidate_contract import CandidateProjection, CandidateStatus
 from ledgerbridge.config import Settings, get_settings
 from ledgerbridge.db import get_session_factory
+from ledgerbridge.internal_candidate_command import (
+    SyntheticInternalReviewService,
+    get_synthetic_review_service,
+)
 from ledgerbridge.internal_read_audit import (
     AuditSinkUnavailable,
     EvidenceReadAuditEvent,
@@ -177,7 +181,7 @@ def get_synthetic_internal_read_service(
     receipt_sink: Annotated[
         InternalReadReceiptSink | None, Depends(get_internal_read_receipt_sink)
     ],
-) -> SyntheticInternalReadService | DatabaseInternalReadService:
+) -> SyntheticInternalReadService | SyntheticInternalReviewService | DatabaseInternalReadService:
     if settings.internal_read_backend == "database":
         cursor_key = settings.internal_read_cursor_key
         if cursor_key is None:
@@ -187,7 +191,7 @@ def get_synthetic_internal_read_service(
             ReadCursorSigner(cursor_key),
             receipt_sink=receipt_sink,
         )
-    return SyntheticInternalReadService()
+    return get_synthetic_review_service()
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,7 +322,7 @@ ResourceRef = Annotated[UUID, Depends(_parse_closed_resource_uuid)]
 ReconciliationParams = Annotated[_ReconciliationParams, Depends(_parse_reconciliation_params)]
 LedgerParams = Annotated[_LedgerParams, Depends(_parse_ledger_params)]
 Service = Annotated[
-    SyntheticInternalReadService | DatabaseInternalReadService,
+    SyntheticInternalReadService | SyntheticInternalReviewService | DatabaseInternalReadService,
     Depends(get_synthetic_internal_read_service),
 ]
 AuditSink = Annotated[InternalReadAuditSink, Depends(get_internal_read_audit_sink)]

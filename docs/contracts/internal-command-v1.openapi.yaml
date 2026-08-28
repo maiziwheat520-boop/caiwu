@@ -1,0 +1,172 @@
+openapi: 3.1.0
+info:
+  title: LedgerBridge Internal Candidate Command API
+  version: 1.0.0
+  description: >-
+    Disabled-by-default synthetic D1 contract. Production and database-backed
+    command execution remain unavailable until their independent gates pass.
+servers: []
+paths:
+  /internal/v1/candidate-events:
+    get:
+      operationId: listCandidateEvents
+      parameters:
+        - in: query
+          name: candidate_ref
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Visible append-only candidate events.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateEventPage"
+  /internal/v1/candidates/{candidate_ref}/decisions:
+    post:
+      operationId: appendCandidateDecision
+      parameters:
+        - in: path
+          name: candidate_ref
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: header
+          name: X-LedgerBridge-User-Assertion
+          required: true
+          description: >-
+            Signed v1 assertion binding the human session, exact request body,
+            path, workload principal, policy generation, revision, and operation.
+          schema:
+            type: string
+            maxLength: 4096
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CandidateDecisionRequest"
+      responses:
+        "200":
+          description: Original or idempotently replayed decision receipt.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateDecisionReceipt"
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+components:
+  responses:
+    Problem:
+      description: Closed problem response.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    CandidateDecisionRequest:
+      type: object
+      additionalProperties: false
+      required: [decision, expected_revision, reason]
+      properties:
+        decision:
+          enum: [CONFIRM, IGNORE, CORRECT_AND_CONFIRM, RESOLVE_CONFLICT]
+        expected_revision:
+          type: integer
+          minimum: 1
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        corrections:
+          type: object
+          additionalProperties: false
+          minProperties: 1
+          properties:
+            business_unit: { type: string, minLength: 1, maxLength: 100 }
+            category: { type: string, minLength: 1, maxLength: 100 }
+            amount_minor:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            accounting_month:
+              type: string
+              pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        conflict_resolution:
+          type: string
+          minLength: 1
+          maxLength: 1000
+    CandidateDecisionReceipt:
+      type: object
+      additionalProperties: false
+      required: [contract_version, operation_id, replayed, candidate, events]
+      properties:
+        contract_version:
+          const: ledgerbridge.candidate-decision.v1
+        operation_id: { type: string, format: uuid }
+        replayed: { type: boolean }
+        candidate:
+          $ref: "./internal-read-v1.openapi.yaml#/components/schemas/CandidateProjection"
+        events:
+          type: array
+          minItems: 1
+          maxItems: 2
+          items: { $ref: "#/components/schemas/CandidateEvent" }
+    CandidateEventPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/CandidateEvent" }
+        next_cursor: { type: "null" }
+    CandidateEvent:
+      type: object
+      description: Full ledgerbridge.candidate.v1 append-only event receipt.
+      required:
+        - operation_id
+        - candidate_ref
+        - action
+        - from_revision
+        - to_revision
+        - actor_ref
+        - reason
+        - created_at
+      properties:
+        operation_id: { type: string, format: uuid }
+        candidate_ref: { type: string, format: uuid }
+        action:
+          enum: [COMPLETE_FIELDS, RESOLVE_CONFLICT, CONFIRM, IGNORE, SUPERSEDE]
+        from_revision: { type: integer, minimum: 1 }
+        to_revision: { type: integer, minimum: 2 }
+        actor_ref: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+        created_at: { type: string, format: date-time }
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        code: { type: string }

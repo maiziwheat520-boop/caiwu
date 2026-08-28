@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -39,6 +39,22 @@ class Settings(BaseSettings):
     internal_read_cursor_key: str | None = Field(default=None, min_length=32, max_length=256)
     enable_internal_read_persistent_audit: bool = False
     enable_internal_read_persistent_receipt: bool = False
+    enable_internal_candidate_command_api: bool = False
+    internal_command_assertion_key: SecretStr | None = Field(
+        default=None,
+        min_length=32,
+        max_length=256,
+    )
+    internal_command_assertion_issuer: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+    )
+    internal_command_assertion_audience: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+    )
     enable_review_api: bool = False
     enable_real_ingest: bool = False
     internal_read_policy_generation: int | None = Field(default=None, ge=1)
@@ -109,6 +125,25 @@ class Settings(BaseSettings):
             if self.internal_read_backend != "database":
                 raise ValueError(
                     "persistent internal read receipt requires the database reader backend"
+                )
+        if self.enable_internal_candidate_command_api:
+            if self.env == "production":
+                raise ValueError(
+                    "production candidate command API remains unavailable until the D1 gate"
+                )
+            if not self.enable_internal_read_api:
+                raise ValueError("candidate command API requires the internal read API")
+            if self.internal_read_backend != "synthetic":
+                raise ValueError(
+                    "candidate command API remains synthetic-only until database D1 is reviewed"
+                )
+            if (
+                self.internal_command_assertion_key is None
+                or self.internal_command_assertion_issuer is None
+                or self.internal_command_assertion_audience is None
+            ):
+                raise ValueError(
+                    "candidate command API requires assertion key, issuer, and audience"
                 )
         if self.mail_provider == "microsoft_graph" and not self.mailbox_id:
             raise ValueError("mailbox_id is required when mail_provider=microsoft_graph")
