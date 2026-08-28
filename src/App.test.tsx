@@ -8,6 +8,7 @@ const session = {
   principal: 'finance-admin',
   csrf_token: 'csrf-token-with-at-least-thirty-two-characters',
   expires_at: '2026-08-24T18:00:00+08:00',
+  runtime_mode: 'authenticated-preview' as const,
 }
 
 const authenticatedStatus = {
@@ -89,6 +90,7 @@ function installFetch(options: {
   candidatePages?: Array<{ items: ApiCandidate[]; next_cursor: string | null }>
   reviewEventPages?: Array<{ items: ReviewEvent[]; next_cursor: string | null }>
   failReviewEvents?: boolean
+  runtimeMode?: 'synthetic-preview' | 'authenticated-preview' | 'core-backed'
 } = {}) {
   const {
     items = candidates,
@@ -100,6 +102,7 @@ function installFetch(options: {
     candidatePages = [{ items, next_cursor: null }],
     reviewEventPages = [{ items: reviewEvents, next_cursor: null }],
     failReviewEvents = false,
+    runtimeMode = 'authenticated-preview',
   } = options
   let shouldFailSession = failSessionOnce
   let decisionSaved = false
@@ -141,7 +144,7 @@ function installFetch(options: {
         shouldFailSession = false
         return response({ title: '服务暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
       }
-      return response(session)
+      return response({ ...session, runtime_mode: runtimeMode })
     }
     if (url === '/api/v1/candidates' || url.startsWith('/api/v1/candidates?')) {
       const cursor = new URL(url, 'http://ledgerbridge.local').searchParams.get('cursor')
@@ -373,7 +376,7 @@ describe('LedgerBridge Web API client', () => {
     installFetch()
     renderApp()
     expect(screen.getByText('正在检查访问状态')).toBeInTheDocument()
-    expect(await screen.findByText('原型环境 · 合成 API 数据')).toBeInTheDocument()
+    expect(await screen.findByText('演示环境 · 登录已启用 · 合成业务数据')).toBeInTheDocument()
     expect(await screen.findByText('¥6,380.00')).toBeInTheDocument()
     expect(screen.getByText('3 条')).toBeInTheDocument()
   })
@@ -415,6 +418,14 @@ describe('LedgerBridge Web API client', () => {
     fireEvent.change(screen.getByLabelText('搜索候选编号、门店或科目'), { target: { value: '机场店' } })
     expect(screen.getByText('机场店水费，原消息未说明归属月份')).toBeInTheDocument()
     expect(screen.queryByText('城南店 8 月布草清洗费用，供应商月结单')).not.toBeInTheDocument()
+  })
+
+  it('labels Core-backed sessions as formal Core data instead of synthetic data', async () => {
+    installFetch({ runtimeMode: 'core-backed' })
+    renderApp()
+    expect(await screen.findByText('正式环境 · Core 实时业务数据')).toBeInTheDocument()
+    expect(screen.getByText('Core 是唯一业务事实源')).toBeInTheDocument()
+    expect(screen.queryByText('无真实财务数据')).not.toBeInTheDocument()
   })
 
   it('opens the append-only review history from the overview', async () => {

@@ -461,6 +461,8 @@ function App() {
     return <AuthScreen status={authStatus} onAuthenticated={completeAuthentication} onRecoveryCancelled={loadAuthStatus} />
   }
 
+  const isCoreBacked = session?.runtime_mode === 'core-backed'
+
   return (
     <div className="app-shell">
       <aside className="sidebar" aria-label="主导航">
@@ -488,9 +490,9 @@ function App() {
         <div className="sidebar-foot">
           <div className="secure-line">
             <ShieldCheck size={17} weight="fill" />
-            <span>合成预览环境</span>
+            <span>{isCoreBacked ? '正式数据环境' : '演示数据环境'}</span>
           </div>
-          <span>无真实财务数据</span>
+          <span>{isCoreBacked ? 'Core 是唯一业务事实源' : '无真实财务数据'}</span>
         </div>
       </aside>
 
@@ -499,7 +501,9 @@ function App() {
           <div className="mobile-brand"><Brand compact /></div>
           <div className="prototype-flag">
             <span className="flag-dot" />
-            原型环境 · 合成 API 数据
+            {isCoreBacked
+              ? '正式环境 · Core 实时业务数据'
+              : '演示环境 · 登录已启用 · 合成业务数据'}
           </div>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger>

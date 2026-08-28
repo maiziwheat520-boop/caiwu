@@ -242,6 +242,13 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 base_url = f"http://127.0.0.1:{server.server_port}"
                 cookie = f"{COOKIE_NAME}=session-token"
                 request = urllib.request.Request(
+                    f"{base_url}/api/v1/session",
+                    headers={"Cookie": cookie},
+                )
+                with urllib.request.urlopen(request, timeout=2) as response:
+                    session = json.load(response)
+                self.assertEqual(session["runtime_mode"], "core-backed")
+                request = urllib.request.Request(
                     f"{base_url}/api/v1/candidates?status=PENDING",
                     headers={"Cookie": cookie},
                 )

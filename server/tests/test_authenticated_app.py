@@ -143,6 +143,7 @@ class AuthenticatedPreviewHttpTests(unittest.TestCase):
         cookie_header = {"Cookie": f"__Host-ledgerbridge_session={session}"}
         status, session_payload, _ = self.request("GET", "/api/v1/session", headers=cookie_header)
         self.assertEqual(status, 200)
+        self.assertEqual(session_payload["runtime_mode"], "authenticated-preview")
         status, candidates, _ = self.request("GET", "/api/v1/candidates", headers=cookie_header)
         self.assertEqual(status, 200)
         self.assertEqual(len(candidates["items"]), 5)  # type: ignore[arg-type,index]

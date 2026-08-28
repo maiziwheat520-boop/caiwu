@@ -124,6 +124,7 @@ export type Session = {
   principal: string
   csrf_token: string
   expires_at: string
+  runtime_mode: 'synthetic-preview' | 'authenticated-preview' | 'core-backed'
 }
 
 export type AuthStatus = {

@@ -581,14 +581,21 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/v1/session":
             if manager is None:
-                self._send_json(200, state.session_payload(), cookie=True)
+                self._send_json(
+                    200,
+                    {**state.session_payload(), "runtime_mode": self.preview_server.mode},
+                    cookie=True,
+                )
                 return
             token = self._session_token()
             payload = manager.session_payload(token) if token else None
             if payload is None:
                 self._send_json(401, _problem(401, "AUTHENTICATION_REQUIRED", "需要先完成身份验证"))
             else:
-                self._send_json(200, payload)
+                self._send_json(
+                    200,
+                    {**payload, "runtime_mode": self.preview_server.mode},
+                )
             return
         if not self._require_session():
             return
