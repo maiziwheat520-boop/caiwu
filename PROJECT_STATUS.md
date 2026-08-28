@@ -1,6 +1,26 @@
 # Project status
 
-Updated: 2026-08-24
+Updated: 2026-08-28
+
+## F-4 immutable image binding hotfix checkpoint (2026-08-28)
+
+An encrypted-storage cutover preflight exposed a fail-closed restore rehearsal
+failure on production Hermes: the healthy API/worker containers still reference
+immutable image ID `f417a464f7d0...` with the full deployed revision label, while
+the mutable tag `ledgerbridge-app:e426b48` resolves to `cb2cd5c13bcb...` with
+only the seven-character revision label. No disk, filesystem, service cutover,
+or real-data enablement occurred; the newly created encrypted backup remains at
+`/srv/ai-center/backups/ledgerbridge/20260828T061115Z-e426b488b2ab`.
+
+Branch `ai/chatgpt/storage-cutover-image-binding` introduces backup format v3,
+which records and verifies the immutable application image ID while retaining
+v1/v2 restore compatibility. Focused Windows backup/restore tests pass **42**.
+The ignored one-time cutover wizard now detects tag drift, preserves the drifted
+image under a recovery tag, rebuilds a correctly labelled candidate from the
+manifest-verified e426 deployment tree without restarting production, and
+reuses the existing ciphertext for isolated rehearsal. The candidate rebuild,
+rehearsal, storage migration, merge, and deployment still await their explicit
+operator/review gates.
 
 ## R1 database Core read adapter checkpoint (2026-08-24)
 

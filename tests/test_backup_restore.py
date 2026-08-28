@@ -12,6 +12,7 @@ import pytest
 from scripts.backup_restore import (
     BACKUP_FORMAT_V1,
     BACKUP_FORMAT_V2,
+    BACKUP_FORMAT_V3,
     PHASE_1_FUNCTIONS,
     PHASE_1_TABLE_PRIVILEGES,
     PHASE_1_TRIGGERS,
@@ -42,6 +43,7 @@ from scripts.backup_restore import (
     _normalize_fingerprint,
     _replace_database_host,
     _safe_extract_tar,
+    _validate_backup_image,
     _validate_restored_database,
     _verify_payload_hashes,
     _write_payload_hashes,
@@ -58,6 +60,7 @@ def _source_state() -> SourceState:
         api_container="api-id",
         worker_container="worker-id",
         api_image="ledgerbridge-app:abcdef0",
+        api_image_id=f"sha256:{'a' * 64}",
         artifact_volume="ledgerbridge_artifacts",
         database={"alembic_version": "20260821_0002"},
     )
@@ -371,6 +374,54 @@ def test_source_state_comparison_detects_production_drift() -> None:
         _assert_source_unchanged(before, after)
 
 
+class _ImageIdentityRunner:
+    def __init__(self, *, image_id: str, revision: str) -> None:
+        self.image_id = image_id
+        self.revision = revision
+
+    def capture(self, args: list[str], **kwargs: object) -> str:
+        del kwargs
+        output_format = args[4]
+        if output_format == "{{.Id}}":
+            return self.image_id
+        if "org.opencontainers.image.revision" in output_format:
+            return self.revision
+        raise AssertionError(f"unexpected image inspection: {args}")
+
+
+def test_backup_image_rejects_mutable_tag_drift() -> None:
+    revision = "a" * 40
+    backup_image_id = f"sha256:{'b' * 64}"
+    runner = cast(
+        Runner,
+        _ImageIdentityRunner(image_id=f"sha256:{'c' * 64}", revision=revision),
+    )
+
+    with pytest.raises(BackupError, match="immutable image ID"):
+        _validate_backup_image(
+            runner,
+            "ledgerbridge-app:abcdef0",
+            backup_image_id,
+            revision,
+        )
+
+
+def test_backup_image_returns_verified_immutable_id() -> None:
+    revision = "a" * 40
+    image_id = f"sha256:{'b' * 64}"
+    runner = cast(Runner, _ImageIdentityRunner(image_id=image_id, revision=revision))
+
+    assert (
+        _validate_backup_image(
+            runner,
+            "ledgerbridge-app:abcdef0",
+            image_id,
+            revision,
+        )
+        == image_id
+    )
+
+
 def test_safe_extract_accepts_only_expected_regular_file(tmp_path: Path) -> None:
     archive = tmp_path / "payload.tar"
     contents = b"verified"
@@ -437,6 +488,7 @@ def test_v1_database_metadata_compares_only_legacy_source_fields() -> None:
 
     assert compared == sorted(expected)
     assert BACKUP_FORMAT_V1 != BACKUP_FORMAT_V2
+    assert BACKUP_FORMAT_V2 != BACKUP_FORMAT_V3
 
 
 def test_v2_database_metadata_requires_exact_rich_comparison() -> None:

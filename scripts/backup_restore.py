@@ -27,9 +27,10 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 BACKUP_FORMAT_V1 = "ledgerbridge-encrypted-backup-v1"
 BACKUP_FORMAT_V2 = "ledgerbridge-encrypted-backup-v2"
-BACKUP_FORMAT = BACKUP_FORMAT_V2
-SUPPORTED_BACKUP_FORMATS = frozenset({BACKUP_FORMAT_V1, BACKUP_FORMAT_V2})
-RESTORE_REPORT_FORMAT = "ledgerbridge-restore-rehearsal-v2"
+BACKUP_FORMAT_V3 = "ledgerbridge-encrypted-backup-v3"
+BACKUP_FORMAT = BACKUP_FORMAT_V3
+SUPPORTED_BACKUP_FORMATS = frozenset({BACKUP_FORMAT_V1, BACKUP_FORMAT_V2, BACKUP_FORMAT_V3})
+RESTORE_REPORT_FORMAT = "ledgerbridge-restore-rehearsal-v3"
 POSTGRES_IMAGE = (
     "postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b"
 )
@@ -798,6 +799,7 @@ class SourceState:
     api_container: str
     worker_container: str
     api_image: str
+    api_image_id: str
     artifact_volume: str
     database: dict[str, Any]
 
@@ -1064,6 +1066,8 @@ def _collect_source_state(config: CommonConfig, runner: Runner) -> SourceState:
             raise BackupError(f"production service is not healthy: {service}")
     image = runner.capture(["docker", "inspect", "--format", "{{.Config.Image}}", api])
     worker_image = runner.capture(["docker", "inspect", "--format", "{{.Config.Image}}", worker])
+    image_id = runner.capture(["docker", "inspect", "--format", "{{.Image}}", api])
+    worker_image_id = runner.capture(["docker", "inspect", "--format", "{{.Image}}", worker])
     image_revision = runner.capture(
         [
             "docker",
@@ -1075,8 +1079,11 @@ def _collect_source_state(config: CommonConfig, runner: Runner) -> SourceState:
     )
     if image != worker_image or not image.startswith("ledgerbridge-app:"):
         raise BackupError("API and worker do not share one revision-tagged image")
+    if image_id != worker_image_id:
+        raise BackupError("API and worker do not share one immutable image ID")
     if image_revision != revision:
         raise BackupError("production image revision label does not match DEPLOYED_REVISION")
+    _validate_backup_image(runner, image, image_id, revision)
     artifact_volume = runner.capture(
         [
             "docker",
@@ -1097,6 +1104,7 @@ def _collect_source_state(config: CommonConfig, runner: Runner) -> SourceState:
         api_container=api,
         worker_container=worker,
         api_image=image,
+        api_image_id=image_id,
         artifact_volume=artifact_volume,
         database=_database_metadata(runner, postgres),
     )
@@ -1326,7 +1334,7 @@ def _create_plain_payload(
     )
     _deterministic_artifact_tar(
         runner,
-        image=state.api_image,
+        image=state.api_image_id,
         volume=state.artifact_volume,
         destination_dir=work_dir,
         output="artifacts.tar",
@@ -1357,6 +1365,7 @@ def _create_plain_payload(
         "created_at": _now().isoformat(),
         "revision": state.revision,
         "api_image": state.api_image,
+        "api_image_id": state.api_image_id,
         "artifact_volume": state.artifact_volume,
         "database": state.database,
         "artifact_control": artifact_control,
@@ -1415,6 +1424,7 @@ def _assert_source_unchanged(
     checks: tuple[tuple[str, object, object], ...] = (
         ("revision", before.revision, after.revision),
         ("API image", before.api_image, after.api_image),
+        ("API image ID", before.api_image_id, after.api_image_id),
         ("artifact volume", before.artifact_volume, after.artifact_volume),
         ("database metadata", before.database, after.database),
     )
@@ -1668,12 +1678,22 @@ def _validate_tar_archive(archive: Path) -> None:
             names.add(normalized)
 
 
-def _validate_backup_image(runner: Runner, image: object, revision: str) -> str:
+def _validate_backup_image(
+    runner: Runner, image: object, image_id: object | None, revision: str
+) -> str:
     if (
         not isinstance(image, str)
         or re.fullmatch(r"ledgerbridge-app:[0-9a-f]{7,40}", image) is None
     ):
         raise BackupError("backup application image tag is invalid")
+    if image_id is not None and (
+        not isinstance(image_id, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None
+    ):
+        raise BackupError("backup application immutable image ID is invalid")
+    resolved_id = runner.capture(["docker", "image", "inspect", "--format", "{{.Id}}", image])
+    if image_id is not None and not hmac.compare_digest(resolved_id, image_id):
+        raise BackupError("backup application tag no longer resolves to its immutable image ID")
+    inspected_image = image_id if image_id is not None else image
     label = runner.capture(
         [
             "docker",
@@ -1681,12 +1701,12 @@ def _validate_backup_image(runner: Runner, image: object, revision: str) -> str:
             "inspect",
             "--format",
             '{{index .Config.Labels "org.opencontainers.image.revision"}}',
-            image,
+            inspected_image,
         ]
     )
     if not hmac.compare_digest(label, revision):
         raise BackupError("backup application image revision label is invalid")
-    return image
+    return inspected_image
 
 
 def _wait_for_postgres(runner: Runner, container: str, timeout: int = 90) -> None:
@@ -2416,15 +2436,23 @@ def rehearse_restore(config: CommonConfig, backup: Path, runner: Runner | None =
             "artifact_archive_sha256",
             "deployment_tree_sha256",
         }
-        if source_format == BACKUP_FORMAT_V2:
+        rich_format = source_format in {BACKUP_FORMAT_V2, BACKUP_FORMAT_V3}
+        if rich_format:
             expected_metadata_keys.add("artifact_control")
+        if source_format == BACKUP_FORMAT_V3:
+            expected_metadata_keys.add("api_image_id")
         if (
             set(metadata) != expected_metadata_keys
             or metadata.get("format") != source_format
             or metadata.get("revision") != revision
         ):
             raise BackupError("encrypted metadata does not match the backup sidecar")
-        backup_image = _validate_backup_image(runner, metadata.get("api_image"), revision)
+        backup_image = _validate_backup_image(
+            runner,
+            metadata.get("api_image"),
+            metadata.get("api_image_id") if source_format == BACKUP_FORMAT_V3 else None,
+            revision,
+        )
         expected_database = metadata.get("database")
         if not isinstance(expected_database, dict):
             raise BackupError("encrypted database metadata is invalid")
@@ -2468,7 +2496,7 @@ def rehearse_restore(config: CommonConfig, backup: Path, runner: Runner | None =
             extracted / "artifacts.tar", deployment_quota
         )
         source_artifact_control = metadata.get("artifact_control")
-        if source_format == BACKUP_FORMAT_V2:
+        if rich_format:
             if not isinstance(source_artifact_control, dict):
                 raise BackupError("encrypted artifact-control metadata is invalid")
             if source_artifact_control != artifact_observation:
@@ -2559,7 +2587,7 @@ def rehearse_restore(config: CommonConfig, backup: Path, runner: Runner | None =
                 artifact_digest, expected_artifact_digest
             ):
                 raise BackupError("restored artifact volume digest differs from backup")
-            if source_format == BACKUP_FORMAT_V2 and (
+            if rich_format and (
                 actual_database.get("artifact_count") != artifact_observation.get("artifact_count")
                 or actual_database.get("artifact_manifest_sha256")
                 != artifact_observation.get("artifact_manifest_sha256")
@@ -2596,15 +2624,13 @@ def rehearse_restore(config: CommonConfig, backup: Path, runner: Runner | None =
                 "completed_at": _now().isoformat(),
                 "backup": backup.name,
                 "revision": revision,
-                "source_format": "v2" if source_format == BACKUP_FORMAT_V2 else "v1",
+                "source_format": source_format.removeprefix("ledgerbridge-encrypted-backup-"),
                 "database": database_name,
                 "database_compared_fields": compared_database_fields,
                 "source_database_metadata": expected_database,
                 "post_restore_database_observations": actual_database,
                 "unpaired_database_observation_fields": (
-                    []
-                    if source_format == BACKUP_FORMAT_V2
-                    else sorted(set(actual_database) - set(expected_database))
+                    [] if rich_format else sorted(set(actual_database) - set(expected_database))
                 ),
                 "source_artifact_control": source_artifact_control,
                 "post_restore_artifact_observations": artifact_observation,
