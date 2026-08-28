@@ -3,7 +3,7 @@
 - Status: implementation
 - Implementation owner: Codex
 - Branch: `ai/chatgpt/real-data-cutover`
-- Web branch: `ai/chatgpt/real-data-cutover`
+- Web branch: `ai/chatgpt/web-real-data-cutover`
 
 ## Goal
 
