@@ -39,6 +39,45 @@ export type Blocker = {
   message: string
 }
 
+export type EvidencePreviewField = {
+  label: string
+  value: string
+}
+
+export type EvidencePreview =
+  | {
+      kind: 'image'
+      filename: string
+      media_type: string
+      data_url: string
+    }
+  | {
+      kind: 'text'
+      filename: string
+      text: string
+    }
+  | {
+      kind: 'spreadsheet'
+      filename: string
+      reference: string | null
+      matched: boolean
+      records: Array<{
+        sheet: string
+        row_number: number
+        header_row_number: number | null
+        fields: EvidencePreviewField[]
+      }>
+      fallback: {
+        sheet: string
+        rows: Array<{ row_number: number; cells: string[] }>
+      } | null
+    }
+  | {
+      kind: 'unsupported'
+      filename: string
+      reason: string
+    }
+
 export type ApiCandidate = {
   id: string
   short_id: string

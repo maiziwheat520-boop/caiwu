@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Theme } from '@radix-ui/themes'
 import App from './App'
-import type { ApiCandidate, AuthStatus, ReviewEvent } from './types'
+import type { ApiCandidate, AuthStatus, EvidencePreview, ReviewEvent } from './types'
 
 const session = {
   principal: 'finance-admin',
@@ -91,6 +91,7 @@ function installFetch(options: {
   reviewEventPages?: Array<{ items: ReviewEvent[]; next_cursor: string | null }>
   failReviewEvents?: boolean
   runtimeMode?: 'synthetic-preview' | 'authenticated-preview' | 'core-backed'
+  evidencePreview?: EvidencePreview
 } = {}) {
   const {
     items = candidates,
@@ -103,6 +104,11 @@ function installFetch(options: {
     reviewEventPages = [{ items: reviewEvents, next_cursor: null }],
     failReviewEvents = false,
     runtimeMode = 'authenticated-preview',
+    evidencePreview = {
+      kind: 'text',
+      filename: 'message.txt',
+      text: '原始消息内容已直接展示',
+    },
   } = options
   let shouldFailSession = failSessionOnce
   let decisionSaved = false
@@ -160,6 +166,7 @@ function installFetch(options: {
       return response(reconciliation)
     }
     if (url === '/api/v1/connections') return response({ items: [] })
+    if (url.includes('/api/v1/evidence/') && url.includes('/preview?')) return response(evidencePreview)
     if (url.includes('/decisions') && init?.method === 'POST') {
       decisionSaved = true
       const body = JSON.parse(String(init.body)) as { decision: string }
@@ -444,11 +451,58 @@ describe('LedgerBridge Web API client', () => {
     fireEvent.click(screen.getByRole('button', { name: '查看候选与证据' }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByRole('heading', { name: '查看已确认候选' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('link', { name: '消息原文' })).toBeInTheDocument()
+    expect(await within(dialog).findByText('原始消息内容已直接展示')).toBeInTheDocument()
+    expect(within(dialog).getByRole('link', { name: '下载原文件：消息原文' })).toBeInTheDocument()
     expect(await within(dialog).findByText('已核对电子缴款书')).toBeInTheDocument()
     expect(within(dialog).getByLabelText('营业单元')).toHaveAttribute('readonly')
     expect(within(dialog).queryByRole('button', { name: '忽略候选' })).not.toBeInTheDocument()
     expect(within(dialog).queryByRole('button', { name: '保存更正并确认' })).not.toBeInTheDocument()
+  })
+
+  it('renders spreadsheet evidence inline instead of presenting attachment chips', async () => {
+    const workbookCandidate: ApiCandidate = {
+      ...candidates[0],
+      short_id: 'TX-0139',
+      summary: '中行邮箱账单待复核：TX-0139',
+      evidence: [{
+        id: 'evidence-workbook',
+        kind: 'attachment',
+        media_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        sha256: 'b'.repeat(64),
+        original_filename: 'boc-manual-review.xlsx',
+      }],
+    }
+    installFetch({
+      items: [workbookCandidate],
+      evidencePreview: {
+        kind: 'spreadsheet',
+        filename: 'boc-manual-review.xlsx',
+        reference: 'TX-0139',
+        matched: true,
+        records: [{
+          sheet: '26.5中行邮箱待复核',
+          row_number: 26,
+          header_row_number: 4,
+          fields: [
+            { label: '清单ID', value: 'TX-0139' },
+            { label: '金额(元)', value: '¥80,000.00' },
+            { label: '对方名称', value: '陈明哲' },
+          ],
+        }],
+        fallback: null,
+      },
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(await screen.findByText('中行邮箱账单待复核：TX-0139'))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByText('26.5中行邮箱待复核')).toBeInTheDocument()
+    expect(within(dialog).getByText('¥80,000.00')).toBeInTheDocument()
+    expect(within(dialog).getByText('陈明哲')).toBeInTheDocument()
+    expect(within(dialog).queryByText('1 个附件')).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('link', { name: '下载原文件：boc-manual-review.xlsx' })).toBeInTheDocument()
   })
 
   it('loads later review-history pages through the returned cursor', async () => {

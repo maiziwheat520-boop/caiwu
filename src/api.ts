@@ -8,6 +8,7 @@ import type {
   CandidateDetail,
   CandidateListResponse,
   ConnectionStatus,
+  EvidencePreview,
   PasskeyAdditionResult,
   Problem,
   Reconciliation,
@@ -221,6 +222,13 @@ export const api = {
 
   getCandidate: (candidateId: string) =>
     requestJson<CandidateDetail>(`/api/v1/candidates/${encodeURIComponent(candidateId)}`),
+
+  getEvidencePreview: (evidenceId: string, reference: string) => {
+    const query = new URLSearchParams({ reference })
+    return requestJson<EvidencePreview>(
+      `/api/v1/evidence/${encodeURIComponent(evidenceId)}/preview?${query.toString()}`,
+    )
+  },
 
   listReviewEvents: (cursor?: string) => requestJson<ReviewEventListResponse>(
     `/api/v1/review-events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,

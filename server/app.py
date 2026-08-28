@@ -26,6 +26,7 @@ from .core_backend import (
     CoreHttpClient,
     sqlite_contains_business_facts,
 )
+from .evidence_preview import EvidencePreviewError, build_evidence_preview
 from .persistence import (
     IdempotencyConflictError,
     IdempotencyRecord,
@@ -50,6 +51,7 @@ RECONCILIATION_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)$")
 DRAFT_CREATE_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)/drafts$")
 DRAFT_PATH = re.compile(r"^/api/v1/workbook-drafts/([0-9a-f-]{36})$")
 EVIDENCE_PATH = re.compile(r"^/api/v1/evidence/([0-9a-f-]{36})/content$")
+EVIDENCE_PREVIEW_PATH = re.compile(r"^/api/v1/evidence/([0-9a-f-]{36})/preview$")
 MAX_REQUEST_BYTES = 64 * 1024
 STATUSES = {"INCOMPLETE", "PENDING", "CONFLICTED", "CONFIRMED", "IGNORED", "SUPERSEDED"}
 
@@ -641,6 +643,24 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 self._send_json(404, _problem(404, "EVIDENCE_NOT_FOUND", "证据不存在"))
             else:
                 self._send_evidence(evidence)
+            return
+        match = EVIDENCE_PREVIEW_PATH.fullmatch(path)
+        if match:
+            params = parse_qs(query, keep_blank_values=True)
+            reference = params.get("reference", [None])[0]
+            if set(params) - {"reference"} or reference == "":
+                self._send_json(400, _problem(400, "INVALID_EVIDENCE_PREVIEW_QUERY", "证据预览参数无效"))
+                return
+            evidence = state.evidence(match.group(1))
+            if evidence is None:
+                self._send_json(404, _problem(404, "EVIDENCE_NOT_FOUND", "证据不存在"))
+                return
+            try:
+                preview = build_evidence_preview(evidence, reference=reference)
+            except EvidencePreviewError as error:
+                self._send_json(400, _problem(400, "INVALID_EVIDENCE_PREVIEW_QUERY", "证据预览参数无效", str(error)))
+                return
+            self._send_json(200, preview, headers={"Cache-Control": "no-store"})
             return
         match = RECONCILIATION_PATH.fullmatch(path)
         if match:

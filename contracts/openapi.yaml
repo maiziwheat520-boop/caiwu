@@ -403,6 +403,39 @@ paths:
                 format: binary
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/v1/evidence/{evidence_id}/preview:
+    get:
+      operationId: previewEvidence
+      description: >-
+        Return a bounded, inert preview of an authorized evidence object. The
+        immutable original remains available only from the content endpoint.
+      parameters:
+        - name: evidence_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: reference
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9._-]{1,64}$"
+      responses:
+        "200":
+          description: Safe inline evidence preview
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvidencePreview"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /api/v1/reconciliations/{accounting_month}:
     get:
       operationId: getReconciliation
@@ -790,6 +823,67 @@ components:
           pattern: "^[a-f0-9]{64}$"
         original_filename:
           type: [string, "null"]
+          maxLength: 500
+    EvidencePreview:
+      type: object
+      description: >-
+        Bounded inert preview. kind selects image, text, spreadsheet, or an
+        unsupported fallback; active document content is never emitted inline.
+      required: [kind, filename]
+      properties:
+        kind:
+          type: string
+          enum: [image, text, spreadsheet, unsupported]
+        filename:
+          type: string
+          maxLength: 200
+        media_type:
+          type: string
+          enum: [image/jpeg, image/png, image/gif, image/webp]
+        data_url:
+          type: string
+          maxLength: 12000000
+        text:
+          type: string
+          maxLength: 262144
+        reference:
+          type: [string, "null"]
+          maxLength: 64
+        matched:
+          type: boolean
+        records:
+          type: array
+          maxItems: 4
+          items:
+            type: object
+            required: [sheet, row_number, header_row_number, fields]
+            properties:
+              sheet:
+                type: string
+                maxLength: 200
+              row_number:
+                type: integer
+                minimum: 1
+              header_row_number:
+                type: [integer, "null"]
+                minimum: 1
+              fields:
+                type: array
+                maxItems: 30
+                items:
+                  type: object
+                  required: [label, value]
+                  properties:
+                    label:
+                      type: string
+                      maxLength: 1000
+                    value:
+                      type: string
+                      maxLength: 1000
+        fallback:
+          type: [object, "null"]
+        reason:
+          type: string
           maxLength: 500
     Blocker:
       type: object

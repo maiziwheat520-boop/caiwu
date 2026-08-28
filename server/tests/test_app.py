@@ -177,6 +177,29 @@ class SyntheticBffTests(unittest.TestCase):
         self.assertEqual(status, 404)
         self.assertEqual(problem["code"], "EVIDENCE_NOT_FOUND")
 
+    def test_evidence_preview_is_authenticated_and_never_executes_active_content(self) -> None:
+        message_id = "1dedc967-753a-4c02-8409-e51c02e6cc18"
+        status, preview, headers = self.request(
+            f"/api/v1/evidence/{message_id}/preview?reference=C-8F21"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(preview["kind"], "text")
+        self.assertIn("合成原文", preview["text"])
+        self.assertEqual(headers.headers["Cache-Control"], "no-store")
+
+        status, problem, _ = self.request(
+            f"/api/v1/evidence/{message_id}/preview?reference=../unsafe"
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(problem["code"], "INVALID_EVIDENCE_PREVIEW_QUERY")
+
+        status, problem, _ = self.request(
+            f"/api/v1/evidence/{message_id}/preview?reference=C-8F21",
+            authenticated=False,
+        )
+        self.assertEqual(status, 401)
+        self.assertEqual(problem["code"], "AUTHENTICATION_REQUIRED")
+
     def test_csrf_idempotency_and_immutable_revision_delta(self) -> None:
         candidate_id = "2d0d0cb9-d4ab-4e3f-9879-7812882b8f21"
         body = {"decision": "CONFIRM", "expected_revision": 1, "reason": "已核对合成附件"}
