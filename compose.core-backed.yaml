@@ -1,0 +1,77 @@
+services:
+  web:
+    image: python@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
+    container_name: ledgerbridge-web-core
+    restart: unless-stopped
+    user: "${LEDGERBRIDGE_WEB_UID:-1000}:${LEDGERBRIDGE_WEB_GID:-1000}"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      LEDGERBRIDGE_MODE: core-backed
+      PORT: "8080"
+      BIND_ADDRESS: 0.0.0.0
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: /vendor
+      SESSION_COOKIE_SECURE: "1"
+      SITE_ROOT: /site
+      DATA_PATH: /data/ledgerbridge-preview.sqlite3
+      WEBAUTHN_RP_ID: "${WEBAUTHN_RP_ID:?WEBAUTHN_RP_ID is required}"
+      WEBAUTHN_EXPECTED_ORIGIN: "${WEBAUTHN_EXPECTED_ORIGIN:?WEBAUTHN_EXPECTED_ORIGIN is required}"
+      TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:?TRUSTED_PROXY_CIDRS is required}"
+      SETUP_CODE_SHA256: "${SETUP_CODE_SHA256:?SETUP_CODE_SHA256 is required}"
+      SETUP_CODE_EXPIRES_AT: "${SETUP_CODE_EXPIRES_AT:?SETUP_CODE_EXPIRES_AT is required}"
+      ALLOW_INITIAL_BOOTSTRAP: "0"
+      INSTALLATION_MARKER_PATH: /config/enrolled-v1
+      CORE_BASE_URL: https://internal-ingress:8443
+      CORE_CA_FILE: /run/ledgerbridge-core/ca.crt
+      CORE_CERT_FILE: /run/ledgerbridge-core/client.crt
+      CORE_KEY_FILE: /run/ledgerbridge-core/client.key
+      CORE_TIMEOUT_SECONDS: "${CORE_TIMEOUT_SECONDS:-10}"
+      CORE_USER_ASSERTION_KEY: "${CORE_USER_ASSERTION_KEY:?Core assertion key is required}"
+      CORE_ASSERTION_ISSUER: "${CORE_ASSERTION_ISSUER:?Core assertion issuer is required}"
+      CORE_ASSERTION_AUDIENCE: "${CORE_ASSERTION_AUDIENCE:?Core assertion audience is required}"
+      CORE_WORKLOAD_PRINCIPAL: "${CORE_WORKLOAD_PRINCIPAL:?Core workload principal is required}"
+      CORE_POLICY_GENERATION: "${CORE_POLICY_GENERATION:?Core policy generation is required}"
+      CORE_USER_SUBJECT: "${CORE_USER_SUBJECT:?Core user subject is required}"
+      CORE_AUTHENTICATION_GENERATION: "${CORE_AUTHENTICATION_GENERATION:?authentication generation is required}"
+      CORE_ENTITY_REF: "${CORE_ENTITY_REF:?Core entity ref is required}"
+      CORE_BUSINESS_UNIT_REF: "${CORE_BUSINESS_UNIT_REF:?Core business-unit ref is required}"
+    command:
+      - python
+      - /app/run_preview.py
+    volumes:
+      - ./dist:/site:ro
+      - ./deploy/server.py:/app/run_preview.py:ro
+      - ./server:/app/server:ro
+      - ./vendor:/vendor:ro
+      - ./state:/data
+      - ./config:/config:ro
+      - "${CORE_CA_HOST_FILE:?Core CA host file is required}:/run/ledgerbridge-core/ca.crt:ro"
+      - "${CORE_CLIENT_CERT_HOST_FILE:?Core client certificate host file is required}:/run/ledgerbridge-core/client.crt:ro"
+      - "${CORE_CLIENT_KEY_HOST_FILE:?Core client key host file is required}:/run/ledgerbridge-core/client.key:ro"
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    networks:
+      - default
+      - review-link
+    ports:
+      - "127.0.0.1:${LEDGERBRIDGE_WEB_PORT:-8781}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+networks:
+  review-link:
+    external: true
+    name: ledgerbridge_core_review

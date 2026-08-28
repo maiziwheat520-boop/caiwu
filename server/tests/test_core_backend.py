@@ -15,7 +15,11 @@ from pathlib import Path
 from typing import Any
 
 from server.app import COOKIE_NAME, create_server
-from server.core_backend import CoreBackedState, sqlite_contains_business_facts
+from server.core_backend import (
+    CoreBackendError,
+    CoreBackedState,
+    sqlite_contains_business_facts,
+)
 
 
 CANDIDATE_ID = "30000000-0000-4000-8000-000000000003"
@@ -186,6 +190,32 @@ def build_state(client: FakeCoreClient) -> CoreBackedState:
 
 
 class CoreBackedAdapterTests(unittest.TestCase):
+    def test_missing_reconciliation_snapshot_does_not_hide_imported_candidates(self) -> None:
+        client = FakeCoreClient()
+
+        def missing_snapshot(
+            method: str,
+            path: str,
+            *,
+            body: bytes | None = None,
+            headers: dict[str, str] | None = None,
+        ) -> dict[str, object]:
+            if path.startswith("/internal/v1/reconciliations/"):
+                raise CoreBackendError(404, {"code": "RESOURCE_NOT_VISIBLE"})
+            return FakeCoreClient.json(client, method, path, body=body, headers=headers)
+
+        client.json = missing_snapshot  # type: ignore[method-assign]
+        reconciliation = build_state(client).reconciliation("2026-08")
+
+        self.assertEqual(reconciliation["accounting_month"], "2026-08")
+        self.assertEqual(reconciliation["revision"], 0)
+        self.assertFalse(reconciliation["ready"])
+        self.assertEqual(reconciliation["business_units"], [])
+        self.assertEqual(
+            reconciliation["blockers"][0]["code"],  # type: ignore[index]
+            "RECONCILIATION_SNAPSHOT_MISSING",
+        )
+
     def test_maps_outlook_candidate_and_binds_exact_user_assertion(self) -> None:
         client = FakeCoreClient()
         state = build_state(client)

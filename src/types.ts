@@ -14,6 +14,7 @@ export type SourceChannel =
   | 'weixin'
   | 'hermes'
   | 'outlook'
+  | 'controlled_upload'
   | 'synthetic'
 
 export type SourceLabel =
@@ -21,7 +22,8 @@ export type SourceLabel =
   | '钉钉'
   | '微信'
   | 'Hermes'
-  | '中行邮箱'
+  | '中行账单（复核材料）'
+  | '照片凭证'
   | '合成数据'
 
 export type EvidenceReference = {

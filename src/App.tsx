@@ -89,7 +89,8 @@ const sourceLabels: Record<ApiCandidate['source_channel'], Candidate['source']> 
   dingtalk: '钉钉',
   weixin: '微信',
   hermes: 'Hermes',
-  outlook: '中行邮箱',
+  outlook: '中行账单（复核材料）',
+  controlled_upload: '照片凭证',
   synthetic: '合成数据',
 }
 
@@ -1284,7 +1285,8 @@ function SourceIcon({ source }: { source: Candidate['source'] }) {
     钉钉: '钉',
     微信: '微',
     Hermes: 'H',
-    中行邮箱: '邮',
+    '中行账单（复核材料）': '银',
+    照片凭证: '照',
     合成数据: '合',
   }
   return <span className={`source-icon source-${source}`}>{initials[source] || '?'}</span>

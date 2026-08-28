@@ -331,10 +331,26 @@ class CoreBackedState:
                 "business_unit": self.business_unit_ref,
             }
         )
-        payload = self.client.json(
-            "GET",
-            f"/internal/v1/reconciliations/{month}?{query}",
-        )
+        try:
+            payload = self.client.json(
+                "GET",
+                f"/internal/v1/reconciliations/{month}?{query}",
+            )
+        except CoreBackendError as error:
+            if error.status != 404:
+                raise
+            return {
+                "accounting_month": month,
+                "revision": 0,
+                "ready": False,
+                "blockers": [
+                    {
+                        "code": "RECONCILIATION_SNAPSHOT_MISSING",
+                        "message": "正式候选已导入，月度对账快照尚未生成",
+                    }
+                ],
+                "business_units": [],
+            }
         blockers = payload.get("blockers")
         if not isinstance(blockers, list):
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
