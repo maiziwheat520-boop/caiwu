@@ -2,6 +2,18 @@
 
 Updated: 2026-08-28
 
+## May financial foundation checkpoint (2026-08-29)
+
+The real-data cutover branch now contains a one-command, review-only financial foundation
+builder for WeChat Pay, Alipay, and the controlled Bank of China monthly review workbook. The
+real May 2026 rehearsal normalized 208 rows (93 WeChat, 73 Alipay, 42 BOC), retained 194 rows in
+the provisional result, registered 13 supplied or observed accounts, and produced five missing
+statement requests. Record-id, evidence-reference, and transfer-balance checks all passed. The
+generated workbook has a concise first-page summary and separate transaction, account,
+internal-transfer, and missing-evidence sheets. It does not automatically post, confirm, or
+replace production candidates. Production Web import and replay verification remain the next
+gate. See `docs/operations/MAY_FINANCIAL_FOUNDATION.md`.
+
 ## OCR and managed-account preprocessing checkpoint (2026-08-29)
 
 The real-data cutover branch now contains an offline bill OCR boundary and a statement-backed

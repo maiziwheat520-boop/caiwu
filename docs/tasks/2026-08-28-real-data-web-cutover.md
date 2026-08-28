@@ -73,3 +73,17 @@ as evidence-bound candidates that remain pending human review.
 - The existing controlled-bundle command accepts private OCR observations and bypasses its
   legacy fixed-cell photo candidates when they are supplied. Production candidates are not
   silently replaced until the superseding import gate is run and reviewed.
+
+## May financial foundation checkpoint (2026-08-29)
+
+- The authorized WeChat Pay and Alipay annual exports are now normalized together with the
+  controlled May BOC rows by `scripts/build_financial_foundation_workbook.mjs`.
+- `scripts/run_financial_foundation.ps1` is the single local build entry point. It writes a
+  concise review workbook plus a non-sensitive validation manifest and fails closed on duplicate
+  record ids, missing evidence references, or invalid internal-transfer links.
+- A payment-method or same-holder counterparty account is recorded immediately, but becomes a
+  Managed Account only after its own statement is supplied. Until then it is listed in
+  `待补佐证` and cannot be automatically cleared.
+- The real May rehearsal normalized 208 rows and registered 13 accounts. Five accounts still need
+  independent statements. No automatic posting, candidate confirmation, or production Web
+  replacement occurred at this checkpoint.
