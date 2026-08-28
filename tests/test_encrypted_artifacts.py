@@ -105,22 +105,14 @@ def test_encrypted_artifact_binds_object_reference_digest_size_and_key(tmp_path:
 def test_encrypted_artifact_descriptor_metadata_is_verified(tmp_path: Path) -> None:
     store = _store(tmp_path)
     artifact = store.publish(io.BytesIO(b"descriptor evidence"))
-    with store._durable.open_verified(artifact.ciphertext) as ciphertext_stream:
-        from ledgerbridge.crypto import _parse_envelope
-
-        header = _parse_envelope(ciphertext_stream.read()).header
-    metadata = EncryptedEnvelopeMetadata(
-        chunk_size=header.chunk_size,
-        stream_header=header.stream_header,
-        wrapped_key=header.wrapped_key,
-    )
+    metadata = store.envelope_metadata(artifact)
     with store.open_verified(artifact, envelope_metadata=metadata) as stream:
         assert stream.read() == b"descriptor evidence"
 
     drifted = EncryptedEnvelopeMetadata(
-        chunk_size=header.chunk_size + 1,
-        stream_header=header.stream_header,
-        wrapped_key=header.wrapped_key,
+        chunk_size=metadata.chunk_size + 1,
+        stream_header=metadata.stream_header,
+        wrapped_key=metadata.wrapped_key,
     )
     with (
         pytest.raises(EncryptedArtifactIntegrityError, match="authentication"),

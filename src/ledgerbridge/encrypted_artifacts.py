@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 from ledgerbridge.artifacts import ArtifactStore, BinarySource, PublishedArtifact
-from ledgerbridge.crypto import CryptoError, SecretStreamCipher
+from ledgerbridge.crypto import CryptoError, SecretStreamCipher, _parse_envelope
 from ledgerbridge.keyring import KeyProviderError, WrappedKey
 from ledgerbridge.secure_spool import EncryptedSpool
 
@@ -241,6 +241,26 @@ class EncryptedArtifactStore:
             raise ValueError("prefix limit must be non-negative")
         with self.open_verified(artifact) as stream:
             return stream.read(limit)
+
+    def envelope_metadata(
+        self, artifact: EncryptedPublishedArtifact
+    ) -> EncryptedEnvelopeMetadata:
+        """Return the authenticated envelope fields persisted beside one blob."""
+
+        _require_artifact(artifact)
+        with self._durable.open_verified(artifact.ciphertext) as ciphertext_stream:
+            ciphertext = ciphertext_stream.read()
+        try:
+            header = _parse_envelope(ciphertext).header
+        except CryptoError as exc:
+            raise EncryptedArtifactIntegrityError(
+                "encrypted artifact envelope metadata is invalid"
+            ) from exc
+        return EncryptedEnvelopeMetadata(
+            chunk_size=header.chunk_size,
+            stream_header=header.stream_header,
+            wrapped_key=header.wrapped_key,
+        )
 
 
 def _artifact_aad(object_ref: str) -> bytes:

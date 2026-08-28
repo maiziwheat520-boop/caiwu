@@ -741,6 +741,24 @@ def test_database_reader_verifies_cursor_and_row_scope_before_returning() -> Non
         )
 
 
+def test_database_candidate_maps_canonical_channel_to_wire_contract() -> None:
+    candidate = SyntheticInternalReadService()._fixture.candidates[1]
+    row = candidate.model_dump()
+    row["source"] = {
+        **row["source"],
+        "ingest_channel": "controlled_upload",
+        "source_event_ref": str(row["source"]["source_event_ref"]),
+    }
+    row["evidence"] = [
+        {**item, "evidence_ref": str(item["evidence_ref"])} for item in row["evidence"]
+    ]
+    row["blockers"] = list(row["blockers"])
+
+    projection = DatabaseInternalReadService._candidate(row)
+
+    assert projection.source.ingest_channel.value == "CONTROLLED_UPLOAD"
+
+
 def test_database_reader_scans_past_nonmatching_month_rows() -> None:
     template = SyntheticInternalReadService()._fixture.candidates[1].model_dump()
     rows = [dict(template) for _ in range(101)]

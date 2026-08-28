@@ -22,7 +22,15 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ledgerbridge.artifacts import ArtifactStoreError, PublishedArtifact, storage_key_for_digest
-from ledgerbridge.candidate_contract import CandidateProjection, CandidateStatus
+from ledgerbridge.candidate_contract import (
+    Blocker,
+    CandidateProjection,
+    CandidateStatus,
+    EvidenceReference,
+    IngestChannel,
+    ReviewSummary,
+    SourceProjection,
+)
 from ledgerbridge.encrypted_artifacts import (
     EncryptedArtifactError,
     EncryptedArtifactStore,
@@ -1010,11 +1018,52 @@ class DatabaseInternalReadService:
         try:
             value = dict(row)
             value["status"] = CandidateStatus(cast(str, value["status"]))
+            source = dict(cast(Mapping[str, object], value["source"]))
+            source["ingest_channel"] = _wire_ingest_channel(
+                cast(str | IngestChannel, source["ingest_channel"])
+            )
+            value["source"] = SourceProjection.model_validate(source)
+            value["evidence"] = tuple(
+                EvidenceReference.model_validate(item)
+                for item in _database_json_objects(value["evidence"], field="evidence")
+            )
+            value["blockers"] = tuple(
+                Blocker.model_validate(item)
+                for item in _database_json_objects(value["blockers"], field="blockers")
+            )
+            value["review_summary"] = ReviewSummary.model_validate(
+                dict(cast(Mapping[str, object], value["review_summary"]))
+            )
             return CandidateProjection.model_validate(value, strict=True)
         except (ValueError, TypeError, KeyError) as exc:
             raise InternalReadBackendUnavailable(
                 "database candidate projection is invalid"
             ) from exc
+
+
+def _database_json_objects(value: object, *, field: str) -> tuple[Mapping[str, object], ...]:
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"database {field} projection must be a JSON array")
+    if not all(isinstance(item, Mapping) for item in value):
+        raise TypeError(f"database {field} projection must contain JSON objects")
+    return tuple(cast(Mapping[str, object], item) for item in value)
+
+
+def _wire_ingest_channel(value: str | IngestChannel) -> IngestChannel:
+    """Map canonical database registry IDs onto the versioned wire contract."""
+    if isinstance(value, IngestChannel):
+        return value
+    mapping = {
+        "controlled_upload": IngestChannel.CONTROLLED_UPLOAD,
+        "hermes": IngestChannel.HERMES,
+        "manual_upload": IngestChannel.CONTROLLED_UPLOAD,
+        "outlook": IngestChannel.OUTLOOK,
+        "synthetic_upload": IngestChannel.SYNTHETIC,
+    }
+    try:
+        return mapping[value]
+    except KeyError as exc:
+        raise ValueError("database ingest channel has no wire-contract mapping") from exc
 
 
 def _read_resource_bytes(name: str) -> bytes:

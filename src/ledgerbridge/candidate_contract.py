@@ -67,6 +67,7 @@ class EvidenceKind(StrEnum):
 class IngestChannel(StrEnum):
     HERMES = "HERMES"
     OUTLOOK = "OUTLOOK"
+    CONTROLLED_UPLOAD = "CONTROLLED_UPLOAD"
     SYNTHETIC = "SYNTHETIC"
 
 
