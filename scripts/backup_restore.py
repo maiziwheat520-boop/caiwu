@@ -240,6 +240,33 @@ SELECT json_build_object(
     )
 )::text;
 """.strip()
+R1_ARTIFACT_MANIFEST_SQL = """
+WITH artifacts AS (
+    SELECT sha256, byte_size, storage_key
+      FROM public.raw_artifact
+    UNION
+    SELECT ciphertext_sha256 AS sha256,
+           ciphertext_size AS byte_size,
+           storage_key
+      FROM public.encrypted_blob_version
+)
+SELECT json_build_object(
+    'artifact_count', (SELECT count(*) FROM artifacts),
+    'artifact_manifest_sha256', encode(
+        digest(
+            COALESCE((
+                SELECT string_agg(
+                    encode(sha256, 'hex') || ':' || byte_size::text || ':' || storage_key,
+                    E'\\n' ORDER BY encode(sha256, 'hex')
+                )
+                FROM artifacts
+            ), ''),
+            'sha256'
+        ),
+        'hex'
+    )
+)::text;
+""".strip()
 
 # R1 facts are deliberately kept out of the legacy role-grant baseline above.
 # The compatibility role still owns the Phase 1/2/3 runtime grants, but it must
@@ -297,14 +324,24 @@ R1_INTERNAL_READ_FUNCTIONS = (
 R1_INTERNAL_READ_FUNCTION_SIGNATURES = {
     "current_audit_horizon": "",
     "list_candidates_as_of": (
-        "uuid, uuid, character varying, bigint, bytea, timestamp with time zone, uuid, integer"
+        "p_entity_id uuid, p_business_unit_id uuid, p_status character varying, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea, "
+        "p_last_created_at timestamp with time zone, p_last_candidate_id uuid, p_limit integer"
     ),
-    "get_reconciliation_as_of": "uuid, uuid, date, bigint, bytea",
-    "resolve_active_evidence_blob": "uuid",
-    "get_ledger_summary_as_of": "uuid, uuid, date, date, bigint, bytea",
+    "get_reconciliation_as_of": (
+        "p_entity_id uuid, p_business_unit_id uuid, p_accounting_month date, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
+    "resolve_active_evidence_blob": "p_evidence_ref uuid",
+    "get_ledger_summary_as_of": (
+        "p_entity_id uuid, p_business_unit_id uuid, p_from_month date, p_to_month date, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
     "append_internal_evidence_read_audit": (
-        "uuid, character varying, character varying, character varying, "
-        "uuid, uuid, uuid, uuid, bigint, bytea"
+        "p_operation_id uuid, p_principal_ref character varying, "
+        "p_verified_san character varying, p_policy_generation character varying, "
+        "p_evidence_ref uuid, p_entity_id uuid, p_business_unit_id uuid, "
+        "p_blob_ref uuid, p_byte_size bigint, p_plaintext_sha256 bytea"
     ),
 }
 R1_SECURITY_REVISION = "20260824_0015"
@@ -391,9 +428,7 @@ WITH expected_roles(role_name) AS (
                 'role', CASE WHEN m.member = r.oid
                             THEN pg_get_userbyid(m.roleid)
                             ELSE pg_get_userbyid(m.member) END,
-                'admin_option', m.admin_option,
-                'inherit_option', m.inherit_option,
-                'set_option', m.set_option
+                'admin_option', m.admin_option
             ) ORDER BY m.roleid, m.member)
               FROM pg_auth_members AS m
              WHERE m.member = r.oid OR m.roleid = r.oid
@@ -1002,7 +1037,12 @@ def _database_metadata(
             raise BackupError("R1 security query returned an incomplete object")
         metadata.update(cast(dict[str, Any], r1_security))
     if revision >= "20260821_0003":
-        artifact_manifest = query(ARTIFACT_MANIFEST_SQL)
+        artifact_sql = (
+            R1_ARTIFACT_MANIFEST_SQL
+            if revision >= "20260824_0012"
+            else ARTIFACT_MANIFEST_SQL
+        )
+        artifact_manifest = query(artifact_sql)
         if not isinstance(artifact_manifest, dict):
             raise BackupError("artifact manifest query returned an invalid object")
         metadata.update(cast(dict[str, Any], artifact_manifest))
@@ -1745,14 +1785,61 @@ def _database_name(metadata: dict[str, Any]) -> str:
     return value
 
 
+def _legacy_runtime_role_is_retired(metadata: dict[str, Any]) -> bool:
+    roles = metadata.get("r1_role_matrix")
+    if isinstance(roles, list):
+        app = next(
+            (
+                item
+                for item in roles
+                if isinstance(item, dict) and item.get("role") == "ledgerbridge_app"
+            ),
+            None,
+        )
+        if isinstance(app, dict) and isinstance(app.get("login"), bool):
+            return app["login"] is False
+    revision = metadata.get("alembic_version")
+    return (
+        isinstance(revision, str)
+        and revision >= "20260823_0007"
+        and metadata.get("runtime_role_valid") is False
+        and metadata.get("role_grant_count") == 0
+    )
+
+
 def _validate_restored_database(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
     is_v2 = expected.get("metadata_version") == 2
     compared_fields = sorted(expected)
     if is_v2:
+        comparison_expected = dict(expected)
         comparison_actual = dict(actual)
+        database_owner = expected.get("database_owner")
+        if isinstance(database_owner, str):
+            owner_grantees = {database_owner, "pg_database_owner"}
+            for field in ("r1_database_acl", "r1_schema_acl"):
+                expected_acl = expected.get(field)
+                actual_acl = actual.get(field)
+                if isinstance(expected_acl, list) and isinstance(actual_acl, list):
+                    comparison_expected[field] = sorted(
+                        (
+                            item
+                            for item in expected_acl
+                            if not isinstance(item, dict)
+                            or item.get("grantee") not in owner_grantees
+                        ),
+                        key=lambda item: json.dumps(item, sort_keys=True),
+                    )
+                    comparison_actual[field] = sorted(
+                        (
+                            item
+                            for item in actual_acl
+                            if not isinstance(item, dict)
+                            or item.get("grantee") not in owner_grantees
+                        ),
+                        key=lambda item: json.dumps(item, sort_keys=True),
+                    )
         expected_roles = expected.get("r1_role_matrix")
         actual_roles = actual.get("r1_role_matrix")
-        database_owner = expected.get("database_owner")
         if (
             isinstance(database_owner, str)
             and actual.get("database_owner") == database_owner
@@ -1770,20 +1857,27 @@ def _validate_restored_database(expected: dict[str, Any], actual: dict[str, Any]
                 item for item in actual_roles if item.get("role") != database_owner
             ]
     else:
+        comparison_expected = expected
         comparison_actual = {key: actual.get(key) for key in expected}
-    if comparison_actual != expected:
+    if comparison_actual != comparison_expected:
         differing = sorted(
             key
-            for key in set(expected) | set(comparison_actual)
-            if expected.get(key) != comparison_actual.get(key)
+            for key in set(comparison_expected) | set(comparison_actual)
+            if comparison_expected.get(key) != comparison_actual.get(key)
         )
         raise BackupError(f"restored database metadata differs: {', '.join(differing)}")
-    if not isinstance(actual.get("role_grant_count"), int) or actual["role_grant_count"] <= 0:
+    legacy_role_retired = _legacy_runtime_role_is_retired(actual)
+    role_grant_count = actual.get("role_grant_count")
+    if not isinstance(role_grant_count, int):
+        raise BackupError("ledgerbridge_app restored table grants are invalid")
+    if legacy_role_retired and role_grant_count != 0:
+        raise BackupError("retired ledgerbridge_app retains restored table grants")
+    if not legacy_role_retired and role_grant_count <= 0:
         raise BackupError("ledgerbridge_app has no restored table grants")
     required_true = (
-        "runtime_role_valid",
-        "audit_select_only",
-        "schema_create_denied",
+        ("schema_create_denied",)
+        if legacy_role_retired
+        else ("runtime_role_valid", "audit_select_only", "schema_create_denied")
     )
     failed = [name for name in required_true if actual.get(name) is not True]
     if failed:
@@ -1844,16 +1938,21 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
     ):
         raise BackupError("restored R1 role matrix is incomplete")
     active_roles = tuple(role for role in R1_CONTROLLED_ROLES if role in role_name_set)
+    revision = metadata.get("alembic_version")
+    if not isinstance(revision, str):
+        raise BackupError("restored database revision is invalid")
+    legacy_role_retired = _legacy_runtime_role_is_retired(metadata)
     for item in roles:
         role = item.get("role")
         is_database_owner = role == database_owner
+        expected_login = role != "ledgerbridge_app" or not legacy_role_retired
         if (
             not isinstance(role, str)
             or not isinstance(item.get("login"), bool)
             or (
                 not is_database_owner
                 and (
-                    (role != "ledgerbridge_backup" and item.get("login") is not True)
+                    (role != "ledgerbridge_backup" and item.get("login") is not expected_login)
                     or item.get("superuser") is not False
                     or item.get("create_database") is not False
                     or item.get("create_role") is not False
@@ -1897,7 +1996,7 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
             if privilege != "CONNECT" or not _is_not_grantable(item.get("grantable")):
                 raise BackupError("restored R1 runtime database ACL is over-privileged")
 
-    expected_connect = {*R1_ROLES, database_owner}
+    expected_connect = set(R1_ROLES)
     if "ledgerbridge_backup" in active_roles:
         expected_connect.add("ledgerbridge_backup")
     connect_grantees = {
@@ -1917,6 +2016,7 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
         },
         "internal_read": {
             database_owner: {"USAGE", "CREATE"},
+            "ledgerbridge_api": {"USAGE"},
             "ledgerbridge_reader": {"USAGE"},
         },
     }
@@ -2132,8 +2232,14 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
         schema = item.get("schema")
         if not isinstance(item.get("execute"), bool):
             raise BackupError("restored R1 effective function privilege metadata is invalid")
-        if schema == "internal_read" and item["execute"] != (role == "ledgerbridge_reader"):
-            raise BackupError("restored R1 internal_read function privilege matrix is invalid")
+        if schema == "internal_read":
+            expected_executor = (
+                "ledgerbridge_api"
+                if item.get("name") == "append_internal_evidence_read_audit"
+                else "ledgerbridge_reader"
+            )
+            if item["execute"] != (role == expected_executor):
+                raise BackupError("restored R1 internal_read function privilege matrix is invalid")
         if schema == "public" and item["execute"]:
             raise BackupError("restored R1 public validator is executable by a runtime role")
 
@@ -2153,7 +2259,12 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
         if not isinstance(item.get("usage"), bool) or not isinstance(item.get("create"), bool):
             raise BackupError("restored R1 effective schema privilege metadata is invalid")
         if item["create"] or (
-            schema == "internal_read" and item["usage"] != (role == "ledgerbridge_reader")
+            schema == "internal_read"
+            and item["usage"]
+            != (
+                role == "ledgerbridge_reader"
+                or (role == "ledgerbridge_api" and revision >= "20260828_0016")
+            )
         ):
             raise BackupError("restored R1 schema privilege matrix is invalid")
 
@@ -2164,6 +2275,7 @@ def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
     revision = metadata.get("alembic_version")
     if not isinstance(revision, str):
         raise BackupError("restored database revision is invalid")
+    legacy_role_retired = _legacy_runtime_role_is_retired(metadata)
     if revision >= R1_SECURITY_REVISION:
         _validate_r1_database_security(metadata)
     if metadata.get("database_temp_denied") is not True:
@@ -2225,11 +2337,13 @@ def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
     if not isinstance(function_grants, list):
         raise BackupError("restored grant metadata is invalid: function_grants")
 
-    expected_table_grants = set(PHASE_1_TABLE_PRIVILEGES)
-    if revision >= "20260821_0003":
-        expected_table_grants.update(PHASE_2_TABLE_PRIVILEGES)
-    if revision >= "20260822_0004":
-        expected_table_grants.update(PHASE_3_TABLE_PRIVILEGES)
+    expected_table_grants: set[tuple[str, str]] = set()
+    if not legacy_role_retired:
+        expected_table_grants.update(PHASE_1_TABLE_PRIVILEGES)
+        if revision >= "20260821_0003":
+            expected_table_grants.update(PHASE_2_TABLE_PRIVILEGES)
+        if revision >= "20260822_0004":
+            expected_table_grants.update(PHASE_3_TABLE_PRIVILEGES)
     actual_table_grants: set[tuple[str, str]] = set()
     for value in table_grants:
         if not isinstance(value, dict):
@@ -2248,10 +2362,11 @@ def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
     if not isinstance(column_grants, list):
         raise BackupError("restored grant metadata is invalid: column_grants")
     expected_column_grants: set[tuple[str, str, str]] = set()
-    if revision >= "20260821_0003":
-        expected_column_grants.update(PHASE_2_COLUMN_PRIVILEGES)
-    if revision >= "20260822_0004":
-        expected_column_grants.update(PHASE_3_COLUMN_PRIVILEGES)
+    if not legacy_role_retired:
+        if revision >= "20260821_0003":
+            expected_column_grants.update(PHASE_2_COLUMN_PRIVILEGES)
+        if revision >= "20260822_0004":
+            expected_column_grants.update(PHASE_3_COLUMN_PRIVILEGES)
     actual_column_grants: set[tuple[str, str, str]] = set()
     for value in column_grants:
         if not isinstance(value, dict):
@@ -2286,7 +2401,10 @@ def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
         if value.get("grantable") != "NO":
             raise BackupError("restored runtime function grant is grantable")
         runtime_function_grants.add((function, privilege))
-    if runtime_function_grants != {("append_audit_event", "EXECUTE")}:
+    expected_function_grants = (
+        set() if legacy_role_retired else {("append_audit_event", "EXECUTE")}
+    )
+    if runtime_function_grants != expected_function_grants:
         raise BackupError("restored runtime function grants differ from the required baseline")
 
 
@@ -2597,18 +2715,32 @@ def rehearse_restore(config: CommonConfig, backup: Path, runner: Runner | None =
                 )
 
             environment = _parse_env(deployment / ".env")
-            source_url = environment.get("LEDGERBRIDGE_DATABASE_URL")
-            if source_url is None:
-                raise BackupError("deployment .env lacks LEDGERBRIDGE_DATABASE_URL")
-            restored_url = _replace_database_host(source_url, resources.container)
-            identity = _runtime_identity(
-                runner,
-                image=backup_image,
-                network=resources.network,
-                database_url=restored_url,
-            )
-            if not hmac.compare_digest(identity, "ledgerbridge_app|ledgerbridge_app"):
-                raise BackupError("application image did not connect as ledgerbridge_app")
+            if _legacy_runtime_role_is_retired(expected_database):
+                runtime_identities = {
+                    "LEDGERBRIDGE_API_DATABASE_URL": "ledgerbridge_api",
+                    "LEDGERBRIDGE_WORKER_DATABASE_URL": "ledgerbridge_worker",
+                    "LEDGERBRIDGE_READER_DATABASE_URL": "ledgerbridge_reader",
+                }
+            else:
+                runtime_identities = {
+                    "LEDGERBRIDGE_DATABASE_URL": "ledgerbridge_app",
+                }
+            for variable, expected_role in runtime_identities.items():
+                source_url = environment.get(variable)
+                if source_url is None:
+                    raise BackupError(f"deployment .env lacks {variable}")
+                restored_url = _replace_database_host(source_url, resources.container)
+                identity = _runtime_identity(
+                    runner,
+                    image=backup_image,
+                    network=resources.network,
+                    database_url=restored_url,
+                )
+                expected_identity = f"{expected_role}|{expected_role}"
+                if not hmac.compare_digest(identity, expected_identity):
+                    raise BackupError(
+                        f"application image did not connect as {expected_role}"
+                    )
         finally:
             _cleanup_restore_resources(runner, resources)
             after = _collect_source_state(config, runner)

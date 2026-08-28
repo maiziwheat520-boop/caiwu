@@ -1,4 +1,23 @@
 services:
+  internal-socket-init:
+    image: ledgerbridge-app:${LEDGERBRIDGE_REVISION:?review image revision is required}
+    user: "0:0"
+    command:
+      - /bin/sh
+      - -ec
+      - chown 0:0 /run/ledgerbridge-internal; chmod 0770 /run/ledgerbridge-internal; chown 10001:10001 /run/ledgerbridge-internal
+    restart: "no"
+    read_only: true
+    network_mode: none
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    volumes:
+      - internal-read-socket:/run/ledgerbridge-internal
+
   internal-reader:
     image: ledgerbridge-app:${LEDGERBRIDGE_REVISION:?review image revision is required}
     command: ["/app/docker/run-internal-reader.sh"]
@@ -35,6 +54,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      internal-socket-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -53,7 +74,7 @@ services:
       - ${LEDGERBRIDGE_INTERNAL_READ_POLICY_HOST_FILE:?policy host file is required}:/run/ledgerbridge-policy/policy.json:ro
       - ${LEDGERBRIDGE_EVIDENCE_KEY_HOST_FILE:?evidence key host file is required}:/run/ledgerbridge-key/evidence-key.json:ro
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect('/run/ledgerbridge-internal/core.sock'); s.sendall(b'GET /health/ready HTTP/1.0\r\nHost: localhost\r\n\r\n'); data=s.recv(128); s.close(); raise SystemExit(0 if b' 200 ' in data else 1)"]
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect('/run/ledgerbridge-internal/core.sock'); e=bytes((13,10)); s.sendall(b'GET /health/ready HTTP/1.0'+e+b'Host: localhost'+e+e); data=s.recv(128); s.close(); raise SystemExit(0 if b' 200 ' in data else 1)"]
       interval: 15s
       timeout: 3s
       retries: 5

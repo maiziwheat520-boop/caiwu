@@ -315,7 +315,17 @@ def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
                     "name": function["name"],
                     "identity_arguments": function["identity_arguments"],
                     "execute": (
-                        role == "ledgerbridge_reader" and function["schema"] == "internal_read"
+                        function["schema"] == "internal_read"
+                        and (
+                            (
+                                function["name"] == "append_internal_evidence_read_audit"
+                                and role == "ledgerbridge_api"
+                            )
+                            or (
+                                function["name"] != "append_internal_evidence_read_audit"
+                                and role == "ledgerbridge_reader"
+                            )
+                        )
                     ),
                 }
             )
@@ -750,9 +760,13 @@ def test_r1_owner_compatibility_does_not_hide_other_metadata_drift() -> None:
         ],
     }
     extra_field = {**actual, "unexpected": True}
-    for drifted in (unknown_role, extra_acl, owner_acl_drift, extra_field):
+    for drifted in (unknown_role, extra_acl, extra_field):
         with pytest.raises(BackupError, match="metadata differs"):
             _validate_restored_database(expected, drifted)
+    # PostgreSQL may omit or represent owner privileges through
+    # pg_database_owner during a restore; effective ownership is checked
+    # separately and must not make an equivalent restore fail.
+    _validate_restored_database(actual, owner_acl_drift)
     with pytest.raises(BackupError, match="role matrix is privileged"):
         _validate_restored_database(expected, owner_membership_drift)
 
@@ -893,7 +907,9 @@ def test_r1_database_metadata_requires_ledger_summary_reader_execute() -> None:
         for item in functions
         if item.get("schema") == "internal_read" and item.get("name") == "get_ledger_summary_as_of"
     )
-    assert summary["identity_arguments"] == "uuid, uuid, date, date, bigint, bytea"
+    assert summary["identity_arguments"] == R1_INTERNAL_READ_FUNCTION_SIGNATURES[
+        "get_ledger_summary_as_of"
+    ]
     assert summary["owner"] == "ledgerbridge_owner"
     assert summary["security_definer"] is True
     assert summary["proconfig"] == ["search_path=pg_catalog"]
