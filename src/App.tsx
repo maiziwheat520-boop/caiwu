@@ -1301,6 +1301,20 @@ function evidenceLookupReference(candidate: Candidate): string {
   return candidate.summary.match(/\bTX-[0-9]{4,8}\b/)?.[0] ?? candidate.shortId
 }
 
+function billIdentityFields(fields: Array<{ label: string; value: string }>) {
+  const priorities = [
+    ['交易时间', '交易日期', '交易日', '记账日期', '记账日', '日期', '时间'],
+    ['金额(元)', '交易金额', '账单金额', '付款金额', '收款金额', '金额'],
+    ['对方名称', '交易对方', '对方户名', '收款人', '付款人', '商户名称', '商户', '户名'],
+  ]
+  const selected: Array<{ label: string; value: string }> = []
+  for (const aliases of priorities) {
+    const match = fields.find((field) => aliases.some((alias) => field.label.trim().includes(alias)))
+    if (match && !selected.includes(match)) selected.push(match)
+  }
+  return selected
+}
+
 function EvidencePreviewPanel({ evidence, reference }: {
   evidence: EvidenceReference
   reference: string
@@ -1360,9 +1374,9 @@ function EvidencePreviewPanel({ evidence, reference }: {
         <div className="evidence-records">
           {preview.records.map((record) => (
             <section key={`${record.sheet}-${record.row_number}`}>
-              <div className="evidence-record-meta"><span>{record.sheet}</span><small>第 {record.row_number} 行</small></div>
+              <div className="evidence-record-meta"><span>账单 {preview.reference ?? reference}</span><small>识别摘要</small></div>
               <dl>
-                {record.fields.map((field, index) => (
+                {billIdentityFields(record.fields).map((field, index) => (
                   <div key={`${index}-${field.label}`}><dt>{field.label}</dt><dd>{field.value}</dd></div>
                 ))}
               </dl>

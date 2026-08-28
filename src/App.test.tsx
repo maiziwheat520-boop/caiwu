@@ -485,8 +485,11 @@ describe('LedgerBridge Web API client', () => {
           header_row_number: 4,
           fields: [
             { label: '清单ID', value: 'TX-0139' },
+            { label: '交易时间', value: '2026-05-18 09:30' },
             { label: '金额(元)', value: '¥80,000.00' },
             { label: '对方名称', value: '陈明哲' },
+            { label: '自动分类', value: '内部往来' },
+            { label: '预处理说明', value: '模型推断结果' },
           ],
         }],
         fallback: null,
@@ -498,9 +501,13 @@ describe('LedgerBridge Web API client', () => {
     fireEvent.click(await screen.findByText('中行邮箱账单待复核：TX-0139'))
 
     const dialog = await screen.findByRole('dialog')
-    expect(await within(dialog).findByText('26.5中行邮箱待复核')).toBeInTheDocument()
+    expect(await within(dialog).findByText('账单 TX-0139')).toBeInTheDocument()
+    expect(within(dialog).getByText('2026-05-18 09:30')).toBeInTheDocument()
     expect(within(dialog).getByText('¥80,000.00')).toBeInTheDocument()
     expect(within(dialog).getByText('陈明哲')).toBeInTheDocument()
+    expect(within(dialog).queryByText('内部往来')).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('模型推断结果')).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('第 26 行')).not.toBeInTheDocument()
     expect(within(dialog).queryByText('1 个附件')).not.toBeInTheDocument()
     expect(within(dialog).getByRole('link', { name: '下载原文件：boc-manual-review.xlsx' })).toBeInTheDocument()
   })
