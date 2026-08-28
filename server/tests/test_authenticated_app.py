@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import http.client
 import json
@@ -20,6 +21,10 @@ from server.persistence import SQLitePersistence
 
 ORIGIN = "https://ledgerbridge.example.ts.net"
 SETUP_CODE = "ABCD-EFGH-JKLM-NPQR-STUV-WXYZ-2345-6789"
+
+
+def b64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 
 
 class AuthenticatedPreviewHttpTests(unittest.TestCase):
@@ -291,6 +296,90 @@ class AuthenticatedPreviewHttpTests(unittest.TestCase):
             headers={**headers, "X-CSRF-Token": refreshed["csrf_token"]},  # type: ignore[index]
         )
         self.assertEqual(status, 204)
+
+    def test_authenticated_passkey_addition_keeps_existing_devices_and_session(self) -> None:
+        recovery_codes = self.manager.store.register_credential(
+            user_id=b"u" * 32,
+            credential_id=b"credential-one",
+            public_key=b"public-key-one",
+            sign_count=1,
+            device_type="single_device",
+            backed_up=False,
+            initial=True,
+        )
+        session = self.manager.store.create_session("passkey")
+        base_headers = {
+            "Origin": ORIGIN,
+            "Sec-Fetch-Site": "same-origin",
+            "Cookie": f"__Host-ledgerbridge_session={session.token}",
+        }
+        status, problem, _ = self.request(
+            "POST",
+            "/api/v1/auth/passkey/add/authorize/options",
+            body={},
+            headers=base_headers,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(problem["code"], "CSRF_VALIDATION_FAILED")  # type: ignore[index]
+
+        headers = {**base_headers, "X-CSRF-Token": session.csrf_token}
+        status, authorization_options, authorization_headers = self.request(
+            "POST",
+            "/api/v1/auth/passkey/add/authorize/options",
+            body={},
+            headers=headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(authorization_options["allowCredentials"]), 1)  # type: ignore[arg-type,index]
+        authorization_flow = self.cookie_values(authorization_headers)["__Host-ledgerbridge_auth_flow"]
+        authorization = SimpleNamespace(
+            credential_id=b"credential-one",
+            new_sign_count=2,
+            credential_device_type=SimpleNamespace(value="multi_device"),
+            credential_backed_up=True,
+        )
+        with patch("server.auth.verify_authentication_response", return_value=authorization):
+            status, registration_options, registration_headers = self.request(
+                "POST",
+                "/api/v1/auth/passkey/add/authorize/verify",
+                body={"credential": {"id": b64url(b"credential-one")}},
+                headers={
+                    **headers,
+                    "Cookie": (
+                        f"__Host-ledgerbridge_session={session.token}; "
+                        f"__Host-ledgerbridge_auth_flow={authorization_flow}"
+                    ),
+                },
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(registration_options["excludeCredentials"]), 1)  # type: ignore[arg-type,index]
+        registration_flow = self.cookie_values(registration_headers)["__Host-ledgerbridge_auth_flow"]
+        registration = SimpleNamespace(
+            credential_id=b"credential-two",
+            credential_public_key=b"public-key-two",
+            sign_count=0,
+            credential_device_type=SimpleNamespace(value="single_device"),
+            credential_backed_up=False,
+        )
+        with patch("server.auth.verify_registration_response", return_value=registration):
+            status, result, _ = self.request(
+                "POST",
+                "/api/v1/auth/passkey/add/verify",
+                body={"credential": {"id": b64url(b"credential-two")}},
+                headers={
+                    **headers,
+                    "Cookie": (
+                        f"__Host-ledgerbridge_session={session.token}; "
+                        f"__Host-ledgerbridge_auth_flow={registration_flow}"
+                    ),
+                },
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(result, {"added": True, "passkey_count": 2})
+        self.assertIsNotNone(self.manager.store.credential(b"credential-one"))
+        self.assertIsNotNone(self.manager.store.credential(b"credential-two"))
+        self.assertIsNotNone(self.manager.store.session_payload(session.token, rotate_csrf=False))
+        self.assertTrue(self.manager.store.consume_recovery_code(recovery_codes[0]))
 
 
 if __name__ == "__main__":

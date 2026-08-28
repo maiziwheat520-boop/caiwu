@@ -83,6 +83,7 @@ CONFIRMED -> SUPERSEDED（通过新事件更正，不覆盖旧记录）
 ## 身份和网络
 
 - 单用户 Passkey 为主认证方式，一次性恢复码只显示一次并只存哈希。
+- 同一用户可登记最多 10 把独立 Passkey。正常新增设备要求已有完整会话、CSRF 和一次新的已有 Passkey 用户验证；授权与登记 ceremony 绑定同一会话、调用方和认证代次，成功后只追加新凭据，不撤销旧凭据、恢复码或会话。
 - 会话使用 `Secure`、`HttpOnly`、`SameSite=Strict` Cookie。
 - 所有状态变更要求同源检查、CSRF 令牌、幂等键和候选版本号。
 - WebAuthn RP ID 为固定域名，服务端精确匹配 HTTPS origin；普通局域网 IP HTTP 只保留为无认证合成演示，不能登记 Passkey。

@@ -141,6 +141,11 @@ export type AuthResult = AuthStatus & {
   expires_at?: string
 }
 
+export type PasskeyAdditionResult = {
+  added: true
+  passkey_count: number
+}
+
 export type RegistrationOptionsJson = Omit<PublicKeyCredentialCreationOptions, 'challenge' | 'user' | 'excludeCredentials'> & {
   challenge: string
   user: Omit<PublicKeyCredentialUserEntity, 'id'> & { id: string }

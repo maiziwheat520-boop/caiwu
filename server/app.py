@@ -707,6 +707,9 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             "/api/v1/auth/passkey/register/verify",
             "/api/v1/auth/passkey/login/options",
             "/api/v1/auth/passkey/login/verify",
+            "/api/v1/auth/passkey/add/authorize/options",
+            "/api/v1/auth/passkey/add/authorize/verify",
+            "/api/v1/auth/passkey/add/verify",
             "/api/v1/auth/recovery",
             "/api/v1/session/logout",
         }
@@ -730,6 +733,51 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 return True
             request = self._read_json_object()
             if request is None:
+                return True
+            if path.startswith("/api/v1/auth/passkey/add/"):
+                session_token = self._session_token()
+                if not session_token or manager.store.session_method(session_token) in {None, "recovery-code"}:
+                    raise AuthError(401, "AUTHENTICATION_REQUIRED", "需要有效的通行密钥登录会话")
+                if not self._require_csrf():
+                    return True
+                if path == "/api/v1/auth/passkey/add/authorize/options":
+                    if request:
+                        raise AuthError(422, "INVALID_AUTH_REQUEST", "新增通行密钥授权请求必须为空对象")
+                    options, flow_token = manager.start_passkey_addition_authorization(
+                        session_token,
+                        caller_key=self._auth_caller_key(),
+                        previous_flow_token=self._cookie_value(FLOW_COOKIE_NAME),
+                    )
+                    self._send_json(200, options, cookies=[self._flow_cookie(flow_token)])
+                    return True
+                if path == "/api/v1/auth/passkey/add/authorize/verify":
+                    if set(request) != {"credential"} or not isinstance(request["credential"], dict):
+                        raise AuthError(422, "INVALID_AUTH_REQUEST", "通行密钥授权响应无效")
+                    flow_token = self._cookie_value(FLOW_COOKIE_NAME)
+                    if not flow_token:
+                        raise AuthError(400, "AUTH_CEREMONY_EXPIRED", "认证请求已过期，请重新开始")
+                    options, registration_flow_token = manager.finish_passkey_addition_authorization(
+                        flow_token,
+                        request["credential"],
+                        session_token=session_token,
+                    )
+                    self._send_json(200, options, cookies=[self._flow_cookie(registration_flow_token)])
+                    return True
+                if set(request) != {"credential"} or not isinstance(request["credential"], dict):
+                    raise AuthError(422, "INVALID_AUTH_REQUEST", "新增通行密钥登记响应无效")
+                flow_token = self._cookie_value(FLOW_COOKIE_NAME)
+                if not flow_token:
+                    raise AuthError(400, "AUTH_CEREMONY_EXPIRED", "认证请求已过期，请重新开始")
+                passkey_count = manager.finish_passkey_addition(
+                    flow_token,
+                    request["credential"],
+                    session_token=session_token,
+                )
+                self._send_json(
+                    200,
+                    {"added": True, "passkey_count": passkey_count},
+                    cookies=[self._clear_cookie(FLOW_COOKIE_NAME)],
+                )
                 return True
             if path == "/api/v1/auth/passkey/register/options":
                 if set(request) != {"setup_code"} or not isinstance(request["setup_code"], str):

@@ -155,6 +155,9 @@ function App() {
   const [decisionBusyId, setDecisionBusyId] = useState<string | null>(null)
   const [draftBusy, setDraftBusy] = useState(false)
   const [logoutBusy, setLogoutBusy] = useState(false)
+  const [passkeyDialogOpen, setPasskeyDialogOpen] = useState(false)
+  const [passkeyBusy, setPasskeyBusy] = useState(false)
+  const [passkeyError, setPasskeyError] = useState<string | null>(null)
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null)
   const [candidateDetailLoadingId, setCandidateDetailLoadingId] = useState<string | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
@@ -386,6 +389,24 @@ function App() {
     }
   }
 
+  const addPasskey = async () => {
+    if (!session) {
+      setPasskeyError('会话信息尚未就绪，请刷新后重试。')
+      return
+    }
+    setPasskeyBusy(true)
+    setPasskeyError(null)
+    try {
+      const result = await api.addPasskey(session.csrf_token)
+      setPasskeyDialogOpen(false)
+      setNotice({ tone: 'success', message: `这台设备已登记，当前共有 ${result.passkey_count} 个通行密钥可登录。` })
+    } catch (error) {
+      setPasskeyError(authErrorMessage(error))
+    } finally {
+      setPasskeyBusy(false)
+    }
+  }
+
   const renderPage = () => {
     if (page === 'overview') {
       return (
@@ -488,7 +509,7 @@ function App() {
               </Button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Content align="end">
-              <DropdownMenu.Item disabled>通行密钥设置（后续开放）</DropdownMenu.Item>
+              <DropdownMenu.Item onSelect={() => { setPasskeyError(null); setPasskeyDialogOpen(true) }}><Fingerprint size={15} />添加这台设备</DropdownMenu.Item>
               <DropdownMenu.Item onSelect={() => navigate('audit')}><ClockCounterClockwise size={15} />操作记录</DropdownMenu.Item>
               <DropdownMenu.Separator />
               <DropdownMenu.Item color="red" disabled={logoutBusy} onSelect={() => void logout()}><SignOut size={15} />{logoutBusy ? '正在退出' : '安全退出'}</DropdownMenu.Item>
@@ -529,6 +550,28 @@ function App() {
           )
         })}
       </nav>
+
+      <Dialog.Root
+        open={passkeyDialogOpen}
+        onOpenChange={(open) => {
+          if (!passkeyBusy) {
+            setPasskeyDialogOpen(open)
+            if (!open) setPasskeyError(null)
+          }
+        }}
+      >
+        <Dialog.Content maxWidth="480px">
+          <Dialog.Title>添加这台设备的通行密钥</Dialog.Title>
+          <Dialog.Description>
+            系统会先要求你使用一个已登记的通行密钥确认身份，再按当前设备的系统提示（Windows Hello、指纹或屏幕锁）创建独立密钥。其他设备的密钥不会被撤销。
+          </Dialog.Description>
+          {passkeyError ? <div className="auth-error" role="alert"><Warning size={17} />{passkeyError}</div> : null}
+          <div className="auth-actions">
+            <Button type="button" variant="outline" disabled={passkeyBusy} onClick={() => setPasskeyDialogOpen(false)}>取消</Button>
+            <Button type="button" disabled={passkeyBusy} onClick={() => void addPasskey()}><Fingerprint size={18} />{passkeyBusy ? '正在登记' : '开始登记'}</Button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Root>
 
       {selectedCandidate ? (
         <CandidateDialog

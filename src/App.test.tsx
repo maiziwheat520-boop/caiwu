@@ -112,6 +112,17 @@ function installFetch(options: {
       allowCredentials: [{ type: 'public-key', id: 'Ag' }],
     })
     if (url === '/api/v1/auth/passkey/login/verify') return response(authenticatedStatus)
+    if (url === '/api/v1/auth/passkey/add/authorize/options') return response({
+      challenge: 'AQ', timeout: 60000, rpId: 'ledgerbridge.local', userVerification: 'required',
+      allowCredentials: [{ type: 'public-key', id: 'Ag' }],
+    })
+    if (url === '/api/v1/auth/passkey/add/authorize/verify') return response({
+      challenge: 'Aw', rp: { name: 'LedgerBridge', id: 'ledgerbridge.local' },
+      user: { id: 'BA', name: 'finance-admin', displayName: 'Finance Admin' },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }], timeout: 60000,
+      excludeCredentials: [{ type: 'public-key', id: 'BQ' }],
+    })
+    if (url === '/api/v1/auth/passkey/add/verify') return response({ added: true, passkey_count: 2 })
     if (url === '/api/v1/auth/passkey/register/options') return response({
       challenge: 'AQ', rp: { name: 'LedgerBridge', id: 'ledgerbridge.local' },
       user: { id: 'Ag', name: 'finance-admin', displayName: 'Finance Admin' },
@@ -315,6 +326,47 @@ describe('LedgerBridge Web API client', () => {
     expect(await screen.findByText('保存一次性恢复码')).toBeInTheDocument()
     const optionsCall = fetchMock.mock.calls.find(([input]) => String(input) === '/api/v1/auth/passkey/register/options')!
     expect((optionsCall[1]?.headers as Record<string, string>)['X-CSRF-Token']).toBe(session.csrf_token)
+  })
+
+  it('adds this device after step-up without replacing existing passkeys', async () => {
+    const authorization = {
+      id: 'credential-existing', rawId: buffer(5), type: 'public-key',
+      response: { clientDataJSON: buffer(6), authenticatorData: buffer(7), signature: buffer(8), userHandle: null },
+      getClientExtensionResults: () => ({}),
+    } as unknown as Credential
+    const registration = {
+      id: 'credential-new', rawId: buffer(9), type: 'public-key',
+      response: { clientDataJSON: buffer(10), attestationObject: buffer(11), getTransports: () => ['internal'] },
+      getClientExtensionResults: () => ({}),
+    } as unknown as Credential
+    const getCredential = vi.fn(async () => authorization)
+    const createCredential = vi.fn(async () => registration)
+    Object.defineProperty(navigator, 'credentials', {
+      configurable: true,
+      value: { get: getCredential, create: createCredential },
+    })
+    const fetchMock = installFetch()
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    const accountButton = screen.getByRole('button', { name: /财务管理员/ })
+    fireEvent.pointerDown(accountButton, { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /添加这台设备/ }))
+    expect(await screen.findByRole('heading', { name: '添加这台设备的通行密钥' })).toBeInTheDocument()
+    expect(screen.getByText(/其他设备的密钥不会被撤销/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '开始登记' }))
+
+    expect(await screen.findByText('这台设备已登记，当前共有 2 个通行密钥可登录。')).toBeInTheDocument()
+    expect(getCredential).toHaveBeenCalledTimes(1)
+    expect(createCredential).toHaveBeenCalledTimes(1)
+    const addCalls = fetchMock.mock.calls.filter(([input]) => String(input).includes('/api/v1/auth/passkey/add/'))
+    expect(addCalls.map(([input]) => String(input))).toEqual([
+      '/api/v1/auth/passkey/add/authorize/options',
+      '/api/v1/auth/passkey/add/authorize/verify',
+      '/api/v1/auth/passkey/add/verify',
+    ])
+    for (const [, init] of addCalls) {
+      expect((init?.headers as Record<string, string>)['X-CSRF-Token']).toBe(session.csrf_token)
+    }
   })
 
   it('loads API projections and formats amount_minor as yuan', async () => {

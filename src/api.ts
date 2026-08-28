@@ -8,6 +8,7 @@ import type {
   CandidateDetail,
   CandidateListResponse,
   ConnectionStatus,
+  PasskeyAdditionResult,
   Problem,
   Reconciliation,
   ReviewEvent,
@@ -167,6 +168,35 @@ export const api = {
     return requestJson<AuthResult>('/api/v1/auth/passkey/login/verify', jsonPost({
       credential: serializeAuthenticationCredential(credential as PublicKeyCredential),
     }))
+  },
+
+  addPasskey: async (csrfToken: string) => {
+    if (!navigator.credentials) throw new Error('当前浏览器不支持通行密钥')
+    const authorizationOptions = await requestJson<AuthenticationOptionsJson>(
+      '/api/v1/auth/passkey/add/authorize/options',
+      jsonPost({}, csrfToken),
+    )
+    const authorization = await navigator.credentials.get({
+      publicKey: authenticationOptionsFromJson(authorizationOptions),
+    })
+    if (!authorization || authorization.type !== 'public-key' || !('rawId' in authorization)) {
+      throw new Error('现有通行密钥验证未完成')
+    }
+    const registrationOptions = await requestJson<RegistrationOptionsJson>(
+      '/api/v1/auth/passkey/add/authorize/verify',
+      jsonPost({
+        credential: serializeAuthenticationCredential(authorization as PublicKeyCredential),
+      }, csrfToken),
+    )
+    const credential = await navigator.credentials.create({
+      publicKey: registrationOptionsFromJson(registrationOptions),
+    })
+    if (!credential || credential.type !== 'public-key' || !('rawId' in credential)) {
+      throw new Error('新通行密钥创建未完成')
+    }
+    return requestJson<PasskeyAdditionResult>('/api/v1/auth/passkey/add/verify', jsonPost({
+      credential: serializeRegistrationCredential(credential as PublicKeyCredential),
+    }, csrfToken))
   },
 
   recoverSession: (recoveryCode: string) =>

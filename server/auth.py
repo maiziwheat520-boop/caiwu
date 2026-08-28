@@ -40,6 +40,7 @@ MAX_ACTIVE_CEREMONIES = 128
 MAX_ACTIVE_PUBLIC_CEREMONIES = 120
 MAX_ACTIVE_CEREMONIES_PER_CALLER = 5
 MAX_FAILURE_BUCKETS = 4096
+MAX_PASSKEY_CREDENTIALS = 10
 RECOVERY_CODE_COUNT = 10
 RECOVERY_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 RECOVERY_CODE_LENGTH = 32
@@ -305,6 +306,62 @@ class AuthStore:
         finally:
             connection.close()
 
+    def add_credential_after_step_up(
+        self,
+        *,
+        user_id: bytes,
+        credential_id: bytes,
+        public_key: bytes,
+        sign_count: int,
+        device_type: str,
+        backed_up: bool,
+        authorization_session_token: str,
+        expected_auth_epoch: int,
+    ) -> int:
+        now = _utc_iso()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            authorization = connection.execute(
+                """
+                SELECT 1 FROM auth_sessions
+                WHERE token_hash = ? AND expires_at > ?
+                  AND authenticated_with IN ('passkey', 'passkey-registration')
+                """,
+                (_token_hash(authorization_session_token), int(time.time())),
+            ).fetchone()
+            state = connection.execute(
+                "SELECT auth_epoch, recovery_pending FROM auth_state WHERE singleton = 1"
+            ).fetchone()
+            existing = connection.execute("SELECT user_id FROM auth_user WHERE singleton = 1").fetchone()
+            if authorization is None:
+                raise AuthError(401, "AUTH_CEREMONY_REVOKED", "授权此次登记的登录会话已失效")
+            if state is None or bool(state[1]) or int(state[0]) != expected_auth_epoch:
+                raise AuthError(401, "AUTH_CEREMONY_REVOKED", "认证状态已经变化，请重新开始")
+            if existing is None or not hmac.compare_digest(bytes(existing[0]), user_id):
+                raise AuthError(409, "USER_ID_MISMATCH", "通行密钥用户标识不匹配")
+            credential_count = int(connection.execute("SELECT count(*) FROM passkey_credentials").fetchone()[0])
+            if credential_count >= MAX_PASSKEY_CREDENTIALS:
+                raise AuthError(409, "PASSKEY_LIMIT_REACHED", "已达到通行密钥数量上限")
+            connection.execute(
+                """
+                INSERT INTO passkey_credentials(
+                    credential_id, user_id, public_key, sign_count, device_type, backed_up, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (credential_id, user_id, public_key, sign_count, device_type, int(backed_up), now),
+            )
+            connection.commit()
+            return credential_count + 1
+        except sqlite3.IntegrityError as error:
+            connection.rollback()
+            raise AuthError(409, "PASSKEY_ALREADY_REGISTERED", "该通行密钥已经登记") from error
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def replace_credentials_after_recovery(
         self,
         *,
@@ -461,6 +518,52 @@ class AuthStore:
             )
             connection.commit()
             return session
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def complete_step_up(
+        self,
+        credential_id: bytes,
+        *,
+        expected_sign_count: int,
+        new_sign_count: int,
+        device_type: str,
+        backed_up: bool,
+        expected_auth_epoch: int,
+        authorization_session_token: str,
+    ) -> None:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            authorization = connection.execute(
+                """
+                SELECT 1 FROM auth_sessions
+                WHERE token_hash = ? AND expires_at > ?
+                  AND authenticated_with IN ('passkey', 'passkey-registration')
+                """,
+                (_token_hash(authorization_session_token), int(time.time())),
+            ).fetchone()
+            state = connection.execute(
+                "SELECT auth_epoch, recovery_pending FROM auth_state WHERE singleton = 1"
+            ).fetchone()
+            if authorization is None:
+                raise AuthError(401, "AUTH_CEREMONY_REVOKED", "授权此次登记的登录会话已失效")
+            if state is None or bool(state[1]) or int(state[0]) != expected_auth_epoch:
+                raise AuthError(401, "AUTH_CEREMONY_REVOKED", "认证状态已经变化，请重新开始")
+            cursor = connection.execute(
+                """
+                UPDATE passkey_credentials
+                SET sign_count = ?, device_type = ?, backed_up = ?, last_used_at = ?
+                WHERE credential_id = ? AND sign_count = ?
+                """,
+                (new_sign_count, device_type, int(backed_up), _utc_iso(), credential_id, expected_sign_count),
+            )
+            if cursor.rowcount != 1:
+                raise AuthError(409, "PASSKEY_STATE_CHANGED", "通行密钥状态已经变化，请重新验证")
+            connection.commit()
         except BaseException:
             connection.rollback()
             raise
@@ -649,6 +752,36 @@ class AuthManager:
             return None
         return self.store.session_payload(session_token)
 
+    def _require_full_session(self, session_token: str | None) -> str:
+        if not session_token:
+            raise AuthError(401, "AUTHENTICATION_REQUIRED", "需要先登录才能添加通行密钥")
+        method = self.store.session_method(session_token)
+        if method is None:
+            raise AuthError(401, "AUTHENTICATION_REQUIRED", "登录会话已经失效")
+        if method == "recovery-code":
+            raise AuthError(403, "PASSKEY_REAUTH_REQUIRED", "账户恢复期间不能添加其他通行密钥")
+        return session_token
+
+    def _registration_options(self, user_id: bytes) -> tuple[dict[str, object], bytes]:
+        credentials = self.store.credentials()
+        if len(credentials) >= MAX_PASSKEY_CREDENTIALS:
+            raise AuthError(409, "PASSKEY_LIMIT_REACHED", "已达到通行密钥数量上限")
+        options = generate_registration_options(
+            rp_id=self.rp_id,
+            rp_name="LedgerBridge",
+            user_id=user_id,
+            user_name="ledgerbridge-owner",
+            user_display_name="LedgerBridge Owner",
+            attestation=AttestationConveyancePreference.NONE,
+            authenticator_selection=AuthenticatorSelectionCriteria(
+                resident_key=ResidentKeyRequirement.REQUIRED,
+                require_resident_key=True,
+                user_verification=UserVerificationRequirement.REQUIRED,
+            ),
+            exclude_credentials=[PublicKeyCredentialDescriptor(id=item.credential_id) for item in credentials],
+        )
+        return json.loads(options_to_json(options)), options.challenge
+
     def start_registration(
         self,
         setup_code: str,
@@ -679,27 +812,13 @@ class AuthManager:
                 raise AuthError(401, "SETUP_CODE_INVALID", "初始设置码无效")
             self.failures.success(failure_key)
             user_id = secrets.token_bytes(32)
-        credentials = self.store.credentials()
-        options = generate_registration_options(
-            rp_id=self.rp_id,
-            rp_name="LedgerBridge",
-            user_id=user_id,
-            user_name="ledgerbridge-owner",
-            user_display_name="LedgerBridge Owner",
-            attestation=AttestationConveyancePreference.NONE,
-            authenticator_selection=AuthenticatorSelectionCriteria(
-                resident_key=ResidentKeyRequirement.REQUIRED,
-                require_resident_key=True,
-                user_verification=UserVerificationRequirement.REQUIRED,
-            ),
-            exclude_credentials=[PublicKeyCredentialDescriptor(id=item.credential_id) for item in credentials],
-        )
+        registration_options, registration_challenge = self._registration_options(user_id)
         flow_token = secrets.token_urlsafe(32)
         self._remember_ceremony(
             flow_token,
             Ceremony(
                 "register",
-                options.challenge,
+                registration_challenge,
                 user_id,
                 min(time.time() + CEREMONY_LIFETIME_SECONDS, float(self.setup_code_expires_at))
                 if not initialized
@@ -712,7 +831,7 @@ class AuthManager:
             ),
             previous_flow_token=previous_flow_token,
         )
-        return json.loads(options_to_json(options)), flow_token
+        return registration_options, flow_token
 
     def finish_registration(
         self,
@@ -804,8 +923,11 @@ class AuthManager:
         )
         return json.loads(options_to_json(options)), flow_token
 
-    def finish_login(self, flow_token: str, credential: dict[str, Any]) -> AuthSession:
-        ceremony = self._take_ceremony(flow_token, "login")
+    def _verify_authentication_credential(
+        self,
+        ceremony: Ceremony,
+        credential: dict[str, Any],
+    ) -> tuple[StoredCredential, Any]:
         raw_id = credential.get("rawId") or credential.get("id")
         if not isinstance(raw_id, str) or len(raw_id) > 2048:
             raise AuthError(400, "PASSKEY_RESPONSE_INVALID", "通行密钥响应缺少凭据标识")
@@ -838,6 +960,11 @@ class AuthManager:
             )
         except Exception as error:
             raise AuthError(401, "PASSKEY_VERIFICATION_FAILED", "无法验证通行密钥") from error
+        return stored, verified
+
+    def finish_login(self, flow_token: str, credential: dict[str, Any]) -> AuthSession:
+        ceremony = self._take_ceremony(flow_token, "login")
+        stored, verified = self._verify_authentication_credential(ceremony, credential)
         if ceremony.auth_epoch is None:
             raise AuthError(400, "AUTH_CEREMONY_EXPIRED", "认证请求已过期，请重新开始")
         return self.store.complete_login(
@@ -846,6 +973,124 @@ class AuthManager:
             new_sign_count=verified.new_sign_count,
             device_type=verified.credential_device_type.value,
             backed_up=verified.credential_backed_up,
+            expected_auth_epoch=ceremony.auth_epoch,
+        )
+
+    def start_passkey_addition_authorization(
+        self,
+        session_token: str | None,
+        *,
+        caller_key: str,
+        previous_flow_token: str | None = None,
+    ) -> tuple[dict[str, object], str]:
+        authorization_session_token = self._require_full_session(session_token)
+        auth_epoch = self.store.login_epoch()
+        credentials = self.store.credentials()
+        if not credentials:
+            raise AuthError(409, "PASSKEY_NOT_CONFIGURED", "尚未登记通行密钥")
+        if len(credentials) >= MAX_PASSKEY_CREDENTIALS:
+            raise AuthError(409, "PASSKEY_LIMIT_REACHED", "已达到通行密钥数量上限")
+        options = generate_authentication_options(
+            rp_id=self.rp_id,
+            allow_credentials=[PublicKeyCredentialDescriptor(id=item.credential_id) for item in credentials],
+            user_verification=UserVerificationRequirement.REQUIRED,
+        )
+        flow_token = secrets.token_urlsafe(32)
+        user_id = self.store.user_id() or b""
+        self._remember_ceremony(
+            flow_token,
+            Ceremony(
+                "add-authorize",
+                options.challenge,
+                user_id,
+                time.time() + CEREMONY_LIFETIME_SECONDS,
+                caller_key,
+                authorization_session_hash=_token_hash(authorization_session_token),
+                auth_epoch=auth_epoch,
+            ),
+            previous_flow_token=previous_flow_token,
+        )
+        return json.loads(options_to_json(options)), flow_token
+
+    def finish_passkey_addition_authorization(
+        self,
+        flow_token: str,
+        credential: dict[str, Any],
+        *,
+        session_token: str | None,
+    ) -> tuple[dict[str, object], str]:
+        authorization_session_token = self._require_full_session(session_token)
+        ceremony = self._take_ceremony(flow_token, "add-authorize")
+        if (
+            ceremony.authorization_session_hash is None
+            or not hmac.compare_digest(
+                _token_hash(authorization_session_token), ceremony.authorization_session_hash
+            )
+            or ceremony.auth_epoch is None
+        ):
+            raise AuthError(401, "AUTH_CEREMONY_REVOKED", "授权此次登记的登录会话已失效")
+        stored, verified = self._verify_authentication_credential(ceremony, credential)
+        self.store.complete_step_up(
+            verified.credential_id,
+            expected_sign_count=stored.sign_count,
+            new_sign_count=verified.new_sign_count,
+            device_type=verified.credential_device_type.value,
+            backed_up=verified.credential_backed_up,
+            expected_auth_epoch=ceremony.auth_epoch,
+            authorization_session_token=authorization_session_token,
+        )
+        registration_options, registration_challenge = self._registration_options(ceremony.user_id)
+        registration_flow_token = secrets.token_urlsafe(32)
+        self._remember_ceremony(
+            registration_flow_token,
+            Ceremony(
+                "add-register",
+                registration_challenge,
+                ceremony.user_id,
+                time.time() + CEREMONY_LIFETIME_SECONDS,
+                ceremony.caller_key,
+                authorization_session_hash=ceremony.authorization_session_hash,
+                auth_epoch=ceremony.auth_epoch,
+            ),
+        )
+        return registration_options, registration_flow_token
+
+    def finish_passkey_addition(
+        self,
+        flow_token: str,
+        credential: dict[str, Any],
+        *,
+        session_token: str | None,
+    ) -> int:
+        authorization_session_token = self._require_full_session(session_token)
+        ceremony = self._take_ceremony(flow_token, "add-register")
+        if (
+            ceremony.authorization_session_hash is None
+            or not hmac.compare_digest(
+                _token_hash(authorization_session_token), ceremony.authorization_session_hash
+            )
+            or ceremony.auth_epoch is None
+        ):
+            raise AuthError(401, "AUTH_CEREMONY_REVOKED", "授权此次登记的登录会话已失效")
+        _reject_cross_origin_client_data(credential)
+        try:
+            verified = verify_registration_response(
+                credential=credential,
+                expected_challenge=ceremony.challenge,
+                expected_rp_id=self.rp_id,
+                expected_origin=self.expected_origin,
+                require_user_verification=True,
+            )
+        except Exception as error:
+            raise AuthError(401, "PASSKEY_VERIFICATION_FAILED", "无法验证通行密钥登记结果") from error
+        return self.store.add_credential_after_step_up(
+            user_id=ceremony.user_id,
+            credential_id=verified.credential_id,
+            public_key=verified.credential_public_key,
+            sign_count=verified.sign_count,
+            device_type=verified.credential_device_type.value,
+            backed_up=verified.credential_backed_up,
+            authorization_session_token=authorization_session_token,
             expected_auth_epoch=ceremony.auth_epoch,
         )
 

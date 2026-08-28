@@ -165,6 +165,87 @@ class AuthManagerTests(unittest.TestCase):
         self.assertIsNone(self.manager.store.credential(b"credential-one"))
         self.assertIsNotNone(self.manager.store.credential(b"credential-two"))
 
+    def test_authenticated_step_up_appends_independent_passkey(self) -> None:
+        recovery_codes = self.manager.store.register_credential(
+            user_id=b"u" * 32,
+            credential_id=b"credential-one",
+            public_key=b"public-key-one",
+            sign_count=1,
+            device_type="single_device",
+            backed_up=False,
+            initial=True,
+        )
+        session = self.manager.store.create_session("passkey")
+        authorization_options, authorization_flow = self.manager.start_passkey_addition_authorization(
+            session.token,
+            caller_key=self.caller_key,
+        )
+        self.assertEqual(len(authorization_options["allowCredentials"]), 1)  # type: ignore[arg-type]
+        authorization = SimpleNamespace(
+            credential_id=b"credential-one",
+            new_sign_count=2,
+            credential_device_type=SimpleNamespace(value="multi_device"),
+            credential_backed_up=True,
+        )
+        with patch("server.auth.verify_authentication_response", return_value=authorization):
+            registration_options, registration_flow = self.manager.finish_passkey_addition_authorization(
+                authorization_flow,
+                {"id": b64url(b"credential-one")},
+                session_token=session.token,
+            )
+        self.assertEqual(len(registration_options["excludeCredentials"]), 1)  # type: ignore[arg-type]
+        self.assertEqual(self.manager.store.credential(b"credential-one").sign_count, 2)  # type: ignore[union-attr]
+
+        registration = SimpleNamespace(
+            credential_id=b"credential-two",
+            credential_public_key=b"public-key-two",
+            sign_count=0,
+            credential_device_type=SimpleNamespace(value="single_device"),
+            credential_backed_up=False,
+        )
+        with patch("server.auth.verify_registration_response", return_value=registration):
+            count = self.manager.finish_passkey_addition(
+                registration_flow,
+                {"id": b64url(b"credential-two")},
+                session_token=session.token,
+            )
+        self.assertEqual(count, 2)
+        self.assertIsNotNone(self.manager.store.credential(b"credential-one"))
+        self.assertIsNotNone(self.manager.store.credential(b"credential-two"))
+        self.assertIsNotNone(self.manager.store.session_payload(session.token, rotate_csrf=False))
+        self.assertTrue(self.manager.store.consume_recovery_code(recovery_codes[0]))
+        with self.assertRaises(AuthError) as replay:
+            self.manager.finish_passkey_addition(
+                registration_flow,
+                {"id": b64url(b"credential-two")},
+                session_token=session.token,
+            )
+        self.assertEqual(replay.exception.code, "AUTH_CEREMONY_EXPIRED")
+
+    def test_passkey_addition_is_bound_to_authorizing_session(self) -> None:
+        self.manager.store.register_credential(
+            user_id=b"u" * 32,
+            credential_id=b"credential-one",
+            public_key=b"public-key-one",
+            sign_count=1,
+            device_type="single_device",
+            backed_up=False,
+            initial=True,
+        )
+        authorizing_session = self.manager.store.create_session("passkey")
+        other_session = self.manager.store.create_session("passkey")
+        _, flow = self.manager.start_passkey_addition_authorization(
+            authorizing_session.token,
+            caller_key=self.caller_key,
+        )
+        with self.assertRaises(AuthError) as mismatched:
+            self.manager.finish_passkey_addition_authorization(
+                flow,
+                {"id": b64url(b"credential-one")},
+                session_token=other_session.token,
+            )
+        self.assertEqual(mismatched.exception.code, "AUTH_CEREMONY_REVOKED")
+
     def test_expired_setup_code_fails_closed(self) -> None:
         manager = AuthManager(
             AuthStore(self.database),

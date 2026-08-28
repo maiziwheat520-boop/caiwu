@@ -127,6 +127,88 @@ paths:
                 $ref: "#/components/schemas/AuthResult"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /api/v1/auth/passkey/add/authorize/options:
+    post:
+      operationId: beginPasskeyAdditionAuthorization
+      description: >-
+        Begin a fresh user-verifying assertion with an already registered Passkey. This step-up
+        ceremony is bound to the current full session, caller, authentication generation, and CSRF token.
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        "200":
+          description: PublicKeyCredentialRequestOptions JSON and an HttpOnly ceremony cookie
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebAuthnOptions"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/auth/passkey/add/authorize/verify:
+    post:
+      operationId: finishPasskeyAdditionAuthorization
+      description: >-
+        Verify the fresh assertion and, without creating a new session, begin a registration
+        ceremony that excludes every existing credential.
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [credential]
+              properties:
+                credential:
+                  $ref: "#/components/schemas/WebAuthnCredential"
+      responses:
+        "200":
+          description: PublicKeyCredentialCreationOptions JSON and a replacement HttpOnly ceremony cookie
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebAuthnOptions"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/auth/passkey/add/verify:
+    post:
+      operationId: finishPasskeyAddition
+      description: >-
+        Add one independent Passkey after revalidating the same live session and authentication
+        generation. Existing Passkeys, recovery codes, and sessions are preserved.
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [credential]
+              properties:
+                credential:
+                  $ref: "#/components/schemas/WebAuthnCredential"
+      responses:
+        "200":
+          description: The new Passkey was appended without revoking existing devices
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyAdditionResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /api/v1/auth/recovery:
     post:
       operationId: recoverSession
@@ -488,6 +570,12 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
+    Conflict:
+      description: Authentication state changed, credential already exists, or the Passkey limit was reached
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
   schemas:
     AuthStatus:
       type: object
@@ -539,6 +627,18 @@ components:
         expires_at:
           type: string
           format: date-time
+    PasskeyAdditionResult:
+      type: object
+      additionalProperties: false
+      required: [added, passkey_count]
+      properties:
+        added:
+          type: boolean
+          const: true
+        passkey_count:
+          type: integer
+          minimum: 2
+          maximum: 10
     WebAuthnOptions:
       type: object
       description: Standards-shaped WebAuthn options; binary values use unpadded base64url.
