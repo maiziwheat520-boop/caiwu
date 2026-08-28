@@ -463,14 +463,24 @@ describe('LedgerBridge Web API client', () => {
     const workbookCandidate: ApiCandidate = {
       ...candidates[0],
       short_id: 'C-0139',
+      source_channel: 'outlook',
       summary: '中行邮箱账单待复核：TX-0139',
-      evidence: [{
-        id: 'evidence-workbook',
-        kind: 'attachment',
-        media_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        sha256: 'b'.repeat(64),
-        original_filename: 'boc-manual-review.xlsx',
-      }],
+      evidence: [
+        {
+          id: 'evidence-combined-workbook',
+          kind: 'attachment',
+          media_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          sha256: 'a'.repeat(64),
+          original_filename: 'combined-review.xlsx',
+        },
+        {
+          id: 'evidence-workbook',
+          kind: 'attachment',
+          media_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          sha256: 'b'.repeat(64),
+          original_filename: 'boc-manual-review.xlsx',
+        },
+      ],
     }
     installFetch({
       items: [workbookCandidate],
@@ -510,6 +520,7 @@ describe('LedgerBridge Web API client', () => {
     expect(within(dialog).queryByText('第 26 行')).not.toBeInTheDocument()
     expect(within(dialog).queryByText('1 个附件')).not.toBeInTheDocument()
     expect(within(dialog).getByRole('link', { name: '下载原文件：boc-manual-review.xlsx' })).toBeInTheDocument()
+    expect(within(dialog).queryByRole('link', { name: '下载原文件：combined-review.xlsx' })).not.toBeInTheDocument()
   })
 
   it('loads later review-history pages through the returned cursor', async () => {

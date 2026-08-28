@@ -1301,6 +1301,29 @@ function evidenceLookupReference(candidate: Candidate): string {
   return candidate.summary.match(/\bTX-[0-9]{4,8}\b/)?.[0] ?? candidate.shortId
 }
 
+const CONTROLLED_PHOTO_EVIDENCE: Array<{ summary: string; digestPrefix: string }> = [
+  { summary: '薇旭美团', digestPrefix: '920f69115b96' },
+  { summary: '薇旭携程', digestPrefix: '29f7c422799c' },
+  { summary: '景怡美团', digestPrefix: 'd9a2e8132642' },
+]
+
+function evidenceForBillConfirmation(candidate: Candidate): EvidenceReference[] {
+  if (candidate.source === '中行账单（复核材料）') {
+    const manualReview = candidate.evidence.find((item) => item.original_filename === 'boc-manual-review.xlsx')
+    const spreadsheet = candidate.evidence.find((item) => item.media_type.includes('spreadsheet'))
+    return manualReview ? [manualReview] : spreadsheet ? [spreadsheet] : []
+  }
+  if (candidate.source === '照片凭证') {
+    const mapping = CONTROLLED_PHOTO_EVIDENCE.find((item) => candidate.summary.includes(item.summary))
+    const matchingImage = mapping
+      ? candidate.evidence.find((item) => item.sha256?.startsWith(mapping.digestPrefix))
+      : undefined
+    const firstImage = candidate.evidence.find((item) => item.media_type.startsWith('image/'))
+    return matchingImage ? [matchingImage] : firstImage ? [firstImage] : []
+  }
+  return candidate.evidence.slice(0, 1)
+}
+
 function billIdentityFields(fields: Array<{ label: string; value: string }>) {
   const priorities = [
     ['交易时间', '交易日期', '交易日', '记账日期', '记账日', '日期', '时间'],
@@ -1485,11 +1508,11 @@ function CandidateDialog({ candidate, onClose, onUpdate, busy, detailLoading }: 
         </div>
         <div className="dialog-layout">
           <section className="dialog-evidence-pane" aria-labelledby="evidence-heading">
-            <span className="section-label" id="evidence-heading">原始证据</span>
+            <span className="section-label" id="evidence-heading">账单凭证</span>
             <div className="evidence-box">
               <blockquote>{candidate.summary}</blockquote>
               <div className="evidence-previews">
-                {candidate.evidence.map((item) => <EvidencePreviewPanel evidence={item} reference={evidenceLookupReference(candidate)} key={item.id} />)}
+                {evidenceForBillConfirmation(candidate).map((item) => <EvidencePreviewPanel evidence={item} reference={evidenceLookupReference(candidate)} key={item.id} />)}
               </div>
             </div>
           </section>
