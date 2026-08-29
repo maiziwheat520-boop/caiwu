@@ -8,7 +8,11 @@ import pytest
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from ledgerbridge.candidate_contract import CandidateRevisionConflict, CandidateStatus
+from ledgerbridge.candidate_contract import (
+    CandidateRevisionConflict,
+    CandidateStatus,
+    IngestChannel,
+)
 from ledgerbridge.internal_candidate_command import (
     CandidateDecision,
     CandidateDecisionRequest,
@@ -154,6 +158,38 @@ def test_database_review_service_uses_only_scoped_functions_and_commits() -> Non
     assert params["current_business_unit_id"] == BUSINESS_UNIT_ID
     assert params["target_business_unit_id"] == BUSINESS_UNIT_ID
     assert params["verified_san"] == principal.san_uri
+
+
+def test_database_review_service_maps_database_ingest_channel_ids_in_receipt() -> None:
+    candidate, principal, request, receipt = _fixtures()
+    raw_receipt = receipt.model_dump(mode="json")
+    raw_receipt["candidate"]["source"]["ingest_channel"] = "controlled_upload"
+    event = raw_receipt["events"][0]
+    event["prior_projection"]["source"]["ingest_channel"] = "controlled_upload"
+    event["result_projection"]["source"]["ingest_channel"] = "controlled_upload"
+    command = _Session(candidate.model_dump(), receipt=raw_receipt)
+    service = DatabaseInternalReviewService(
+        _factory(_Session(candidate.model_dump())),
+        _factory(command),
+    )
+
+    result = service.append_decision(
+        principal,
+        candidate_ref=candidate.candidate_ref,
+        operation_id=receipt.operation_id,
+        assertion_jti=uuid4(),
+        actor_ref="human:web-reviewer",
+        request=request,
+        decided_at=datetime.now(UTC),
+    )
+
+    assert result.candidate.source.ingest_channel == IngestChannel.CONTROLLED_UPLOAD
+    assert all(
+        event.prior_projection.source.ingest_channel == IngestChannel.CONTROLLED_UPLOAD
+        and event.result_projection.source.ingest_channel == IngestChannel.CONTROLLED_UPLOAD
+        for event in result.events
+    )
+    assert command.committed is True
 
 
 def test_database_review_service_reads_events_through_horizon_scoped_function() -> None:

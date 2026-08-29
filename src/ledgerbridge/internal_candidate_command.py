@@ -11,6 +11,7 @@ import hashlib
 import json
 import threading
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import date, datetime
 from enum import StrEnum
 from functools import lru_cache
@@ -31,6 +32,7 @@ from ledgerbridge.candidate_contract import (
     CandidatePatch,
     CandidateProjection,
     CandidateStatus,
+    IngestChannel,
     apply_candidate_command,
     create_candidate_aggregate,
 )
@@ -49,6 +51,7 @@ from ledgerbridge.internal_read_cursor import ReadCursorSigner
 from ledgerbridge.internal_read_service import (
     DatabaseInternalReadService,
     SyntheticInternalReadService,
+    _wire_ingest_channel,
 )
 
 
@@ -129,6 +132,44 @@ class CandidateCommandRejected(RuntimeError):
 
 class CandidateCommandIdempotencyConflict(RuntimeError):
     """An idempotency operation or assertion JTI was reused with different content."""
+
+
+def _database_candidate_decision_receipt(value: object) -> object:
+    """Map database registry IDs in a receipt onto the versioned wire contract."""
+
+    payload = deepcopy(value)
+    if not isinstance(payload, dict):
+        return payload
+
+    projections: list[object] = [payload.get("candidate")]
+    events = payload.get("events")
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            projections.extend(
+                (
+                    event.get("prior_projection"),
+                    event.get("result_projection"),
+                    event.get("result_derived_candidate"),
+                )
+            )
+
+    for projection in projections:
+        if not isinstance(projection, dict):
+            continue
+        source = projection.get("source")
+        if not isinstance(source, dict):
+            continue
+        channel = source.get("ingest_channel")
+        if isinstance(channel, IngestChannel):
+            continue
+        if isinstance(channel, str):
+            try:
+                source["ingest_channel"] = IngestChannel(channel)
+            except ValueError:
+                source["ingest_channel"] = _wire_ingest_channel(channel)
+    return payload
 
 
 class SyntheticInternalReviewService(SyntheticInternalReadService):
@@ -388,7 +429,9 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
                 row = session.execute(sql, params).mappings().first()
                 if row is None:
                     raise CandidateCommandUnavailable("candidate command returned no receipt")
-                receipt = CandidateDecisionReceipt.model_validate(row["receipt"])
+                receipt = CandidateDecisionReceipt.model_validate(
+                    _database_candidate_decision_receipt(row["receipt"])
+                )
                 session.commit()
                 return receipt
         except SQLAlchemyError as exc:
