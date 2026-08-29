@@ -53,6 +53,11 @@ button { -webkit-tap-highlight-color: transparent; }
 .notice button { display: grid; place-items: center; margin-left: auto; padding: 3px; border: 0; color: inherit; background: none; cursor: pointer; }
 .notice.info { border-color: #b9d2f2; color: #315d9c; background: #edf5ff; }
 .notice.error { border-color: #f1bcc1; color: var(--danger); background: var(--danger-soft); }
+.review-header-actions { display: flex; align-items: center; gap: 8px; }
+.evidence-reminder { display: flex; align-items: flex-start; gap: 10px; margin: -5px 0 18px; padding: 12px 14px; border: 1px solid #ecd6a6; border-radius: 11px; color: #8b5b0a; background: #fff9e9; }
+.evidence-reminder strong, .evidence-reminder span { display: block; }
+.evidence-reminder strong { margin-bottom: 2px; font-size: 13px; }
+.evidence-reminder span { color: #735e38; font-size: 12px; }
 .bottom-nav { display: none; }
 
 .auth-shell { min-height: 100dvh; display: grid; grid-template-rows: auto 1fr auto; place-items: center; gap: 24px; padding: 34px 18px 24px; background: radial-gradient(circle at 50% 0, #edf4ff 0, #f5f7fa 38%, #f5f7fa 100%); }
@@ -198,6 +203,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .candidate-card.has-conflict { border-left-color: var(--danger); }
 .candidate-card.is-incomplete { border-left-color: #d28a1b; }
 .candidate-card.is-ready { border-left-color: var(--success); }
+.candidate-risk { display: flex; align-items: center; gap: 5px; margin-top: 8px; color: #9a620a; font-size: 12px; font-weight: 650; }
 .candidate-card:hover, .candidate-card:focus-within { border-color: #b9c9df; box-shadow: 0 8px 24px rgb(29 48 79 / 8%); }
 .candidate-source { display: flex; align-items: center; gap: 10px; }
 .candidate-source strong, .candidate-source span { display: block; }
@@ -379,6 +385,7 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .audit-changes li strong { grid-column: 1 / 4; }
   .review-toolbar { position: static; margin-top: 0; padding-top: 0; background: transparent; backdrop-filter: none; }
   .queue-summary { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .review-header-actions { width: 100%; flex-wrap: wrap; }
   .status-filters { width: 100%; overflow-x: auto; padding-bottom: 2px; }
   .status-filters button { flex: 1 0 auto; justify-content: center; }
   .filter-bar { flex-wrap: wrap; }

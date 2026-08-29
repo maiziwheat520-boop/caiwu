@@ -101,11 +101,17 @@ const sourceLabels: Record<ApiCandidate['source_channel'], Candidate['source']> 
 
 function toCandidate(candidate: ApiCandidate | CandidateDetail): Candidate {
   const blockerCodes = new Set(candidate.blockers.map((blocker) => blocker.code))
+  const reviewRisks = candidate.review_risks ?? []
+  const source = candidate.summary.startsWith('微信 |')
+    ? '微信'
+    : candidate.summary.startsWith('支付宝 |')
+      ? '支付宝'
+      : sourceLabels[candidate.source_channel]
   return {
     id: candidate.id,
     shortId: candidate.short_id,
     revision: candidate.revision,
-    source: sourceLabels[candidate.source_channel],
+    source,
     sourceChannel: candidate.source_channel,
     receivedAt: new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(candidate.received_at)),
     businessUnit: candidate.business_unit,
@@ -118,11 +124,21 @@ function toCandidate(candidate: ApiCandidate | CandidateDetail): Candidate {
     confidence: candidate.confidence_basis_points / 10000,
     status: candidate.status,
     blockers: candidate.blockers,
+    reviewRisks,
     reviewEvents: 'review_events' in candidate ? candidate.review_events : [],
     incomplete: candidate.status === 'INCOMPLETE' || blockerCodes.has('MISSING_ACCOUNTING_MONTH'),
     conflict: candidate.status === 'CONFLICTED' || blockerCodes.has('BUSINESS_KEY_CONFLICT') || blockerCodes.has('DUPLICATE_MESSAGE') || blockerCodes.has('DUPLICATE_ATTACHMENT'),
     raw: candidate,
   }
+}
+
+function isBulkEligible(candidate: Candidate): boolean {
+  return candidate.status === 'PENDING'
+    && candidate.confidence >= 0.9
+    && candidate.blockers.length === 0
+    && candidate.reviewRisks.length === 0
+    && !candidate.incomplete
+    && !candidate.conflict
 }
 
 async function listRemainingCandidatePages(initialCursor: string) {
@@ -159,6 +175,7 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [decisionBusyId, setDecisionBusyId] = useState<string | null>(null)
+  const [batchBusy, setBatchBusy] = useState(false)
   const [draftBusy, setDraftBusy] = useState(false)
   const [logoutBusy, setLogoutBusy] = useState(false)
   const [passkeyDialogOpen, setPasskeyDialogOpen] = useState(false)
@@ -213,9 +230,12 @@ function App() {
         api.listConnections(),
       ])
       setSession(sessionData)
-      setCandidates(candidateData.items.map(toCandidate))
+      const remainingCandidates = candidateData.next_cursor
+        ? await listRemainingCandidatePages(candidateData.next_cursor)
+        : []
+      setCandidates([...candidateData.items, ...remainingCandidates].map(toCandidate))
       setAuditCandidates([])
-      candidateCursorRef.current = candidateData.next_cursor
+      candidateCursorRef.current = null
       setReconciliation(reconciliationData)
       setConnections(connectionData)
     } catch (error) {
@@ -314,6 +334,36 @@ function App() {
       setNotice({ tone: 'error', message: error instanceof Error ? error.message : '提交审核决定失败，请重试' })
     } finally {
       setDecisionBusyId(null)
+    }
+  }
+
+  const bulkConfirmCandidates = async (eligible: Candidate[]) => {
+    if (!session || batchBusy || eligible.length === 0) return
+    if (!window.confirm(`将一次确认 ${eligible.length} 条置信度不低于 90% 且无风险提示的账单。确认继续？`)) return
+    setBatchBusy(true)
+    let confirmed = 0
+    let failed = 0
+    try {
+      for (let offset = 0; offset < eligible.length; offset += 6) {
+        const chunk = eligible.slice(offset, offset + 6)
+        const results = await Promise.allSettled(chunk.map((candidate) => api.appendDecision({
+          candidate: candidate.raw,
+          decision: 'CONFIRM',
+          reason: 'Web 例外审核：批量确认高置信度且无风险候选',
+          csrfToken: session.csrf_token,
+        })))
+        confirmed += results.filter((result) => result.status === 'fulfilled').length
+        failed += results.filter((result) => result.status === 'rejected').length
+      }
+      await loadData()
+      setNotice({
+        tone: failed === 0 ? 'success' : 'info',
+        message: failed === 0
+          ? `已确认 ${confirmed} 条安全候选；风险项仍保留人工审核`
+          : `已确认 ${confirmed} 条，${failed} 条因状态变化或网络问题未处理，请刷新后重试`,
+      })
+    } finally {
+      setBatchBusy(false)
     }
   }
 
@@ -434,6 +484,8 @@ function App() {
           onUpdate={updateCandidate}
           onRefresh={loadData}
           busyId={decisionBusyId}
+          batchBusy={batchBusy}
+          onBatchConfirm={bulkConfirmCandidates}
         />
       )
     }
@@ -1153,32 +1205,38 @@ function StatusLine({ icon, label, detail, tone }: { icon: React.ReactNode; labe
   )
 }
 
-function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId }: {
+function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId, batchBusy, onBatchConfirm }: {
   candidates: Candidate[]
   onOpenCandidate: (candidate: Candidate) => void
   onUpdate: (candidate: Candidate, intent: CandidateUpdateIntent, corrections?: CandidateCorrections, conflictResolution?: string) => void
   onRefresh: () => void
   busyId: string | null
+  batchBusy: boolean
+  onBatchConfirm: (candidates: Candidate[]) => void
 }) {
   const [sourceFilter, setSourceFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState<'all' | 'conflict' | 'incomplete' | 'ready'>('all')
   const [query, setQuery] = useState('')
   const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN')
+  const bulkEligible = candidates.filter(isBulkEligible)
+  const evidenceReminderCount = candidates.filter((candidate) => candidate.reviewRisks.some((risk) =>
+    ['RELATED_ACCOUNT_STATEMENT_REQUIRED', 'HOTEL_PAYOUT_STATEMENT_REQUIRED'].includes(risk.code),
+  )).length
   const statusCounts = {
     all: candidates.length,
     conflict: candidates.filter((candidate) => candidate.conflict).length,
     incomplete: candidates.filter((candidate) => candidate.incomplete && !candidate.conflict).length,
-    ready: candidates.filter((candidate) => !candidate.conflict && !candidate.incomplete).length,
+    ready: bulkEligible.length,
   }
   const filtered = [...candidates].sort((left, right) => {
-    const rank = (candidate: Candidate) => candidate.conflict ? 0 : candidate.incomplete ? 1 : 2
+    const rank = (candidate: Candidate) => candidate.conflict ? 0 : candidate.incomplete || candidate.reviewRisks.length > 0 ? 1 : 2
     return rank(left) - rank(right)
   }).filter((candidate) => {
     const matchesSource = sourceFilter === 'all' || candidate.source === sourceFilter
     const matchesStatus = statusFilter === 'all'
       || (statusFilter === 'conflict' && candidate.conflict)
-      || (statusFilter === 'incomplete' && candidate.incomplete && !candidate.conflict)
-      || (statusFilter === 'ready' && !candidate.conflict && !candidate.incomplete)
+      || (statusFilter === 'incomplete' && (candidate.incomplete || candidate.reviewRisks.length > 0) && !candidate.conflict)
+      || (statusFilter === 'ready' && isBulkEligible(candidate))
     const matchesQuery = !normalizedQuery || [
       candidate.shortId,
       candidate.businessUnit,
@@ -1192,9 +1250,15 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId 
       <PageHeader
         eyebrow="人工确认队列"
         title="待审核候选"
-        description="逐条核对字段与原始证据。确认不会直接生成正式凭证。"
-        action={<Button variant="outline" color="gray" onClick={onRefresh}><ArrowsClockwise size={17} />刷新</Button>}
+        description="高置信度且无风险的账单可批量确认，其余只保留真正需要判断的项目。"
+        action={<div className="review-header-actions"><Button disabled={batchBusy || bulkEligible.length === 0} onClick={() => onBatchConfirm(bulkEligible)}><ListChecks size={17} />一键审批 {bulkEligible.length} 条</Button><Button disabled={batchBusy} variant="outline" color="gray" onClick={onRefresh}><ArrowsClockwise size={17} />刷新</Button></div>}
       />
+      {evidenceReminderCount > 0 ? (
+        <div className="evidence-reminder" role="status">
+          <Warning size={19} />
+          <div><strong>{evidenceReminderCount} 条需补关联单据</strong><span>内部/关联账户资金流需提供另一侧流水；酒店平台结算需匹配收款银行入账。</span></div>
+        </div>
+      ) : null}
       <div className="review-toolbar">
         <div className="queue-summary">
           <div>
@@ -1205,8 +1269,8 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId 
             {([
               ['all', '全部'],
               ['conflict', '冲突'],
-              ['incomplete', '缺月份'],
-              ['ready', '可确认'],
+              ['incomplete', '风险审核'],
+              ['ready', '可一键审批'],
             ] as const).map(([value, label]) => (
               <button aria-label={`${label} ${statusCounts[value]}`} aria-pressed={statusFilter === value} className={statusFilter === value ? 'active' : ''} key={value} onClick={() => setStatusFilter(value)} type="button">
                 <span>{label}</span><strong>{statusCounts[value]}</strong>
@@ -1216,12 +1280,7 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId 
         </div>
         <div className="filter-bar">
           <div className="filter-tabs" role="group" aria-label="来源筛选">
-            {[
-              ['all', '全部来源'],
-              ['Telegram', 'Telegram'],
-              ['钉钉', '钉钉'],
-              ['微信', '微信'],
-            ].map(([value, label]) => (
+            {[['all', '全部来源'], ...[...new Set(candidates.map((candidate) => candidate.source))].map((source) => [source, source])].map(([value, label]) => (
               <button aria-pressed={sourceFilter === value} className={sourceFilter === value ? 'active' : ''} key={value} onClick={() => setSourceFilter(value)} type="button">{label}</button>
             ))}
           </div>
@@ -1239,7 +1298,7 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId 
             <p>新的财务候选会在这里出现。</p>
           </div>
         ) : filtered.map((candidate) => (
-          <article className={`candidate-card ${candidate.conflict ? 'has-conflict' : candidate.incomplete ? 'is-incomplete' : 'is-ready'}`} key={candidate.id}>
+          <article className={`candidate-card ${candidate.conflict ? 'has-conflict' : candidate.incomplete || candidate.reviewRisks.length > 0 ? 'is-incomplete' : 'is-ready'}`} key={candidate.id}>
             <div className="candidate-source">
               <SourceIcon source={candidate.source} />
               <div>
@@ -1252,6 +1311,7 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId 
                 <Badge color="gray">{candidate.category}</Badge>
                 {candidate.conflict ? <Badge color="red">金额或凭证冲突</Badge> : null}
                 {candidate.incomplete ? <Badge color="amber">缺少归属月份</Badge> : null}
+                {candidate.reviewRisks.length > 0 ? <Badge color="amber">风险项·需人工审核</Badge> : null}
               </div>
               <h2>{candidate.businessUnit} · {candidate.category}</h2>
               <p>{candidate.summary}</p>
@@ -1261,6 +1321,7 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId 
                 <span>置信度 {Math.round(candidate.confidence * 100)}%</span>
                 {candidate.evidence.some((item) => item.kind === 'attachment') ? <span><Paperclip size={14} />{candidate.evidence.filter((item) => item.kind === 'attachment').length} 个附件</span> : null}
               </div>
+              {candidate.reviewRisks[0] ? <div className="candidate-risk"><Warning size={14} />{candidate.reviewRisks[0].message}</div> : null}
             </button>
             <div className="candidate-amount">
               <span>提取金额</span>
@@ -1273,6 +1334,8 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId 
                 <Button disabled={busyId === candidate.id} color="red" variant="soft" onClick={() => onOpenCandidate(candidate)}><Warning size={16} />处理冲突</Button>
               ) : candidate.incomplete ? (
                 <Button disabled={busyId === candidate.id} color="amber" variant="soft" onClick={() => onOpenCandidate(candidate)}><Info size={16} />补全月份</Button>
+              ) : candidate.reviewRisks.length > 0 ? (
+                <Button disabled={busyId === candidate.id} color="amber" variant="soft" onClick={() => onOpenCandidate(candidate)}><Warning size={16} />人工审核</Button>
               ) : (
                 <Button disabled={busyId === candidate.id} onClick={() => onUpdate(candidate, 'CONFIRM')}><Check size={16} />确认</Button>
               )}
@@ -1289,6 +1352,7 @@ function SourceIcon({ source }: { source: Candidate['source'] }) {
     Telegram: 'T',
     钉钉: '钉',
     微信: '微',
+    支付宝: '支',
     Hermes: 'H',
     '中行账单（复核材料）': '银',
     照片凭证: '照',

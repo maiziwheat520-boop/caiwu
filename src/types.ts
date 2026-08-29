@@ -21,6 +21,7 @@ export type SourceLabel =
   | 'Telegram'
   | '钉钉'
   | '微信'
+  | '支付宝'
   | 'Hermes'
   | '中行账单（复核材料）'
   | '照片凭证'
@@ -95,6 +96,12 @@ export type ApiCandidate = {
   confidence_basis_points: number
   evidence: EvidenceReference[]
   blockers: Blocker[]
+  review_risks: ReviewRisk[]
+}
+
+export type ReviewRisk = {
+  code: string
+  message: string
 }
 
 export type CandidateDetail = ApiCandidate & {
@@ -118,6 +125,7 @@ export type Candidate = {
   confidence: number
   status: CandidateStatus
   blockers: Blocker[]
+  reviewRisks: ReviewRisk[]
   reviewEvents: ReviewEvent[]
   incomplete: boolean
   conflict: boolean

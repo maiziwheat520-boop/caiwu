@@ -29,27 +29,27 @@ const candidates: ApiCandidate[] = [
     id: 'candidate-1', short_id: 'C-8F21', revision: 3, status: 'PENDING', source_channel: 'telegram',
     source_message_id: 'message-1', received_at: '2026-08-24T09:42:00+08:00', business_unit: '城南店',
     category: '布草', amount_minor: 638000, currency: 'CNY', accounting_month: '2026-08',
-    summary: '城南店 8 月布草清洗费用，供应商月结单', confidence_basis_points: 9600, evidence, blockers: [],
+    summary: '城南店 8 月布草清洗费用，供应商月结单', confidence_basis_points: 9600, evidence, blockers: [], review_risks: [],
   },
   {
     id: 'candidate-2', short_id: 'C-62D9', revision: 1, status: 'INCOMPLETE', source_channel: 'weixin',
     source_message_id: 'message-2', received_at: '2026-08-23T17:35:00+08:00', business_unit: '机场店',
     category: '水费', amount_minor: 483260, currency: 'CNY', accounting_month: null,
     summary: '机场店水费，原消息未说明归属月份', confidence_basis_points: 8800, evidence,
-    blockers: [{ code: 'MISSING_ACCOUNTING_MONTH', message: '缺少归属月份' }],
+    blockers: [{ code: 'MISSING_ACCOUNTING_MONTH', message: '缺少归属月份' }], review_risks: [],
   },
   {
     id: 'candidate-3', short_id: 'C-5B17', revision: 2, status: 'CONFLICTED', source_channel: 'dingtalk',
     source_message_id: 'message-3', received_at: '2026-08-23T14:02:00+08:00', business_unit: '城南店',
     category: '银行收款', amount_minor: 1268000, currency: 'CNY', accounting_month: '2026-08',
     summary: '城南店银行收款，与另一条候选冲突', confidence_basis_points: 9400, evidence,
-    blockers: [{ code: 'BUSINESS_KEY_CONFLICT', message: '相同凭证号金额不同' }],
+    blockers: [{ code: 'BUSINESS_KEY_CONFLICT', message: '相同凭证号金额不同' }], review_risks: [],
   },
   {
     id: 'candidate-4', short_id: 'C-49E3', revision: 4, status: 'CONFIRMED', source_channel: 'dingtalk',
     source_message_id: 'message-4', received_at: '2026-08-21T11:28:00+08:00', business_unit: '江景店',
     category: '税费', amount_minor: 924050, currency: 'CNY', accounting_month: '2026-08',
-    summary: '江景店本月税费缴款', confidence_basis_points: 9800, evidence, blockers: [],
+    summary: '江景店本月税费缴款', confidence_basis_points: 9800, evidence, blockers: [], review_risks: [],
   },
 ]
 
@@ -580,7 +580,7 @@ describe('LedgerBridge Web API client', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '返回概览' }))
     fireEvent.click(screen.getAllByRole('button', { name: /待审核/ })[0])
-    expect(screen.queryByText('仅用于审核上下文的较早候选')).not.toBeInTheDocument()
+    expect(screen.getByText('仅用于审核上下文的较早候选')).toBeInTheDocument()
   })
 
   it('isolates review-history failures from the core overview', async () => {
@@ -631,6 +631,34 @@ describe('LedgerBridge Web API client', () => {
     expect(await screen.findByRole('button', { name: '保存更正并确认' })).toBeDisabled()
   })
 
+  it('bulk-confirms only high-confidence candidates without Core risk flags', async () => {
+    const riskyCandidate: ApiCandidate = {
+      ...candidates[0],
+      id: 'candidate-risk',
+      short_id: 'C-RISK1',
+      summary: '酒店平台结算待关联银行流水',
+      confidence_basis_points: 9900,
+      review_risks: [{
+        code: 'HOTEL_PAYOUT_STATEMENT_REQUIRED',
+        message: '酒店平台结算或提现需关联收款银行流水，未匹配前保留人工审核',
+      }],
+    }
+    const fetchMock = installFetch({ items: [candidates[0], riskyCandidate] })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+
+    expect(screen.getByText('1 条需补关联单据')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '一键审批 1 条' }))
+    expect(await screen.findByText('已确认 1 条安全候选；风险项仍保留人工审核')).toBeInTheDocument()
+
+    const decisionCalls = fetchMock.mock.calls.filter(([input]) => String(input).includes('/decisions'))
+    expect(decisionCalls).toHaveLength(1)
+    expect(String(decisionCalls[0][0])).toContain('/candidate-1/decisions')
+    expect(String(decisionCalls[0][0])).not.toContain('/candidate-risk/decisions')
+  })
+
   it('filters the queue by blocker status and keeps the counts visible', async () => {
     installFetch()
     renderApp()
@@ -638,8 +666,8 @@ describe('LedgerBridge Web API client', () => {
     fireEvent.click(screen.getAllByText('待审核')[0])
 
     expect(screen.getByRole('button', { name: '冲突 1' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '缺月份 1' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '可确认 1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '风险审核 1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '可一键审批 1' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '冲突 1' }))
     expect(screen.getByText('城南店银行收款，与另一条候选冲突')).toBeInTheDocument()
     expect(screen.queryByText('机场店水费，原消息未说明归属月份')).not.toBeInTheDocument()

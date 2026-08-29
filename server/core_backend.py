@@ -459,7 +459,17 @@ def _candidate_from_core(value: object) -> dict[str, object]:
     source = value.get("source")
     evidence = value.get("evidence")
     blockers = value.get("blockers")
+    review_risks = value.get("review_risks")
     if not isinstance(source, dict) or not isinstance(evidence, list) or not isinstance(blockers, list):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    if review_risks is None:
+        review_risks = [
+            {
+                "code": "RISK_ASSESSMENT_UNAVAILABLE",
+                "message": "风险评估尚未就绪，暂不允许批量审批",
+            }
+        ]
+    if not isinstance(review_risks, list):
         raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
     channel = str(source.get("ingest_channel", "")).lower()
     return {
@@ -481,6 +491,11 @@ def _candidate_from_core(value: object) -> dict[str, object]:
         "blockers": [
             {"code": item.get("code"), "message": item.get("message")}
             for item in blockers
+            if isinstance(item, dict)
+        ],
+        "review_risks": [
+            {"code": item.get("code"), "message": item.get("message")}
+            for item in review_risks
             if isinstance(item, dict)
         ],
     }
