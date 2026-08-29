@@ -739,7 +739,7 @@ describe('LedgerBridge Web API client', () => {
     }
     const importedCandidates: ApiCandidate[] = [
       { ...candidates[0], id: 'candidate-evidence-pending', short_id: 'C-EV01', source_channel: 'outlook', accounting_month: '2026-05', summary: '银行流水待复核：TX-1001', evidence: [sharedEvidence] },
-      { ...candidates[3], id: 'candidate-evidence-confirmed', short_id: 'C-EV02', source_channel: 'outlook', accounting_month: '2026-05', summary: '银行流水已确认：TX-1002', evidence: [sharedEvidence] },
+      { ...candidates[3], id: 'candidate-evidence-confirmed', short_id: 'C-EV02', source_channel: 'outlook', accounting_month: '2026-05', summary: '银行流水已确认：TX-1002', evidence: [{ ...sharedEvidence, id: 'evidence-may-bank-copy' }] },
     ]
     installFetch({ items: importedCandidates })
     renderApp()
@@ -786,11 +786,18 @@ describe('LedgerBridge Web API client', () => {
     renderApp()
     await screen.findByText('早上好，今天有几项需要确认')
     fireEvent.click(screen.getAllByText('待审核')[0])
-    expect(screen.getByRole('button', { name: '查看网商银行 2 笔' })).toBeInTheDocument()
-    expect(screen.getByText('本人内部/关联方')).toBeInTheDocument()
+    const wangshangGroup = screen.getByRole('button', { name: '查看网商银行 2 笔' })
+    expect(wangshangGroup).toBeInTheDocument()
+    expect(within(wangshangGroup).getByText('身份待分类')).toBeInTheDocument()
+    expect(within(wangshangGroup).getByText(/关系待确认/)).toBeInTheDocument()
     expect(screen.getByText('净额 -¥60.00')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '查看张三 1 笔' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '查看未识别对象 1 笔' })).toBeInTheDocument()
+    const zhangsanGroup = screen.getByRole('button', { name: '查看张三 1 笔' })
+    expect(within(zhangsanGroup).getByText('身份待分类')).toBeInTheDocument()
+    expect(within(zhangsanGroup).getByText(/关系待确认/)).toBeInTheDocument()
+    const unknownGroup = screen.getByRole('button', { name: '查看未识别对象 1 笔' })
+    expect(within(unknownGroup).getByText('身份待分类')).toBeInTheDocument()
+    expect(screen.queryByText('已知业务对象')).not.toBeInTheDocument()
+    expect(screen.queryByText('本人内部/关联方')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^查看余额宝/ })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '查看网商银行 2 笔' }))
     expect(screen.getByText('C-WS01')).toBeInTheDocument()

@@ -1332,7 +1332,7 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId,
     const name = counterparty || '未识别对象'
     const current = groups.get(name) ?? {
       name,
-      category: counterparty ? hasRelatedRisk ? '本人内部/关联方' : '已知业务对象' : '未知',
+      category: '身份待分类',
       candidates: [] as Candidate[],
       netMinor: 0,
       highestRisk: '常规复核',
@@ -1342,7 +1342,6 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId,
     if (candidate.conflict) current.highestRisk = '凭证或金额冲突'
     else if (hasRelatedRisk && current.highestRisk !== '凭证或金额冲突') current.highestRisk = '需关联另一侧流水'
     else if (hasTransferRisk && current.highestRisk === '常规复核') current.highestRisk = '需人工确认'
-    if (hasRelatedRisk) current.category = '本人内部/关联方'
     groups.set(name, current)
     return groups
   }, new Map<string, { name: string; category: string; candidates: Candidate[]; netMinor: number; highestRisk: string }>()).values()]
@@ -1389,10 +1388,10 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId,
           <div className="transfer-object-groups">
             {transferObjects.map((group) => (
               <button aria-label={`查看${group.name} ${group.candidates.length} 笔`} aria-pressed={transferObjectFilter === group.name} className={`transfer-object-card ${transferObjectFilter === group.name ? 'active' : ''}`} key={group.name} onClick={() => setTransferObjectFilter(group.name)} type="button">
-                <span className="transfer-object-heading"><strong>{group.name}</strong><Badge color={group.category === '未知' ? 'amber' : group.category === '本人内部/关联方' ? 'blue' : 'gray'}>{group.category}</Badge></span>
+                <span className="transfer-object-heading"><strong>{group.name}</strong><Badge color="amber">{group.category}</Badge></span>
                 <span>{group.candidates.length} 笔</span>
                 <span>净额 {currency.format(minorToMajor(group.netMinor))}</span>
-                <small>最高风险：{group.highestRisk}</small>
+                <small>关系待确认 · 最高风险：{group.highestRisk}</small>
               </button>
             ))}
           </div>
@@ -1946,7 +1945,8 @@ function FilesAndConnections({ candidates, connections, onOpenCandidate, onRefre
   const connection = (id: ConnectionStatus['id']) => connections.find((item) => item.id === id)
   const evidenceLibrary = [...candidates.reduce((items, candidate) => {
     for (const evidence of candidate.evidence) {
-      const current = items.get(evidence.id) ?? {
+      const dedupeKey = evidence.sha256 ? `sha256:${evidence.sha256.toLowerCase()}` : `id:${evidence.id}`
+      const current = items.get(dedupeKey) ?? {
         evidence,
         candidates: [] as Candidate[],
         sources: new Set<string>(),
@@ -1955,7 +1955,7 @@ function FilesAndConnections({ candidates, connections, onOpenCandidate, onRefre
       if (!current.candidates.some((item) => item.id === candidate.id)) current.candidates.push(candidate)
       current.sources.add(candidate.source)
       if (candidate.accountingMonth) current.periods.add(candidate.accountingMonth)
-      items.set(evidence.id, current)
+      items.set(dedupeKey, current)
     }
     return items
   }, new Map<string, { evidence: EvidenceReference; candidates: Candidate[]; sources: Set<string>; periods: Set<string> }>()).values()]
