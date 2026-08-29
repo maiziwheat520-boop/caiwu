@@ -617,7 +617,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 len(cursor) > 512
                 or not cursor.isascii()
                 or (not opaque_cursors and not cursor.isdigit())
-                or (opaque_cursors and re.fullmatch(r"[A-Za-z0-9_-]+", cursor) is None)
+                or (opaque_cursors and re.fullmatch(r"[A-Za-z0-9._-]+", cursor) is None)
             ):
                 self._send_json(400, _problem(400, "INVALID_CURSOR", "分页游标无效"))
                 return

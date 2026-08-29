@@ -107,6 +107,7 @@ def core_event() -> dict[str, object]:
 class FakeCoreClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, bytes | None, dict[str, str]]] = []
+        self.candidate_next_cursor: str | None = None
 
     def json(
         self,
@@ -130,7 +131,7 @@ class FakeCoreClient:
         if path.startswith(f"/internal/v1/candidates/{CANDIDATE_ID}"):
             return core_candidate()
         if path.startswith("/internal/v1/candidates?"):
-            return {"items": [core_candidate()], "next_cursor": None}
+            return {"items": [core_candidate()], "next_cursor": self.candidate_next_cursor}
         raise AssertionError(f"unexpected Core path: {path}")
 
     def evidence(self, path: str) -> dict[str, object]:
@@ -254,6 +255,7 @@ class CoreBackedAdapterTests(unittest.TestCase):
 
     def test_core_backed_bff_serves_and_reviews_without_local_business_store(self) -> None:
         client = FakeCoreClient()
+        client.candidate_next_cursor = "eNpF.payload.signature"
         state = build_state(client)
         with tempfile.TemporaryDirectory() as temp_dir:
             Path(temp_dir, "index.html").write_text("<main>review</main>", encoding="utf-8")
@@ -285,6 +287,18 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 with urllib.request.urlopen(request, timeout=2) as response:
                     page = json.load(response)
                 self.assertEqual(page["items"][0]["source_channel"], "outlook")
+                self.assertEqual(page["next_cursor"], client.candidate_next_cursor)
+                request = urllib.request.Request(
+                    f"{base_url}/api/v1/candidates?cursor={client.candidate_next_cursor}",
+                    headers={"Cookie": cookie},
+                )
+                with urllib.request.urlopen(request, timeout=2) as response:
+                    next_page = json.load(response)
+                self.assertEqual(next_page["items"][0]["source_channel"], "outlook")
+                self.assertIn(
+                    f"cursor={client.candidate_next_cursor}",
+                    client.calls[-1][1],
+                )
 
                 body = json.dumps(
                     {
