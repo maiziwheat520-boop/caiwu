@@ -26,6 +26,8 @@ from urllib.request import (
 MAX_JSON_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_EVIDENCE_RESPONSE_BYTES = 128 * 1024 * 1024
 SAFE_HEADER_VALUE = re.compile(r"^[\x21-\x7e]+$")
+EVIDENCE_UNLOCK_CORE_PATH = "/internal/v1/evidence/unlocks"
+EVIDENCE_UNLOCK_STATUSES = {"NOT_REQUIRED", "PASSWORD_REQUIRED", "UNLOCKED"}
 
 
 class CoreBackendError(RuntimeError):
@@ -193,6 +195,7 @@ class CoreBackedState:
         authentication_generation: int,
         entity_ref: str,
         business_unit_ref: str,
+        evidence_unlock_path: str | None = None,
     ) -> None:
         if not 32 <= len(assertion_key) <= 256:
             raise ValueError("CORE_USER_ASSERTION_KEY must contain 32 to 256 bytes")
@@ -208,6 +211,9 @@ class CoreBackedState:
         self.authentication_generation = authentication_generation
         self.entity_ref = str(uuid.UUID(entity_ref))
         self.business_unit_ref = _bounded(business_unit_ref, maximum=100)
+        if evidence_unlock_path not in {None, "", EVIDENCE_UNLOCK_CORE_PATH}:
+            raise ValueError("Core evidence unlock path is unsupported")
+        self.evidence_unlock_path = EVIDENCE_UNLOCK_CORE_PATH if evidence_unlock_path else None
         # These fields are unreachable when core-backed mode has its required
         # AuthManager, but keep the server Interface closed and explicit.
         self.cookie_secure = True
@@ -324,6 +330,59 @@ class CoreBackedState:
         evidence_ref = str(uuid.UUID(evidence_id))
         return self.client.evidence(f"/internal/v1/evidence/{evidence_ref}/content")
 
+    def unlock_evidence_source(
+        self,
+        source_ref: str,
+        password: str,
+        idempotency_key: str,
+    ) -> tuple[int, dict[str, object]]:
+        try:
+            canonical_source_ref = _opaque_source_ref(source_ref)
+            operation_id = str(uuid.UUID(idempotency_key))
+        except (TypeError, ValueError):
+            return 422, _problem(422, "INVALID_EVIDENCE_UNLOCK_REQUEST")
+        if self.evidence_unlock_path is None:
+            return 503, _problem(503, "EVIDENCE_UNLOCK_UNAVAILABLE")
+
+        request_payload: dict[str, object] = {
+            "contract_version": "ledgerbridge.evidence-unlock.v1",
+            "source_ref": canonical_source_ref,
+            "password": password,
+        }
+        body = json.dumps(request_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        assertion = self._resource_user_assertion(
+            path=self.evidence_unlock_path,
+            body=body,
+            resource_ref=canonical_source_ref,
+            operation_id=operation_id,
+        )
+        try:
+            payload = self.client.json(
+                "POST",
+                self.evidence_unlock_path,
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": operation_id,
+                    "X-LedgerBridge-User-Assertion": assertion,
+                },
+            )
+        except CoreBackendError as error:
+            status = 503 if error.status >= 500 else 422
+            code = "EVIDENCE_UNLOCK_UNAVAILABLE" if status == 503 else "EVIDENCE_UNLOCK_FAILED"
+            return status, _problem(status, code)
+        finally:
+            request_payload["password"] = ""
+            body = b""
+
+        if (
+            payload.get("contract_version") != "ledgerbridge.evidence-unlock-result.v1"
+            or payload.get("source_ref") != canonical_source_ref
+            or payload.get("unlock_status") != "UNLOCKED"
+        ):
+            return 503, _problem(503, "EVIDENCE_UNLOCK_UNAVAILABLE")
+        return 200, {"unlocked": True}
+
     def reconciliation(self, month: str) -> dict[str, object]:
         query = urlencode(
             {
@@ -429,6 +488,44 @@ class CoreBackedState:
         signature = hmac.new(self.assertion_key, signed, hashlib.sha256).digest()
         return f"v1.{encoded}.{_b64url(signature)}"
 
+    def _resource_user_assertion(
+        self,
+        *,
+        path: str,
+        body: bytes,
+        resource_ref: str,
+        operation_id: str,
+    ) -> str:
+        issued_at = int(time.time())
+        claims = {
+            "version": "ledgerbridge.bff-user-assertion.v1",
+            "issuer": self.assertion_issuer,
+            "audience": self.assertion_audience,
+            "subject": self.user_subject,
+            "authentication_generation": self.authentication_generation,
+            "method": "POST",
+            "canonical_path": path,
+            "body_sha256": hashlib.sha256(body).hexdigest(),
+            "resource_ref": resource_ref,
+            "operation_id": operation_id,
+            "workload_principal": self.workload_principal,
+            "policy_generation": self.policy_generation,
+            "issued_at": issued_at,
+            "expires_at": issued_at + 45,
+            "jti": str(uuid.uuid4()),
+        }
+        encoded = _b64url(
+            json.dumps(
+                claims,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        signed = f"v1.{encoded}".encode("ascii")
+        signature = hmac.new(self.assertion_key, signed, hashlib.sha256).digest()
+        return f"v1.{encoded}.{_b64url(signature)}"
+
 
 def sqlite_contains_business_facts(path: str | Path) -> bool:
     """Refuse a Core-backed start over a Web database containing preview facts."""
@@ -505,13 +602,28 @@ def _evidence_from_core(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
     kind = str(value.get("kind"))
-    return {
+    mapped: dict[str, object] = {
         "id": value.get("evidence_ref"),
         "kind": "attachment" if kind == "ATTACHMENT" else "message",
         "media_type": value.get("media_type"),
         "sha256": None,
         "original_filename": value.get("display_name"),
     }
+    unlock_status = value.get("unlock_status")
+    source_ref = value.get("source_ref")
+    if unlock_status is not None:
+        if unlock_status not in EVIDENCE_UNLOCK_STATUSES:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        if source_ref is not None:
+            try:
+                source_ref = _opaque_source_ref(source_ref)
+            except (TypeError, ValueError) as error:
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID")) from error
+        if unlock_status == "PASSWORD_REQUIRED" and source_ref is None:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        mapped["unlock_status"] = unlock_status
+        mapped["source_ref"] = source_ref
+    return mapped
 
 
 def _event_from_core(value: object) -> dict[str, object]:
@@ -564,6 +676,15 @@ def _bounded(value: str, *, maximum: int = 200) -> str:
     if not isinstance(value, str) or not 1 <= len(value) <= maximum:
         raise ValueError("Core adapter configuration is missing or too long")
     return value
+
+
+def _opaque_source_ref(value: object) -> str:
+    if not isinstance(value, str):
+        raise TypeError("source_ref must be a string")
+    canonical = str(uuid.UUID(value))
+    if value != canonical:
+        raise ValueError("source_ref must be a canonical opaque UUID")
+    return canonical
 
 
 def _b64url(value: bytes) -> str:

@@ -436,6 +436,59 @@ paths:
                 $ref: "#/components/schemas/EvidencePreview"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/v1/evidence/unlocks:
+    post:
+      operationId: unlockEvidenceSource
+      description: >-
+        Forward one in-memory archive password to the configured Core adapter.
+        The password is never persisted, logged, placed in a URL, or returned.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [source_ref, password]
+              properties:
+                source_ref:
+                  type: string
+                  format: uuid
+                password:
+                  type: string
+                  minLength: 1
+                  maxLength: 1024
+                  writeOnly: true
+      responses:
+        "200":
+          description: Core accepted the password and unlocked the evidence source.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [unlocked]
+                properties:
+                  unlocked:
+                    type: boolean
+                    const: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          description: The source reference or password was rejected without exposing Core response text.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "503":
+          description: The fixed Core unlock endpoint is not configured or is unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/reconciliations/{accounting_month}:
     get:
       operationId: getReconciliation
@@ -824,6 +877,13 @@ components:
         original_filename:
           type: [string, "null"]
           maxLength: 500
+        unlock_status:
+          type: string
+          enum: [NOT_REQUIRED, PASSWORD_REQUIRED, UNLOCKED]
+        source_ref:
+          type: [string, "null"]
+          format: uuid
+          description: Opaque canonical reference; required when unlock_status is PASSWORD_REQUIRED.
     EvidencePreview:
       type: object
       description: >-

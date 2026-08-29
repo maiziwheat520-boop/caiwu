@@ -33,6 +33,12 @@ export type EvidenceReference = {
   media_type: string
   sha256: string | null
   original_filename: string | null
+  unlock_status?: 'NOT_REQUIRED' | 'PASSWORD_REQUIRED' | 'UNLOCKED'
+  source_ref?: string | null
+}
+
+export type EvidenceUnlockResult = {
+  unlocked: true
 }
 
 export type Blocker = {

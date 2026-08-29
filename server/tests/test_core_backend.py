@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import http.client
+import io
 import json
 import sqlite3
 import tempfile
@@ -11,11 +13,13 @@ import unittest
 import urllib.request
 import uuid
 from contextlib import closing
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 
 from server.app import COOKIE_NAME, create_server
 from server.core_backend import (
+    EVIDENCE_UNLOCK_CORE_PATH,
     CoreBackendError,
     CoreBackedState,
     sqlite_contains_business_facts,
@@ -108,6 +112,7 @@ class FakeCoreClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, bytes | None, dict[str, str]]] = []
         self.candidate_next_cursor: str | None = None
+        self.candidate_payload = core_candidate()
 
     def json(
         self,
@@ -129,9 +134,9 @@ class FakeCoreClient:
         if path.startswith("/internal/v1/candidate-events"):
             return {"items": [core_event()], "next_cursor": None}
         if path.startswith(f"/internal/v1/candidates/{CANDIDATE_ID}"):
-            return core_candidate()
+            return self.candidate_payload
         if path.startswith("/internal/v1/candidates?"):
-            return {"items": [core_candidate()], "next_cursor": self.candidate_next_cursor}
+            return {"items": [self.candidate_payload], "next_cursor": self.candidate_next_cursor}
         raise AssertionError(f"unexpected Core path: {path}")
 
     def evidence(self, path: str) -> dict[str, object]:
@@ -175,7 +180,51 @@ class FakeAuthManager:
         }
 
 
-def build_state(client: FakeCoreClient) -> CoreBackedState:
+class SecretSafeUnlockCoreClient(FakeCoreClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_unlock = False
+        self.unlock_calls = 0
+        self.password_was_present = False
+        self.unlock_source_ref: str | None = None
+        self.unlock_headers: dict[str, str] = {}
+        self.unlock_body_sha256: str | None = None
+
+    def json(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        if method == "POST" and path == EVIDENCE_UNLOCK_CORE_PATH:
+            assert body is not None
+            request = json.loads(body)
+            password = request.pop("password", None)
+            self.unlock_calls += 1
+            self.password_was_present = isinstance(password, str) and bool(password)
+            self.unlock_source_ref = request.get("source_ref")
+            self.unlock_headers = dict(headers or {})
+            self.unlock_body_sha256 = hashlib.sha256(body).hexdigest()
+            if self.fail_unlock:
+                raise CoreBackendError(
+                    422,
+                    {"code": "CORE_PASSWORD_REJECTED", "detail": password},
+                )
+            return {
+                "contract_version": "ledgerbridge.evidence-unlock-result.v1",
+                "source_ref": self.unlock_source_ref,
+                "unlock_status": "UNLOCKED",
+            }
+        return super().json(method, path, body=body, headers=headers)
+
+
+def build_state(
+    client: FakeCoreClient,
+    *,
+    evidence_unlock_path: str | None = None,
+) -> CoreBackedState:
     return CoreBackedState(
         client,  # type: ignore[arg-type]
         assertion_key=ASSERTION_KEY,
@@ -187,10 +236,69 @@ def build_state(client: FakeCoreClient) -> CoreBackedState:
         authentication_generation=4,
         entity_ref=ENTITY_ID,
         business_unit_ref="unit-demo-a",
+        evidence_unlock_path=evidence_unlock_path,
     )
 
 
 class CoreBackedAdapterTests(unittest.TestCase):
+    def test_maps_only_valid_structured_evidence_unlock_state(self) -> None:
+        source_ref = "21000000-0000-4000-8000-000000000001"
+        client = FakeCoreClient()
+        client.candidate_payload["evidence"][0].update(  # type: ignore[index,union-attr]
+            {"unlock_status": "PASSWORD_REQUIRED", "source_ref": source_ref}
+        )
+
+        evidence = build_state(client).list_candidates(status=None, month=None, cursor=None)["items"][0]["evidence"][0]  # type: ignore[index]
+        self.assertEqual(evidence["unlock_status"], "PASSWORD_REQUIRED")
+        self.assertEqual(evidence["source_ref"], source_ref)
+
+        client.candidate_payload["evidence"][0]["source_ref"] = "../private/archive.zip"  # type: ignore[index]
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(client).list_candidates(status=None, month=None, cursor=None)
+        self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_unlock_adapter_is_fail_closed_and_drops_core_failure_text(self) -> None:
+        source_ref = "22000000-0000-4000-8000-000000000001"
+        operation = str(uuid.uuid4())
+        unavailable_status, unavailable = build_state(SecretSafeUnlockCoreClient()).unlock_evidence_source(
+            source_ref,
+            "temporary-password",
+            operation,
+        )
+        self.assertEqual(unavailable_status, 503)
+        self.assertEqual(unavailable["code"], "EVIDENCE_UNLOCK_UNAVAILABLE")
+
+        client = SecretSafeUnlockCoreClient()
+        client.fail_unlock = True
+        status, problem = build_state(
+            client,
+            evidence_unlock_path=EVIDENCE_UNLOCK_CORE_PATH,
+        ).unlock_evidence_source(source_ref, "must-not-leak", operation)
+        self.assertEqual(status, 422)
+        self.assertEqual(problem["code"], "EVIDENCE_UNLOCK_FAILED")
+        self.assertNotIn("must-not-leak", json.dumps(problem))
+        self.assertFalse(hasattr(client, "unlock_body"))
+
+    def test_unlock_adapter_binds_source_body_digest_and_operation(self) -> None:
+        source_ref = "23000000-0000-4000-8000-000000000001"
+        operation = str(uuid.uuid4())
+        client = SecretSafeUnlockCoreClient()
+        status, result = build_state(
+            client,
+            evidence_unlock_path=EVIDENCE_UNLOCK_CORE_PATH,
+        ).unlock_evidence_source(source_ref, "temporary-password", operation)
+        self.assertEqual(status, 200)
+        self.assertEqual(result, {"unlocked": True})
+        self.assertTrue(client.password_was_present)
+        self.assertEqual(client.unlock_source_ref, source_ref)
+        self.assertEqual(client.unlock_headers["Idempotency-Key"], operation)
+        version, encoded, _ = client.unlock_headers["X-LedgerBridge-User-Assertion"].split(".")
+        self.assertEqual(version, "v1")
+        claims = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        self.assertEqual(claims["resource_ref"], source_ref)
+        self.assertEqual(claims["body_sha256"], client.unlock_body_sha256)
+        self.assertEqual(claims["operation_id"], operation)
+
     def test_missing_reconciliation_snapshot_does_not_hide_imported_candidates(self) -> None:
         client = FakeCoreClient()
 
@@ -342,6 +450,142 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 connection.execute("INSERT INTO candidates (id) VALUES ('synthetic')")
                 connection.commit()
             self.assertTrue(sqlite_contains_business_facts(database))
+
+
+class CoreBackedUnlockBffTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = SecretSafeUnlockCoreClient()
+        self.temp_dir = tempfile.TemporaryDirectory()
+        Path(self.temp_dir.name, "index.html").write_text("<main>review</main>", encoding="utf-8")
+        self.server = create_server(
+            "127.0.0.1",
+            0,
+            self.temp_dir.name,
+            state=build_state(self.client, evidence_unlock_path=EVIDENCE_UNLOCK_CORE_PATH),
+            auth_manager=FakeAuthManager(),  # type: ignore[arg-type]
+            mode="core-backed",
+            trusted_proxy_cidrs="127.0.0.1/32",
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        self.temp_dir.cleanup()
+
+    def request(
+        self,
+        body: dict[str, object],
+        *,
+        authenticated: bool = True,
+        csrf: str = "csrf-token",
+    ) -> tuple[int, dict[str, object]]:
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
+        headers = {
+            "Origin": "https://ledgerbridge.test",
+            "Sec-Fetch-Site": "same-origin",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": csrf,
+            "Idempotency-Key": str(uuid.uuid4()),
+        }
+        if authenticated:
+            headers["Cookie"] = f"{COOKIE_NAME}=session-token"
+        connection.request(
+            "POST",
+            "/api/v1/evidence/unlocks",
+            body=json.dumps(body).encode("utf-8"),
+            headers=headers,
+        )
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+        status = response.status
+        connection.close()
+        return status, payload
+
+    def test_requires_session_csrf_and_opaque_source_reference(self) -> None:
+        request = {
+            "source_ref": "24000000-0000-4000-8000-000000000001",
+            "password": "temporary-password",
+        }
+        status, problem = self.request(request, authenticated=False)
+        self.assertEqual(status, 401)
+        self.assertEqual(problem["code"], "AUTHENTICATION_REQUIRED")
+        status, problem = self.request(request, csrf="wrong")
+        self.assertEqual(status, 403)
+        self.assertEqual(problem["code"], "CSRF_VALIDATION_FAILED")
+        status, problem = self.request({**request, "source_ref": "../private/archive.zip"})
+        self.assertEqual(status, 422)
+        self.assertEqual(problem["code"], "INVALID_SOURCE_REF")
+        self.assertEqual(self.client.unlock_calls, 0)
+
+    def test_rejects_every_malformed_unlock_shape_without_forwarding_or_echoing_passwords(self) -> None:
+        source_ref = "24500000-0000-4000-8000-000000000001"
+        cases = [
+            (
+                {"source_ref": source_ref, "password": "extra-field-secret", "extra": True},
+                "INVALID_EVIDENCE_UNLOCK_REQUEST",
+                "extra-field-secret",
+            ),
+            (
+                {"password": "missing-reference-secret"},
+                "INVALID_EVIDENCE_UNLOCK_REQUEST",
+                "missing-reference-secret",
+            ),
+            (
+                {"source_ref": "../private/archive.zip", "password": "invalid-reference-secret"},
+                "INVALID_SOURCE_REF",
+                "invalid-reference-secret",
+            ),
+            (
+                {"source_ref": source_ref, "password": "nul-secret\x00suffix"},
+                "INVALID_EVIDENCE_PASSWORD",
+                "nul-secret",
+            ),
+            (
+                {"source_ref": source_ref, "password": "x" * 1025},
+                "INVALID_EVIDENCE_PASSWORD",
+                "x" * 64,
+            ),
+        ]
+        capture = io.StringIO()
+        with redirect_stdout(capture):
+            for body, expected_code, secret_fragment in cases:
+                with self.subTest(expected_code=expected_code):
+                    status, problem = self.request(body)
+                    self.assertEqual(status, 422)
+                    self.assertEqual(problem["code"], expected_code)
+                    self.assertNotIn(secret_fragment, json.dumps(problem))
+        self.assertEqual(self.client.unlock_calls, 0)
+        for _, _, secret_fragment in cases:
+            self.assertNotIn(secret_fragment, capture.getvalue())
+
+    def test_core_failure_is_generic_and_password_is_not_logged_or_returned(self) -> None:
+        self.client.fail_unlock = True
+        capture = io.StringIO()
+        with redirect_stdout(capture):
+            status, problem = self.request(
+                {
+                    "source_ref": "25000000-0000-4000-8000-000000000001",
+                    "password": "must-not-leak",
+                }
+            )
+        self.assertEqual(status, 422)
+        self.assertEqual(problem["code"], "EVIDENCE_UNLOCK_FAILED")
+        self.assertNotIn("must-not-leak", json.dumps(problem))
+        self.assertNotIn("must-not-leak", capture.getvalue())
+
+    def test_success_returns_only_unlock_flag(self) -> None:
+        status, payload = self.request(
+            {
+                "source_ref": "26000000-0000-4000-8000-000000000001",
+                "password": "temporary-password",
+            }
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"unlocked": True})
+        self.assertEqual(self.client.unlock_calls, 1)
 
 
 if __name__ == "__main__":

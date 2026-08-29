@@ -52,6 +52,7 @@ DRAFT_CREATE_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)/drafts$")
 DRAFT_PATH = re.compile(r"^/api/v1/workbook-drafts/([0-9a-f-]{36})$")
 EVIDENCE_PATH = re.compile(r"^/api/v1/evidence/([0-9a-f-]{36})/content$")
 EVIDENCE_PREVIEW_PATH = re.compile(r"^/api/v1/evidence/([0-9a-f-]{36})/preview$")
+EVIDENCE_UNLOCK_PATH = "/api/v1/evidence/unlocks"
 MAX_REQUEST_BYTES = 64 * 1024
 STATUSES = {"INCOMPLETE", "PENDING", "CONFLICTED", "CONFIRMED", "IGNORED", "SUPERSEDED"}
 
@@ -127,6 +128,15 @@ class SyntheticState:
     def evidence(self, evidence_id: str) -> dict[str, object] | None:
         evidence = SYNTHETIC_EVIDENCE_CONTENT.get(evidence_id)
         return deepcopy(evidence) if evidence is not None else None
+
+    def unlock_evidence_source(
+        self,
+        source_ref: str,
+        password: str,
+        idempotency_key: str,
+    ) -> tuple[int, dict[str, object]]:
+        del source_ref, password, idempotency_key
+        return 503, _problem(503, "EVIDENCE_UNLOCK_UNAVAILABLE", "账单解锁服务尚未配置")
 
     def connections(self) -> list[dict[str, str]]:
         return deepcopy(SYNTHETIC_CONNECTIONS)
@@ -902,7 +912,8 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             return
         decision_match = DECISION_PATH.fullmatch(path)
         draft_match = DRAFT_CREATE_PATH.fullmatch(path)
-        if decision_match is None and draft_match is None:
+        evidence_unlock = path == EVIDENCE_UNLOCK_PATH
+        if decision_match is None and draft_match is None and not evidence_unlock:
             self._send_json(404 if path.startswith("/api/") else 405, _problem(404 if path.startswith("/api/") else 405, "API_ROUTE_NOT_FOUND" if path.startswith("/api/") else "METHOD_NOT_ALLOWED", "路径不接受该请求"))
             return
         if not self._require_session():
@@ -920,6 +931,34 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             return
         request = self._read_json_object()
         if request is None:
+            return
+        if evidence_unlock:
+            try:
+                password = request.get("password")
+                if set(request) != {"source_ref", "password"}:
+                    self._send_json(422, _problem(422, "INVALID_EVIDENCE_UNLOCK_REQUEST", "解锁请求字段不符合合约"))
+                    return
+                source_ref = request.get("source_ref")
+                try:
+                    canonical_source_ref = str(uuid.UUID(source_ref)) if isinstance(source_ref, str) else ""
+                except ValueError:
+                    canonical_source_ref = ""
+                if not isinstance(source_ref, str) or source_ref != canonical_source_ref:
+                    self._send_json(422, _problem(422, "INVALID_SOURCE_REF", "账单来源引用无效"))
+                    return
+                if not isinstance(password, str) or not 1 <= len(password) <= 1024 or "\x00" in password:
+                    self._send_json(422, _problem(422, "INVALID_EVIDENCE_PASSWORD", "解锁密码无效"))
+                    return
+                status, payload = self.preview_server.state.unlock_evidence_source(
+                    canonical_source_ref,
+                    password,
+                    idempotency_key.lower(),
+                )
+            finally:
+                if "password" in request:
+                    request["password"] = ""
+                password = ""
+            self._send_json(status, payload)
             return
         if decision_match is not None:
             validated = self._validate_decision(request)
@@ -1148,6 +1187,7 @@ def run() -> None:
                 authentication_generation=int(required["CORE_AUTHENTICATION_GENERATION"]),
                 entity_ref=required["CORE_ENTITY_REF"],
                 business_unit_ref=required["CORE_BUSINESS_UNIT_REF"],
+                evidence_unlock_path=os.environ.get("CORE_EVIDENCE_UNLOCK_PATH", "").strip() or None,
             )
         except (OSError, ValueError) as error:
             raise SystemExit("Refusing core-backed mode: invalid Core settings") from error

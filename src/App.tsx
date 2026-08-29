@@ -287,8 +287,10 @@ function App() {
       candidateCursorRef.current = null
       setReconciliation(reconciliationData)
       setConnections(connectionData)
+      return true
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : '无法读取财务数据')
+      return false
     } finally {
       setLoading(false)
     }
@@ -565,7 +567,7 @@ function App() {
         />
       )
     }
-    return <FilesAndConnections candidates={candidates} connections={connections} onOpenCandidate={openCandidate} onRefresh={loadData} />
+    return <FilesAndConnections candidates={candidates} connections={connections} csrfToken={session?.csrf_token ?? null} onOpenCandidate={openCandidate} onRefresh={loadData} onNotice={setNotice} />
   }
 
   if (authLoading) return <AuthFrame><LoadingState title="正在检查访问状态" description="正在确认此设备的单用户会话。" /></AuthFrame>
@@ -1936,16 +1938,97 @@ function ConnectionBadge({ connection }: { connection?: ConnectionStatus }) {
   return <Badge color={color}>{connectionStateLabel[state]}</Badge>
 }
 
-function FilesAndConnections({ candidates, connections, onOpenCandidate, onRefresh }: {
+function EvidenceUnlockDialog({ evidence, csrfToken, onClose, onUnlocked }: {
+  evidence: EvidenceReference
+  csrfToken: string
+  onClose: () => void
+  onUnlocked: () => Promise<void>
+}) {
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (busy || password.length === 0 || !evidence.source_ref) return
+    setBusy(true)
+    setError(null)
+    const submittedPassword = { value: password }
+    let unlocked = false
+    setPassword('')
+    try {
+      await api.unlockEvidence({
+        sourceRef: evidence.source_ref,
+        password: submittedPassword.value,
+        csrfToken,
+      })
+      unlocked = true
+    } catch (unlockError) {
+      setError(unlockError instanceof Error ? unlockError.message : '账单解锁失败，请检查密码后重试')
+    } finally {
+      submittedPassword.value = ''
+      setPassword('')
+      setBusy(false)
+    }
+    if (!unlocked) return
+    onClose()
+    await onUnlocked()
+  }
+
+  return (
+    <Dialog.Root open onOpenChange={(open) => {
+      if (!open && !busy) {
+        setPassword('')
+        setError(null)
+        onClose()
+      }
+    }}>
+      <Dialog.Content maxWidth="460px">
+        <Dialog.Title>输入账单解压密码</Dialog.Title>
+        <Dialog.Description>密码只用于本次解锁请求，提交后立即从输入框清除。</Dialog.Description>
+        <form className="evidence-unlock-form" onSubmit={(event) => void submit(event)}>
+          <label htmlFor="evidence-unlock-password">解压密码</label>
+          <TextField.Root
+            autoComplete="off"
+            autoFocus
+            id="evidence-unlock-password"
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            aria-describedby={error ? 'evidence-unlock-error' : undefined}
+          />
+          {error ? <div className="auth-error" id="evidence-unlock-error" role="alert"><Warning size={17} />{error}</div> : null}
+          <div className="auth-actions">
+            <Button type="button" variant="outline" color="gray" disabled={busy} onClick={() => {
+              setPassword('')
+              setError(null)
+              onClose()
+            }}>取消</Button>
+            <Button type="submit" disabled={busy || password.length === 0}>{busy ? '正在解锁' : '解锁账单'}</Button>
+          </div>
+        </form>
+      </Dialog.Content>
+    </Dialog.Root>
+  )
+}
+
+function FilesAndConnections({ candidates, connections, csrfToken, onOpenCandidate, onRefresh, onNotice }: {
   candidates: Candidate[]
   connections: ConnectionStatus[]
+  csrfToken: string | null
   onOpenCandidate: (candidate: Candidate) => void
-  onRefresh: () => void
+  onRefresh: () => Promise<boolean>
+  onNotice: (notice: Notice) => void
 }) {
+  const [unlockEvidence, setUnlockEvidence] = useState<EvidenceReference | null>(null)
   const connection = (id: ConnectionStatus['id']) => connections.find((item) => item.id === id)
   const evidenceLibrary = [...candidates.reduce((items, candidate) => {
     for (const evidence of candidate.evidence) {
-      const dedupeKey = evidence.sha256 ? `sha256:${evidence.sha256.toLowerCase()}` : `id:${evidence.id}`
+      const contentKey = evidence.sha256 ? `sha256:${evidence.sha256.toLowerCase()}` : `id:${evidence.id}`
+      const unlockKey = evidence.unlock_status || evidence.source_ref
+        ? `:unlock:${evidence.unlock_status ?? 'UNKNOWN'}:${evidence.source_ref ?? 'none'}`
+        : ''
+      const dedupeKey = `${contentKey}${unlockKey}`
       const current = items.get(dedupeKey) ?? {
         evidence,
         candidates: [] as Candidate[],
@@ -1994,6 +2077,9 @@ function FilesAndConnections({ candidates, connections, onOpenCandidate, onRefre
                 <article className="evidence-library-item" key={item.evidence.id}>
                   <div className="evidence-library-title"><FileText size={20} /><div><strong>{item.evidence.original_filename ?? (item.evidence.kind === 'message' ? '消息原文' : '原始文件')}</strong><span>{[...item.sources].join('、')}</span></div><Badge color={hasPending ? 'amber' : allConfirmed ? 'green' : 'gray'}>{status}</Badge></div>
                   <div className="evidence-library-meta"><span>{[...item.periods].map(accountingMonthLabel).join('、') || '期间待确认'}</span><span>证据 {item.evidence.id}</span></div>
+                  {item.evidence.unlock_status === 'PASSWORD_REQUIRED' ? (
+                    <Button className="evidence-unlock-button" size="1" variant="soft" color="amber" disabled={!csrfToken || !item.evidence.source_ref} onClick={() => setUnlockEvidence(item.evidence)}>输入解压密码</Button>
+                  ) : null}
                   <details>
                     <summary>关联 {item.candidates.length} 条候选</summary>
                     <div className="evidence-candidate-links">
@@ -2046,6 +2132,20 @@ function FilesAndConnections({ candidates, connections, onOpenCandidate, onRefre
         <div className="panel-heading"><div><h2>最近的工作簿</h2><p>连接 OneDrive 后显示应用文件夹中的版本</p></div><Button variant="outline" color="gray" disabled><CloudArrowUp size={17} />上传副本</Button></div>
         <div className="empty-state compact-empty"><FolderOpen size={34} weight="light" /><h2>尚未连接文件来源</h2><p>连接后，系统会显示可用于月度对账的工作簿副本。</p></div>
       </section>
+
+      {unlockEvidence && csrfToken ? (
+        <EvidenceUnlockDialog
+          evidence={unlockEvidence}
+          csrfToken={csrfToken}
+          onClose={() => setUnlockEvidence(null)}
+          onUnlocked={async () => {
+            const refreshed = await onRefresh()
+            onNotice(refreshed
+              ? { tone: 'success', message: '账单已解锁，数据已刷新' }
+              : { tone: 'info', message: '已解锁，但列表刷新失败，请重试刷新' })
+          }}
+        />
+      ) : null}
     </>
   )
 }

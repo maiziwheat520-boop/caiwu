@@ -92,6 +92,9 @@ function installFetch(options: {
   failReviewEvents?: boolean
   runtimeMode?: 'synthetic-preview' | 'authenticated-preview' | 'core-backed'
   evidencePreview?: EvidencePreview
+  unlockFailure?: boolean
+  unlockGate?: Promise<void>
+  failCandidateRefreshAfterUnlock?: boolean
 } = {}) {
   const {
     items = candidates,
@@ -109,9 +112,13 @@ function installFetch(options: {
       filename: 'message.txt',
       text: '原始消息内容已直接展示',
     },
+    unlockFailure = false,
+    unlockGate,
+    failCandidateRefreshAfterUnlock = false,
   } = options
   let shouldFailSession = failSessionOnce
   let decisionSaved = false
+  const unlockedSources = new Set<string>()
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input)
     if (url === '/api/v1/auth/status') return response(authStatus)
@@ -153,8 +160,22 @@ function installFetch(options: {
       return response({ ...session, runtime_mode: runtimeMode })
     }
     if (url === '/api/v1/candidates' || url.startsWith('/api/v1/candidates?')) {
+      if (failCandidateRefreshAfterUnlock && unlockedSources.size > 0) {
+        return response({ title: '候选刷新暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
+      }
       const cursor = new URL(url, 'http://ledgerbridge.local').searchParams.get('cursor')
-      return response(candidatePages[cursor ? 1 : 0] ?? { items: [], next_cursor: null })
+      const page = candidatePages[cursor ? 1 : 0] ?? { items: [], next_cursor: null }
+      return response(unlockedSources.size > 0 ? {
+        ...page,
+        items: page.items.map((candidate) => ({
+          ...candidate,
+          evidence: candidate.evidence.map((item) => item.unlock_status === 'PASSWORD_REQUIRED'
+            && item.source_ref
+            && unlockedSources.has(item.source_ref)
+            ? { ...item, unlock_status: 'UNLOCKED' as const }
+            : item),
+        })),
+      } : page)
     }
     if (url.startsWith('/api/v1/review-events')) {
       if (failReviewEvents) return response({ title: '操作记录暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
@@ -167,6 +188,15 @@ function installFetch(options: {
     }
     if (url === '/api/v1/connections') return response({ items: [] })
     if (url.includes('/api/v1/evidence/') && url.includes('/preview?')) return response(evidencePreview)
+    if (url === '/api/v1/evidence/unlocks' && init?.method === 'POST') {
+      if (unlockGate) await unlockGate
+      const submitted = JSON.parse(String(init.body)) as { source_ref: string; password: string }
+      if (unlockFailure) {
+        return response({ title: 'Core failure', detail: submitted.password, status: 422 }, 422)
+      }
+      unlockedSources.add(submitted.source_ref)
+      return response({ unlocked: true })
+    }
     if (url.includes('/decisions') && init?.method === 'POST') {
       decisionSaved = true
       const body = JSON.parse(String(init.body)) as { decision: string }
@@ -753,6 +783,136 @@ describe('LedgerBridge Web API client', () => {
     fireEvent.click(screen.getByRole('button', { name: /C-EV01/ }))
     expect(await screen.findByRole('dialog')).toBeInTheDocument()
     expect(await screen.findByText('原始消息内容已直接展示')).toBeInTheDocument()
+  })
+
+  it('shows a password-only dialog only for locked evidence, prevents duplicate submit, and refreshes after success', async () => {
+    const sourceRef = '21000000-0000-4000-8000-000000000001'
+    const secondSourceRef = '21000000-0000-4000-8000-000000000004'
+    const lockedEvidence = {
+      id: '21000000-0000-4000-8000-000000000002',
+      kind: 'attachment' as const,
+      media_type: 'application/zip',
+      sha256: 'd'.repeat(64),
+      original_filename: 'encrypted-statement.zip',
+      unlock_status: 'PASSWORD_REQUIRED' as const,
+      source_ref: sourceRef,
+    }
+    const secondLockedEvidence = {
+      ...lockedEvidence,
+      id: '21000000-0000-4000-8000-000000000005',
+      original_filename: 'forwarded-encrypted-statement.zip',
+      source_ref: secondSourceRef,
+    }
+    const ordinaryEvidence = {
+      ...lockedEvidence,
+      id: '21000000-0000-4000-8000-000000000003',
+      original_filename: 'ordinary-statement.xlsx',
+      unlock_status: 'NOT_REQUIRED' as const,
+      source_ref: null,
+    }
+    let releaseUnlock!: () => void
+    const unlockGate = new Promise<void>((resolve) => { releaseUnlock = resolve })
+    const fetchMock = installFetch({
+      items: [
+        { ...candidates[0], id: 'candidate-locked-evidence', short_id: 'C-LK01', evidence: [lockedEvidence] },
+        { ...candidates[2], id: 'candidate-second-locked-evidence', short_id: 'C-LK02', evidence: [secondLockedEvidence] },
+        { ...candidates[1], id: 'candidate-ordinary-evidence', short_id: 'C-LK02', evidence: [ordinaryEvidence] },
+      ],
+      unlockGate,
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('文件与连接')[0])
+
+    const unlockButton = screen.getAllByRole('button', { name: '输入解压密码' })[0]
+    expect(screen.getAllByRole('button', { name: '输入解压密码' })).toHaveLength(2)
+    expect(screen.getByText('ordinary-statement.xlsx')).toBeInTheDocument()
+    fireEvent.click(unlockButton)
+    const passwordInput = screen.getByLabelText('解压密码')
+    expect(passwordInput).toHaveAttribute('type', 'password')
+    fireEvent.change(passwordInput, { target: { value: 'ephemeral-test-password' } })
+    const submitButton = screen.getByRole('button', { name: '解锁账单' })
+    fireEvent.click(submitButton)
+    fireEvent.click(submitButton)
+
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/evidence/unlocks')).toHaveLength(1))
+    releaseUnlock()
+    expect(await screen.findByText('账单已解锁，数据已刷新')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getAllByRole('button', { name: '输入解压密码' })).toHaveLength(1))
+    expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/candidates').length).toBeGreaterThanOrEqual(2)
+
+    const unlockCall = fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/evidence/unlocks')[0]
+    expect(unlockCall[1]?.credentials).toBe('same-origin')
+    expect((unlockCall[1]?.headers as Record<string, string>)['X-CSRF-Token']).toBe(session.csrf_token)
+    expect((unlockCall[1]?.headers as Record<string, string>)['Idempotency-Key']).toMatch(/^[0-9a-f-]{36}$/)
+    expect(JSON.parse(String(unlockCall[1]?.body))).toEqual({ source_ref: sourceRef, password: 'ephemeral-test-password' })
+    expect(document.body).not.toHaveTextContent('ephemeral-test-password')
+
+    fireEvent.click(screen.getByRole('button', { name: '输入解压密码' }))
+    fireEvent.change(screen.getByLabelText('解压密码'), { target: { value: 'second-ephemeral-password' } })
+    fireEvent.click(screen.getByRole('button', { name: '解锁账单' }))
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/evidence/unlocks')).toHaveLength(2))
+    await waitFor(() => expect(screen.queryByRole('button', { name: '输入解压密码' })).not.toBeInTheDocument())
+    const secondUnlockCall = fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/evidence/unlocks')[1]
+    expect(JSON.parse(String(secondUnlockCall[1]?.body))).toEqual({ source_ref: secondSourceRef, password: 'second-ephemeral-password' })
+    expect(document.body).not.toHaveTextContent('second-ephemeral-password')
+  })
+
+  it('clears the password and hides Core failure text after an unlock failure', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const lockedEvidence = {
+      id: '22000000-0000-4000-8000-000000000002',
+      kind: 'attachment' as const,
+      media_type: 'application/zip',
+      sha256: 'f'.repeat(64),
+      original_filename: 'locked.zip',
+      unlock_status: 'PASSWORD_REQUIRED' as const,
+      source_ref: '22000000-0000-4000-8000-000000000001',
+    }
+    installFetch({
+      items: [{ ...candidates[0], id: 'candidate-failed-unlock', short_id: 'C-LK03', evidence: [lockedEvidence] }],
+      unlockFailure: true,
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('文件与连接')[0])
+    fireEvent.click(screen.getByRole('button', { name: '输入解压密码' }))
+    const passwordInput = screen.getByLabelText('解压密码')
+    fireEvent.change(passwordInput, { target: { value: 'must-not-leak' } })
+    fireEvent.click(screen.getByRole('button', { name: '解锁账单' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('账单解锁失败，请检查密码后重试')
+    expect(passwordInput).toHaveValue('')
+    expect(document.body).not.toHaveTextContent('must-not-leak')
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain('must-not-leak')
+  })
+
+  it('reports an accepted unlock separately when the candidate list refresh fails', async () => {
+    const lockedEvidence = {
+      id: '22500000-0000-4000-8000-000000000002',
+      kind: 'attachment' as const,
+      media_type: 'application/zip',
+      sha256: '1'.repeat(64),
+      original_filename: 'refresh-failure.zip',
+      unlock_status: 'PASSWORD_REQUIRED' as const,
+      source_ref: '22500000-0000-4000-8000-000000000001',
+    }
+    installFetch({
+      items: [{ ...candidates[0], id: 'candidate-refresh-failure', short_id: 'C-LK04', evidence: [lockedEvidence] }],
+      failCandidateRefreshAfterUnlock: true,
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('文件与连接')[0])
+    fireEvent.click(screen.getByRole('button', { name: '输入解压密码' }))
+    fireEvent.change(screen.getByLabelText('解压密码'), { target: { value: 'accepted-password' } })
+    fireEvent.click(screen.getByRole('button', { name: '解锁账单' }))
+
+    expect(await screen.findByText('已解锁，但列表刷新失败，请重试刷新')).toBeInTheDocument()
+    expect(screen.queryByText('账单已解锁，数据已刷新')).not.toBeInTheDocument()
+    expect(screen.queryByText('账单解锁失败，请检查密码后重试')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('解压密码')).not.toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent('accepted-password')
   })
 
   it('aggregates only Core material risks and excludes platform internal accounts', async () => {

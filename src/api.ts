@@ -8,6 +8,7 @@ import type {
   CandidateDetail,
   CandidateListResponse,
   ConnectionStatus,
+  EvidenceUnlockResult,
   EvidencePreview,
   PasskeyAdditionResult,
   Problem,
@@ -85,6 +86,28 @@ async function requestVoid(path: string, init: RequestInit): Promise<void> {
       problem = undefined
     }
     throw new ApiError(problem?.detail || problem?.title || `请求失败（${response.status}）`, response.status, problem?.code)
+  }
+}
+
+async function requestEvidenceUnlock(path: string, init: RequestInit): Promise<EvidenceUnlockResult> {
+  const response = await fetch(path, {
+    credentials: 'same-origin',
+    ...init,
+    headers: { Accept: 'application/json', ...init.headers },
+  })
+  if (!response.ok) {
+    await response.body?.cancel()
+    throw new ApiError(
+      response.status >= 500 ? '账单解锁服务暂不可用，请稍后重试' : '账单解锁失败，请检查密码后重试',
+      response.status,
+    )
+  }
+  try {
+    const result = await response.json() as Partial<EvidenceUnlockResult>
+    if (result.unlocked !== true) throw new Error('invalid unlock response')
+    return { unlocked: true }
+  } catch {
+    throw new ApiError('账单解锁服务暂不可用，请稍后重试', 503)
   }
 }
 
@@ -246,6 +269,20 @@ export const api = {
       `/api/v1/evidence/${encodeURIComponent(evidenceId)}/preview?${query.toString()}`,
     )
   },
+
+  unlockEvidence: ({ sourceRef, password, csrfToken }: {
+    sourceRef: string
+    password: string
+    csrfToken: string
+  }) => requestEvidenceUnlock('/api/v1/evidence/unlocks', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': createOperationId(),
+      'X-CSRF-Token': csrfToken,
+    },
+    body: JSON.stringify({ source_ref: sourceRef, password }),
+  }),
 
   listReviewEvents: (cursor?: string) => requestJson<ReviewEventListResponse>(
     `/api/v1/review-events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
