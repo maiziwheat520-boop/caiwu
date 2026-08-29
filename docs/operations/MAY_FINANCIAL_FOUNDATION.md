@@ -87,6 +87,31 @@ descriptions. Those belong to the evidence view, not the review decision surface
 - every worksheet is rendered and visually checked before release;
 - replaying the same inputs produces the same record ids and counts.
 
+## Least-privilege production import
+
+The generated review bundle is imported by the regular `aiadmin` operations account. The import
+must not require `sudo`, an interactive password, or a desktop approval prompt. This lets an Agent
+run the already-authorized job through non-interactive SSH while the existing administrative
+boundary remains intact.
+
+The import runner must:
+
+- verify the deployed revision, source-manifest digest, and backup-tool digest before starting;
+- copy the three private source files into a uniquely named ephemeral Docker volume;
+- keep the volume directory at `0700` and files at `0600`, owned by the container's non-root UID;
+- resolve the evidence-key source from the deployed Core review configuration and require a
+  readable regular file, never a directory or guessed path;
+- run an agent-executable preflight against the exact preparation container mounts;
+- create an encrypted backup and pass an isolated restore rehearsal before importing;
+- import the prepared manifest twice and require the second result to be an idempotent replay;
+- verify database counts, per-source counts, and container health;
+- create and rehearse a second encrypted backup after the import; and
+- remove the ephemeral volume on success or failure.
+
+Any operation that genuinely changes host administrator policy remains a human authorization
+step. Do not use Docker access to bypass that policy; design routine imports so they do not need
+host administrator privileges.
+
 ## Faster iteration rule
 
 Do not rebuild the workflow as a sequence of ad-hoc PowerShell prompts. Keep source discovery,
