@@ -415,6 +415,32 @@ describe('LedgerBridge Web API client', () => {
     expect(fetchMock.mock.calls.filter(([input, requestInit]) => String(input) === '/api/v1/reconciliations/2026-08' && requestInit?.method !== 'POST')).toHaveLength(2)
   })
 
+  it('posts a confirmed decision when the browser lacks crypto.randomUUID', async () => {
+    const originalCrypto = globalThis.crypto
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: {
+        getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto),
+      },
+    })
+    try {
+      const fetchMock = installFetch()
+      renderApp()
+      await screen.findByText('早上好，今天有几项需要确认')
+      fireEvent.click(screen.getAllByText('待审核')[0])
+      fireEvent.click(screen.getAllByRole('button', { name: '确认' })[0])
+
+      expect(await screen.findByText(/C-8F21 已确认/)).toBeInTheDocument()
+      const decisionCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/candidate-1/decisions'))
+      expect(decisionCall).toBeDefined()
+      expect((decisionCall?.[1]?.headers as Record<string, string>)['Idempotency-Key']).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      )
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', { configurable: true, value: originalCrypto })
+    }
+  })
+
   it('keeps the selected section in the URL and filters the review queue', async () => {
     installFetch()
     renderApp()
