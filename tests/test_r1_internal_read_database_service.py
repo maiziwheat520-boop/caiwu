@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from ledgerbridge.artifacts import ArtifactStore, storage_key_for_digest
 from ledgerbridge.candidate_contract import ReviewRiskCode
+from ledgerbridge.counterparty import CounterpartyClass
 from ledgerbridge.crypto import SecretStreamCipher, _parse_envelope
 from ledgerbridge.encrypted_artifacts import EncryptedArtifactStore
 from ledgerbridge.internal_read_contract import (
@@ -57,6 +58,7 @@ class _Session:
         ledger_rows: list[dict[str, Any]] | None = None,
         evidence_row: dict[str, Any] | None = None,
         satisfaction_rows: list[dict[str, Any]] | None = None,
+        counterparty_rows: list[dict[str, Any]] | None = None,
         fail: bool = False,
     ) -> None:
         self.candidate_row = candidate_row
@@ -65,6 +67,7 @@ class _Session:
         self.ledger_rows = ledger_rows or []
         self.evidence_row = evidence_row
         self.satisfaction_rows = satisfaction_rows or []
+        self.counterparty_rows = counterparty_rows or []
         self.fail = fail
         self.statements: list[str] = []
 
@@ -85,6 +88,8 @@ class _Session:
             return _Result(self.candidate_rows)
         if "list_candidate_evidence_satisfactions" in sql:
             return _Result(self.satisfaction_rows)
+        if "list_candidate_counterparty_facts" in sql:
+            return _Result(self.counterparty_rows)
         if "get_reconciliation_as_of" in sql:
             return _Result([] if self.reconciliation_row is None else [self.reconciliation_row])
         if "get_ledger_summary_as_of" in sql:
@@ -207,9 +212,37 @@ def test_database_candidate_reader_applies_audited_risk_satisfaction() -> None:
 
     assert page.items[0].review_risks == ()
     assert any(
-        "list_candidate_evidence_satisfactions" in statement
-        for statement in session.statements
+        "list_candidate_evidence_satisfactions" in statement for statement in session.statements
     )
+
+
+def test_database_candidate_reader_uses_registry_backed_counterparty_class() -> None:
+    candidate = SyntheticInternalReadService()._fixture.candidates[1]
+    row = candidate.model_dump()
+    row["entity_ref"] = ENTITY
+    row["business_unit_ref"] = "unit-demo-a"
+    row["source"] = {**row["source"], "source_system": "alipay_export"}
+    row["category_code"] = "ALIPAY_TRANSACTION_REVIEW"
+    row["summary"] = "支付宝 | 2026-05-08 | 支出 | 转账 | 关联公司 | 账户余额 | 交易成功"
+    session = _Session(
+        row,
+        counterparty_rows=[
+            {
+                "candidate_id": row["candidate_ref"],
+                "counterparty_ref": "cp_related_company",
+                "counterparty_class": "related_party",
+            }
+        ],
+    )
+
+    page = _service(session).list_candidates(_principal())
+
+    assert {risk.code for risk in page.items[0].review_risks} == {
+        ReviewRiskCode.RELATED_ACCOUNT_STATEMENT_REQUIRED
+    }
+    assert page.items[0].counterparty_ref == "cp_related_company"
+    assert page.items[0].counterparty_class is CounterpartyClass.RELATED_PARTY
+    assert any("list_candidate_counterparty_facts" in sql for sql in session.statements)
 
 
 def test_database_candidate_reader_rejects_entity_scope_drift() -> None:

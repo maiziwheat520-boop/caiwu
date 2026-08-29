@@ -25,6 +25,8 @@ def _record(record_id: str, *, source: str, effect: bool = True) -> dict[str, ob
         "paymentMethod": "平台余额",
         "status": "交易成功",
         "evidenceAlias": "wechat" if source == "微信" else "alipay",
+        "counterpartyRef": "cp_" + "1" * 64,
+        "counterpartyClass": "unknown",
     }
 
 
@@ -100,6 +102,97 @@ def test_platform_bundle_rejects_duplicate_normalized_ids(tmp_path: Path) -> Non
     alipay.write_bytes(b"synthetic-alipay")
     repeated = _record("WX-0123456789ab", source="微信")
     _write_normalized(normalized, [repeated, repeated])
+
+    with pytest.raises(PlatformBundleError, match="normalized platform record file is invalid"):
+        build_platform_bundle(
+            normalized_records=normalized,
+            wechat_statement=wechat,
+            alipay_statement=alipay,
+            output_directory=tmp_path / "bundle",
+        )
+
+
+def test_platform_bundle_rejects_partial_counterparty_projection(tmp_path: Path) -> None:
+    normalized = tmp_path / "normalized.json"
+    record = _record("WX-0123456789ab", source="微信")
+    record.pop("counterpartyClass")
+    _write_normalized(normalized, [record])
+    wechat = tmp_path / "wechat.xlsx"
+    alipay = tmp_path / "alipay.csv"
+    wechat.write_bytes(b"synthetic-wechat")
+    alipay.write_bytes(b"synthetic-alipay")
+
+    with pytest.raises(PlatformBundleError, match="normalized platform record file is invalid"):
+        build_platform_bundle(
+            normalized_records=normalized,
+            wechat_statement=wechat,
+            alipay_statement=alipay,
+            output_directory=tmp_path / "bundle",
+        )
+
+
+def test_platform_bundle_persists_counterparty_and_unique_partial_refund_relation(
+    tmp_path: Path,
+) -> None:
+    normalized = tmp_path / "normalized.json"
+    payment = _record("WX-0123456789ab", source="微信")
+    payment["amountMinor"] = -10000
+    payment["status"] = "已退款(￥49.95)"
+    payment["refundMatch"] = {
+        "matchedRecordId": "WX-abcdef012345",
+        "role": "ORIGINAL",
+        "amountMinor": 4995,
+    }
+    refund = _record("WX-abcdef012345", source="微信")
+    refund["amountMinor"] = 4995
+    refund["direction"] = "退款收入"
+    refund["category"] = "消费-退款"
+    refund["status"] = "已退款(￥49.95)"
+    refund["refundMatch"] = {
+        "matchedRecordId": "WX-0123456789ab",
+        "role": "REFUND",
+        "amountMinor": 4995,
+    }
+    _write_normalized(normalized, [payment, refund])
+    wechat = tmp_path / "wechat.xlsx"
+    alipay = tmp_path / "alipay.csv"
+    wechat.write_bytes(b"synthetic-wechat")
+    alipay.write_bytes(b"synthetic-alipay")
+
+    _, manifest = build_platform_bundle(
+        normalized_records=normalized,
+        wechat_statement=wechat,
+        alipay_statement=alipay,
+        output_directory=tmp_path / "bundle",
+    )
+
+    assert all(candidate.counterparty_ref == "cp_" + "1" * 64 for candidate in manifest.candidates)
+    assert all(candidate.counterparty_class is not None for candidate in manifest.candidates)
+    assert all(
+        candidate.counterparty_class is not None and candidate.counterparty_class.value == "unknown"
+        for candidate in manifest.candidates
+    )
+    assert len(manifest.candidate_links) == 1
+    link = manifest.candidate_links[0]
+    assert link.risk_code == "REVERSAL_MATCH_REQUIRED"
+    assert link.relation == "PARTIAL_REFUND"
+    assert link.amount_minor == 4995
+
+
+def test_platform_bundle_rejects_one_sided_refund_match(tmp_path: Path) -> None:
+    normalized = tmp_path / "normalized.json"
+    payment = _record("WX-0123456789ab", source="微信")
+    payment["refundMatch"] = {
+        "matchedRecordId": "WX-abcdef012345",
+        "role": "ORIGINAL",
+        "amountMinor": 4995,
+    }
+    refund = _record("WX-abcdef012345", source="微信")
+    _write_normalized(normalized, [payment, refund])
+    wechat = tmp_path / "wechat.xlsx"
+    alipay = tmp_path / "alipay.csv"
+    wechat.write_bytes(b"synthetic-wechat")
+    alipay.write_bytes(b"synthetic-alipay")
 
     with pytest.raises(PlatformBundleError, match="normalized platform record file is invalid"):
         build_platform_bundle(

@@ -76,6 +76,8 @@ class _Session:
             return _Result([self.candidate_row])
         if "list_candidate_evidence_satisfactions" in sql:
             return _Result([])
+        if "list_candidate_counterparty_facts" in sql:
+            return _Result([])
         if "list_candidate_events_as_of" in sql:
             return _Result([{"event": event} for event in self.events])
         if "apply_candidate_decision" in sql:

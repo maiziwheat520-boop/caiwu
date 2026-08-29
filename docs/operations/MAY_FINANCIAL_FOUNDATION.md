@@ -51,8 +51,10 @@ Every source record becomes one normalized row with:
 - a bounded review reason when the row cannot be finalized automatically.
 
 Closed transactions and platform `不计收支` rows do not affect the result. WeChat full refunds
-are excluded; explicit refund rows are treated as refund inflows. Calculations use integer cents
-before worksheet values are written.
+are excluded. A uniquely corresponding partial-refund row is linked to its original payment,
+both evidence rows remain visible, and the result contains only their net expense. Ambiguous
+refunds remain unmatched and in risk review. Calculations use integer cents before worksheet
+values are written.
 
 ## Account and transfer rules
 
@@ -66,19 +68,56 @@ Accounts merely referenced as a payment method or same-holder counterparty are r
 - A platform purchase funded directly by a bank card is one economic transaction with two pieces
   of evidence. The platform row contributes to the result and the matching bank row is retained as
   evidence only, preventing double counting.
+- A transfer routed through a platform and funded directly by a bank card uses the opposite
+  source precedence: the bank row contributes to the result and the platform row is channel
+  evidence only. This choice is based on transaction kind, never amount alone.
 - A card suffix shown by WeChat or Alipay may differ from the deposit-account suffix printed on
   the bank statement. The runner only treats it as a funding-instrument alias when institution,
   signed amount, platform payment rail, and transaction date (within two days) form a one-to-one
   match. A competing card from another institution is never used to satisfy the match.
-- Credit-card and Huabei purchases remain expenses at purchase time. Their later repayment is a
-  balance settlement, not a second expense. Until the complete credit statement and repayment
-  account statement are supplied, those rows stay in evidence-required review.
+- Alipay `花呗`, `余额宝`, and `账户余额`, plus WeChat `零钱` and `零钱通`, are
+  platform-internal subaccounts covered by the supplied complete platform statement. They never
+  create an independent-statement request. Internal recharge, redemption, and balance movement
+  remain inside that platform evidence boundary.
+- Huabei purchases remain expenses at purchase time; Huabei repayment is a balance settlement,
+  not a second expense. A real bank or external account explicitly named as the funding rail still
+  requires the corresponding bank statement.
+- Credit-card purchases remain expenses at purchase time. Their later repayment is a balance
+  settlement, not a second expense. Until the complete credit-card statement and repayment-account
+  statement are supplied, those rows stay in evidence-required review.
 - Every hotel-platform settlement or withdrawal must be linked to the corresponding receiving-bank
   credit. The match must be one-to-one on exact amount, platform/payment-provider clue, and a bank
   credit dated zero to seven days after the settlement period. A clear OCR read is not enough to
   approve it; an unmatched payout remains in the evidence-required queue. A successful link only
   removes that material reminder and does not approve or post either candidate.
 - A suspected same-holder transfer with only one side present goes to `待补佐证`.
+- Internal/related classification never comes from words such as `银行`, `账户`, `转账`,
+  or `投资理财` in a summary. The counterparty must be classified through the managed-account
+  and business-counterparty registries as `self_managed`, `related_party`,
+  `known_business`, or `unknown`. The safe default is ordinary
+  transfer review. Self-managed and related-party transfer status additionally requires bilateral
+  statement evidence.
+- Normalized platform output carries a stable `counterpartyRef` and a
+  `counterpartyClass`. Unicode/whitespace normalization lets repeated observations reuse the
+  same explicit registry identity, while each transaction and evidence row stays independent.
+  Platform-internal subaccounts have no external counterparty projection.
+- The controlled-import schema persists normalized counterparty references and classifications in
+  append-only Candidate/Counterparty facts. Stable identity is separate from versioned
+  classification, so an initial `unknown` can later be explicitly classified without rewriting
+  history. Core reads the latest classification visible at its audit horizon; absent or unknown
+  identities keep the safe ordinary-transfer review path.
+
+## Refund risk closure
+
+The workbook matcher is a fail-closed projection: it links a partial refund only when the original
+payment and refund are unique on platform account, counterparty, description, stated refund amount,
+and date window. Core already accepts an audited `REVERSAL_MATCH_REQUIRED` satisfaction when
+projecting review risks.
+
+Production import persists that satisfaction as an append-only candidate-evidence relation at the
+same controlled-import boundary used by hotel payout evidence. Both the original payment and refund
+remain as Candidate/evidence facts; only a reciprocal, unique partial-refund relation satisfies
+their separate `REVERSAL_MATCH_REQUIRED` risks. Missing or ambiguous matches remain fail-closed.
 
 ## Workbook review surface
 
@@ -94,6 +133,15 @@ The workbook contains five sheets:
 The machine-readable manifest contains the same list in `materialsNeeded`. The PowerShell runner
 prints every item after a successful run, so an operator never has to infer missing materials from
 the workbook manually.
+
+Account lifecycle is explicit. The Agricultural Bank of China account ending in `2061` is
+`closed` and `excluded_from_collection`: its historical transactions and evidence remain in the
+ledger, but it is not emitted in `materialsNeeded`. This exception is keyed to that concrete bank
+account only and does not affect any other Agricultural Bank account.
+
+Core candidate risks do not yet carry a managed-account lifecycle fact. The persistence migration
+point is the managed-account registry: project a structured `excluded_from_collection` value into
+funding-evidence risk derivation, never infer it from a transaction summary or bank-name keyword.
 
 The summary deliberately excludes attachments, raw messages, OCR diagnostics, and long source
 descriptions. Those belong to the evidence view, not the review decision surface.

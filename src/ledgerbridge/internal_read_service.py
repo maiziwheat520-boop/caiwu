@@ -33,6 +33,7 @@ from ledgerbridge.candidate_contract import (
     ReviewSummary,
     SourceProjection,
 )
+from ledgerbridge.counterparty import CounterpartyClass
 from ledgerbridge.encrypted_artifacts import (
     EncryptedArtifactError,
     EncryptedArtifactStore,
@@ -577,13 +578,20 @@ class DatabaseInternalReadService:
                         query_last_created_at = boundary.created_at
                         query_last_candidate_id = boundary.candidate_ref
                 satisfied_by_candidate: dict[UUID, frozenset[ReviewRiskCode]] = {}
+                counterparties_by_candidate: dict[UUID, tuple[str, CounterpartyClass]] = {}
                 if rows:
                     scope_grant, scope_business_unit_id = scopes_by_grant[0]
                     if scope_business_unit_id is not None:
-                        candidate_ids = tuple(
-                            UUID(str(row["candidate_ref"])) for row in rows
-                        )
+                        candidate_ids = tuple(UUID(str(row["candidate_ref"])) for row in rows)
                         satisfied_by_candidate = self._candidate_risk_satisfactions(
+                            session,
+                            entity_ref=scope_grant.entity_ref,
+                            business_unit_id=scope_business_unit_id,
+                            candidate_ids=candidate_ids,
+                            horizon_sequence=sequence,
+                            horizon_hash=horizon_hash,
+                        )
+                        counterparties_by_candidate = self._candidate_counterparty_facts(
                             session,
                             entity_ref=scope_grant.entity_ref,
                             business_unit_id=scope_business_unit_id,
@@ -596,6 +604,9 @@ class DatabaseInternalReadService:
                         row,
                         satisfied_review_risk_codes=satisfied_by_candidate.get(
                             UUID(str(row["candidate_ref"])), frozenset()
+                        ),
+                        counterparty=counterparties_by_candidate.get(
+                            UUID(str(row["candidate_ref"]))
                         ),
                     )
                     for row in rows
@@ -1080,19 +1091,68 @@ class DatabaseInternalReadService:
                     "database candidate evidence satisfaction escaped the requested scope"
                 )
             values.setdefault(candidate_id, set()).add(risk_code)
-        return {
-            candidate_id: frozenset(codes) for candidate_id, codes in values.items()
-        }
+        return {candidate_id: frozenset(codes) for candidate_id, codes in values.items()}
+
+    @staticmethod
+    def _candidate_counterparty_facts(
+        session: Session,
+        *,
+        entity_ref: UUID,
+        business_unit_id: UUID,
+        candidate_ids: tuple[UUID, ...],
+        horizon_sequence: int,
+        horizon_hash: bytes,
+    ) -> dict[UUID, tuple[str, CounterpartyClass]]:
+        if not candidate_ids:
+            return {}
+        rows = session.execute(
+            text(
+                "SELECT * FROM internal_read.list_candidate_counterparty_facts("
+                ":entity_id, :business_unit_id, :candidate_ids, "
+                ":horizon_sequence, :horizon_hash)"
+            ),
+            {
+                "entity_id": entity_ref,
+                "business_unit_id": business_unit_id,
+                "candidate_ids": list(candidate_ids),
+                "horizon_sequence": horizon_sequence,
+                "horizon_hash": horizon_hash,
+            },
+        ).mappings()
+        values: dict[UUID, tuple[str, CounterpartyClass]] = {}
+        allowed = set(candidate_ids)
+        for row in rows:
+            try:
+                candidate_id = UUID(str(row["candidate_id"]))
+                counterparty_ref = str(row["counterparty_ref"])
+                counterparty_class = CounterpartyClass(str(row["counterparty_class"]))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise InternalReadBackendUnavailable(
+                    "database candidate counterparty fact is malformed"
+                ) from exc
+            if candidate_id not in allowed or candidate_id in values:
+                raise InternalReadBackendUnavailable(
+                    "database candidate counterparty fact escaped or duplicated scope"
+                )
+            if re.fullmatch(r"cp_[a-z0-9_]{1,96}", counterparty_ref) is None:
+                raise InternalReadBackendUnavailable(
+                    "database candidate counterparty fact is malformed"
+                )
+            values[candidate_id] = (counterparty_ref, counterparty_class)
+        return values
 
     @staticmethod
     def _candidate(
         row: Mapping[str, object],
         *,
         satisfied_review_risk_codes: frozenset[ReviewRiskCode] = frozenset(),
+        counterparty: tuple[str, CounterpartyClass] | None = None,
     ) -> CandidateProjection:
         try:
             value = dict(row)
             value["status"] = CandidateStatus(cast(str, value["status"]))
+            if counterparty is not None:
+                value["counterparty_ref"], value["counterparty_class"] = counterparty
             source = dict(cast(Mapping[str, object], value["source"]))
             source["ingest_channel"] = _wire_ingest_channel(
                 cast(str | IngestChannel, source["ingest_channel"])
@@ -1114,6 +1174,7 @@ class DatabaseInternalReadService:
                     category_code=cast(str | None, value.get("category_code")),
                     summary=cast(str, value["summary"]),
                     satisfied_codes=satisfied_review_risk_codes,
+                    counterparty_class=(counterparty[1] if counterparty is not None else None),
                 )
             )
             value["review_summary"] = ReviewSummary.model_validate(

@@ -16,6 +16,7 @@ from uuid import UUID, uuid5
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ledgerbridge.controlled_import import SOURCE_MANIFEST_SCHEMA, SourceManifest
+from ledgerbridge.counterparty import CounterpartyClass
 
 _NAMESPACE = UUID("bd23ace7-59c3-49ab-8df5-6ed83f0d114e")
 _EXCEL_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -42,6 +43,9 @@ class NormalizedPlatformRecord(_StrictModel):
     paymentMethod: str = Field(max_length=200)
     status: str = Field(max_length=200)
     evidenceAlias: Literal["wechat", "alipay"]
+    counterpartyRef: str | None = Field(default=None, pattern=r"^cp_[a-z0-9_]{1,96}$")
+    counterpartyClass: CounterpartyClass | None = None
+    refundMatch: NormalizedRefundMatch | None = None
 
     @model_validator(mode="after")
     def source_matches_evidence(self) -> NormalizedPlatformRecord:
@@ -50,7 +54,15 @@ class NormalizedPlatformRecord(_StrictModel):
             raise ValueError("platform record evidence alias does not match its source")
         if self.effect and self.amountMinor == 0:
             raise ValueError("effective platform record must have a non-zero amount")
+        if (self.counterpartyRef is None) != (self.counterpartyClass is None):
+            raise ValueError("counterparty reference and class must be supplied together")
         return self
+
+
+class NormalizedRefundMatch(_StrictModel):
+    matchedRecordId: str = Field(pattern=r"^WX-[0-9a-f]{12}$")
+    role: Literal["ORIGINAL", "REFUND"]
+    amountMinor: int = Field(gt=0, le=9_007_199_254_740_991)
 
 
 class NormalizedPlatformEnvelope(_StrictModel):
@@ -65,6 +77,32 @@ class NormalizedPlatformEnvelope(_StrictModel):
             raise ValueError("normalized platform record ids must be unique")
         if any(not record.date.startswith(f"{self.period}-") for record in self.records):
             raise ValueError("normalized platform record falls outside the declared period")
+        records_by_id = {record.recordId: record for record in self.records}
+        for record in self.records:
+            match = record.refundMatch
+            if match is None:
+                continue
+            peer = records_by_id.get(match.matchedRecordId)
+            if (
+                record.source != "微信"
+                or peer is None
+                or peer.source != "微信"
+                or peer.refundMatch is None
+                or peer.refundMatch.matchedRecordId != record.recordId
+                or peer.refundMatch.amountMinor != match.amountMinor
+                or peer.refundMatch.role == match.role
+            ):
+                raise ValueError("normalized partial refund match must be reciprocal")
+            original = record if match.role == "ORIGINAL" else peer
+            refund = record if match.role == "REFUND" else peer
+            if (
+                not original.effect
+                or not refund.effect
+                or original.amountMinor >= 0
+                or refund.amountMinor != match.amountMinor
+                or match.amountMinor >= abs(original.amountMinor)
+            ):
+                raise ValueError("normalized partial refund match conflicts with transaction facts")
         return self
 
 
@@ -147,6 +185,7 @@ def build_platform_bundle(
         },
     )
     candidates: list[dict[str, object]] = []
+    candidate_refs: dict[str, UUID] = {}
     for record in effective:
         source_system = "wechat_pay_export" if record.source == "微信" else "alipay_export"
         category_code = (
@@ -163,9 +202,11 @@ def build_platform_bundle(
             record.status,
         )
         summary = " | ".join(part for part in summary_parts if part)[:500]
+        candidate_ref = uuid5(_NAMESPACE, f"candidate:{stable}")
+        candidate_refs[record.recordId] = candidate_ref
         candidates.append(
             {
-                "candidate_ref": uuid5(_NAMESPACE, f"candidate:{stable}"),
+                "candidate_ref": candidate_ref,
                 "operation_id": uuid5(_NAMESPACE, f"operation:{stable}"),
                 "ingest_channel": "CONTROLLED_UPLOAD",
                 "source_system": source_system,
@@ -177,6 +218,34 @@ def build_platform_bundle(
                 "summary": summary,
                 "confidence_basis_points": 9900,
                 "evidence_refs": (evidence_refs[record.evidenceAlias],),
+                "counterparty_ref": record.counterpartyRef,
+                "counterparty_class": record.counterpartyClass,
+            }
+        )
+
+    candidate_links: list[dict[str, object]] = []
+    for record in effective:
+        match = record.refundMatch
+        if match is None or match.role != "ORIGINAL":
+            continue
+        refund = next(item for item in effective if item.recordId == match.matchedRecordId)
+        stable = f"partial-refund:{record.recordId}:{refund.recordId}"
+        candidate_links.append(
+            {
+                "link_ref": uuid5(_NAMESPACE, stable),
+                "subject_candidate_ref": candidate_refs[record.recordId],
+                "evidence_candidate_ref": candidate_refs[refund.recordId],
+                "risk_code": "REVERSAL_MATCH_REQUIRED",
+                "relation": "PARTIAL_REFUND",
+                "amount_minor": match.amountMinor,
+                "currency": "CNY",
+                "match_basis": {
+                    "method": "UNIQUE_PLATFORM_PARTIAL_REFUND",
+                    "original_record_id": record.recordId,
+                    "refund_record_id": refund.recordId,
+                    "original_date": record.date,
+                    "refund_date": refund.date,
+                },
             }
         )
 
@@ -210,6 +279,7 @@ def build_platform_bundle(
         "categories": categories,
         "evidence": tuple(evidence),
         "candidates": tuple(candidates),
+        "candidate_links": tuple(candidate_links),
     }
     manifest = SourceManifest.model_validate(payload, strict=True)
     manifest_path = output_directory / "source-manifest.json"

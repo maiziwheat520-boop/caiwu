@@ -5,6 +5,15 @@ import fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 
+import {
+  accountLifecycle,
+  accountNeedsCollection,
+  counterpartyProjection,
+  matchWechatRefunds,
+  platformRecordPreference,
+  platformSubaccountEvidence,
+} from "./financial_foundation_rules.mjs";
+
 const require = createRequire(import.meta.url);
 const { FileBlob, SpreadsheetFile, Workbook } = require("@oai/artifact-tool");
 
@@ -419,7 +428,7 @@ function addPlatformSubaccounts(records, accounts) {
       const key = accountKey(record.source, `${record.holder}:${name}`);
       if (known.has(key)) continue;
       known.add(key);
-      const requiresIndependentStatement = name === "花呗";
+      const coverage = platformSubaccountEvidence(name, record.evidence);
       accounts.push({
         key,
         displayName: `${record.source}${name}`,
@@ -427,8 +436,8 @@ function addPlatformSubaccounts(records, accounts) {
         type: name === "花呗" ? "信用账户" : "平台子账户",
         holder: record.holder,
         identifier: "平台内账户",
-        evidenceStatus: requiresIndependentStatement ? "待补独立账单" : "已在平台流水中出现",
-        evidence: requiresIndependentStatement ? "仅在支付宝支付方式中出现" : record.evidence,
+        evidenceStatus: coverage.status,
+        evidence: coverage.evidence,
       });
     }
   }
@@ -506,18 +515,27 @@ function linkCrossSource(records, statementAccounts, accounts) {
     const match = candidates[0];
     if (!match) continue;
     usedBank.add(match.recordId);
-    match.effect = false;
-    match.reviewReason = `与${platform.source}记录${platform.recordId}为同一笔消费凭证`;
+    const preference = platformRecordPreference(platform);
+    if (preference === "bank") {
+      platform.effect = false;
+      platform.reviewReason = `与中国银行记录${match.recordId}为同一笔转账渠道凭证；以银行流水计入`;
+      match.reviewReason = `与${platform.source}记录${platform.recordId}为同一笔转账；银行流水为主记录`;
+    } else {
+      match.effect = false;
+      match.reviewReason = `与${platform.source}记录${platform.recordId}为同一笔消费凭证`;
+    }
     const statement = statementByKey.get(match.sourceAccountKey);
     links.push({
       groupId: `LINK-${shortHash(`${match.recordId}:${platform.recordId}`)}`,
       date: platform.date,
       amountMinor: Math.abs(platform.signedMinor),
-      left: platform.recordId,
-      right: match.recordId,
-      type: "同一交易双重凭证",
+      left: preference === "bank" ? match.recordId : platform.recordId,
+      right: preference === "bank" ? platform.recordId : match.recordId,
+      type: preference === "bank" ? "转账渠道重复凭证" : "同一消费双重凭证",
       status: "已匹配",
-      note: `${platform.paymentMethod}已与${statement?.displayName || "银行流水"}逐笔匹配；平台记录计入，银行记录仅作佐证`,
+      note: preference === "bank"
+        ? `${platform.source}记录已与${statement?.displayName || "银行流水"}逐笔匹配；银行记录计入，平台记录仅作渠道佐证`
+        : `${platform.paymentMethod}已与${statement?.displayName || "银行流水"}逐笔匹配；平台记录计入，银行记录仅作佐证`,
       fundingInstrumentKey: `${instrument.institutionKey}:${instrument.suffix}`,
       statementAccount: statement?.displayName || "银行账户",
     });
@@ -540,33 +558,6 @@ function linkCrossSource(records, statementAccounts, accounts) {
     referenced.evidence = `${instrumentLinks.length}笔支付已逐笔归并至${statementNames.join("、")}`;
     referenced.statementAccount = statementNames.join("、");
   }
-  for (const bank of bankRecords) {
-    if (!bank.effect || usedBank.has(bank.recordId) || bank.signedMinor === 0) continue;
-    const bankText = `${bank.category} ${bank.description} ${bank.counterparty}`;
-    if (!/支付宝|财付通|微信/.test(bankText)) continue;
-    const match = platformRecords.find((platform) =>
-      platform.effect &&
-      /转账|提现|信用卡还款|投资理财|余额互转/.test(`${platform.category} ${platform.description}`) &&
-      platform.signedMinor === -bank.signedMinor &&
-      dayDistance(platform.date, bank.date) <= 2 &&
-      !links.some((link) => link.left === platform.recordId || link.right === platform.recordId)
-    );
-    if (!match) continue;
-    bank.effect = false;
-    match.effect = false;
-    bank.reviewReason = `与${match.source}记录${match.recordId}构成内部转入/转出`;
-    match.reviewReason = `与中国银行记录${bank.recordId}构成内部转入/转出`;
-    links.push({
-      groupId: `MOVE-${shortHash(`${bank.recordId}:${match.recordId}`)}`,
-      date: match.date,
-      amountMinor: Math.abs(match.signedMinor),
-      left: match.recordId,
-      right: bank.recordId,
-      type: "内部转账",
-      status: "双边流水已匹配",
-      note: "不计收入、不计支出",
-    });
-  }
   return links;
 }
 
@@ -581,12 +572,21 @@ function buildAccounts(records, sourceAccounts) {
   }
   addPlatformSubaccounts(records, accounts);
   addSameHolderCounterpartyAccounts(records, accounts);
-  return accounts;
+  return accounts.map((account) => {
+    const lifecycle = accountLifecycle(account);
+    return {
+      ...account,
+      ...lifecycle,
+      ...(lifecycle.excludedFromCollection
+        ? { evidenceStatus: "已注销，不再采集" }
+        : {}),
+    };
+  });
 }
 
 function buildPending(accounts, records) {
   const pending = [];
-  for (const account of accounts.filter((item) => item.evidenceStatus === "待补独立流水" || item.evidenceStatus === "待补独立账单")) {
+  for (const account of accounts.filter(accountNeedsCollection)) {
     const suffix = account.identifier.slice(-4);
     const related = records.filter((item) => account.displayName.endsWith("花呗")
       ? item.paymentMethod.includes("花呗")
@@ -684,7 +684,7 @@ function writeSummary(workbook, records, accounts, links, pending, year, month) 
   styleHeader(sheet.getRange("D10:H10"));
   sheet.getRange("D11:H14").merge();
   sheet.getRange("D11").values = [[
-    "同一笔微信/支付宝银行卡消费，只计平台记录，银行记录作为佐证；内部转账双方均不计收入或支出；未提供独立流水的账户只记录、不自动核销。",
+    "银行卡消费以微信/支付宝记录为主，银行扣款作佐证；转账以银行记录为主，平台记录作渠道佐证；平台内部子账户由所属平台完整流水覆盖；内部/关联分类只接受账户台账与双边流水。",
   ]];
   sheet.getRange("D11:H14").format.wrapText = true;
   sheet.getRange("D11:H14").format.fill = "#F3F6F8";
@@ -742,18 +742,22 @@ function writeTransactions(workbook, records) {
 function writeAccounts(workbook, accounts, records) {
   const sheet = workbook.worksheets.add("账户台账");
   sheet.showGridLines = false;
-  const headers = ["账户", "机构", "类型", "户名", "标识", "流水状态", "五月出现次数", "证据编号", "处理规则"];
-  sheet.getRange("A1:I1").values = [headers];
+  const headers = ["账户", "机构", "类型", "户名", "标识", "生命周期", "采集状态", "流水状态", "五月出现次数", "证据编号", "处理规则"];
+  sheet.getRange("A1:K1").values = [headers];
   const rows = accounts.map((account) => [
     account.displayName,
     account.institution,
     account.type,
     account.holder,
     account.identifier,
+    account.lifecycleStatus,
+    account.excludedFromCollection ? "不再采集" : "正常采集",
     account.evidenceStatus,
     records.filter((record) => record.sourceAccountKey === account.key || record.paymentMethod.includes(account.identifier.slice(-4)) || record.counterpartyAccount.endsWith(account.identifier.slice(-4))).length,
     account.evidence,
-    account.evidenceStatus === "已提供独立流水"
+    account.excludedFromCollection
+      ? account.lifecycleReason
+      : account.evidenceStatus === "已提供独立流水"
       ? "作为内部账户参与双边匹配"
       : account.evidenceStatus === "已由银行流水佐证"
         ? `支付工具已归并至${account.statementAccount || "对应银行账户"}`
@@ -762,15 +766,15 @@ function writeAccounts(workbook, accounts, records) {
           : "作为平台内部子账户记录",
   ]);
   if (rows.length) sheet.getRangeByIndexes(1, 0, rows.length, headers.length).values = rows;
-  styleHeader(sheet.getRange("A1:I1"));
+  styleHeader(sheet.getRange("A1:K1"));
   if (rows.length) styleBody(sheet.getRangeByIndexes(1, 0, rows.length, headers.length));
-  sheet.getRange("A:I").format.columnWidth = 18;
+  sheet.getRange("A:K").format.columnWidth = 18;
   sheet.getRange("A:A").format.columnWidth = 26;
-  sheet.getRange("H:I").format.columnWidth = 34;
-  sheet.getRange(`A1:I${rows.length + 1}`).format.wrapText = true;
+  sheet.getRange("J:K").format.columnWidth = 34;
+  sheet.getRange(`A1:K${rows.length + 1}`).format.wrapText = true;
   sheet.freezePanes.freezeRows(1);
   if (rows.length) {
-    const table = sheet.tables.add(`A1:I${rows.length + 1}`, true, "ManagedAccountsTable");
+    const table = sheet.tables.add(`A1:K${rows.length + 1}`, true, "ManagedAccountsTable");
     table.style = "TableStyleMedium4";
     table.showFilterButton = true;
   }
@@ -844,7 +848,21 @@ async function main() {
     if (!sourceAccounts.some((account) => account.key === item.key)) sourceAccounts.push(item);
   }
   const accounts = buildAccounts(records, sourceAccounts);
-  const links = linkCrossSource(records, [bocParsed.account], accounts);
+  const refundLinks = matchWechatRefunds(records);
+  const refundMatches = new Map();
+  for (const link of refundLinks) {
+    refundMatches.set(link.left, {
+      matchedRecordId: link.right,
+      role: "ORIGINAL",
+      amountMinor: link.amountMinor,
+    });
+    refundMatches.set(link.right, {
+      matchedRecordId: link.left,
+      role: "REFUND",
+      amountMinor: link.amountMinor,
+    });
+  }
+  const links = [...refundLinks, ...linkCrossSource(records, [bocParsed.account], accounts)];
   const pending = buildPending(accounts, records);
 
   const workbook = Workbook.create();
@@ -902,6 +920,7 @@ async function main() {
       records: records
         .filter((item) => item.source === "微信" || item.source === "支付宝")
         .map((item) => ({
+          ...counterpartyProjection(item),
           recordId: item.recordId,
           date: item.date,
           source: item.source,
@@ -914,6 +933,7 @@ async function main() {
           paymentMethod: item.paymentMethod,
           status: item.status,
           evidenceAlias: item.source === "微信" ? "wechat" : "alipay",
+          ...(refundMatches.has(item.recordId) ? { refundMatch: refundMatches.get(item.recordId) } : {}),
         })),
     };
     await fs.mkdir(path.dirname(args.normalizedOutput), { recursive: true });

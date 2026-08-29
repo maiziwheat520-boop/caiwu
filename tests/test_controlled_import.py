@@ -10,10 +10,23 @@ import pytest
 
 from ledgerbridge.controlled_import import (
     ControlledImportError,
+    PartialRefundMatchBasis,
     load_prepared_manifest,
     prepare_source_manifest,
 )
 from ledgerbridge.file_key_provider import bootstrap_file_key
+
+
+def test_partial_refund_match_basis_accepts_non_2026_dates() -> None:
+    basis = PartialRefundMatchBasis(
+        method="UNIQUE_PLATFORM_PARTIAL_REFUND",
+        original_record_id="WX-0123456789ab",
+        refund_record_id="WX-abcdef012345",
+        original_date="2025-12-30",
+        refund_date="2026-01-02",
+    )
+
+    assert basis.original_date == "2025-12-30"
 
 
 def _source_manifest(root: Path, *, digest: str, size: int) -> Path:
@@ -62,6 +75,8 @@ def _source_manifest(root: Path, *, digest: str, size: int) -> Path:
                 "summary": "Controlled import fixture candidate",
                 "confidence_basis_points": 8000,
                 "evidence_refs": ["70000000-0000-4000-8000-000000000005"],
+                "counterparty_ref": "cp_" + "1" * 64,
+                "counterparty_class": "unknown",
             }
         ],
     }
@@ -103,6 +118,9 @@ def test_prepare_encrypts_evidence_and_replays_descriptor(tmp_path: Path) -> Non
     assert first.batch_ref == UUID("70000000-0000-4000-8000-000000000001")
     assert first.evidence[0].plaintext_sha256 == hashlib.sha256(evidence).hexdigest()
     assert first.evidence[0].ciphertext_sha256 != first.evidence[0].plaintext_sha256
+    assert first.candidates[0].counterparty_ref == "cp_" + "1" * 64
+    assert first.candidates[0].counterparty_class is not None
+    assert first.candidates[0].counterparty_class.value == "unknown"
     durable_files = [
         path for path in artifact_root.rglob("*") if path.is_file() and path.name != ".quota.lock"
     ]

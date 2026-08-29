@@ -17,6 +17,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ledgerbridge.counterparty import CounterpartyClass
+
 CONTRACT_VERSION = "ledgerbridge.candidate.v1"
 STATE_GRAPH_VERSION = "ledgerbridge.candidate-state.v1"
 JSON_SAFE_INTEGER = 9_007_199_254_740_991
@@ -156,6 +158,8 @@ class CandidateProjection(_FrozenModel):
     currency: Literal["CNY"] = "CNY"
     accounting_month: str | None = None
     summary: str = Field(min_length=1, max_length=500)
+    counterparty_ref: str | None = Field(default=None, pattern=r"^cp_[a-z0-9_]{1,96}$")
+    counterparty_class: CounterpartyClass | None = None
     confidence_basis_points: int = Field(ge=0, le=10_000)
     source: SourceProjection
     evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
@@ -169,6 +173,8 @@ class CandidateProjection(_FrozenModel):
 
     @model_validator(mode="after")
     def validate_shape(self) -> CandidateProjection:
+        if (self.counterparty_ref is None) != (self.counterparty_class is None):
+            raise ValueError("candidate counterparty reference and class must be supplied together")
         if self.accounting_month is not None and _MONTH.fullmatch(self.accounting_month) is None:
             raise ValueError("accounting_month must use YYYY-MM")
         if self.review_summary.current_revision != self.revision:

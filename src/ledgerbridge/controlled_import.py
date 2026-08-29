@@ -18,6 +18,7 @@ from sqlalchemy import Connection, text
 from sqlalchemy.engine import Engine
 
 from ledgerbridge.artifacts import ArtifactStore
+from ledgerbridge.counterparty import CounterpartyClass
 from ledgerbridge.crypto import (
     ENVELOPE_ALGORITHM,
     ENVELOPE_SCHEMA,
@@ -92,11 +93,40 @@ class ImportCandidate(_FrozenModel):
     summary: str = Field(min_length=1, max_length=500)
     confidence_basis_points: int = Field(strict=True, ge=0, le=10_000)
     evidence_refs: tuple[UUID, ...] = Field(min_length=1)
+    counterparty_ref: str | None = Field(default=None, pattern=r"^cp_[a-z0-9_]{1,96}$")
+    counterparty_class: CounterpartyClass | None = None
 
     @model_validator(mode="after")
     def evidence_is_unique(self) -> ImportCandidate:
         if len(set(self.evidence_refs)) != len(self.evidence_refs):
             raise ValueError("candidate evidence references must be unique")
+        if (self.counterparty_ref is None) != (self.counterparty_class is None):
+            raise ValueError("candidate counterparty reference and class must be supplied together")
+        return self
+
+
+class PartialRefundMatchBasis(_FrozenModel):
+    method: Literal["UNIQUE_PLATFORM_PARTIAL_REFUND"]
+    original_record_id: str = Field(pattern=r"^WX-[0-9a-f]{12}$")
+    refund_record_id: str = Field(pattern=r"^WX-[0-9a-f]{12}$")
+    original_date: str = Field(pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])-[0-3][0-9]$")
+    refund_date: str = Field(pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])-[0-3][0-9]$")
+
+
+class ImportCandidateLink(_FrozenModel):
+    link_ref: UUID
+    subject_candidate_ref: UUID
+    evidence_candidate_ref: UUID
+    risk_code: Literal["REVERSAL_MATCH_REQUIRED"]
+    relation: Literal["PARTIAL_REFUND"]
+    amount_minor: MoneyMinor = Field(gt=0)
+    currency: Literal["CNY"]
+    match_basis: PartialRefundMatchBasis
+
+    @model_validator(mode="after")
+    def candidates_are_distinct(self) -> ImportCandidateLink:
+        if self.subject_candidate_ref == self.evidence_candidate_ref:
+            raise ValueError("candidate link endpoints must be distinct")
         return self
 
 
@@ -110,6 +140,7 @@ class SourceManifest(_FrozenModel):
     categories: tuple[ImportCategory, ...] = Field(min_length=1)
     evidence: tuple[SourceEvidence, ...] = Field(min_length=1)
     candidates: tuple[ImportCandidate, ...] = Field(min_length=1)
+    candidate_links: tuple[ImportCandidateLink, ...] = ()
 
     @model_validator(mode="after")
     def batch_is_closed(self) -> SourceManifest:
@@ -118,9 +149,7 @@ class SourceManifest(_FrozenModel):
         evidence_refs = [item.evidence_ref for item in self.evidence]
         candidate_refs = [item.candidate_ref for item in self.candidates]
         operation_ids = [item.operation_id for item in self.candidates]
-        source_events = [
-            (item.source_system, item.source_event_ref) for item in self.candidates
-        ]
+        source_events = [(item.source_system, item.source_event_ref) for item in self.candidates]
         category_codes = [item.code for item in self.categories]
         if len(set(evidence_refs)) != len(evidence_refs):
             raise ValueError("manifest evidence references must be unique")
@@ -134,11 +163,33 @@ class SourceManifest(_FrozenModel):
             raise ValueError("manifest category codes must be unique")
         known_evidence = set(evidence_refs)
         known_categories = set(category_codes)
+        candidates_by_ref = {item.candidate_ref: item for item in self.candidates}
         for candidate in self.candidates:
             if not set(candidate.evidence_refs) <= known_evidence:
                 raise ValueError("candidate references unknown evidence")
             if candidate.category_code not in known_categories:
                 raise ValueError("candidate references an unknown category")
+        linked_subjects: set[UUID] = set()
+        linked_evidence: set[UUID] = set()
+        for link in self.candidate_links:
+            subject = candidates_by_ref.get(link.subject_candidate_ref)
+            evidence = candidates_by_ref.get(link.evidence_candidate_ref)
+            if subject is None or evidence is None:
+                raise ValueError("candidate link references an unknown candidate")
+            if link.subject_candidate_ref in linked_subjects:
+                raise ValueError("candidate link subject cannot be reused")
+            if link.evidence_candidate_ref in linked_evidence:
+                raise ValueError("candidate link evidence cannot be reused")
+            if (
+                subject.source_system != "wechat_pay_export"
+                or evidence.source_system != "wechat_pay_export"
+                or subject.amount_minor >= 0
+                or evidence.amount_minor != link.amount_minor
+                or link.amount_minor >= abs(subject.amount_minor)
+            ):
+                raise ValueError("partial refund link conflicts with candidate facts")
+            linked_subjects.add(link.subject_candidate_ref)
+            linked_evidence.add(link.evidence_candidate_ref)
         return self
 
 
@@ -173,6 +224,7 @@ class PreparedManifest(_FrozenModel):
     categories: tuple[ImportCategory, ...] = Field(min_length=1)
     evidence: tuple[PreparedEvidence, ...] = Field(min_length=1)
     candidates: tuple[ImportCandidate, ...] = Field(min_length=1)
+    candidate_links: tuple[ImportCandidateLink, ...] = ()
 
     @model_validator(mode="after")
     def prepared_batch_is_closed(self) -> PreparedManifest:
@@ -197,6 +249,7 @@ class PreparedManifest(_FrozenModel):
                     for item in self.evidence
                 ),
                 "candidates": self.candidates,
+                "candidate_links": self.candidate_links,
             },
             strict=True,
         )
@@ -307,6 +360,7 @@ def prepare_source_manifest(
         categories=source_manifest.categories,
         evidence=tuple(prepared_evidence),
         candidates=source_manifest.candidates,
+        candidate_links=source_manifest.candidate_links,
     )
     _write_new_private_json(prepared_manifest_path, prepared.model_dump(mode="json"))
     return prepared
@@ -317,14 +371,18 @@ def import_prepared_manifest(engine: Engine, prepared_manifest_path: Path) -> Im
     prepared_sha256 = hashlib.sha256(raw).digest()
     source_sha256 = bytes.fromhex(manifest.source_manifest_sha256)
     with engine.begin() as connection:
-        receipt = connection.execute(
-            text(
-                "SELECT source_manifest_sha256, prepared_manifest_sha256, evidence_count, "
-                "candidate_count, audit_horizon_sequence, audit_horizon_hash "
-                "FROM internal_import.controlled_batch_receipt WHERE batch_ref = :batch"
-            ),
-            {"batch": manifest.batch_ref},
-        ).mappings().first()
+        receipt = (
+            connection.execute(
+                text(
+                    "SELECT source_manifest_sha256, prepared_manifest_sha256, evidence_count, "
+                    "candidate_count, audit_horizon_sequence, audit_horizon_hash "
+                    "FROM internal_import.controlled_batch_receipt WHERE batch_ref = :batch"
+                ),
+                {"batch": manifest.batch_ref},
+            )
+            .mappings()
+            .first()
+        )
         if receipt is not None:
             if (
                 bytes(receipt["source_manifest_sha256"]) != source_sha256
@@ -348,9 +406,16 @@ def import_prepared_manifest(engine: Engine, prepared_manifest_path: Path) -> Im
         categories = {item.code: item for item in manifest.categories}
         for candidate in manifest.candidates:
             _insert_candidate(connection, manifest, categories[candidate.category_code], candidate)
-        horizon = connection.execute(
-            text("SELECT sequence, hash FROM public.audit_event ORDER BY sequence DESC LIMIT 1")
-        ).mappings().one()
+            _insert_candidate_counterparty(connection, manifest, candidate)
+        for link in manifest.candidate_links:
+            _insert_candidate_link(connection, manifest, link)
+        horizon = (
+            connection.execute(
+                text("SELECT sequence, hash FROM public.audit_event ORDER BY sequence DESC LIMIT 1")
+            )
+            .mappings()
+            .one()
+        )
         connection.execute(
             text(
                 "INSERT INTO internal_import.controlled_batch_receipt "
@@ -410,10 +475,7 @@ def _insert_dimensions(connection: Connection, manifest: PreparedManifest) -> No
             ),
             {"id": channel, "description": description},
         )
-    source_systems = {
-        candidate.source_system
-        for candidate in manifest.candidates
-    }
+    source_systems = {candidate.source_system for candidate in manifest.candidates}
     for source_system in sorted(source_systems):
         connection.execute(
             text(
@@ -454,16 +516,20 @@ def _insert_dimensions(connection: Connection, manifest: PreparedManifest) -> No
                 "label": category.label,
             },
         )
-    expected = connection.execute(
-        text(
-            "SELECT e.name, b.entity_id, b.ref, b.label FROM public.entity e "
-            "JOIN public.business_unit b ON b.id = :unit WHERE e.id = :entity"
-        ),
-        {
-            "entity": manifest.entity.entity_ref,
-            "unit": manifest.business_unit.business_unit_ref,
-        },
-    ).mappings().one_or_none()
+    expected = (
+        connection.execute(
+            text(
+                "SELECT e.name, b.entity_id, b.ref, b.label FROM public.entity e "
+                "JOIN public.business_unit b ON b.id = :unit WHERE e.id = :entity"
+            ),
+            {
+                "entity": manifest.entity.entity_ref,
+                "unit": manifest.business_unit.business_unit_ref,
+            },
+        )
+        .mappings()
+        .one_or_none()
+    )
     if expected is None or dict(expected) != {
         "name": manifest.entity.name,
         "entity_id": manifest.entity.entity_ref,
@@ -704,12 +770,170 @@ def _insert_candidate(
     )
 
 
+def _insert_candidate_counterparty(
+    connection: Connection,
+    manifest: PreparedManifest,
+    candidate: ImportCandidate,
+) -> None:
+    if candidate.counterparty_ref is None or candidate.counterparty_class is None:
+        return
+    identity_exists = connection.execute(
+        text(
+            "SELECT EXISTS (SELECT 1 FROM public.counterparty_identity "
+            "WHERE entity_id = :entity AND counterparty_ref = :counterparty"
+            ")"
+        ),
+        {
+            "entity": manifest.entity.entity_ref,
+            "counterparty": candidate.counterparty_ref,
+        },
+    ).scalar_one()
+    if not identity_exists:
+        identity_payload: dict[str, object] = {
+            "entity_id": str(manifest.entity.entity_ref),
+            "counterparty_ref": candidate.counterparty_ref,
+        }
+        identity_audit = _append_audit(
+            connection,
+            action="counterparty.identity.register",
+            reason="controlled review counterparty registration",
+            payload=identity_payload,
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.counterparty_identity "
+                "(entity_id, counterparty_ref, audit_event_id) "
+                "VALUES (:entity, :counterparty, :audit)"
+            ),
+            {
+                "entity": manifest.entity.entity_ref,
+                "counterparty": candidate.counterparty_ref,
+                "audit": identity_audit,
+            },
+        )
+    existing_class = connection.execute(
+        text(
+            "SELECT counterparty_class FROM public.counterparty_classification "
+            "WHERE entity_id = :entity AND counterparty_ref = :counterparty "
+            "ORDER BY classification_revision DESC LIMIT 1"
+        ),
+        {
+            "entity": manifest.entity.entity_ref,
+            "counterparty": candidate.counterparty_ref,
+        },
+    ).scalar_one_or_none()
+    effective_class = existing_class or candidate.counterparty_class.value
+    if existing_class is None:
+        classification_payload: dict[str, object] = {
+            "entity_id": str(manifest.entity.entity_ref),
+            "counterparty_ref": candidate.counterparty_ref,
+            "classification_revision": 1,
+            "counterparty_class": effective_class,
+        }
+        classification_audit = _append_audit(
+            connection,
+            action="counterparty.classify",
+            reason="controlled review initial counterparty classification",
+            payload=classification_payload,
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.counterparty_classification "
+                "(entity_id, counterparty_ref, classification_revision, "
+                "counterparty_class, audit_event_id) "
+                "VALUES (:entity, :counterparty, 1, :class, :audit)"
+            ),
+            {
+                "entity": manifest.entity.entity_ref,
+                "counterparty": candidate.counterparty_ref,
+                "class": effective_class,
+                "audit": classification_audit,
+            },
+        )
+    link_payload: dict[str, object] = {
+        "candidate_id": str(candidate.candidate_ref),
+        "entity_id": str(manifest.entity.entity_ref),
+        "counterparty_ref": candidate.counterparty_ref,
+        "counterparty_class": effective_class,
+    }
+    link_audit = _append_audit(
+        connection,
+        action="candidate.counterparty.link",
+        reason="controlled review candidate counterparty link",
+        payload=link_payload,
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.candidate_counterparty "
+            "(candidate_id, entity_id, counterparty_ref, audit_event_id) "
+            "VALUES (:candidate, :entity, :counterparty, :audit)"
+        ),
+        {
+            "candidate": candidate.candidate_ref,
+            "entity": manifest.entity.entity_ref,
+            "counterparty": candidate.counterparty_ref,
+            "audit": link_audit,
+        },
+    )
+
+
+def _insert_candidate_link(
+    connection: Connection,
+    manifest: PreparedManifest,
+    link: ImportCandidateLink,
+) -> None:
+    payload = {
+        "link_ref": str(link.link_ref),
+        "subject_candidate_id": str(link.subject_candidate_ref),
+        "evidence_candidate_id": str(link.evidence_candidate_ref),
+        "risk_code": link.risk_code,
+        "amount_minor": link.amount_minor,
+        "match_basis": link.match_basis.model_dump(mode="json"),
+    }
+    audit = _append_audit(
+        connection,
+        action="candidate.evidence.match",
+        reason="unique platform partial refund matched to original payment",
+        payload=payload,
+        rule_version="ledgerbridge.candidate-evidence-link.v1",
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.candidate_evidence_link "
+            "(link_ref, subject_candidate_id, evidence_candidate_id, entity_id, "
+            "business_unit_id, risk_code, relation, amount_minor, currency, "
+            "match_basis, audit_event_id) VALUES "
+            "(:link, :subject, :evidence, :entity, :unit, :risk, :relation, "
+            ":amount, :currency, CAST(:basis AS jsonb), :audit)"
+        ),
+        {
+            "link": link.link_ref,
+            "subject": link.subject_candidate_ref,
+            "evidence": link.evidence_candidate_ref,
+            "entity": manifest.entity.entity_ref,
+            "unit": manifest.business_unit.business_unit_ref,
+            "risk": link.risk_code,
+            "relation": link.relation,
+            "amount": link.amount_minor,
+            "currency": link.currency,
+            "basis": json.dumps(
+                link.match_basis.model_dump(mode="json"),
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            "audit": audit,
+        },
+    )
+
+
 def _append_audit(
     connection: Connection,
     *,
     action: str,
     reason: str,
     payload: dict[str, object],
+    rule_version: str = "ledgerbridge.controlled-review-import.v1",
 ) -> UUID:
     value = connection.execute(
         text(
@@ -720,7 +944,7 @@ def _append_audit(
             "actor": "system:controlled-review-import",
             "action": action,
             "reason": reason,
-            "rule_version": "ledgerbridge.controlled-review-import.v1",
+            "rule_version": rule_version,
             "payload": json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
         },
     ).scalar_one()

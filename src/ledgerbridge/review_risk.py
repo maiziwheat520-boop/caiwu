@@ -8,6 +8,7 @@ second decision in Core so Web never has to infer risk from display text.
 from __future__ import annotations
 
 from ledgerbridge.candidate_contract import ReviewRisk, ReviewRiskCode
+from ledgerbridge.counterparty import CounterpartyClass
 
 _HOTEL_PAYOUT_SOURCES = frozenset(
     {
@@ -24,8 +25,9 @@ _PLATFORM_CATEGORIES = frozenset(
 _TRANSFER_TERMS = ("转账", "提现", "投资理财", "信用卡还款", "信用借还", "余额互转")
 _REVERSAL_TERMS = ("退款", "冲正", "撤销")
 _UNSETTLED_TERMS = ("付款中", "生成中", "未出账", "交易关闭", "付款异常")
-_ACCOUNT_TERMS = ("银行", "储蓄卡", "信用卡", "账户余额", "零钱", "余额宝", "零钱通")
-_EXTERNAL_FUNDING_TERMS = ("银行", "储蓄卡", "信用卡", "花呗")
+_EXTERNAL_FUNDING_TERMS = ("银行", "储蓄卡", "信用卡")
+_PLATFORM_INTERNAL_MOVEMENT_TERMS = ("余额互转", "充值", "赎回", "花呗还款")
+_PLATFORM_SUBACCOUNT_TERMS = ("账户余额", "余额宝", "花呗", "零钱", "零钱通")
 
 
 def derive_review_risks(
@@ -34,6 +36,8 @@ def derive_review_risks(
     category_code: str | None,
     summary: str,
     satisfied_codes: frozenset[ReviewRiskCode] = frozenset(),
+    counterparty_class: CounterpartyClass | None = None,
+    bilateral_statement_evidence: bool = False,
 ) -> tuple[ReviewRisk, ...]:
     """Return ordered, de-duplicated risks from immutable candidate facts."""
 
@@ -57,7 +61,10 @@ def derive_review_risks(
         transaction_status = parts[6] if len(parts) > 6 else ""
         transfer_text = " ".join((transaction_category, counterparty, payment_method))
 
-        if any(term in payment_method for term in _EXTERNAL_FUNDING_TERMS):
+        if (
+            any(term in payment_method for term in _EXTERNAL_FUNDING_TERMS)
+            and ReviewRiskCode.FUNDING_STATEMENT_REQUIRED not in satisfied_codes
+        ):
             risks.append(
                 ReviewRisk(
                     code=ReviewRiskCode.FUNDING_STATEMENT_REQUIRED,
@@ -65,16 +72,22 @@ def derive_review_risks(
                 )
             )
 
-        if any(term in transaction_status for term in _UNSETTLED_TERMS):
+        if (
+            any(term in transaction_status for term in _UNSETTLED_TERMS)
+            and ReviewRiskCode.UNSETTLED_TRANSACTION not in satisfied_codes
+        ):
             risks.append(
                 ReviewRisk(
                     code=ReviewRiskCode.UNSETTLED_TRANSACTION,
                     message="交易尚未最终结算; 需人工确认最终状态",
                 )
             )
-        if any(
-            term in transaction_category or term in transaction_status
-            for term in _REVERSAL_TERMS
+        if (
+            any(
+                term in transaction_category or term in transaction_status
+                for term in _REVERSAL_TERMS
+            )
+            and ReviewRiskCode.REVERSAL_MATCH_REQUIRED not in satisfied_codes
         ):
             risks.append(
                 ReviewRisk(
@@ -82,15 +95,28 @@ def derive_review_risks(
                     message="退款或冲正需先关联原交易再确认",
                 )
             )
-        if any(term in transfer_text for term in _TRANSFER_TERMS):
-            if any(term in transfer_text for term in _ACCOUNT_TERMS):
+        platform_internal = (
+            any(term in transaction_category for term in _PLATFORM_INTERNAL_MOVEMENT_TERMS)
+            and any(term in transfer_text for term in _PLATFORM_SUBACCOUNT_TERMS)
+            and not any(term in payment_method for term in _EXTERNAL_FUNDING_TERMS)
+        )
+        if any(term in transfer_text for term in _TRANSFER_TERMS) and not platform_internal:
+            if (
+                counterparty_class
+                in {
+                    CounterpartyClass.SELF_MANAGED,
+                    CounterpartyClass.RELATED_PARTY,
+                }
+                and not bilateral_statement_evidence
+                and ReviewRiskCode.RELATED_ACCOUNT_STATEMENT_REQUIRED not in satisfied_codes
+            ):
                 risks.append(
                     ReviewRisk(
                         code=ReviewRiskCode.RELATED_ACCOUNT_STATEMENT_REQUIRED,
                         message="内部或关联账户资金流需提交并关联另一侧账户同期流水",
                     )
                 )
-            else:
+            elif ReviewRiskCode.TRANSFER_REVIEW_REQUIRED not in satisfied_codes:
                 risks.append(
                     ReviewRisk(
                         code=ReviewRiskCode.TRANSFER_REVIEW_REQUIRED,
