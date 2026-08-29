@@ -24,6 +24,11 @@ LedgerBridge Web.
 
 Raw financial files stay in an ignored private staging directory. They must never be committed.
 
+The sanitized mailbox inventory, protected-attachment state machine, and current missing-material
+decisions are maintained in
+[EMAIL_EVIDENCE_INVENTORY.md](EMAIL_EVIDENCE_INVENTORY.md). Treat that document as the
+operational source of truth before requesting or importing another emailed statement.
+
 ## One-command build
 
 ```powershell
