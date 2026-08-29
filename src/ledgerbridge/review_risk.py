@@ -25,6 +25,7 @@ _TRANSFER_TERMS = ("转账", "提现", "投资理财", "信用卡还款", "信�
 _REVERSAL_TERMS = ("退款", "冲正", "撤销")
 _UNSETTLED_TERMS = ("付款中", "生成中", "未出账", "交易关闭", "付款异常")
 _ACCOUNT_TERMS = ("银行", "储蓄卡", "信用卡", "账户余额", "零钱", "余额宝", "零钱通")
+_EXTERNAL_FUNDING_TERMS = ("银行", "储蓄卡", "信用卡", "花呗")
 
 
 def derive_review_risks(
@@ -48,6 +49,14 @@ def derive_review_risks(
         payment_method = parts[5] if len(parts) > 5 else ""
         transaction_status = parts[6] if len(parts) > 6 else ""
         transfer_text = " ".join((transaction_category, counterparty, payment_method))
+
+        if any(term in payment_method for term in _EXTERNAL_FUNDING_TERMS):
+            risks.append(
+                ReviewRisk(
+                    code=ReviewRiskCode.FUNDING_STATEMENT_REQUIRED,
+                    message="平台交易使用银行或信用账户支付; 需关联资金账户明细后再确认",
+                )
+            )
 
         if any(term in transaction_status for term in _UNSETTLED_TERMS):
             risks.append(

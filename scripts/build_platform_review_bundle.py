@@ -31,7 +31,7 @@ class _StrictModel(BaseModel):
 
 class NormalizedPlatformRecord(_StrictModel):
     recordId: str = Field(pattern=r"^(WX|ZFB)-[0-9a-f]{12}$")
-    date: str = Field(pattern=r"^2026-05-[0-3][0-9]$")
+    date: str = Field(pattern=r"^2026-(0[1-9]|1[0-2])-[0-3][0-9]$")
     source: Literal["微信", "支付宝"]
     amountMinor: int = Field(ge=-9_007_199_254_740_991, le=9_007_199_254_740_991)
     effect: bool
@@ -55,7 +55,7 @@ class NormalizedPlatformRecord(_StrictModel):
 
 class NormalizedPlatformEnvelope(_StrictModel):
     schemaVersion: Literal["ledgerbridge.financial-foundation-normalized.v1"]
-    period: Literal["2026-05"]
+    period: str = Field(pattern=r"^2026-(0[1-9]|1[0-2])$")
     records: tuple[NormalizedPlatformRecord, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -63,6 +63,8 @@ class NormalizedPlatformEnvelope(_StrictModel):
         ids = [record.recordId for record in self.records]
         if len(ids) != len(set(ids)):
             raise ValueError("normalized platform record ids must be unique")
+        if any(not record.date.startswith(f"{self.period}-") for record in self.records):
+            raise ValueError("normalized platform record falls outside the declared period")
         return self
 
 
@@ -150,7 +152,7 @@ def build_platform_bundle(
         category_code = (
             "WECHAT_TRANSACTION_REVIEW" if record.source == "微信" else "ALIPAY_TRANSACTION_REVIEW"
         )
-        stable = f"{source_system}:2026-05:{record.recordId}"
+        stable = f"{source_system}:{envelope.period}:{record.recordId}"
         summary_parts = (
             record.source,
             record.date,
@@ -171,7 +173,7 @@ def build_platform_bundle(
                 "display_label": f"{record.source} {record.date} {record.category}"[:100],
                 "category_code": category_code,
                 "amount_minor": record.amountMinor,
-                "accounting_month": "2026-05",
+                "accounting_month": envelope.period,
                 "summary": summary,
                 "confidence_basis_points": 9900,
                 "evidence_refs": (evidence_refs[record.evidenceAlias],),
@@ -187,7 +189,7 @@ def build_platform_bundle(
             tz=UTC,
         ),
         "source_description": (
-            "Native WeChat Pay and Alipay May 2026 exports admitted as pending review "
+            "Native WeChat Pay and Alipay 2026+ exports admitted as real-data test "
             "candidates; no automatic confirmation or posting."
         ),
         "entity": {
@@ -200,10 +202,10 @@ def build_platform_bundle(
         "business_unit": {
             "business_unit_ref": uuid5(
                 UUID("b2f82a31-26cf-4b43-a6a7-8e90339ab468"),
-                "business-unit:2026-05-controlled-review",
+                f"business-unit:{envelope.period}-controlled-review",
             ),
-            "ref": "review-2026-05",
-            "label": "2026年5月对账复核",
+            "ref": f"review-{envelope.period}",
+            "label": f"{envelope.period}真实测试数据复核",
         },
         "categories": categories,
         "evidence": tuple(evidence),

@@ -6,6 +6,10 @@ One run converts the supplied WeChat Pay, Alipay, and Bank of China evidence int
 monthly reconciliation workbook. The first worksheet is the review summary. Transaction,
 account, transfer, and missing-evidence details remain on separate audit worksheets.
 
+The formal finance intake boundary starts at `2026-01-01`. The runner rejects earlier periods.
+Current supplied rows are real-data test records: they remain pending review and are never
+treated as approved or posted merely because a match was found.
+
 The workflow never posts ledger entries. Every result remains pending human confirmation in
 LedgerBridge Web.
 
@@ -62,6 +66,16 @@ Accounts merely referenced as a payment method or same-holder counterparty are r
 - A platform purchase funded directly by a bank card is one economic transaction with two pieces
   of evidence. The platform row contributes to the result and the matching bank row is retained as
   evidence only, preventing double counting.
+- A card suffix shown by WeChat or Alipay may differ from the deposit-account suffix printed on
+  the bank statement. The runner only treats it as a funding-instrument alias when institution,
+  signed amount, platform payment rail, and transaction date (within two days) form a one-to-one
+  match. A competing card from another institution is never used to satisfy the match.
+- Credit-card and Huabei purchases remain expenses at purchase time. Their later repayment is a
+  balance settlement, not a second expense. Until the complete credit statement and repayment
+  account statement are supplied, those rows stay in evidence-required review.
+- Every hotel-platform settlement or withdrawal must be linked to the corresponding receiving-bank
+  credit. A clear OCR read is not enough to approve it; an unmatched payout remains in the
+  evidence-required queue.
 - A suspected same-holder transfer with only one side present goes to `待补佐证`.
 
 ## Workbook review surface
@@ -72,7 +86,12 @@ The workbook contains five sheets:
 2. `五月流水`: normalized audit detail.
 3. `账户台账`: supplied and referenced accounts with evidence status.
 4. `内部转账`: bilateral matches and duplicate-evidence links.
-5. `待补佐证`: only the missing statements that block an automatic match.
+5. `待补佐证`: the exact missing statements/bills, affected period, transaction count, affected
+   expense amount, and requested file type.
+
+The machine-readable manifest contains the same list in `materialsNeeded`. The PowerShell runner
+prints every item after a successful run, so an operator never has to infer missing materials from
+the workbook manually.
 
 The summary deliberately excludes attachments, raw messages, OCR diagnostics, and long source
 descriptions. Those belong to the evidence view, not the review decision surface.
@@ -86,6 +105,9 @@ descriptions. Those belong to the evidence view, not the review decision surface
 - workbook formula scan contains no `#REF!`, `#DIV/0!`, `#VALUE!`, `#NAME?`, or `#N/A`;
 - every worksheet is rendered and visually checked before release;
 - replaying the same inputs produces the same record ids and counts.
+- the source totals equal the included rows plus evidence-only rows after economic-transaction
+  merging;
+- every `materialsNeeded` item names a period, count, requested evidence, priority, and status.
 
 ## Least-privilege production import
 

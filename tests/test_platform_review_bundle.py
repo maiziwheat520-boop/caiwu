@@ -28,12 +28,14 @@ def _record(record_id: str, *, source: str, effect: bool = True) -> dict[str, ob
     }
 
 
-def _write_normalized(path: Path, records: list[dict[str, object]]) -> None:
+def _write_normalized(
+    path: Path, records: list[dict[str, object]], *, period: str = "2026-05"
+) -> None:
     path.write_text(
         json.dumps(
             {
                 "schemaVersion": "ledgerbridge.financial-foundation-normalized.v1",
-                "period": "2026-05",
+                "period": period,
                 "records": records,
             },
             ensure_ascii=False,
@@ -98,6 +100,31 @@ def test_platform_bundle_rejects_duplicate_normalized_ids(tmp_path: Path) -> Non
     alipay.write_bytes(b"synthetic-alipay")
     repeated = _record("WX-0123456789ab", source="微信")
     _write_normalized(normalized, [repeated, repeated])
+
+    with pytest.raises(PlatformBundleError, match="normalized platform record file is invalid"):
+        build_platform_bundle(
+            normalized_records=normalized,
+            wechat_statement=wechat,
+            alipay_statement=alipay,
+            output_directory=tmp_path / "bundle",
+        )
+
+
+@pytest.mark.parametrize(
+    ("period", "date"),
+    [("2025-12", "2026-05-18"), ("2026-06", "2026-05-18")],
+)
+def test_platform_bundle_only_accepts_2026_records_in_declared_period(
+    tmp_path: Path, period: str, date: str
+) -> None:
+    normalized = tmp_path / "normalized.json"
+    record = _record("WX-0123456789ab", source="微信")
+    record["date"] = date
+    _write_normalized(normalized, [record], period=period)
+    wechat = tmp_path / "wechat.xlsx"
+    alipay = tmp_path / "alipay.csv"
+    wechat.write_bytes(b"synthetic-wechat")
+    alipay.write_bytes(b"synthetic-alipay")
 
     with pytest.raises(PlatformBundleError, match="normalized platform record file is invalid"):
         build_platform_bundle(

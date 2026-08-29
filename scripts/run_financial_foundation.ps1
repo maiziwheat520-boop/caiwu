@@ -9,6 +9,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Output,
 
+    [ValidateRange(2026, 2100)]
     [int]$Year = 2026,
     [ValidateRange(1, 12)]
     [int]$Month = 5
@@ -60,9 +61,21 @@ if ($LASTEXITCODE -ne 0) {
 
 $resolvedOutput = (Resolve-Path -LiteralPath $Output).Path
 $manifestPath = [System.IO.Path]::ChangeExtension($resolvedOutput, ".manifest.json")
-$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+$manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($manifest.checks.duplicateRecordIds -ne 0 -or $manifest.checks.missingEvidence -ne 0 -or $manifest.checks.unbalancedInternalLinks -ne 0) {
     throw "Financial foundation checks did not pass. Review the manifest before using the workbook."
+}
+
+Write-Output "AUTOMATION_MATERIALS_NEEDED"
+if (@($manifest.materialsNeeded).Count -eq 0) {
+    Write-Output "- No materials are required for this period."
+}
+else {
+    foreach ($item in @($manifest.materialsNeeded)) {
+        $amount = [math]::Round(([long]$item.expenseMinor / 100), 2)
+        $materialLine = "- {0}: {1}; period {2}; {3} transactions; expense CNY {4:N2}." -f $item.item, $item.action, $item.period, $item.transactionCount, $amount
+        Write-Output $materialLine
+    }
 }
 
 [pscustomobject]@{
@@ -71,5 +84,6 @@ if ($manifest.checks.duplicateRecordIds -ne 0 -or $manifest.checks.missingEviden
     Records = $manifest.counts.records
     Accounts = $manifest.counts.accounts
     PendingEvidence = $manifest.counts.pending
+    MaterialsNeeded = @($manifest.materialsNeeded)
     Checks = "passed"
 }
