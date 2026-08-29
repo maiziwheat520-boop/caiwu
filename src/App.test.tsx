@@ -632,7 +632,7 @@ describe('LedgerBridge Web API client', () => {
   })
 
   it('bulk-confirms only high-confidence candidates without Core risk flags', async () => {
-    const riskyCandidate: ApiCandidate = {
+    const hotelRiskCandidate: ApiCandidate = {
       ...candidates[0],
       id: 'candidate-risk',
       short_id: 'C-RISK1',
@@ -643,13 +643,24 @@ describe('LedgerBridge Web API client', () => {
         message: '酒店平台结算或提现需关联收款银行流水，未匹配前保留人工审核',
       }],
     }
-    const fetchMock = installFetch({ items: [candidates[0], riskyCandidate] })
+    const fundingRiskCandidate: ApiCandidate = {
+      ...candidates[0],
+      id: 'candidate-funding-risk',
+      short_id: 'C-RISK2',
+      summary: '微信消费使用银行卡支付，待关联银行流水',
+      confidence_basis_points: 9900,
+      review_risks: [{
+        code: 'FUNDING_STATEMENT_REQUIRED',
+        message: '平台交易使用银行或信用账户支付，需关联资金账户明细后再确认',
+      }],
+    }
+    const fetchMock = installFetch({ items: [candidates[0], hotelRiskCandidate, fundingRiskCandidate] })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderApp()
     await screen.findByText('早上好，今天有几项需要确认')
     fireEvent.click(screen.getAllByText('待审核')[0])
 
-    expect(screen.getByText('1 条需补关联单据')).toBeInTheDocument()
+    expect(screen.getByText('2 条需补关联单据')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '一键审批 1 条' }))
     expect(await screen.findByText('已确认 1 条安全候选；风险项仍保留人工审核')).toBeInTheDocument()
 
@@ -657,6 +668,7 @@ describe('LedgerBridge Web API client', () => {
     expect(decisionCalls).toHaveLength(1)
     expect(String(decisionCalls[0][0])).toContain('/candidate-1/decisions')
     expect(String(decisionCalls[0][0])).not.toContain('/candidate-risk/decisions')
+    expect(String(decisionCalls[0][0])).not.toContain('/candidate-funding-risk/decisions')
   })
 
   it('filters the queue by blocker status and keeps the counts visible', async () => {

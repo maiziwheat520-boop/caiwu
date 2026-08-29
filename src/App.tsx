@@ -1220,7 +1220,7 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId,
   const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN')
   const bulkEligible = candidates.filter(isBulkEligible)
   const evidenceReminderCount = candidates.filter((candidate) => candidate.reviewRisks.some((risk) =>
-    ['RELATED_ACCOUNT_STATEMENT_REQUIRED', 'HOTEL_PAYOUT_STATEMENT_REQUIRED'].includes(risk.code),
+    ['FUNDING_STATEMENT_REQUIRED', 'RELATED_ACCOUNT_STATEMENT_REQUIRED', 'HOTEL_PAYOUT_STATEMENT_REQUIRED'].includes(risk.code),
   )).length
   const statusCounts = {
     all: candidates.length,
@@ -1256,7 +1256,7 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId,
       {evidenceReminderCount > 0 ? (
         <div className="evidence-reminder" role="status">
           <Warning size={19} />
-          <div><strong>{evidenceReminderCount} 条需补关联单据</strong><span>内部/关联账户资金流需提供另一侧流水；酒店平台结算需匹配收款银行入账。</span></div>
+          <div><strong>{evidenceReminderCount} 条需补关联单据</strong><span>银行卡或信用账户支付需关联资金明细；内部转账需另一侧流水；酒店平台结算需匹配银行入账。</span></div>
         </div>
       ) : null}
       <div className="review-toolbar">
