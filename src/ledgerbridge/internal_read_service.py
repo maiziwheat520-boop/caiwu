@@ -28,6 +28,7 @@ from ledgerbridge.candidate_contract import (
     CandidateStatus,
     EvidenceReference,
     IngestChannel,
+    ReviewRisk,
     ReviewSummary,
     SourceProjection,
 )
@@ -58,6 +59,7 @@ from ledgerbridge.internal_read_contract import (
 )
 from ledgerbridge.internal_read_cursor import CursorInvalid, ReadCursorSigner
 from ledgerbridge.keyring import KeyProviderError, WrappedKey
+from ledgerbridge.review_risk import derive_review_risks
 
 _RESOURCE_PACKAGE = "ledgerbridge.synthetic_read_data"
 _FIXTURE_NAME = "r0_contract_fixture.json"
@@ -1022,7 +1024,8 @@ class DatabaseInternalReadService:
             source["ingest_channel"] = _wire_ingest_channel(
                 cast(str | IngestChannel, source["ingest_channel"])
             )
-            value["source"] = SourceProjection.model_validate(source)
+            source_projection = SourceProjection.model_validate(source)
+            value["source"] = source_projection
             value["evidence"] = tuple(
                 EvidenceReference.model_validate(item)
                 for item in _database_json_objects(value["evidence"], field="evidence")
@@ -1030,6 +1033,14 @@ class DatabaseInternalReadService:
             value["blockers"] = tuple(
                 Blocker.model_validate(item)
                 for item in _database_json_objects(value["blockers"], field="blockers")
+            )
+            value["review_risks"] = tuple(
+                ReviewRisk.model_validate(item)
+                for item in derive_review_risks(
+                    source_system=source_projection.source_system,
+                    category_code=cast(str | None, value.get("category_code")),
+                    summary=cast(str, value["summary"]),
+                )
             )
             value["review_summary"] = ReviewSummary.model_validate(
                 dict(cast(Mapping[str, object], value["review_summary"]))

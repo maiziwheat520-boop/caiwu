@@ -60,6 +60,14 @@ class BlockerCode(StrEnum):
     COUNTERPARTY_STATEMENT_REQUIRED = "COUNTERPARTY_STATEMENT_REQUIRED"
 
 
+class ReviewRiskCode(StrEnum):
+    RELATED_ACCOUNT_STATEMENT_REQUIRED = "RELATED_ACCOUNT_STATEMENT_REQUIRED"
+    HOTEL_PAYOUT_STATEMENT_REQUIRED = "HOTEL_PAYOUT_STATEMENT_REQUIRED"
+    TRANSFER_REVIEW_REQUIRED = "TRANSFER_REVIEW_REQUIRED"
+    REVERSAL_MATCH_REQUIRED = "REVERSAL_MATCH_REQUIRED"
+    UNSETTLED_TRANSACTION = "UNSETTLED_TRANSACTION"
+
+
 class EvidenceKind(StrEnum):
     MESSAGE_ENVELOPE = "MESSAGE_ENVELOPE"
     MAIL_ENVELOPE = "MAIL_ENVELOPE"
@@ -108,6 +116,11 @@ class Blocker(_FrozenModel):
     evidence_ref: UUID | None = None
 
 
+class ReviewRisk(_FrozenModel):
+    code: ReviewRiskCode
+    message: str = Field(min_length=1, max_length=300)
+
+
 class ReviewSummary(_FrozenModel):
     event_count: int = Field(ge=0)
     last_action: CandidateAction | None = None
@@ -146,6 +159,7 @@ class CandidateProjection(_FrozenModel):
     source: SourceProjection
     evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
     blockers: tuple[Blocker, ...] = ()
+    review_risks: tuple[ReviewRisk, ...] = ()
     review_summary: ReviewSummary
     created_at: datetime
     updated_at: datetime
