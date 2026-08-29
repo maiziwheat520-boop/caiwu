@@ -728,4 +728,86 @@ describe('LedgerBridge Web API client', () => {
     fireEvent.click(screen.getAllByText('待审核')[0])
     expect(screen.getByText('当前筛选下没有待审核项')).toBeInTheDocument()
   })
+
+  it('shows a deduplicated evidence library and opens an associated candidate', async () => {
+    const sharedEvidence = {
+      id: 'evidence-may-bank',
+      kind: 'attachment' as const,
+      media_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      sha256: 'c'.repeat(64),
+      original_filename: 'may-bank-statement.xlsx',
+    }
+    const importedCandidates: ApiCandidate[] = [
+      { ...candidates[0], id: 'candidate-evidence-pending', short_id: 'C-EV01', source_channel: 'outlook', accounting_month: '2026-05', summary: '银行流水待复核：TX-1001', evidence: [sharedEvidence] },
+      { ...candidates[3], id: 'candidate-evidence-confirmed', short_id: 'C-EV02', source_channel: 'outlook', accounting_month: '2026-05', summary: '银行流水已确认：TX-1002', evidence: [sharedEvidence] },
+    ]
+    installFetch({ items: importedCandidates })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('文件与连接')[0])
+    expect(screen.getAllByText('may-bank-statement.xlsx')).toHaveLength(1)
+    expect(screen.getByText('2026 年 5 月')).toBeInTheDocument()
+    expect(screen.getByText('关联 2 条候选')).toBeInTheDocument()
+    expect(screen.getByText('含待审核')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('关联 2 条候选'))
+    fireEvent.click(screen.getByRole('button', { name: /C-EV01/ }))
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(await screen.findByText('原始消息内容已直接展示')).toBeInTheDocument()
+  })
+
+  it('aggregates only Core material risks and excludes platform internal accounts', async () => {
+    const materialCandidates: ApiCandidate[] = [
+      { ...candidates[0], id: 'candidate-ccb-gap', short_id: 'C-GAP1', accounting_month: '2026-05', summary: '微信 | 2026-05-02 | 支出 | 商户消费 | 通信商 | 中国建设银行储蓄卡(7564) | 支付成功', review_risks: [{ code: 'FUNDING_STATEMENT_REQUIRED', message: '需关联资金账户明细后再确认' }] },
+      ...[1, 2].map((index): ApiCandidate => ({ ...candidates[0], id: `candidate-related-gap-${index}`, short_id: `C-GAP${index + 1}`, accounting_month: '2026-05', summary: `支付宝 | 2026-05-0${index + 3} | 支出 | 投资理财 | 网商银行 | 账户余额 | 交易成功`, review_risks: [{ code: 'RELATED_ACCOUNT_STATEMENT_REQUIRED', message: '需提交并关联另一侧账户同期流水' }] })),
+      { ...candidates[0], id: 'candidate-huabei-internal', short_id: 'C-HB01', accounting_month: '2026-05', summary: '支付宝 | 2026-05-08 | 支出 | 商户消费 | 便利店 | 花呗 | 交易成功', review_risks: [{ code: 'FUNDING_STATEMENT_REQUIRED', message: '需关联资金账户明细后再确认' }] },
+      { ...candidates[0], id: 'candidate-hotel-gap', short_id: 'C-HOTEL', accounting_month: '2026-05', summary: 'OCR账单待复核: CTRIP_EBOOKING 2026-05-25:2026-05-31', review_risks: [{ code: 'HOTEL_PAYOUT_STATEMENT_REQUIRED', message: '需关联收款银行流水' }] },
+    ]
+    installFetch({ items: materialCandidates })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('文件与连接')[0])
+    expect(screen.getByText('中国建设银行储蓄卡(7564)明细')).toBeInTheDocument()
+    expect(screen.getByText('网商银行同期流水')).toBeInTheDocument()
+    expect(screen.getByText('影响 2 条记录')).toBeInTheDocument()
+    expect(screen.getByText('酒店平台收款银行流水')).toBeInTheDocument()
+    expect(screen.queryByText('花呗明细')).not.toBeInTheDocument()
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    expect(screen.getByText('4 条需补关联单据')).toBeInTheDocument()
+  })
+
+  it('groups ordinary transfers by counterparty and filters to the selected object', async () => {
+    const transferCandidates: ApiCandidate[] = [
+      ...[-10000, 4000].map((amount, index): ApiCandidate => ({ ...candidates[0], id: `candidate-wangshang-${index}`, short_id: `C-WS0${index + 1}`, amount_minor: amount, accounting_month: '2026-05', summary: `支付宝 | 2026-05-0${index + 8} | ${amount < 0 ? '支出' : '收入'} | 投资理财 | 网商银行 | 账户余额 | 交易成功`, review_risks: [{ code: 'RELATED_ACCOUNT_STATEMENT_REQUIRED', message: '需关联另一侧账户同期流水' }] })),
+      { ...candidates[0], id: 'candidate-known-transfer', short_id: 'C-ZS01', amount_minor: -2000, summary: '微信 | 2026-05-12 | 支出 | 转账 | 张三 | / | 对方已收钱', review_risks: [{ code: 'TRANSFER_REVIEW_REQUIRED', message: '需人工确认收付款方及资金性质' }] },
+      { ...candidates[0], id: 'candidate-unknown-transfer', short_id: 'C-UNK1', amount_minor: -3000, summary: '微信 | 2026-05-13 | 支出 | 转账 |  | / | 对方已收钱', review_risks: [{ code: 'TRANSFER_REVIEW_REQUIRED', message: '需人工确认收付款方及资金性质' }] },
+      { ...candidates[0], id: 'candidate-internal-wallet', short_id: 'C-WAL1', amount_minor: -5000, summary: '支付宝 | 2026-05-14 | 支出 | 余额互转 | 余额宝 | 账户余额 | 交易成功', review_risks: [{ code: 'RELATED_ACCOUNT_STATEMENT_REQUIRED', message: '需关联另一侧账户同期流水' }] },
+    ]
+    installFetch({ items: transferCandidates })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    expect(screen.getByRole('button', { name: '查看网商银行 2 笔' })).toBeInTheDocument()
+    expect(screen.getByText('本人内部/关联方')).toBeInTheDocument()
+    expect(screen.getByText('净额 -¥60.00')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '查看张三 1 笔' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '查看未识别对象 1 笔' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^查看余额宝/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '查看网商银行 2 笔' }))
+    expect(screen.getByText('C-WS01')).toBeInTheDocument()
+    expect(screen.getByText('C-WS02')).toBeInTheDocument()
+    expect(screen.queryByText('C-ZS01')).not.toBeInTheDocument()
+  })
+
+  it('reaches the three business reporting entry points', async () => {
+    installFetch()
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+    expect(screen.getByRole('heading', { name: '完整个人财务对账' })).toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('button', { name: /原口径对账表/ })[0])
+    expect(screen.getByRole('heading', { name: '2026 年 8 月对账草稿' })).toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('button', { name: /各公司报表/ })[0])
+    expect(screen.getByRole('heading', { name: '各公司报表' })).toBeInTheDocument()
+    expect(screen.getByText('按公司主体汇总将在后续接入')).toBeInTheDocument()
+  })
 })

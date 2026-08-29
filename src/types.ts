@@ -1,4 +1,4 @@
-export type Page = 'overview' | 'review' | 'reconciliation' | 'files' | 'audit'
+export type Page = 'overview' | 'personal-finance' | 'review' | 'reconciliation' | 'company-reports' | 'files' | 'audit'
 
 export type CandidateStatus =
   | 'INCOMPLETE'

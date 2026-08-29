@@ -63,15 +63,19 @@ const CURRENT_MONTH = '2026-08'
 
 const navigation: Array<{ id: Page; label: string; icon: typeof House }> = [
   { id: 'overview', label: '概览', icon: House },
+  { id: 'personal-finance', label: '完整个人财务对账', icon: Bank },
   { id: 'review', label: '待审核', icon: ListChecks },
-  { id: 'reconciliation', label: '月度对账', icon: Table },
+  { id: 'reconciliation', label: '原口径对账表', icon: Table },
+  { id: 'company-reports', label: '各公司报表', icon: Database },
   { id: 'files', label: '文件与连接', icon: FolderOpen },
 ]
 
 const pagePaths: Record<Page, string> = {
   overview: '/overview',
+  'personal-finance': '/personal-finance',
   review: '/review',
   reconciliation: '/reconciliation',
+  'company-reports': '/company-reports',
   files: '/files',
   audit: '/audit',
 }
@@ -139,6 +143,51 @@ function isBulkEligible(candidate: Candidate): boolean {
     && candidate.reviewRisks.length === 0
     && !candidate.incomplete
     && !candidate.conflict
+}
+
+const materialRiskCodes = new Set([
+  'FUNDING_STATEMENT_REQUIRED',
+  'RELATED_ACCOUNT_STATEMENT_REQUIRED',
+  'HOTEL_PAYOUT_STATEMENT_REQUIRED',
+])
+
+const platformInternalAccounts = new Set(['花呗', '余额宝', '账户余额', '零钱', '零钱通'])
+
+function summaryFields(candidate: Candidate): string[] {
+  return candidate.summary.split('|').map((value) => value.trim())
+}
+
+function counterpartyFor(candidate: Candidate): string {
+  return summaryFields(candidate)[4] ?? ''
+}
+
+function paymentMethodFor(candidate: Candidate): string {
+  return summaryFields(candidate)[5] ?? ''
+}
+
+function isPlatformInternalAccount(value: string): boolean {
+  const normalized = value.trim().replace(/^(支付宝|微信)[:：]?/, '')
+  return platformInternalAccounts.has(normalized)
+}
+
+function materialNameFor(candidate: Candidate, riskCode: string): string | null {
+  if (!materialRiskCodes.has(riskCode)) return null
+  if (riskCode === 'FUNDING_STATEMENT_REQUIRED') {
+    const paymentMethod = paymentMethodFor(candidate)
+    if (!paymentMethod) return '资金账户明细'
+    return !isPlatformInternalAccount(paymentMethod) ? `${paymentMethod}明细` : null
+  }
+  if (riskCode === 'RELATED_ACCOUNT_STATEMENT_REQUIRED') {
+    const counterparty = counterpartyFor(candidate)
+    return isPlatformInternalAccount(counterparty) ? null : `${counterparty || '关联账户'}同期流水`
+  }
+  return '酒店平台收款银行流水'
+}
+
+function accountingMonthLabel(month: string | null): string {
+  if (!month) return '期间待确认'
+  const [year, monthNumber] = month.split('-')
+  return `${year} 年 ${Number(monthNumber)} 月`
 }
 
 async function listRemainingCandidatePages(initialCursor: string) {
@@ -476,6 +525,9 @@ function App() {
         />
       )
     }
+    if (page === 'personal-finance') {
+      return <PersonalFinanceOverview candidates={candidates} onNavigate={navigate} />
+    }
     if (page === 'review') {
       return (
         <ReviewQueue
@@ -491,6 +543,9 @@ function App() {
     }
     if (page === 'reconciliation') {
       return <Reconciliation data={reconciliation} confirmed={confirmedCandidates} selectedMonth={selectedMonth} onMonthChange={changeMonth} onGenerate={generateDraft} generating={draftBusy} onNavigate={navigate} />
+    }
+    if (page === 'company-reports') {
+      return <CompanyReports />
     }
     if (page === 'audit') {
       return (
@@ -510,7 +565,7 @@ function App() {
         />
       )
     }
-    return <FilesAndConnections connections={connections} onRefresh={loadData} />
+    return <FilesAndConnections candidates={candidates} connections={connections} onOpenCandidate={openCandidate} onRefresh={loadData} />
   }
 
   if (authLoading) return <AuthFrame><LoadingState title="正在检查访问状态" description="正在确认此设备的单用户会话。" /></AuthFrame>
@@ -1205,6 +1260,46 @@ function StatusLine({ icon, label, detail, tone }: { icon: React.ReactNode; labe
   )
 }
 
+function PersonalFinanceOverview({ candidates, onNavigate }: { candidates: Candidate[]; onNavigate: (page: Page) => void }) {
+  const pending = candidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
+  const evidenceCount = new Set(candidates.flatMap((candidate) => candidate.evidence.map((evidence) => evidence.id))).size
+  const months = new Set(candidates.map((candidate) => candidate.accountingMonth).filter(Boolean)).size
+  return (
+    <>
+      <PageHeader
+        eyebrow="个人财务"
+        title="完整个人财务对账"
+        description="汇总当前已导入的账单、凭证和待审核事项；所有数字均可回到原始材料。"
+        action={<Button onClick={() => onNavigate('review')}><ListChecks size={17} />处理待审核</Button>}
+      />
+      <section className="metric-grid" aria-label="个人财务材料概览">
+        <Metric primary label="全部候选" value={`${candidates.length} 条`} detail={`${pending.length} 条仍待确认`} tone={pending.length > 0 ? 'attention' : undefined} icon={<ListChecks size={20} />} />
+        <Metric label="原始材料" value={`${evidenceCount} 份`} detail="已按证据编号去重" icon={<FolderOpen size={20} />} />
+        <Metric label="覆盖期间" value={`${months} 个月`} detail="来自当前 Core 候选事实" icon={<Table size={20} />} />
+      </section>
+      <section className="panel report-entry-panel">
+        <div><h2>从真实材料继续</h2><p>先确认风险候选，再检查已导入材料和仍需补交的账单。</p></div>
+        <div className="review-header-actions">
+          <Button onClick={() => onNavigate('review')}>查看待审核</Button>
+          <Button variant="outline" color="gray" onClick={() => onNavigate('files')}>查看材料总览</Button>
+        </div>
+      </section>
+    </>
+  )
+}
+
+function CompanyReports() {
+  return (
+    <>
+      <PageHeader eyebrow="公司维度" title="各公司报表" description="公司报表会复用已确认的真实候选，并按公司主体隔离展示。" />
+      <section className="panel planning-panel">
+        <Database size={34} weight="light" />
+        <div><h2>按公司主体汇总将在后续接入</h2><p>当前不生成推测数据；待 Core 提供稳定的公司主体字段后再展示资产、收支与对账状态。</p></div>
+      </section>
+    </>
+  )
+}
+
 function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId, batchBusy, onBatchConfirm }: {
   candidates: Candidate[]
   onOpenCandidate: (candidate: Candidate) => void
@@ -1216,18 +1311,42 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId,
 }) {
   const [sourceFilter, setSourceFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState<'all' | 'conflict' | 'incomplete' | 'ready'>('all')
+  const [transferObjectFilter, setTransferObjectFilter] = useState('all')
   const [query, setQuery] = useState('')
   const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN')
   const bulkEligible = candidates.filter(isBulkEligible)
-  const evidenceReminderCount = candidates.filter((candidate) => candidate.reviewRisks.some((risk) =>
-    ['FUNDING_STATEMENT_REQUIRED', 'RELATED_ACCOUNT_STATEMENT_REQUIRED', 'HOTEL_PAYOUT_STATEMENT_REQUIRED'].includes(risk.code),
-  )).length
+  const evidenceReminderCount = candidates.filter((candidate) => candidate.reviewRisks.some((risk) => materialNameFor(candidate, risk.code) !== null)).length
   const statusCounts = {
     all: candidates.length,
     conflict: candidates.filter((candidate) => candidate.conflict).length,
     incomplete: candidates.filter((candidate) => candidate.incomplete && !candidate.conflict).length,
     ready: bulkEligible.length,
   }
+  const transferObjects = [...candidates.reduce((groups, candidate) => {
+    const fields = summaryFields(candidate)
+    const counterparty = counterpartyFor(candidate)
+    const hasRelatedRisk = candidate.reviewRisks.some((risk) => risk.code === 'RELATED_ACCOUNT_STATEMENT_REQUIRED')
+    const hasTransferRisk = candidate.reviewRisks.some((risk) => risk.code === 'TRANSFER_REVIEW_REQUIRED')
+    const isTransfer = hasRelatedRisk || hasTransferRisk || /转账|提现|投资理财|余额互转|信用卡还款|信用借还/.test(fields[3] ?? '')
+    if (!isTransfer || isPlatformInternalAccount(counterparty)) return groups
+    const name = counterparty || '未识别对象'
+    const current = groups.get(name) ?? {
+      name,
+      category: counterparty ? hasRelatedRisk ? '本人内部/关联方' : '已知业务对象' : '未知',
+      candidates: [] as Candidate[],
+      netMinor: 0,
+      highestRisk: '常规复核',
+    }
+    current.candidates.push(candidate)
+    current.netMinor += candidate.amountMinor
+    if (candidate.conflict) current.highestRisk = '凭证或金额冲突'
+    else if (hasRelatedRisk && current.highestRisk !== '凭证或金额冲突') current.highestRisk = '需关联另一侧流水'
+    else if (hasTransferRisk && current.highestRisk === '常规复核') current.highestRisk = '需人工确认'
+    if (hasRelatedRisk) current.category = '本人内部/关联方'
+    groups.set(name, current)
+    return groups
+  }, new Map<string, { name: string; category: string; candidates: Candidate[]; netMinor: number; highestRisk: string }>()).values()]
+    .sort((left, right) => right.candidates.length - left.candidates.length || left.name.localeCompare(right.name, 'zh-CN'))
   const filtered = [...candidates].sort((left, right) => {
     const rank = (candidate: Candidate) => candidate.conflict ? 0 : candidate.incomplete || candidate.reviewRisks.length > 0 ? 1 : 2
     return rank(left) - rank(right)
@@ -1243,7 +1362,9 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId,
       candidate.category,
       candidate.summary,
     ].some((value) => value.toLocaleLowerCase('zh-CN').includes(normalizedQuery))
-    return matchesSource && matchesStatus && matchesQuery
+    const matchesTransferObject = transferObjectFilter === 'all'
+      || (transferObjectFilter === '未识别对象' ? !counterpartyFor(candidate) : counterpartyFor(candidate) === transferObjectFilter)
+    return matchesSource && matchesStatus && matchesQuery && matchesTransferObject
   })
   return (
     <>
@@ -1258,6 +1379,24 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId,
           <Warning size={19} />
           <div><strong>{evidenceReminderCount} 条需补关联单据</strong><span>银行卡或信用账户支付需关联资金明细；内部转账需另一侧流水；酒店平台结算需匹配银行入账。</span></div>
         </div>
+      ) : null}
+      {transferObjects.length > 0 ? (
+        <section className="transfer-object-section" aria-label="按转账对象筛选">
+          <div className="panel-heading">
+            <div><h2>按转账对象</h2><p>按摘要里的交易对方聚合，不用银行名称推断账户归属。</p></div>
+            <Button variant="ghost" onClick={() => setTransferObjectFilter('all')}>全部对象</Button>
+          </div>
+          <div className="transfer-object-groups">
+            {transferObjects.map((group) => (
+              <button aria-label={`查看${group.name} ${group.candidates.length} 笔`} aria-pressed={transferObjectFilter === group.name} className={`transfer-object-card ${transferObjectFilter === group.name ? 'active' : ''}`} key={group.name} onClick={() => setTransferObjectFilter(group.name)} type="button">
+                <span className="transfer-object-heading"><strong>{group.name}</strong><Badge color={group.category === '未知' ? 'amber' : group.category === '本人内部/关联方' ? 'blue' : 'gray'}>{group.category}</Badge></span>
+                <span>{group.candidates.length} 笔</span>
+                <span>净额 {currency.format(minorToMajor(group.netMinor))}</span>
+                <small>最高风险：{group.highestRisk}</small>
+              </button>
+            ))}
+          </div>
+        </section>
       ) : null}
       <div className="review-toolbar">
         <div className="queue-summary">
@@ -1798,8 +1937,42 @@ function ConnectionBadge({ connection }: { connection?: ConnectionStatus }) {
   return <Badge color={color}>{connectionStateLabel[state]}</Badge>
 }
 
-function FilesAndConnections({ connections, onRefresh }: { connections: ConnectionStatus[]; onRefresh: () => void }) {
+function FilesAndConnections({ candidates, connections, onOpenCandidate, onRefresh }: {
+  candidates: Candidate[]
+  connections: ConnectionStatus[]
+  onOpenCandidate: (candidate: Candidate) => void
+  onRefresh: () => void
+}) {
   const connection = (id: ConnectionStatus['id']) => connections.find((item) => item.id === id)
+  const evidenceLibrary = [...candidates.reduce((items, candidate) => {
+    for (const evidence of candidate.evidence) {
+      const current = items.get(evidence.id) ?? {
+        evidence,
+        candidates: [] as Candidate[],
+        sources: new Set<string>(),
+        periods: new Set<string>(),
+      }
+      if (!current.candidates.some((item) => item.id === candidate.id)) current.candidates.push(candidate)
+      current.sources.add(candidate.source)
+      if (candidate.accountingMonth) current.periods.add(candidate.accountingMonth)
+      items.set(evidence.id, current)
+    }
+    return items
+  }, new Map<string, { evidence: EvidenceReference; candidates: Candidate[]; sources: Set<string>; periods: Set<string> }>()).values()]
+  const materialGaps = [...candidates.reduce((items, candidate) => {
+    for (const risk of candidate.reviewRisks) {
+      if (!materialRiskCodes.has(risk.code)) continue
+      const material = materialNameFor(candidate, risk.code)
+      if (!material) continue
+      const period = candidate.accountingMonth ?? ''
+      const key = `${risk.code}:${material}:${period}`
+      const current = items.get(key) ?? { material, period, reasons: new Set<string>(), candidates: new Set<string>() }
+      current.reasons.add(risk.message)
+      current.candidates.add(candidate.id)
+      items.set(key, current)
+    }
+    return items
+  }, new Map<string, { material: string; period: string; reasons: Set<string>; candidates: Set<string> }>()).values()]
   return (
     <>
       <PageHeader
@@ -1808,6 +1981,45 @@ function FilesAndConnections({ connections, onRefresh }: { connections: Connecti
         description="状态来自同源 API。界面不显示令牌或其他敏感凭据。"
         action={<Button variant="outline" color="gray" onClick={onRefresh}><ArrowsClockwise size={17} />重新检查</Button>}
       />
+
+      <section className="panel evidence-library-panel">
+        <div className="panel-heading"><div><h2>已导入账单与凭证</h2><p>按证据编号去重，展开后可进入关联候选查看原始内容。</p></div><Badge color="gray">{evidenceLibrary.length} 份</Badge></div>
+        {evidenceLibrary.length > 0 ? (
+          <div className="evidence-library-list">
+            {evidenceLibrary.map((item) => {
+              const hasPending = item.candidates.some((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
+              const allConfirmed = item.candidates.every((candidate) => candidate.status === 'CONFIRMED')
+              const status = hasPending ? '含待审核' : allConfirmed ? '已确认' : '已归档'
+              return (
+                <article className="evidence-library-item" key={item.evidence.id}>
+                  <div className="evidence-library-title"><FileText size={20} /><div><strong>{item.evidence.original_filename ?? (item.evidence.kind === 'message' ? '消息原文' : '原始文件')}</strong><span>{[...item.sources].join('、')}</span></div><Badge color={hasPending ? 'amber' : allConfirmed ? 'green' : 'gray'}>{status}</Badge></div>
+                  <div className="evidence-library-meta"><span>{[...item.periods].map(accountingMonthLabel).join('、') || '期间待确认'}</span><span>证据 {item.evidence.id}</span></div>
+                  <details>
+                    <summary>关联 {item.candidates.length} 条候选</summary>
+                    <div className="evidence-candidate-links">
+                      {item.candidates.map((candidate) => <button key={candidate.id} onClick={() => onOpenCandidate(candidate)} type="button">{candidate.shortId} · {candidate.businessUnit} · {candidate.category}</button>)}
+                    </div>
+                  </details>
+                </article>
+              )
+            })}
+          </div>
+        ) : <div className="empty-state compact-empty"><FolderOpen size={34} weight="light" /><h2>尚无已导入材料</h2><p>Core 返回的候选证据会显示在这里。</p></div>}
+      </section>
+
+      <section className="panel material-gap-panel">
+        <div className="panel-heading"><div><h2>待补账单清单</h2><p>只展示 Core 明确标记的资金、关联账户和酒店结算材料缺口。</p></div><Badge color={materialGaps.length > 0 ? 'amber' : 'green'}>{materialGaps.length} 项</Badge></div>
+        {materialGaps.length > 0 ? (
+          <div className="material-gap-list">
+            {materialGaps.map((gap) => (
+              <article className="material-gap-card" key={`${gap.material}:${gap.period}`}>
+                <Warning size={20} />
+                <div><strong>{gap.material}</strong><span>{accountingMonthLabel(gap.period || null)}</span><span>影响 {gap.candidates.size} 条记录</span><p>{[...gap.reasons].join('；')}</p></div>
+              </article>
+            ))}
+          </div>
+        ) : <div className="empty-state compact-empty"><CheckCircle size={34} weight="light" /><h2>当前没有明确材料缺口</h2><p>这里只依据 Core 风险事实，不推测缺失账单。</p></div>}
+      </section>
 
       <div className="connection-grid">
         <section className="panel connection-card">
