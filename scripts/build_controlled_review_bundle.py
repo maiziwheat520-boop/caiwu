@@ -209,6 +209,22 @@ def build_bundle(
     manifest = SourceManifest.model_validate(payload, strict=True)
     manifest_path = output_directory / "source-manifest.json"
     _write_private_json(manifest_path, manifest.model_dump(mode="json"))
+    if ocr_observations is not None:
+        try:
+            from scripts.build_hotel_payout_cutover import (
+                build_hotel_payout_cutover_manifest,
+            )
+        except ModuleNotFoundError:  # direct ``python scripts/...`` execution
+            from build_hotel_payout_cutover import (  # type: ignore[no-redef]
+                build_hotel_payout_cutover_manifest,
+            )
+
+        build_hotel_payout_cutover_manifest(
+            source_manifest_path=manifest_path.resolve(),
+            combined_workbook=combined_workbook,
+            ocr_observations=ocr_observations,
+            output_path=(output_directory / "hotel-payout-cutover.json").resolve(),
+        )
     return manifest_path, manifest
 
 

@@ -29,12 +29,19 @@ _EXTERNAL_FUNDING_TERMS = ("银行", "储蓄卡", "信用卡", "花呗")
 
 
 def derive_review_risks(
-    *, source_system: str, category_code: str | None, summary: str
+    *,
+    source_system: str,
+    category_code: str | None,
+    summary: str,
+    satisfied_codes: frozenset[ReviewRiskCode] = frozenset(),
 ) -> tuple[ReviewRisk, ...]:
     """Return ordered, de-duplicated risks from immutable candidate facts."""
 
     risks: list[ReviewRisk] = []
-    if source_system in _HOTEL_PAYOUT_SOURCES:
+    if (
+        source_system in _HOTEL_PAYOUT_SOURCES
+        and ReviewRiskCode.HOTEL_PAYOUT_STATEMENT_REQUIRED not in satisfied_codes
+    ):
         risks.append(
             ReviewRisk(
                 code=ReviewRiskCode.HOTEL_PAYOUT_STATEMENT_REQUIRED,

@@ -65,6 +65,16 @@ def test_hotel_payout_requires_matching_bank_statement() -> None:
     assert codes == {ReviewRiskCode.HOTEL_PAYOUT_STATEMENT_REQUIRED}
 
 
+def test_audited_hotel_bank_match_satisfies_only_the_hotel_risk() -> None:
+    risks = derive_review_risks(
+        source_system="hotel_bill_ocr",
+        category_code="PHOTO_RECONCILIATION",
+        summary="OCR账单待复核: CTRIP_EBOOKING 66784978:2026-05-18:2026-05-24",
+        satisfied_codes=frozenset({ReviewRiskCode.HOTEL_PAYOUT_STATEMENT_REQUIRED}),
+    )
+    assert risks == ()
+
+
 def test_refund_and_unsettled_status_are_not_bulk_eligible() -> None:
     codes = _codes(
         source="wechat_pay_export",

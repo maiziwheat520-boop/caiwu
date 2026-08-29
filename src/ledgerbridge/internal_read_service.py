@@ -29,6 +29,7 @@ from ledgerbridge.candidate_contract import (
     EvidenceReference,
     IngestChannel,
     ReviewRisk,
+    ReviewRiskCode,
     ReviewSummary,
     SourceProjection,
 )
@@ -575,7 +576,30 @@ class DatabaseInternalReadService:
                         boundary = self._candidate(raw_rows[99])
                         query_last_created_at = boundary.created_at
                         query_last_candidate_id = boundary.candidate_ref
-                candidates = [self._candidate(row) for row in rows]
+                satisfied_by_candidate: dict[UUID, frozenset[ReviewRiskCode]] = {}
+                if rows:
+                    scope_grant, scope_business_unit_id = scopes_by_grant[0]
+                    if scope_business_unit_id is not None:
+                        candidate_ids = tuple(
+                            UUID(str(row["candidate_ref"])) for row in rows
+                        )
+                        satisfied_by_candidate = self._candidate_risk_satisfactions(
+                            session,
+                            entity_ref=scope_grant.entity_ref,
+                            business_unit_id=scope_business_unit_id,
+                            candidate_ids=candidate_ids,
+                            horizon_sequence=sequence,
+                            horizon_hash=horizon_hash,
+                        )
+                candidates = [
+                    self._candidate(
+                        row,
+                        satisfied_review_risk_codes=satisfied_by_candidate.get(
+                            UUID(str(row["candidate_ref"])), frozenset()
+                        ),
+                    )
+                    for row in rows
+                ]
         except (InternalReadBackendUnavailable, CursorInvalid):
             raise
         except (SQLAlchemyError, ValueError, TypeError, KeyError) as exc:
@@ -1016,7 +1040,56 @@ class DatabaseInternalReadService:
         )
 
     @staticmethod
-    def _candidate(row: Mapping[str, object]) -> CandidateProjection:
+    def _candidate_risk_satisfactions(
+        session: Session,
+        *,
+        entity_ref: UUID,
+        business_unit_id: UUID,
+        candidate_ids: tuple[UUID, ...],
+        horizon_sequence: int,
+        horizon_hash: bytes,
+    ) -> dict[UUID, frozenset[ReviewRiskCode]]:
+        if not candidate_ids:
+            return {}
+        rows = session.execute(
+            text(
+                "SELECT * FROM internal_read.list_candidate_evidence_satisfactions("
+                ":entity_id, :business_unit_id, :candidate_ids, "
+                ":horizon_sequence, :horizon_hash)"
+            ),
+            {
+                "entity_id": entity_ref,
+                "business_unit_id": business_unit_id,
+                "candidate_ids": list(candidate_ids),
+                "horizon_sequence": horizon_sequence,
+                "horizon_hash": horizon_hash,
+            },
+        ).mappings()
+        values: dict[UUID, set[ReviewRiskCode]] = {}
+        allowed = set(candidate_ids)
+        for row in rows:
+            try:
+                candidate_id = UUID(str(row["candidate_id"]))
+                risk_code = ReviewRiskCode(str(row["risk_code"]))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise InternalReadBackendUnavailable(
+                    "database candidate evidence satisfaction is malformed"
+                ) from exc
+            if candidate_id not in allowed:
+                raise InternalReadBackendUnavailable(
+                    "database candidate evidence satisfaction escaped the requested scope"
+                )
+            values.setdefault(candidate_id, set()).add(risk_code)
+        return {
+            candidate_id: frozenset(codes) for candidate_id, codes in values.items()
+        }
+
+    @staticmethod
+    def _candidate(
+        row: Mapping[str, object],
+        *,
+        satisfied_review_risk_codes: frozenset[ReviewRiskCode] = frozenset(),
+    ) -> CandidateProjection:
         try:
             value = dict(row)
             value["status"] = CandidateStatus(cast(str, value["status"]))
@@ -1040,6 +1113,7 @@ class DatabaseInternalReadService:
                     source_system=source_projection.source_system,
                     category_code=cast(str | None, value.get("category_code")),
                     summary=cast(str, value["summary"]),
+                    satisfied_codes=satisfied_review_risk_codes,
                 )
             )
             value["review_summary"] = ReviewSummary.model_validate(

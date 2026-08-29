@@ -74,8 +74,10 @@ Accounts merely referenced as a payment method or same-holder counterparty are r
   balance settlement, not a second expense. Until the complete credit statement and repayment
   account statement are supplied, those rows stay in evidence-required review.
 - Every hotel-platform settlement or withdrawal must be linked to the corresponding receiving-bank
-  credit. A clear OCR read is not enough to approve it; an unmatched payout remains in the
-  evidence-required queue.
+  credit. The match must be one-to-one on exact amount, platform/payment-provider clue, and a bank
+  credit dated zero to seven days after the settlement period. A clear OCR read is not enough to
+  approve it; an unmatched payout remains in the evidence-required queue. A successful link only
+  removes that material reminder and does not approve or post either candidate.
 - A suspected same-holder transfer with only one side present goes to `待补佐证`.
 
 ## Workbook review surface
@@ -108,6 +110,8 @@ descriptions. Those belong to the evidence view, not the review decision surface
 - the source totals equal the included rows plus evidence-only rows after economic-transaction
   merging;
 - every `materialsNeeded` item names a period, count, requested evidence, priority, and status.
+- the hotel cutover sidecar replaces only uniquely corresponding weekly summaries, never reuses a
+  bank credit, and leaves every unmatched OCR or legacy hotel candidate in risk review.
 
 ## Least-privilege production import
 

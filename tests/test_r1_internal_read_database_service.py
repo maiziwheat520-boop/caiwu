@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ledgerbridge.artifacts import ArtifactStore, storage_key_for_digest
+from ledgerbridge.candidate_contract import ReviewRiskCode
 from ledgerbridge.crypto import SecretStreamCipher, _parse_envelope
 from ledgerbridge.encrypted_artifacts import EncryptedArtifactStore
 from ledgerbridge.internal_read_contract import (
@@ -55,6 +56,7 @@ class _Session:
         reconciliation_row: dict[str, Any] | None = None,
         ledger_rows: list[dict[str, Any]] | None = None,
         evidence_row: dict[str, Any] | None = None,
+        satisfaction_rows: list[dict[str, Any]] | None = None,
         fail: bool = False,
     ) -> None:
         self.candidate_row = candidate_row
@@ -62,6 +64,7 @@ class _Session:
         self.reconciliation_row = reconciliation_row
         self.ledger_rows = ledger_rows or []
         self.evidence_row = evidence_row
+        self.satisfaction_rows = satisfaction_rows or []
         self.fail = fail
         self.statements: list[str] = []
 
@@ -80,6 +83,8 @@ class _Session:
             return _Result([{"sequence": 7, "hash": b"h" * 32}])
         if "list_candidates_as_of" in sql:
             return _Result(self.candidate_rows)
+        if "list_candidate_evidence_satisfactions" in sql:
+            return _Result(self.satisfaction_rows)
         if "get_reconciliation_as_of" in sql:
             return _Result([] if self.reconciliation_row is None else [self.reconciliation_row])
         if "get_ledger_summary_as_of" in sql:
@@ -175,6 +180,36 @@ def test_database_candidate_reader_uses_horizon_and_scoped_function() -> None:
     assert any("current_audit_horizon" in statement for statement in session.statements)
     assert any("list_candidates_as_of" in statement for statement in session.statements)
     assert all("public." not in statement for statement in session.statements)
+
+
+def test_database_candidate_reader_applies_audited_risk_satisfaction() -> None:
+    candidate = SyntheticInternalReadService()._fixture.candidates[1]
+    row = candidate.model_dump()
+    row["entity_ref"] = ENTITY
+    row["business_unit_ref"] = "unit-demo-a"
+    row["source"] = {
+        **row["source"],
+        "source_system": "hotel_bill_ocr",
+    }
+    row["category_code"] = "PHOTO_RECONCILIATION"
+    row["summary"] = "OCR账单待复核: CTRIP_EBOOKING 1:2026-05-18:2026-05-24"
+    session = _Session(
+        row,
+        satisfaction_rows=[
+            {
+                "candidate_id": row["candidate_ref"],
+                "risk_code": ReviewRiskCode.HOTEL_PAYOUT_STATEMENT_REQUIRED.value,
+            }
+        ],
+    )
+
+    page = _service(session).list_candidates(_principal())
+
+    assert page.items[0].review_risks == ()
+    assert any(
+        "list_candidate_evidence_satisfactions" in statement
+        for statement in session.statements
+    )
 
 
 def test_database_candidate_reader_rejects_entity_scope_drift() -> None:
