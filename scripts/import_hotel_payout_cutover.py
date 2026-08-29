@@ -14,6 +14,7 @@ from ledgerbridge.hotel_payout_cutover import import_hotel_payout_cutover
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-manifest", type=Path, required=True)
+    parser.add_argument("--prepared-manifest", type=Path, required=True)
     parser.add_argument("--cutover-manifest", type=Path, required=True)
     args = parser.parse_args()
     database_url = os.environ.get("LEDGERBRIDGE_IMPORT_DATABASE_URL")
@@ -24,6 +25,7 @@ def main() -> int:
         result = import_hotel_payout_cutover(
             engine,
             source_manifest_path=args.source_manifest.resolve(),
+            prepared_manifest_path=args.prepared_manifest.resolve(),
             cutover_manifest_path=args.cutover_manifest.resolve(),
         )
     finally:

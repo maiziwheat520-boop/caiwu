@@ -1,9 +1,9 @@
 """Audited cutover from weekly hotel summaries to OCR payout candidates.
 
 The cutover is deliberately separate from the original controlled batch.  It
-reuses already-encrypted evidence, ignores only weekly candidates replaced by
-more precise OCR rows, and records one-to-one bank-credit evidence links.  It
-never confirms a candidate or posts a ledger entry.
+registers prepared encrypted evidence when needed, ignores only weekly candidates
+replaced by more precise OCR rows, and records one-to-one bank-credit evidence
+links.  It never confirms a candidate or posts a ledger entry.
 """
 
 from __future__ import annotations
@@ -25,8 +25,12 @@ from sqlalchemy.engine import Connection, Engine
 from ledgerbridge.controlled_import import (
     ControlledImportError,
     ImportCandidate,
+    PreparedManifest,
     SourceManifest,
     _insert_candidate,
+    _insert_dimensions,
+    _insert_evidence,
+    load_prepared_manifest,
     load_source_manifest,
 )
 
@@ -154,13 +158,17 @@ def import_hotel_payout_cutover(
     engine: Engine,
     *,
     source_manifest_path: Path,
+    prepared_manifest_path: Path,
     cutover_manifest_path: Path,
 ) -> HotelPayoutCutoverResult:
     source, source_raw = load_source_manifest(source_manifest_path)
+    prepared, prepared_raw = load_prepared_manifest(prepared_manifest_path)
     cutover, cutover_raw = load_hotel_payout_cutover_manifest(cutover_manifest_path)
     source_digest = hashlib.sha256(source_raw).hexdigest()
+    prepared_digest = hashlib.sha256(prepared_raw).digest()
     if source_digest != cutover.source_manifest_sha256:
         raise HotelPayoutCutoverError("cutover source manifest digest does not match")
+    _validate_prepared_source(source, prepared, source_digest)
     if (
         source.entity.entity_ref != cutover.entity_ref
         or source.business_unit.business_unit_ref != cutover.business_unit_ref
@@ -175,7 +183,8 @@ def import_hotel_payout_cutover(
     with engine.begin() as connection:
         receipt = connection.execute(
             text(
-                "SELECT manifest_sha256, source_manifest_sha256, ignored_candidate_count, "
+                "SELECT manifest_sha256, source_manifest_sha256, prepared_manifest_sha256, "
+                "ignored_candidate_count, "
                 "imported_candidate_count, link_count, audit_horizon_sequence, "
                 "audit_horizon_hash FROM internal_import.hotel_payout_cutover_receipt "
                 "WHERE cutover_ref = :cutover"
@@ -186,6 +195,7 @@ def import_hotel_payout_cutover(
             expected = (
                 bytes(receipt["manifest_sha256"]) == manifest_sha
                 and bytes(receipt["source_manifest_sha256"]) == source_sha
+                and bytes(receipt["prepared_manifest_sha256"]) == prepared_digest
                 and receipt["ignored_candidate_count"] == len(cutover.replacements)
                 and receipt["imported_candidate_count"] == len(ocr_candidates)
                 and receipt["link_count"] == len(cutover.evidence_links)
@@ -194,12 +204,18 @@ def import_hotel_payout_cutover(
                 raise HotelPayoutCutoverError("hotel payout cutover receipt conflicts")
             return _result_from_receipt(cutover.cutover_ref, receipt, replayed=True)
 
-        _preflight_cutover(connection, source, ocr_candidates, cutover)
+        missing_evidence = _preflight_cutover(
+            connection, source, prepared, ocr_candidates, cutover
+        )
+        _insert_dimensions(connection, prepared)
+        prepared_evidence = {item.evidence_ref: item for item in prepared.evidence}
+        for evidence_ref in sorted(missing_evidence, key=str):
+            _insert_evidence(connection, prepared, prepared_evidence[evidence_ref])
         categories = {item.code: item for item in source.categories}
         for candidate in ocr_candidates:
             _insert_candidate(
                 connection,
-                source,  # Source evidence is sufficient because blobs already exist.
+                source,
                 categories[candidate.category_code],
                 candidate,
             )
@@ -215,15 +231,18 @@ def import_hotel_payout_cutover(
             text(
                 "INSERT INTO internal_import.hotel_payout_cutover_receipt "
                 "(cutover_ref, manifest_sha256, source_manifest_sha256, "
+                "prepared_manifest_sha256, "
                 "ignored_candidate_count, imported_candidate_count, link_count, "
                 "audit_horizon_sequence, audit_horizon_hash) VALUES "
-                "(:cutover, :manifest_sha, :source_sha, :ignored, :imported, :links, "
+                "(:cutover, :manifest_sha, :source_sha, :prepared_sha, "
+                ":ignored, :imported, :links, "
                 ":sequence, :hash)"
             ),
             {
                 "cutover": cutover.cutover_ref,
                 "manifest_sha": manifest_sha,
                 "source_sha": source_sha,
+                "prepared_sha": prepared_digest,
                 "ignored": len(cutover.replacements),
                 "imported": len(ocr_candidates),
                 "links": len(cutover.evidence_links),
@@ -255,6 +274,35 @@ def _resolve_ocr_candidates(
     return values
 
 
+def _validate_prepared_source(
+    source: SourceManifest,
+    prepared: PreparedManifest,
+    source_digest: str,
+) -> None:
+    if prepared.source_manifest_sha256 != source_digest:
+        raise HotelPayoutCutoverError("prepared manifest belongs to another source")
+    if (
+        prepared.batch_ref != source.batch_ref
+        or prepared.entity != source.entity
+        or prepared.business_unit != source.business_unit
+        or prepared.categories != source.categories
+        or prepared.candidates != source.candidates
+    ):
+        raise HotelPayoutCutoverError("prepared manifest content conflicts with source")
+    source_evidence = {item.evidence_ref: item for item in source.evidence}
+    if set(source_evidence) != {item.evidence_ref for item in prepared.evidence}:
+        raise HotelPayoutCutoverError("prepared evidence set conflicts with source")
+    for item in prepared.evidence:
+        expected = source_evidence[item.evidence_ref]
+        if (
+            item.display_name != expected.display_name
+            or item.declared_media_type != expected.declared_media_type
+            or item.plaintext_sha256 != expected.plaintext_sha256
+            or item.plaintext_size != expected.plaintext_size
+        ):
+            raise HotelPayoutCutoverError("prepared evidence identity conflicts with source")
+
+
 def _validate_manifest_relations(
     source_candidates: dict[UUID, ImportCandidate],
     ocr_candidates: tuple[ImportCandidate, ...],
@@ -276,9 +324,10 @@ def _validate_manifest_relations(
 def _preflight_cutover(
     connection: Connection,
     source: SourceManifest,
+    prepared: PreparedManifest,
     ocr_candidates: tuple[ImportCandidate, ...],
     cutover: HotelPayoutCutoverManifest,
-) -> None:
+) -> set[UUID]:
     existing_new = connection.execute(
         text("SELECT count(*) FROM public.candidate WHERE id = ANY(:ids)"),
         {"ids": [item.candidate_ref for item in ocr_candidates]},
@@ -296,8 +345,9 @@ def _preflight_cutover(
     ).mappings()
     evidence_by_ref = {row["evidence_ref"]: row for row in evidence_rows}
     source_evidence = {item.evidence_ref: item for item in source.evidence}
-    if set(evidence_by_ref) != evidence_refs:
-        raise HotelPayoutCutoverError("OCR source evidence is not already imported")
+    prepared_evidence = {item.evidence_ref: item for item in prepared.evidence}
+    if not evidence_refs <= set(prepared_evidence):
+        raise HotelPayoutCutoverError("OCR source evidence is absent from prepared import")
     for evidence_ref, row in evidence_by_ref.items():
         expected = source_evidence[evidence_ref]
         if (
@@ -328,6 +378,7 @@ def _preflight_cutover(
             or row["amount_minor"] != link.amount_minor
         ):
             raise HotelPayoutCutoverError("bank evidence candidate does not match cutover")
+    return evidence_refs - set(evidence_by_ref)
 
 
 def _current_candidate_row(

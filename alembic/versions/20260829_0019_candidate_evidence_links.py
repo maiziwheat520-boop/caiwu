@@ -87,6 +87,7 @@ def upgrade() -> None:
         sa.Column("cutover_ref", UUID, nullable=False),
         sa.Column("manifest_sha256", sa.LargeBinary(32), nullable=False),
         sa.Column("source_manifest_sha256", sa.LargeBinary(32), nullable=False),
+        sa.Column("prepared_manifest_sha256", sa.LargeBinary(32), nullable=False),
         sa.Column("ignored_candidate_count", sa.Integer(), nullable=False),
         sa.Column("imported_candidate_count", sa.Integer(), nullable=False),
         sa.Column("link_count", sa.Integer(), nullable=False),
@@ -101,6 +102,7 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "octet_length(manifest_sha256) = 32 AND "
             "octet_length(source_manifest_sha256) = 32 AND "
+            "octet_length(prepared_manifest_sha256) = 32 AND "
             "octet_length(audit_horizon_hash) = 32",
             name="hotel_payout_cutover_receipt_digest_lengths",
         ),
