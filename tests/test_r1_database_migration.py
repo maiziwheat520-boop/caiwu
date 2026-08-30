@@ -99,6 +99,11 @@ INTERNAL_READ_FUNCTION_IDENTITIES = {
     ),
 }
 RECEIPT_FUNCTION = "append_internal_evidence_read_audit"
+READER_FUNCTIONS = frozenset(INTERNAL_READ_FUNCTIONS) - {
+    RECEIPT_FUNCTION,
+    "render_candidate_event",
+    "render_candidate_revision",
+}
 RECEIPT_CALL_SQL = """
 SELECT internal_read.append_internal_evidence_read_audit(
     CAST(:operation_id AS uuid),
@@ -3287,7 +3292,7 @@ def test_r1_internal_read_objects_are_fixed_owner_security_definer_and_fail_clos
                     text("SELECT has_function_privilege('ledgerbridge_reader', :oid, 'EXECUTE')"),
                     {"oid": function_oid},
                 ).scalar_one()
-            ) is (function_name != RECEIPT_FUNCTION)
+            ) is (function_name in READER_FUNCTIONS)
             for role_name in (
                 "ledgerbridge_api",
                 "ledgerbridge_worker",
