@@ -1,0 +1,268 @@
+openapi: 3.1.0
+info:
+  title: LedgerBridge Original Reconciliation Read Contract
+  version: ledgerbridge.original-reconciliation.v1
+  description: >-
+    Read-only projection of one deployment-selected private legacy layout. Money
+    is signed integer CNY minor units. Unknown facts remain null or GAP; callers
+    must not infer missing balances, mappings, or POSTED ledger totals.
+servers:
+  - url: https://ledgerbridge-core.invalid
+security:
+  - workloadMtls: []
+paths:
+  /internal/v1/original-reconciliations/{month}:
+    get:
+      operationId: getOriginalReconciliation
+      x-ledgerbridge-capabilities: [reconciliation:read, candidate:read]
+      x-ledgerbridge-reject-unknown-query: true
+      parameters:
+        - name: month
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/AccountingMonth"
+        - name: entity_ref
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: business_unit
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+      responses:
+        "200":
+          description: Authorized fixed-grid projection for the configured layout version
+          headers:
+            Cache-Control:
+              required: true
+              schema:
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OriginalReconciliationProjection"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
+components:
+  securitySchemes:
+    workloadMtls:
+      type: mutualTLS
+  responses:
+    Problem:
+      description: Closed LedgerBridge problem contract
+      headers:
+        Cache-Control:
+          required: true
+          schema:
+            const: no-store
+      content:
+        application/problem+json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [type, title, status, code]
+            properties:
+              type: {type: string}
+              title: {type: string}
+              status: {type: integer}
+              code: {type: string}
+  schemas:
+    AccountingMonth:
+      type: string
+      pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$'
+    MoneyMinor:
+      type: integer
+      minimum: -9007199254740991
+      maximum: 9007199254740991
+    OriginalReconciliationProjection:
+      type: object
+      additionalProperties: false
+      required:
+        - contract_version
+        - taxonomy_version
+        - month
+        - scope
+        - layout_version
+        - mapping_version
+        - columns
+        - rows
+        - totals
+        - pending_review_count
+        - missing_material_count
+        - unmapped_confirmed_count
+        - confirmed_pending_posting_count
+        - posted_ledger_complete
+        - projection_gaps
+        - sources
+        - is_complete
+      properties:
+        contract_version:
+          const: ledgerbridge.original-reconciliation.v1
+        taxonomy_version:
+          const: ledgerbridge.financial-foundation-blocker-taxonomy.v1
+        month:
+          $ref: "#/components/schemas/AccountingMonth"
+        scope:
+          type: object
+          additionalProperties: false
+          required: [entity_ref, business_unit_ref]
+          properties:
+            entity_ref: {type: string, format: uuid}
+            business_unit_ref: {type: string, minLength: 1, maxLength: 100}
+        layout_version: {type: string, minLength: 1, maxLength: 100}
+        mapping_version: {type: string, minLength: 1, maxLength: 100}
+        columns:
+          type: array
+          minItems: 13
+          maxItems: 13
+          prefixItems:
+            - {$ref: "#/components/schemas/ColumnA"}
+            - {$ref: "#/components/schemas/ColumnB"}
+            - {$ref: "#/components/schemas/ColumnC"}
+            - {$ref: "#/components/schemas/ColumnD"}
+            - {$ref: "#/components/schemas/ColumnE"}
+            - {$ref: "#/components/schemas/ColumnF"}
+            - {$ref: "#/components/schemas/ColumnG"}
+            - {$ref: "#/components/schemas/ColumnH"}
+            - {$ref: "#/components/schemas/ColumnI"}
+            - {$ref: "#/components/schemas/ColumnJ"}
+            - {$ref: "#/components/schemas/ColumnK"}
+            - {$ref: "#/components/schemas/ColumnL"}
+            - {$ref: "#/components/schemas/ColumnM"}
+        rows:
+          type: array
+          minItems: 40
+          maxItems: 40
+          items:
+            $ref: "#/components/schemas/Row"
+        totals:
+          $ref: "#/components/schemas/Totals"
+        pending_review_count: {type: integer, minimum: 0}
+        missing_material_count: {type: integer, minimum: 0}
+        unmapped_confirmed_count: {type: integer, minimum: 0}
+        confirmed_pending_posting_count: {type: integer, minimum: 0}
+        posted_ledger_complete: {type: boolean}
+        projection_gaps:
+          type: array
+          uniqueItems: true
+          items:
+            enum: [MISSING_TIME_GRANULARITY, MISSING_BUSINESS_UNIT_ATTRIBUTION]
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/Source"
+        is_complete: {type: boolean}
+    Column:
+      type: object
+      additionalProperties: false
+      required: [column, ordinal, role]
+      properties:
+        column: {enum: [A, B, C, D, E, F, G, H, I, J, K, L, M]}
+        ordinal: {type: integer, minimum: 1, maximum: 13}
+        role: {enum: [MAIN, SPACER, DETAIL]}
+    ColumnA: {$ref: "#/components/schemas/Column"}
+    ColumnB: {$ref: "#/components/schemas/Column"}
+    ColumnC: {$ref: "#/components/schemas/Column"}
+    ColumnD: {$ref: "#/components/schemas/Column"}
+    ColumnE: {$ref: "#/components/schemas/Column"}
+    ColumnF: {$ref: "#/components/schemas/Column"}
+    ColumnG: {$ref: "#/components/schemas/Column"}
+    ColumnH: {$ref: "#/components/schemas/Column"}
+    ColumnI: {$ref: "#/components/schemas/Column"}
+    ColumnJ: {$ref: "#/components/schemas/Column"}
+    ColumnK: {$ref: "#/components/schemas/Column"}
+    ColumnL: {$ref: "#/components/schemas/Column"}
+    ColumnM: {$ref: "#/components/schemas/Column"}
+    Row:
+      type: object
+      additionalProperties: false
+      required: [row_number, cells]
+      properties:
+        row_number: {type: integer, minimum: 1, maximum: 40}
+        cells:
+          type: array
+          minItems: 13
+          maxItems: 13
+          items:
+            $ref: "#/components/schemas/Cell"
+    Cell:
+      type: object
+      additionalProperties: false
+      required:
+        [coordinate, column, row_number, kind, label, amount_minor, currency, gap_code, source_fact_refs]
+      properties:
+        coordinate: {type: string, pattern: '^[A-M](?:[1-9]|[1-3][0-9]|40)$'}
+        column: {enum: [A, B, C, D, E, F, G, H, I, J, K, L, M]}
+        row_number: {type: integer, minimum: 1, maximum: 40}
+        kind: {enum: [BLANK, LABEL, AMOUNT, GAP]}
+        label: {type: [string, "null"], maxLength: 200}
+        amount_minor:
+          oneOf:
+            - {$ref: "#/components/schemas/MoneyMinor"}
+            - {type: "null"}
+        currency: {enum: [CNY, null]}
+        gap_code:
+          enum:
+            - MISSING_LEGACY_SLOT_MAPPING
+            - MISSING_BALANCE_MAPPING
+            - MISSING_ECONOMIC_EFFECT
+            - POSTED_LEDGER_UNAVAILABLE
+            - null
+        source_fact_refs:
+          type: array
+          items: {type: string, minLength: 1, maxLength: 200}
+    Totals:
+      type: object
+      additionalProperties: false
+      required:
+        - posted_income_minor
+        - posted_expense_minor
+        - posted_profit_minor
+        - opening_balance_minor
+        - closing_balance_minor
+        - mapped_cell_count
+        - confirmed_candidate_amount_minor
+        - posted_amount_minor
+        - currency
+      properties:
+        posted_income_minor:
+          oneOf: [{$ref: "#/components/schemas/MoneyMinor"}, {type: "null"}]
+        posted_expense_minor:
+          oneOf: [{$ref: "#/components/schemas/MoneyMinor"}, {type: "null"}]
+        posted_profit_minor:
+          oneOf: [{$ref: "#/components/schemas/MoneyMinor"}, {type: "null"}]
+        opening_balance_minor:
+          oneOf: [{$ref: "#/components/schemas/MoneyMinor"}, {type: "null"}]
+        closing_balance_minor:
+          oneOf: [{$ref: "#/components/schemas/MoneyMinor"}, {type: "null"}]
+        mapped_cell_count: {type: integer, minimum: 0, maximum: 520}
+        confirmed_candidate_amount_minor: {$ref: "#/components/schemas/MoneyMinor"}
+        posted_amount_minor:
+          oneOf: [{$ref: "#/components/schemas/MoneyMinor"}, {type: "null"}]
+        currency: {const: CNY}
+    Source:
+      type: object
+      additionalProperties: false
+      required:
+        [source_kind, source_system, source_label, fact_count, mapped_fact_count, amount_minor]
+      properties:
+        source_kind: {enum: [CONFIRMED_CANDIDATE, ACCOUNT_STATEMENT, POSTED_LEDGER]}
+        source_system: {type: string, minLength: 1, maxLength: 100}
+        source_label: {type: [string, "null"], maxLength: 200}
+        fact_count: {type: integer, minimum: 1}
+        mapped_fact_count: {type: integer, minimum: 0}
+        amount_minor: {$ref: "#/components/schemas/MoneyMinor"}
