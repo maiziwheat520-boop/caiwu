@@ -8,6 +8,7 @@ import type {
   CandidateDecision,
   CandidateDetail,
   CandidateListResponse,
+  CompanyReportsResponse,
   ConnectionStatus,
   EvidenceUnlockResult,
   EvidencePreview,
@@ -259,6 +260,8 @@ export const api = {
   }),
 
   getSession: () => requestJson<Session>('/api/v1/session'),
+
+  getCompanyReports: () => requestJson<CompanyReportsResponse>('/api/v1/company-reports'),
 
   listCandidates: ({ status, cursor }: { status?: string; cursor?: string } = {}) => {
     const query = new URLSearchParams()

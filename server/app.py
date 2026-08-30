@@ -265,6 +265,27 @@ class SyntheticState:
         next_offset = offset + len(page)
         return {"items": page, "next_cursor": str(next_offset) if next_offset < len(items) else None}
 
+    def company_reports(self, from_month: str, to_month: str) -> dict[str, object]:
+        return {
+            "contract_version": "ledgerbridge.company-reports-bff.v1",
+            "from_month": from_month,
+            "to_month": to_month,
+            "layers": [
+                {
+                    "contract_version": "ledgerbridge.company-report.v1",
+                    "basis": basis,
+                    "from_month": from_month,
+                    "to_month": to_month,
+                    "items": [],
+                }
+                for basis in (
+                    "CONFIRMED_CANDIDATE",
+                    "ACCOUNT_STATEMENT",
+                    "POSTED_LEDGER",
+                )
+            ],
+        }
+
     def reconciliation(self, month: str) -> dict[str, object]:
         if month != SYNTHETIC_RECONCILIATION["accounting_month"]:
             return {"accounting_month": month, "revision": 1, "ready": True, "blockers": [], "business_units": []}
@@ -817,6 +838,22 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 )
                 return
             self._send_json(200, state.accounting_dimensions())
+            return
+        if path == "/api/v1/company-reports":
+            if query:
+                self._send_json(
+                    400,
+                    _problem(
+                        400,
+                        "INVALID_COMPANY_REPORT_QUERY",
+                        "公司报表范围由当前授权会话决定",
+                    ),
+                )
+                return
+            now = datetime.now(timezone.utc)
+            to_month = now.strftime("%Y-%m")
+            from_month = f"{now.year:04d}-01"
+            self._send_json(200, state.company_reports(from_month, to_month))
             return
         if path == "/api/v1/candidates":
             params = parse_qs(query, keep_blank_values=True)

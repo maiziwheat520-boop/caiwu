@@ -237,6 +237,87 @@ const notReadyPayrollResponses: Record<string, unknown> = {
   }),
 }
 
+const reportBases = ['CONFIRMED_CANDIDATE', 'ACCOUNT_STATEMENT', 'POSTED_LEDGER'] as const
+type TestReportBasis = typeof reportBases[number]
+
+function reportMetrics(basis: TestReportBasis, posted = false) {
+  if (basis === 'CONFIRMED_CANDIDATE') return {
+    basis,
+    confirmed_positive_minor: 0,
+    confirmed_negative_minor: 0,
+    confirmed_net_minor: 0,
+    confirmed_count: 61,
+    source_count: 61,
+  }
+  if (basis === 'ACCOUNT_STATEMENT') return {
+    basis,
+    cash_inflow_minor: 0,
+    cash_outflow_minor: 0,
+    net_cash_flow_minor: 0,
+    confirmed_transaction_count: 0,
+    statement_count: 0,
+  }
+  return {
+    basis,
+    revenue_minor: posted ? 800000 : 0,
+    expense_minor: posted ? 235000 : 0,
+    profit_minor: posted ? 565000 : 0,
+    posted_entry_count: posted ? 3 : 0,
+    source_count: posted ? 2 : 0,
+  }
+}
+
+function reportAggregate(basis: TestReportBasis, posted = false) {
+  return {
+    metrics: reportMetrics(basis, posted),
+    pending_review_count: basis === 'CONFIRMED_CANDIDATE' ? 146 : 0,
+    attribution_pending_count: basis === 'CONFIRMED_CANDIDATE' ? 61 : 0,
+    missing_material_count: null,
+    taxonomy_version: null,
+    balance: {
+      balance_basis: 'UNAVAILABLE',
+      opening_balance_minor: null,
+      closing_balance_minor: null,
+      gap: 'AUTHORITATIVE_BALANCE_UNAVAILABLE',
+    },
+  }
+}
+
+function reportCompany(basis: TestReportBasis, posted = false) {
+  return {
+    company_ref: '10000000-0000-4000-8000-000000000001',
+    company_name: '演示公司',
+    currency: 'CNY',
+    business_unit_breakdown_status: 'AVAILABLE',
+    ...reportAggregate(basis, posted),
+    months: [{
+      month: '2026-08',
+      ...reportAggregate(basis, posted),
+      business_unit_breakdown_status: 'AVAILABLE',
+      business_units: [{
+        business_unit_ref: 'unit-demo-a',
+        business_unit_label: '演示门店',
+        ...reportAggregate(basis, posted),
+      }],
+    }],
+  }
+}
+
+function companyReports(withCompany = false, posted = false) {
+  return {
+    contract_version: 'ledgerbridge.company-reports-bff.v1',
+    from_month: '2026-01',
+    to_month: '2026-08',
+    layers: reportBases.map((basis) => ({
+      contract_version: 'ledgerbridge.company-report.v1',
+      basis,
+      from_month: '2026-01',
+      to_month: '2026-08',
+      items: withCompany ? [reportCompany(basis, posted && basis === 'POSTED_LEDGER')] : [],
+    })),
+  }
+}
+
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -265,6 +346,8 @@ function installFetch(options: {
   failCandidateDetail?: boolean
   candidateDetails?: Record<string, ApiCandidate>
   accountingDimensions?: AccountingDimensions
+  companyReportResponse?: unknown
+  failCompanyReportsOnce?: boolean
 } = {}) {
   const {
     items = candidates,
@@ -319,9 +402,12 @@ function installFetch(options: {
     failCandidateDetail = false,
     candidateDetails = {},
     accountingDimensions,
+    companyReportResponse = companyReports(),
+    failCompanyReportsOnce = false,
   } = options
   let shouldFailSession = failSessionOnce
   let decisionSaved = false
+  let shouldFailCompanyReports = failCompanyReportsOnce
   const unlockedSources = new Set<string>()
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input)
@@ -367,6 +453,13 @@ function installFetch(options: {
       return response(payrollVerifyResult)
     }
     if (url in payrollResponses) return response(payrollResponses[url])
+    if (url === '/api/v1/company-reports') {
+      if (shouldFailCompanyReports) {
+        shouldFailCompanyReports = false
+        return response({ title: '公司报表暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
+      }
+      return response(companyReportResponse)
+    }
     if (url === '/api/v1/candidates' || url.startsWith('/api/v1/candidates?')) {
       if (failCandidateRefreshAfterUnlock && unlockedSources.size > 0) {
         return response({ title: '候选刷新暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
@@ -1456,7 +1549,93 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.getByRole('heading', { name: '2026 年 8 月对账草稿' })).toBeInTheDocument()
     fireEvent.click(screen.getAllByRole('button', { name: /各公司报表/ })[0])
     expect(screen.getByRole('heading', { name: '各公司报表' })).toBeInTheDocument()
-    expect(screen.getByText('按公司主体汇总将在后续接入')).toBeInTheDocument()
+    expect(await screen.findByText('当前期间没有可展示的公司报表')).toBeInTheDocument()
+  })
+
+  it('shows posted totals, source layers, months, and authoritative business units separately', async () => {
+    window.history.replaceState({}, '', '/company-reports')
+    installFetch({ runtimeMode: 'core-backed', companyReportResponse: companyReports(true, true) })
+
+    renderApp()
+
+    expect(await screen.findByRole('heading', { name: '演示公司' })).toBeInTheDocument()
+    expect(screen.getAllByText('¥8,000.00').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('¥2,350.00').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('¥5,650.00').length).toBeGreaterThan(0)
+    expect(screen.getByText('已确认来源 61 条')).toBeInTheDocument()
+    expect(screen.getByText('账户流水 0 条')).toBeInTheDocument()
+    expect(screen.getByText('正式入账 3 条')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '2026 年 8 月' })).toBeInTheDocument()
+    expect(screen.getByText('演示门店')).toBeInTheDocument()
+    expect(screen.getByText('余额基础尚未建立')).toBeInTheDocument()
+  })
+
+  it('keeps confirmed attribution and review queues outside zero posted totals', async () => {
+    window.history.replaceState({}, '', '/company-reports')
+    installFetch({ runtimeMode: 'core-backed', companyReportResponse: companyReports(true) })
+
+    renderApp()
+
+    expect(await screen.findByRole('heading', { name: '演示公司' })).toBeInTheDocument()
+    expect(screen.getByText('61 条已确认来源待账户或经济性质归属')).toBeInTheDocument()
+    expect(screen.getByText('146 条来源待审核')).toBeInTheDocument()
+    expect(screen.getAllByText('¥0.00').length).toBeGreaterThanOrEqual(3)
+    expect(screen.getByText('正式入账 0 条')).toBeInTheDocument()
+  })
+
+  it('distinguishes unavailable business-unit breakdowns without backfilling names', async () => {
+    window.history.replaceState({}, '', '/company-reports')
+    const reports = companyReports(true, true)
+    const statementMonth = reports.layers[1].items[0].months[0] as unknown as {
+      business_unit_breakdown_status: string
+      business_units: unknown
+    }
+    statementMonth.business_unit_breakdown_status = 'UNAVAILABLE_ATTRIBUTION_PENDING'
+    statementMonth.business_units = null
+    reports.layers[1].items[0].business_unit_breakdown_status = 'UNAVAILABLE_ATTRIBUTION_PENDING'
+    const postedMonth = reports.layers[2].items[0].months[0] as unknown as {
+      business_unit_breakdown_status: string
+      business_units: unknown
+    }
+    postedMonth.business_unit_breakdown_status = 'UNAVAILABLE_MISSING_SNAPSHOT'
+    postedMonth.business_units = null
+    reports.layers[2].items[0].business_unit_breakdown_status = 'UNAVAILABLE_MISSING_SNAPSHOT'
+    installFetch({ runtimeMode: 'core-backed', companyReportResponse: reports })
+
+    renderApp()
+
+    expect(await screen.findByRole('heading', { name: '演示公司' })).toBeInTheDocument()
+    expect(screen.getByText('账户流水的业务单元归属待补；公司级现金流仍保留。')).toBeInTheDocument()
+    expect(screen.getByText('历史业务单元快照缺失；未使用当前维度名称回填。')).toBeInTheDocument()
+    expect(screen.queryByText('演示门店')).not.toBeInTheDocument()
+  })
+
+  it('shows a completed empty business-unit breakdown as empty rather than unavailable', async () => {
+    window.history.replaceState({}, '', '/company-reports')
+    const reports = companyReports(true)
+    reports.layers.forEach((layer) => {
+      const month = layer.items[0].months[0]
+      month.business_unit_breakdown_status = 'EMPTY'
+      month.business_units = []
+      layer.items[0].business_unit_breakdown_status = 'EMPTY'
+    })
+    installFetch({ runtimeMode: 'core-backed', companyReportResponse: reports })
+
+    renderApp()
+
+    expect(await screen.findByText('正式入账层的业务单元事实确认为空。')).toBeInTheDocument()
+    expect(screen.queryByText(/历史业务单元快照缺失/)).not.toBeInTheDocument()
+  })
+
+  it('retries company reports after a BFF error', async () => {
+    window.history.replaceState({}, '', '/company-reports')
+    installFetch({ failCompanyReportsOnce: true })
+
+    renderApp()
+
+    expect(await screen.findByText('公司报表层暂不可用，未显示任何 0 值。公司报表暂不可用')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    expect(await screen.findByText('当前期间没有可展示的公司报表')).toBeInTheDocument()
   })
 
   it('keeps the payroll integration status reachable and explains when the live projection is not ready', async () => {

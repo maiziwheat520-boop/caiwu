@@ -426,6 +426,58 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
 .files-panel { overflow: hidden; }
 .compact-empty { min-height: 210px; border: 0; border-radius: 0; }
 
+.company-report-empty { min-height: 360px; }
+.company-report-basis-note { display: flex; align-items: flex-start; gap: 11px; margin-bottom: 18px; padding: 14px 16px; border: 1px solid #bfd2ee; border-radius: 12px; color: #315d9c; background: #f3f8ff; }
+.company-report-basis-note svg { flex: 0 0 auto; margin-top: 1px; }
+.company-report-basis-note strong, .company-report-basis-note span { display: block; }
+.company-report-basis-note strong { color: #284e84; font-size: 13px; }
+.company-report-basis-note span { margin-top: 3px; color: #5b7090; font-size: 11px; line-height: 1.55; }
+.company-report-list { display: grid; gap: 18px; }
+.company-report-card { padding: 22px; border: 1px solid var(--line); border-radius: 16px; background: white; box-shadow: var(--shadow); }
+.company-report-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 17px; }
+.company-report-card-header h2 { margin: 0; color: #17263f; font-size: 21px; }
+.company-report-totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid #dfe6ef; border-radius: 12px; background: #dfe6ef; }
+.company-report-totals > div { padding: 16px; background: #fbfcfe; }
+.company-report-totals > div.emphasis { background: #f3f8ff; }
+.company-report-totals span, .company-report-totals strong { display: block; }
+.company-report-totals span { color: var(--muted); font-size: 11px; font-weight: 700; }
+.company-report-totals strong { margin-top: 8px; color: #17263f; font-size: 22px; font-variant-numeric: tabular-nums; }
+.company-report-layers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.company-report-layers > div { padding: 13px 14px; border: 1px solid #e1e7ef; border-radius: 10px; background: #fafbfd; }
+.company-report-layers span, .company-report-layers strong, .company-report-layers small { display: block; }
+.company-report-layers span { color: #60718a; font-size: 10px; font-weight: 800; letter-spacing: .05em; }
+.company-report-layers strong { margin-top: 6px; color: #293b55; font-size: 13px; }
+.company-report-layers small { margin-top: 4px; color: #77859a; font-size: 10px; line-height: 1.5; }
+.company-report-alert { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 10px 12px; border: 1px solid #ecd6a6; border-radius: 9px; color: #8b5b0a; background: #fff9e9; font-size: 11px; }
+.company-report-alert svg { flex: 0 0 auto; }
+.company-report-alert span { margin-left: auto; color: #846d45; }
+.company-balance-unavailable { display: flex; align-items: flex-start; gap: 10px; margin-top: 12px; padding: 12px 14px; border: 1px solid #dfe5ed; border-radius: 10px; color: #60718a; background: #f7f9fc; }
+.company-balance-unavailable svg { flex: 0 0 auto; }
+.company-balance-unavailable strong, .company-balance-unavailable span { display: block; }
+.company-balance-unavailable strong { color: #3b4d67; font-size: 12px; }
+.company-balance-unavailable span { margin-top: 3px; font-size: 10px; line-height: 1.5; }
+.company-month-list { display: grid; gap: 12px; margin-top: 20px; }
+.company-month-card { overflow: hidden; border: 1px solid #dfe6ef; border-radius: 12px; }
+.company-month-card > header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 15px 17px; border-bottom: 1px solid #e4e9f0; background: #f8fafc; }
+.company-month-card > header span { color: var(--muted); font-size: 9px; font-weight: 750; }
+.company-month-card > header h3 { margin: 3px 0 0; color: #293b55; font-size: 15px; }
+.company-month-card > header small { color: #6a7a91; font-size: 10px; }
+.company-month-totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 12px 17px; border-bottom: 1px solid #edf0f4; color: #6a7890; font-size: 10px; }
+.company-month-totals span, .company-month-totals strong { display: block; }
+.company-month-totals strong { margin-top: 4px; color: #34465f; font-size: 12px; font-variant-numeric: tabular-nums; }
+.company-breakdown-state { margin: 0; padding: 12px 17px; border-bottom: 1px solid #edf0f4; color: #66758b; background: #fafbfd; font-size: 11px; }
+.company-breakdown-state.warning { color: #885f16; background: #fff9e9; }
+.company-business-units { display: grid; gap: 8px; padding: 12px; }
+.company-business-units > article { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(0, 1.4fr); align-items: center; gap: 18px; padding: 11px 12px; border: 1px solid #e4e9f0; border-radius: 9px; background: #fcfdff; }
+.company-business-units span, .company-business-units strong { display: block; }
+.company-business-units span { color: var(--muted); font-size: 9px; }
+.company-business-units strong { margin-top: 3px; color: #34465f; font-size: 12px; }
+.company-business-units dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.company-business-units dl > div { min-width: 0; }
+.company-business-units dt { color: var(--muted); font-size: 9px; }
+.company-business-units dd { margin: 3px 0 0; overflow: hidden; color: #34465f; font-size: 11px; font-weight: 750; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.company-report-no-months { margin: 0; padding: 18px; color: var(--muted); font-size: 11px; text-align: center; }
+
 @media (max-width: 1160px) {
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .candidate-card { grid-template-columns: 115px minmax(0, 1fr) 128px; }
@@ -436,6 +488,7 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .payroll-metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .connection-card { min-height: auto; }
   .connection-card > p { min-height: auto; }
+  .company-report-layers { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 800px) {
@@ -447,6 +500,8 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .account-label { display: none; }
   .content { padding: 48px 16px 38px; }
   .notice { margin: 40px 16px -29px; }
+  .company-report-totals, .company-month-totals { grid-template-columns: 1fr; }
+  .company-business-units > article { grid-template-columns: 1fr; }
   .bottom-nav { position: fixed; inset: auto 0 0; z-index: 30; display: grid; grid-auto-columns: minmax(76px, 1fr); grid-auto-flow: column; min-height: calc(68px + env(safe-area-inset-bottom)); overflow-x: auto; padding: 7px 5px max(7px, env(safe-area-inset-bottom)); border-top: 1px solid #dce2ea; background: rgb(255 255 255 / 96%); backdrop-filter: blur(14px); }
   .bottom-nav button { display: grid; place-items: center; gap: 2px; padding: 0; border: 0; color: #596b83; background: transparent; font-size: 9px; font-weight: 650; }
   .bottom-nav button.active { color: var(--accent); }

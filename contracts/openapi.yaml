@@ -299,6 +299,28 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+  /api/v1/company-reports:
+    get:
+      operationId: getCompanyReports
+      description: >-
+        Return three isolated, authorization-scoped reporting layers for the current
+        calendar year. Browser-supplied company or date scope is rejected. Only the
+        POSTED_LEDGER layer represents formal revenue, expense, and profit.
+      responses:
+        "200":
+          description: Confirmed-source, account-statement, and posted-ledger layers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompanyReportsResponse"
+        "400":
+          description: Browser attempted to supply reporting scope
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /api/v1/candidates:
     get:
       operationId: listCandidates
@@ -1930,6 +1952,238 @@ components:
                 additionalProperties:
                   type: integer
                   format: int64
+    CompanyReportsResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, from_month, to_month, layers]
+      properties:
+        contract_version:
+          const: ledgerbridge.company-reports-bff.v1
+        from_month:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        to_month:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        layers:
+          type: array
+          minItems: 3
+          maxItems: 3
+          description: Exactly one layer for each reporting basis; layers are never added together. All three layers have the same strictly sorted company_ref set and identical company identity.
+          items:
+            $ref: "#/components/schemas/CompanyReportLayer"
+    CompanyReportLayer:
+      type: object
+      additionalProperties: false
+      required: [contract_version, basis, from_month, to_month, items]
+      properties:
+        contract_version:
+          const: ledgerbridge.company-report.v1
+        basis:
+          type: string
+          enum: [CONFIRMED_CANDIDATE, ACCOUNT_STATEMENT, POSTED_LEDGER]
+        from_month:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        to_month:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        items:
+          type: array
+          maxItems: 50
+          description: Companies are unique and strictly ascending by canonical company_ref UUID.
+          items:
+            $ref: "#/components/schemas/CompanyReportCompany"
+    CompanyReportCompany:
+      type: object
+      additionalProperties: false
+      required: [company_ref, company_name, currency, business_unit_breakdown_status, metrics, pending_review_count, attribution_pending_count, missing_material_count, taxonomy_version, balance, months]
+      properties:
+        company_ref:
+          type: string
+          format: uuid
+        company_name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        currency:
+          type: string
+          pattern: "^[A-Z]{3}$"
+        business_unit_breakdown_status:
+          type: string
+          enum: [AVAILABLE, EMPTY, UNAVAILABLE_ATTRIBUTION_PENDING, UNAVAILABLE_MISSING_SNAPSHOT]
+          description: Must exactly summarize months. No months is EMPTY; ACCOUNT_STATEMENT prioritizes attribution pending then missing snapshot; POSTED_LEDGER prioritizes missing snapshot; otherwise any AVAILABLE month yields AVAILABLE and all remaining cases yield EMPTY. CONFIRMED_CANDIDATE permits only AVAILABLE or EMPTY.
+        metrics:
+          $ref: "#/components/schemas/CompanyReportMetrics"
+        pending_review_count:
+          $ref: "#/components/schemas/SafeCount"
+        attribution_pending_count:
+          $ref: "#/components/schemas/SafeCount"
+        missing_material_count:
+          $ref: "#/components/schemas/NullableSafeCount"
+        taxonomy_version:
+          type: [string, "null"]
+          maxLength: 200
+          description: Must be non-null exactly when missing_material_count is non-null.
+        balance:
+          $ref: "#/components/schemas/UnavailableBalance"
+        months:
+          type: array
+          maxItems: 24
+          description: Months are unique and strictly ascending by YYYY-MM.
+          items:
+            $ref: "#/components/schemas/CompanyReportMonth"
+    CompanyReportMonth:
+      type: object
+      additionalProperties: false
+      required: [month, metrics, pending_review_count, attribution_pending_count, missing_material_count, taxonomy_version, balance, business_unit_breakdown_status, business_units]
+      properties:
+        month:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        metrics:
+          $ref: "#/components/schemas/CompanyReportMetrics"
+        pending_review_count:
+          $ref: "#/components/schemas/SafeCount"
+        attribution_pending_count:
+          $ref: "#/components/schemas/SafeCount"
+        missing_material_count:
+          $ref: "#/components/schemas/NullableSafeCount"
+        taxonomy_version:
+          type: [string, "null"]
+          maxLength: 200
+          description: Must be non-null exactly when missing_material_count is non-null.
+        balance:
+          $ref: "#/components/schemas/UnavailableBalance"
+        business_unit_breakdown_status:
+          type: string
+          enum: [AVAILABLE, EMPTY, UNAVAILABLE_ATTRIBUTION_PENDING, UNAVAILABLE_MISSING_SNAPSHOT]
+          description: AVAILABLE requires a non-empty sorted array; EMPTY requires an empty array. ACCOUNT_STATEMENT alone may use UNAVAILABLE_ATTRIBUTION_PENDING with null. POSTED_LEDGER alone may use UNAVAILABLE_MISSING_SNAPSHOT with null.
+        business_units:
+          type: [array, "null"]
+          maxItems: 50
+          description: When present, business units are unique and strictly ascending by business_unit_ref. Null means the declared breakdown is unavailable, never zero.
+          items:
+            $ref: "#/components/schemas/CompanyReportBusinessUnit"
+    CompanyReportBusinessUnit:
+      type: object
+      additionalProperties: false
+      required: [business_unit_ref, business_unit_label, metrics, pending_review_count, attribution_pending_count, missing_material_count, taxonomy_version, balance]
+      properties:
+        business_unit_ref:
+          type: string
+          minLength: 1
+          maxLength: 200
+        business_unit_label:
+          type: string
+          minLength: 1
+          maxLength: 200
+        metrics:
+          $ref: "#/components/schemas/CompanyReportMetrics"
+        pending_review_count:
+          $ref: "#/components/schemas/SafeCount"
+        attribution_pending_count:
+          $ref: "#/components/schemas/SafeCount"
+        missing_material_count:
+          $ref: "#/components/schemas/NullableSafeCount"
+        taxonomy_version:
+          type: [string, "null"]
+          maxLength: 200
+          description: Must be non-null exactly when missing_material_count is non-null.
+        balance:
+          $ref: "#/components/schemas/UnavailableBalance"
+    CompanyReportMetrics:
+      oneOf:
+        - $ref: "#/components/schemas/ConfirmedCandidateMetrics"
+        - $ref: "#/components/schemas/AccountStatementMetrics"
+        - $ref: "#/components/schemas/PostedLedgerMetrics"
+      discriminator:
+        propertyName: basis
+    ConfirmedCandidateMetrics:
+      type: object
+      additionalProperties: false
+      required: [basis, confirmed_positive_minor, confirmed_negative_minor, confirmed_net_minor, confirmed_count, source_count]
+      description: confirmed_net_minor must equal confirmed_positive_minor plus confirmed_negative_minor; source_count must not exceed confirmed_count.
+      properties:
+        basis:
+          const: CONFIRMED_CANDIDATE
+        confirmed_positive_minor:
+          $ref: "#/components/schemas/SafeNonnegativeMinor"
+        confirmed_negative_minor:
+          type: integer
+          minimum: -9007199254740991
+          maximum: 0
+        confirmed_net_minor:
+          $ref: "#/components/schemas/SafeSignedMinor"
+        confirmed_count:
+          $ref: "#/components/schemas/SafeCount"
+        source_count:
+          $ref: "#/components/schemas/SafeCount"
+    AccountStatementMetrics:
+      type: object
+      additionalProperties: false
+      required: [basis, cash_inflow_minor, cash_outflow_minor, net_cash_flow_minor, confirmed_transaction_count, statement_count]
+      description: net_cash_flow_minor must equal cash_inflow_minor minus cash_outflow_minor and is not profit; statement_count must not exceed confirmed_transaction_count.
+      properties:
+        basis:
+          const: ACCOUNT_STATEMENT
+        cash_inflow_minor:
+          $ref: "#/components/schemas/SafeNonnegativeMinor"
+        cash_outflow_minor:
+          $ref: "#/components/schemas/SafeNonnegativeMinor"
+        net_cash_flow_minor:
+          $ref: "#/components/schemas/SafeSignedMinor"
+        confirmed_transaction_count:
+          $ref: "#/components/schemas/SafeCount"
+        statement_count:
+          $ref: "#/components/schemas/SafeCount"
+    PostedLedgerMetrics:
+      type: object
+      additionalProperties: false
+      required: [basis, revenue_minor, expense_minor, profit_minor, posted_entry_count, source_count]
+      description: profit_minor must equal revenue_minor minus expense_minor; source_count must not exceed posted_entry_count; only this basis is a formal financial total.
+      properties:
+        basis:
+          const: POSTED_LEDGER
+        revenue_minor:
+          $ref: "#/components/schemas/SafeNonnegativeMinor"
+        expense_minor:
+          $ref: "#/components/schemas/SafeNonnegativeMinor"
+        profit_minor:
+          $ref: "#/components/schemas/SafeSignedMinor"
+        posted_entry_count:
+          $ref: "#/components/schemas/SafeCount"
+        source_count:
+          $ref: "#/components/schemas/SafeCount"
+    SafeCount:
+      type: integer
+      minimum: 0
+      maximum: 9007199254740991
+    NullableSafeCount:
+      type: [integer, "null"]
+      minimum: 0
+      maximum: 9007199254740991
+    SafeNonnegativeMinor:
+      type: integer
+      minimum: 0
+      maximum: 9007199254740991
+    SafeSignedMinor:
+      type: integer
+      minimum: -9007199254740991
+      maximum: 9007199254740991
+    UnavailableBalance:
+      type: object
+      additionalProperties: false
+      required: [balance_basis, opening_balance_minor, closing_balance_minor, gap]
+      properties:
+        balance_basis:
+          const: UNAVAILABLE
+        opening_balance_minor:
+          type: "null"
+        closing_balance_minor:
+          type: "null"
+        gap:
+          const: AUTHORITATIVE_BALANCE_UNAVAILABLE
     WorkbookDraft:
       type: object
       additionalProperties: false

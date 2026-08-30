@@ -241,6 +241,109 @@ export type Reconciliation = {
   }>
 }
 
+export type CompanyReportBasis = 'CONFIRMED_CANDIDATE' | 'ACCOUNT_STATEMENT' | 'POSTED_LEDGER'
+
+export type ConfirmedCandidateMetrics = {
+  basis: 'CONFIRMED_CANDIDATE'
+  confirmed_positive_minor: number
+  confirmed_negative_minor: number
+  confirmed_net_minor: number
+  confirmed_count: number
+  source_count: number
+}
+
+export type AccountStatementMetrics = {
+  basis: 'ACCOUNT_STATEMENT'
+  cash_inflow_minor: number
+  cash_outflow_minor: number
+  net_cash_flow_minor: number
+  confirmed_transaction_count: number
+  statement_count: number
+}
+
+export type PostedLedgerMetrics = {
+  basis: 'POSTED_LEDGER'
+  revenue_minor: number
+  expense_minor: number
+  profit_minor: number
+  posted_entry_count: number
+  source_count: number
+}
+
+export type CompanyReportMetrics =
+  | ConfirmedCandidateMetrics
+  | AccountStatementMetrics
+  | PostedLedgerMetrics
+
+export type CompanyReportBalance = {
+  balance_basis: 'UNAVAILABLE'
+  opening_balance_minor: null
+  closing_balance_minor: null
+  gap: 'AUTHORITATIVE_BALANCE_UNAVAILABLE'
+}
+
+export type CompanyReportAggregate = {
+  metrics: CompanyReportMetrics
+  pending_review_count: number
+  attribution_pending_count: number
+  missing_material_count: number | null
+  taxonomy_version: string | null
+  balance: CompanyReportBalance
+}
+
+export type CompanyReportBusinessUnit = CompanyReportAggregate & {
+  business_unit_ref: string
+  business_unit_label: string
+}
+
+export type CompanyReportBusinessUnitBreakdownStatus =
+  | 'AVAILABLE'
+  | 'EMPTY'
+  | 'UNAVAILABLE_ATTRIBUTION_PENDING'
+  | 'UNAVAILABLE_MISSING_SNAPSHOT'
+
+type CompanyReportMonthIdentity = CompanyReportAggregate & {
+  month: string
+}
+
+export type CompanyReportMonth = CompanyReportMonthIdentity & (
+  | {
+    business_unit_breakdown_status: 'AVAILABLE'
+    business_units: CompanyReportBusinessUnit[]
+  }
+  | {
+    business_unit_breakdown_status: 'EMPTY'
+    business_units: []
+  }
+  | {
+    business_unit_breakdown_status: 'UNAVAILABLE_ATTRIBUTION_PENDING' | 'UNAVAILABLE_MISSING_SNAPSHOT'
+    business_units: null
+  }
+)
+
+export type CompanyReportCompany = CompanyReportAggregate & {
+  company_ref: string
+  company_name: string
+  currency: string
+  business_unit_breakdown_status: CompanyReportBusinessUnitBreakdownStatus
+  months: CompanyReportMonth[]
+}
+
+export type CompanyReportLayer = {
+  contract_version: 'ledgerbridge.company-report.v1'
+  basis: CompanyReportBasis
+  from_month: string
+  to_month: string
+  items: CompanyReportCompany[]
+}
+
+export type CompanyReportsResponse = {
+  contract_version: 'ledgerbridge.company-reports-bff.v1'
+  from_month: string
+  to_month: string
+  layers: CompanyReportLayer[]
+}
+
 export type WorkbookDraft = {
   id: string
   accounting_month: string

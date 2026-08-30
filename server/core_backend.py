@@ -391,6 +391,36 @@ class CoreBackedState:
             "next_cursor": None,
         }
 
+    def company_reports(self, from_month: str, to_month: str) -> dict[str, object]:
+        layers = []
+        for basis in _COMPANY_REPORT_BASES:
+            query = urlencode(
+                {
+                    "from_month": from_month,
+                    "to_month": to_month,
+                    "basis": basis,
+                }
+            )
+            payload = self.client.json(
+                "GET",
+                f"/internal/v1/company-reports?{query}",
+            )
+            layers.append(
+                _company_report_layer_from_core(
+                    payload,
+                    basis,
+                    from_month,
+                    to_month,
+                )
+            )
+        _validate_company_report_layer_identities(layers)
+        return {
+            "contract_version": "ledgerbridge.company-reports-bff.v1",
+            "from_month": from_month,
+            "to_month": to_month,
+            "layers": layers,
+        }
+
     def append_decision(
         self,
         candidate_id: str,
@@ -936,6 +966,467 @@ def sqlite_contains_business_facts(path: str | Path) -> bool:
             ).fetchone()[0]:
                 return True
     return False
+
+
+_COMPANY_REPORT_BASES = (
+    "CONFIRMED_CANDIDATE",
+    "ACCOUNT_STATEMENT",
+    "POSTED_LEDGER",
+)
+_COMPANY_REPORT_ROLLUP_FIELDS = {
+    "metrics",
+    "pending_review_count",
+    "attribution_pending_count",
+    "missing_material_count",
+    "taxonomy_version",
+    "balance",
+}
+_COMPANY_REPORT_METRIC_FIELDS = {
+    "CONFIRMED_CANDIDATE": {
+        "basis",
+        "confirmed_positive_minor",
+        "confirmed_negative_minor",
+        "confirmed_net_minor",
+        "confirmed_count",
+        "source_count",
+    },
+    "ACCOUNT_STATEMENT": {
+        "basis",
+        "cash_inflow_minor",
+        "cash_outflow_minor",
+        "net_cash_flow_minor",
+        "confirmed_transaction_count",
+        "statement_count",
+    },
+    "POSTED_LEDGER": {
+        "basis",
+        "revenue_minor",
+        "expense_minor",
+        "profit_minor",
+        "posted_entry_count",
+        "source_count",
+    },
+}
+_MAX_SAFE_JSON_INTEGER = 2**53 - 1
+_COMPANY_REPORT_MONTH = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+_COMPANY_REPORT_CURRENCY = re.compile(r"^[A-Z]{3}$")
+
+
+def _validate_company_report_layer_identities(
+    layers: list[dict[str, object]],
+) -> None:
+    identities: dict[str, tuple[str, str]] = {}
+    expected_company_refs: set[str] | None = None
+    for layer in layers:
+        seen: set[str] = set()
+        for company in layer["items"]:  # type: ignore[union-attr]
+            company_ref = str(company["company_ref"])
+            identity = (str(company["company_name"]), str(company["currency"]))
+            if company_ref in seen or (
+                company_ref in identities and identities[company_ref] != identity
+            ):
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+            seen.add(company_ref)
+            identities[company_ref] = identity
+        if expected_company_refs is None:
+            expected_company_refs = seen
+        elif seen != expected_company_refs:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+
+def _company_report_layer_from_core(
+    value: dict[str, object],
+    basis: str,
+    from_month: str,
+    to_month: str,
+) -> dict[str, object]:
+    _company_report_require_exact_keys(
+        value,
+        {"contract_version", "basis", "from_month", "to_month", "items"},
+    )
+    items = value.get("items")
+    if (
+        value.get("contract_version") != "ledgerbridge.company-report.v1"
+        or value.get("basis") != basis
+        or value.get("from_month") != from_month
+        or value.get("to_month") != to_month
+        or not isinstance(items, list)
+        or len(items) > 50
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    mapped_items = [
+        _company_report_item_from_core(item, basis, from_month, to_month)
+        for item in items
+    ]
+    _company_report_require_stable_unique(mapped_items, "company_ref")
+    return {
+        "contract_version": "ledgerbridge.company-report.v1",
+        "basis": basis,
+        "from_month": from_month,
+        "to_month": to_month,
+        "items": mapped_items,
+    }
+
+
+def _company_report_item_from_core(
+    value: object,
+    basis: str,
+    from_month: str,
+    to_month: str,
+) -> dict[str, object]:
+    if not isinstance(value, dict) or not isinstance(value.get("months"), list):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    _company_report_require_exact_keys(
+        value,
+        {
+            "company_ref",
+            "company_name",
+            "currency",
+            "business_unit_breakdown_status",
+            "months",
+        }
+        | _COMPANY_REPORT_ROLLUP_FIELDS,
+    )
+    if len(value["months"]) > 24:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    months = [
+        _company_report_month_from_core(month, basis, from_month, to_month)
+        for month in value["months"]
+    ]
+    _company_report_require_stable_unique(months, "month")
+    breakdown_status = _company_report_item_breakdown_status(basis, months)
+    if value.get("business_unit_breakdown_status") != breakdown_status:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    return {
+        "company_ref": _company_report_uuid(value.get("company_ref")),
+        "company_name": _company_report_text(value.get("company_name"), maximum=200),
+        "currency": _company_report_text(
+            value.get("currency"),
+            maximum=3,
+            pattern=_COMPANY_REPORT_CURRENCY,
+        ),
+        "business_unit_breakdown_status": breakdown_status,
+        **_company_report_rollup_from_core(value, basis),
+        "months": months,
+    }
+
+
+def _company_report_month_from_core(
+    value: object,
+    basis: str,
+    from_month: str,
+    to_month: str,
+) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    _company_report_require_exact_keys(
+        value,
+        {"month", "business_unit_breakdown_status", "business_units"}
+        | _COMPANY_REPORT_ROLLUP_FIELDS,
+    )
+    breakdown_status = value.get("business_unit_breakdown_status")
+    business_units = value.get("business_units")
+    available = (
+        breakdown_status == "AVAILABLE"
+        and isinstance(business_units, list)
+        and bool(business_units)
+    )
+    empty = breakdown_status == "EMPTY" and business_units == []
+    statement_unavailable = (
+        basis == "ACCOUNT_STATEMENT"
+        and breakdown_status == "UNAVAILABLE_ATTRIBUTION_PENDING"
+        and business_units is None
+    )
+    missing_snapshot_unavailable = (
+        basis in {"ACCOUNT_STATEMENT", "POSTED_LEDGER"}
+        and breakdown_status == "UNAVAILABLE_MISSING_SNAPSHOT"
+        and business_units is None
+    )
+    if not (
+        available
+        or empty
+        or statement_unavailable
+        or missing_snapshot_unavailable
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    month = _company_report_text(
+        value.get("month"),
+        maximum=7,
+        pattern=_COMPANY_REPORT_MONTH,
+    )
+    if not from_month <= month <= to_month:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    mapped_business_units = None
+    if isinstance(business_units, list):
+        if len(business_units) > 50:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        mapped_business_units = [
+            _company_report_business_unit_from_core(business_unit, basis)
+            for business_unit in business_units
+        ]
+        _company_report_require_stable_unique(
+            mapped_business_units,
+            "business_unit_ref",
+        )
+    return {
+        "month": month,
+        **_company_report_rollup_from_core(value, basis),
+        "business_unit_breakdown_status": breakdown_status,
+        "business_units": mapped_business_units,
+    }
+
+
+def _company_report_item_breakdown_status(
+    basis: str,
+    months: list[dict[str, object]],
+) -> str:
+    if not months:
+        return "EMPTY"
+    statuses = {str(month["business_unit_breakdown_status"]) for month in months}
+    if basis == "ACCOUNT_STATEMENT" and "UNAVAILABLE_ATTRIBUTION_PENDING" in statuses:
+        return "UNAVAILABLE_ATTRIBUTION_PENDING"
+    if basis in {"ACCOUNT_STATEMENT", "POSTED_LEDGER"} and "UNAVAILABLE_MISSING_SNAPSHOT" in statuses:
+        return "UNAVAILABLE_MISSING_SNAPSHOT"
+    if "AVAILABLE" in statuses:
+        return "AVAILABLE"
+    return "EMPTY"
+
+
+def _company_report_business_unit_from_core(
+    value: object,
+    basis: str,
+) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    _company_report_require_exact_keys(
+        value,
+        {"business_unit_ref", "business_unit_label"}
+        | _COMPANY_REPORT_ROLLUP_FIELDS,
+    )
+    return {
+        "business_unit_ref": _company_report_text(
+            value.get("business_unit_ref"),
+            maximum=200,
+        ),
+        "business_unit_label": _company_report_text(
+            value.get("business_unit_label"),
+            maximum=200,
+        ),
+        **_company_report_rollup_from_core(value, basis),
+    }
+
+
+def _company_report_rollup_from_core(
+    value: dict[str, object],
+    basis: str,
+) -> dict[str, object]:
+    metrics = value.get("metrics")
+    if not isinstance(metrics, dict) or metrics.get("basis") != basis:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    _company_report_require_exact_keys(metrics, _COMPANY_REPORT_METRIC_FIELDS[basis])
+    pending_review_count = _company_report_integer(
+        value.get("pending_review_count"),
+        nonnegative=True,
+    )
+    attribution_pending_count = _company_report_integer(
+        value.get("attribution_pending_count"),
+        nonnegative=True,
+    )
+    missing_material = value.get("missing_material_count")
+    if missing_material is not None:
+        missing_material = _company_report_integer(
+            missing_material,
+            nonnegative=True,
+        )
+    taxonomy_version = value.get("taxonomy_version")
+    if taxonomy_version is not None:
+        taxonomy_version = _company_report_text(taxonomy_version, maximum=200)
+    if (missing_material is None) != (taxonomy_version is None):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    balance = value.get("balance")
+    if (
+        not isinstance(balance, dict)
+        or balance.get("balance_basis") != "UNAVAILABLE"
+        or balance.get("opening_balance_minor") is not None
+        or balance.get("closing_balance_minor") is not None
+        or balance.get("gap") != "AUTHORITATIVE_BALANCE_UNAVAILABLE"
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    _company_report_require_exact_keys(
+        balance,
+        {
+            "balance_basis",
+            "opening_balance_minor",
+            "closing_balance_minor",
+            "gap",
+        },
+    )
+    return {
+        "metrics": _company_report_metrics_from_core(metrics, basis),
+        "pending_review_count": pending_review_count,
+        "attribution_pending_count": attribution_pending_count,
+        "missing_material_count": missing_material,
+        "taxonomy_version": taxonomy_version,
+        "balance": {
+            "balance_basis": "UNAVAILABLE",
+            "opening_balance_minor": None,
+            "closing_balance_minor": None,
+            "gap": "AUTHORITATIVE_BALANCE_UNAVAILABLE",
+        },
+    }
+
+
+def _company_report_metrics_from_core(
+    value: dict[str, object],
+    basis: str,
+) -> dict[str, object]:
+    if basis == "CONFIRMED_CANDIDATE":
+        positive = _company_report_integer(
+            value.get("confirmed_positive_minor"),
+            nonnegative=True,
+        )
+        negative = _company_report_integer(
+            value.get("confirmed_negative_minor"),
+            nonpositive=True,
+        )
+        net = _company_report_integer(value.get("confirmed_net_minor"))
+        if net != positive + negative:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        confirmed_count = _company_report_integer(
+            value.get("confirmed_count"),
+            nonnegative=True,
+        )
+        source_count = _company_report_integer(
+            value.get("source_count"),
+            nonnegative=True,
+        )
+        if source_count > confirmed_count:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        return {
+            "basis": basis,
+            "confirmed_positive_minor": positive,
+            "confirmed_negative_minor": negative,
+            "confirmed_net_minor": net,
+            "confirmed_count": confirmed_count,
+            "source_count": source_count,
+        }
+    if basis == "ACCOUNT_STATEMENT":
+        inflow = _company_report_integer(
+            value.get("cash_inflow_minor"),
+            nonnegative=True,
+        )
+        outflow = _company_report_integer(
+            value.get("cash_outflow_minor"),
+            nonnegative=True,
+        )
+        net = _company_report_integer(value.get("net_cash_flow_minor"))
+        if net != inflow - outflow:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        confirmed_transaction_count = _company_report_integer(
+            value.get("confirmed_transaction_count"),
+            nonnegative=True,
+        )
+        statement_count = _company_report_integer(
+            value.get("statement_count"),
+            nonnegative=True,
+        )
+        if statement_count > confirmed_transaction_count:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        return {
+            "basis": basis,
+            "cash_inflow_minor": inflow,
+            "cash_outflow_minor": outflow,
+            "net_cash_flow_minor": net,
+            "confirmed_transaction_count": confirmed_transaction_count,
+            "statement_count": statement_count,
+        }
+    if basis != "POSTED_LEDGER":
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    revenue = _company_report_integer(value.get("revenue_minor"), nonnegative=True)
+    expense = _company_report_integer(value.get("expense_minor"), nonnegative=True)
+    profit = _company_report_integer(value.get("profit_minor"))
+    if profit != revenue - expense:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    posted_entry_count = _company_report_integer(
+        value.get("posted_entry_count"),
+        nonnegative=True,
+    )
+    source_count = _company_report_integer(
+        value.get("source_count"),
+        nonnegative=True,
+    )
+    if source_count > posted_entry_count:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    return {
+        "basis": basis,
+        "revenue_minor": revenue,
+        "expense_minor": expense,
+        "profit_minor": profit,
+        "posted_entry_count": posted_entry_count,
+        "source_count": source_count,
+    }
+
+
+def _company_report_integer(
+    value: object,
+    *,
+    nonnegative: bool = False,
+    nonpositive: bool = False,
+) -> int:
+    if (
+        type(value) is not int
+        or abs(value) > _MAX_SAFE_JSON_INTEGER
+        or (nonnegative and value < 0)
+        or (nonpositive and value > 0)
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    return value
+
+
+def _company_report_text(
+    value: object,
+    *,
+    maximum: int,
+    pattern: re.Pattern[str] | None = None,
+) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= maximum
+        or (pattern is not None and pattern.fullmatch(value) is None)
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    return value
+
+
+def _company_report_uuid(value: object) -> str:
+    text = _company_report_text(value, maximum=36)
+    try:
+        parsed = uuid.UUID(text)
+    except ValueError as error:
+        raise CoreBackendError(
+            503,
+            _problem(503, "CORE_CONTRACT_INVALID"),
+        ) from error
+    if str(parsed) != text:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    return text
+
+
+def _company_report_require_stable_unique(
+    items: list[dict[str, object]],
+    key: str,
+) -> None:
+    values = [str(item[key]) for item in items]
+    if values != sorted(values) or len(values) != len(set(values)):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+
+def _company_report_require_exact_keys(
+    value: dict[str, object],
+    required: set[str],
+) -> None:
+    if set(value) != required:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
 
 
 def _candidate_from_core(value: object) -> dict[str, object]:

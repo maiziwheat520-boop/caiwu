@@ -129,6 +129,37 @@ class SyntheticBffTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(problem["code"], "INVALID_CURSOR")
 
+    def test_company_reports_are_empty_without_authoritative_synthetic_company_scope(self) -> None:
+        status, payload, _ = self.request("/api/v1/company-reports")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["contract_version"], "ledgerbridge.company-reports-bff.v1")
+        self.assertRegex(payload["from_month"], r"^[0-9]{4}-01$")
+        self.assertRegex(payload["to_month"], r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+        self.assertEqual(
+            payload["layers"],
+            [
+                {
+                    "contract_version": "ledgerbridge.company-report.v1",
+                    "basis": basis,
+                    "from_month": payload["from_month"],
+                    "to_month": payload["to_month"],
+                    "items": [],
+                }
+                for basis in (
+                    "CONFIRMED_CANDIDATE",
+                    "ACCOUNT_STATEMENT",
+                    "POSTED_LEDGER",
+                )
+            ],
+        )
+
+        status, problem, _ = self.request(
+            "/api/v1/company-reports?company_ref=10000000-0000-4000-8000-000000000001"
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(problem["code"], "INVALID_COMPANY_REPORT_QUERY")
+
     def test_review_event_history_is_cursor_paginated(self) -> None:
         candidate_id, seeded = next(iter(self.state.review_events.items()))
         template = seeded[0]
