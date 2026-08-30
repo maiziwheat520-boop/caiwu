@@ -84,11 +84,26 @@ class SyntheticBffTests(unittest.TestCase):
         self.assertEqual(problem["code"], "AUTHENTICATION_REQUIRED")
 
     def test_candidate_filters_detail_and_read_projections(self) -> None:
+        status, dimensions, _ = self.request("/api/v1/accounting-dimensions")
+        self.assertEqual(status, 200)
+        self.assertEqual(dimensions["contract_version"], "ledgerbridge.accounting-dimensions.v1")
+        self.assertTrue(dimensions["business_units"])
+        self.assertTrue(dimensions["categories"])
+        self.assertTrue(all(item["ref"] != item["label"] for item in dimensions["business_units"]))
+        self.assertTrue(all(item["code"] != item["label"] for item in dimensions["categories"]))
+        status, problem, _ = self.request(
+            "/api/v1/accounting-dimensions?entity_ref=10000000-0000-4000-8000-000000000099"
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(problem["code"], "INVALID_ACCOUNTING_DIMENSIONS_QUERY")
+
         status, payload, _ = self.request("/api/v1/candidates?status=PENDING&accounting_month=2026-08")
         self.assertEqual(status, 200)
         self.assertEqual(len(payload["items"]), 2)
         candidate = payload["items"][0]
         self.assertIsInstance(candidate["amount_minor"], int)
+        self.assertNotEqual(candidate["business_unit_ref"], candidate["business_unit"])
+        self.assertNotEqual(candidate["category_code"], candidate["category"])
         self.assertNotIn("review_events", candidate)
         status, detail, _ = self.request(f"/api/v1/candidates/{candidate['id']}")
         self.assertEqual(status, 200)
@@ -263,6 +278,23 @@ class SyntheticBffTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertEqual(problem["code"], "UNRESOLVED_CONFLICT")
 
+    def test_correction_amount_must_be_a_json_safe_integer(self) -> None:
+        candidate_id = "2d0d0cb9-d4ab-4e3f-9879-7812882b8f21"
+        for amount_minor in (-9_007_199_254_740_992, 9_007_199_254_740_992):
+            status, problem, _ = self.request(
+                f"/api/v1/candidates/{candidate_id}/decisions",
+                method="POST",
+                body={
+                    "decision": "CORRECT_AND_CONFIRM",
+                    "expected_revision": 1,
+                    "reason": "拒绝浏览器无法精确表示的金额",
+                    "corrections": {"amount_minor": amount_minor},
+                },
+                headers=self.decision_headers(),
+            )
+            self.assertEqual(status, 422)
+            self.assertEqual(problem["code"], "INVALID_CORRECTIONS")
+
     def test_correct_and_resolve_append_complete_audit_events(self) -> None:
         incomplete_id = "430d322d-461d-41e9-89ba-7e8ed04d62d9"
         status, payload, _ = self.request(
@@ -391,6 +423,79 @@ class SyntheticBffTests(unittest.TestCase):
         )
         self.assertEqual(status, 404)
         self.assertEqual(problem["code"], "WORKBOOK_DRAFT_NOT_FOUND")
+
+    def test_explicit_stable_reference_corrections_are_accepted(self) -> None:
+        incomplete_id = "430d322d-461d-41e9-89ba-7e8ed04d62d9"
+        _, dimensions, _ = self.request("/api/v1/accounting-dimensions")
+        business_unit_ref = next(
+            item["ref"] for item in dimensions["business_units"] if item["label"] == "城南店"
+        )
+        category_code = next(
+            item["code"] for item in dimensions["categories"] if item["label"] == "银行收款"
+        )
+
+        status, payload, _ = self.request(
+            f"/api/v1/candidates/{incomplete_id}/decisions",
+            method="POST",
+            body={
+                "decision": "CORRECT_AND_CONFIRM",
+                "expected_revision": 1,
+                "reason": "人工选择稳定营业单元和科目",
+                "corrections": {
+                    "business_unit_ref": business_unit_ref,
+                    "category_code": category_code,
+                    "accounting_month": "2026-08",
+                },
+            },
+            headers=self.decision_headers(),
+        )
+
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["candidate"]["business_unit"], "城南店")
+        self.assertEqual(payload["candidate"]["business_unit_ref"], business_unit_ref)
+        self.assertEqual(payload["candidate"]["category"], "银行收款")
+        self.assertEqual(payload["candidate"]["category_code"], category_code)
+        dimension_changes = {
+            change["field"]: change for change in payload["event"]["changes"]
+        }
+        self.assertTrue(dimension_changes["business_unit"]["identity_changed"])
+        self.assertTrue(dimension_changes["category"]["identity_changed"])
+
+    def test_unknown_stable_reference_correction_is_fail_closed(self) -> None:
+        complete_id = "2d0d0cb9-d4ab-4e3f-9879-7812882b8f21"
+
+        status, payload, _ = self.request(
+            f"/api/v1/candidates/{complete_id}/decisions",
+            method="POST",
+            body={
+                "decision": "CORRECT_AND_CONFIRM",
+                "expected_revision": 1,
+                "reason": "未知营业单元不得写入",
+                "corrections": {"business_unit_ref": "unit-unknown"},
+            },
+            headers=self.decision_headers(),
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "INVALID_CORRECTION_REFERENCE")
+
+    def test_legacy_display_label_corrections_are_rejected(self) -> None:
+        complete_id = "2d0d0cb9-d4ab-4e3f-9879-7812882b8f21"
+
+        status, payload, _ = self.request(
+            f"/api/v1/candidates/{complete_id}/decisions",
+            method="POST",
+            body={
+                "decision": "CORRECT_AND_CONFIRM",
+                "expected_revision": 1,
+                "reason": "旧显示字段不能进入原子发布后的公共合约",
+                "corrections": {"business_unit": "城南店", "category": "布草"},
+            },
+            headers=self.decision_headers(),
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "INVALID_CORRECTIONS")
 
     def test_spa_fallback_and_symlink_are_safe(self) -> None:
         response = urllib.request.urlopen(f"{self.base_url}/review", timeout=2)

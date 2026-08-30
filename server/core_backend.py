@@ -53,6 +53,7 @@ PAYROLL_SAFETY_FLAGS = frozenset(
 PAYROLL_COMMAND_ROLES = {
     "verify-receipts": "checker",
 }
+ACCOUNTING_DIMENSIONS_CORE_PATH = "/internal/v1/accounting-dimensions"
 
 
 class CoreBackendError(RuntimeError):
@@ -308,6 +309,76 @@ class CoreBackedState:
         detail["review_events"] = [_event_from_core(item) for item in values]
         return detail
 
+    def accounting_dimensions(self) -> dict[str, object]:
+        query = urlencode({"entity_ref": self.entity_ref})
+        try:
+            payload = self.client.json("GET", f"{ACCOUNTING_DIMENSIONS_CORE_PATH}?{query}")
+        except CoreBackendError as error:
+            if error.status == 403:
+                raise CoreBackendError(
+                    403,
+                    _problem(403, "ACCOUNTING_DIMENSIONS_FORBIDDEN"),
+                ) from error
+            if error.status == 404:
+                raise CoreBackendError(
+                    404,
+                    _problem(404, "ACCOUNTING_DIMENSIONS_NOT_FOUND"),
+                ) from error
+            raise CoreBackendError(
+                503,
+                _problem(503, "ACCOUNTING_DIMENSIONS_UNAVAILABLE"),
+            ) from error
+
+        def invalid_contract() -> CoreBackendError:
+            return CoreBackendError(
+                503,
+                _problem(503, "ACCOUNTING_DIMENSIONS_INVALID"),
+            )
+
+        if (
+            not isinstance(payload, dict)
+            or set(payload)
+            != {"contract_version", "entity_ref", "business_units", "categories"}
+            or payload.get("contract_version") != "ledgerbridge.accounting-dimensions.v1"
+            or payload.get("entity_ref") != self.entity_ref
+        ):
+            raise invalid_contract()
+
+        mapped: dict[str, object] = {
+            "contract_version": "ledgerbridge.accounting-dimensions.v1",
+        }
+        for collection, reference_field in (
+            ("business_units", "ref"),
+            ("categories", "code"),
+        ):
+            values = payload.get(collection)
+            if not isinstance(values, list) or len(values) > 1_000:
+                raise invalid_contract()
+            items: list[dict[str, str]] = []
+            references: set[str] = set()
+            labels: set[str] = set()
+            for value in values:
+                if not isinstance(value, dict) or set(value) != {reference_field, "label"}:
+                    raise invalid_contract()
+                reference = value.get(reference_field)
+                label = value.get("label")
+                if (
+                    not isinstance(reference, str)
+                    or not 1 <= len(reference) <= 100
+                    or not isinstance(label, str)
+                    or not 1 <= len(label) <= 200
+                    or reference in references
+                    or label in labels
+                ):
+                    raise invalid_contract()
+                references.add(reference)
+                labels.add(label)
+                items.append({reference_field: reference, "label": label})
+            if [item[reference_field] for item in items] != sorted(references):
+                raise invalid_contract()
+            mapped[collection] = items
+        return mapped
+
     def list_review_events(self, *, cursor: str | None) -> dict[str, object]:
         if cursor is not None:
             raise CoreBackendError(400, _problem(400, "INVALID_CURSOR"))
@@ -329,10 +400,26 @@ class CoreBackedState:
         candidate_ref = str(uuid.UUID(candidate_id))
         operation_id = str(uuid.UUID(idempotency_key))
         path = f"/internal/v1/candidates/{candidate_ref}/decisions"
-        body = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         revision = request.get("expected_revision")
         if type(revision) is not int:
             return 422, _problem(422, "INVALID_REVISION")
+        forwarded_request = deepcopy(request)
+        corrections = forwarded_request.get("corrections")
+        explicit_fields = {
+            "business_unit_ref": "business_unit",
+            "category_code": "category",
+        }
+        if isinstance(corrections, dict) and {"business_unit", "category"} & corrections.keys():
+            return 422, _problem(422, "INVALID_CORRECTIONS")
+        if isinstance(corrections, dict):
+            for explicit, legacy in explicit_fields.items():
+                if explicit not in corrections:
+                    continue
+                reference = corrections.pop(explicit)
+                if not isinstance(reference, str) or not 1 <= len(reference) <= 100:
+                    return 422, _problem(422, "INVALID_CORRECTION_REFERENCE")
+                corrections[legacy] = reference
+        body = json.dumps(forwarded_request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         assertion = self._user_assertion(
             path=path,
             body=body,
@@ -869,6 +956,25 @@ def _candidate_from_core(value: object) -> dict[str, object]:
         ]
     if not isinstance(review_risks, list):
         raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    dimension_values: dict[str, str | None] = {}
+    for reference_field, label_field in (
+        ("business_unit_ref", "business_unit_label"),
+        ("category_code", "category_label"),
+    ):
+        reference = value.get(reference_field)
+        label = value.get(label_field)
+        if (reference is None) != (label is None) or (
+            reference is not None
+            and (
+                not isinstance(reference, str)
+                or not 1 <= len(reference) <= 100
+                or not isinstance(label, str)
+                or not 1 <= len(label) <= 200
+            )
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        dimension_values[reference_field] = reference
+        dimension_values[label_field] = label
     channel = str(source.get("ingest_channel", "")).lower()
     return {
         "id": value.get("candidate_ref"),
@@ -878,8 +984,10 @@ def _candidate_from_core(value: object) -> dict[str, object]:
         "source_channel": channel,
         "source_message_id": source.get("source_event_ref"),
         "received_at": value.get("created_at"),
-        "business_unit": value.get("business_unit_label") or "",
-        "category": value.get("category_label") or "",
+        "business_unit": dimension_values["business_unit_label"] or "",
+        "business_unit_ref": dimension_values["business_unit_ref"],
+        "category": dimension_values["category_label"] or "",
+        "category_code": dimension_values["category_code"],
         "amount_minor": value.get("amount_minor") if value.get("amount_minor") is not None else 0,
         "currency": value.get("currency"),
         "accounting_month": value.get("accounting_month"),
@@ -933,22 +1041,79 @@ def _event_from_core(value: object) -> dict[str, object]:
     changes = value.get("changes")
     if not isinstance(changes, list):
         raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
-    mapped_changes: list[dict[str, object]] = []
-    field_map = {
-        "business_unit_label": "business_unit",
-        "category_label": "category",
+    direct_field_map = {
         "amount_minor": "amount_minor",
         "accounting_month": "accounting_month",
         "status": "status",
     }
+    dimension_field_map = {
+        "business_unit_ref": ("business_unit", "identity"),
+        "business_unit_label": ("business_unit", "label"),
+        "category_code": ("category", "identity"),
+        "category_label": ("category", "label"),
+    }
+    dimension_label_fields = {
+        "business_unit": "business_unit_label",
+        "category": "category_label",
+    }
+    ordered_changes: list[tuple[str, object]] = []
+    dimension_changes: dict[str, dict[str, object]] = {}
     for change in changes:
-        if not isinstance(change, dict) or change.get("field") not in field_map:
+        if not isinstance(change, dict):
             continue
+        field = change.get("field")
+        if field in dimension_field_map:
+            public_field, value_kind = dimension_field_map[str(field)]
+            if public_field not in dimension_changes:
+                dimension_changes[public_field] = {}
+                ordered_changes.append(("dimension", public_field))
+            dimension_changes[public_field][f"previous_{value_kind}"] = change.get("previous_value")
+            dimension_changes[public_field][f"new_{value_kind}"] = change.get("new_value")
+        elif field in direct_field_map:
+            ordered_changes.append(
+                (
+                    "direct",
+                    {
+                        "field": direct_field_map[str(field)],
+                        "previous_value": change.get("previous_value"),
+                        "new_value": change.get("new_value"),
+                        "identity_changed": False,
+                    },
+                )
+            )
+
+    prior_projection = value.get("prior_projection")
+    result_projection = value.get("result_projection")
+    prior = prior_projection if isinstance(prior_projection, dict) else {}
+    result = result_projection if isinstance(result_projection, dict) else {}
+    mapped_changes: list[dict[str, object]] = []
+    missing = object()
+    for change_kind, mapped in ordered_changes:
+        if change_kind == "direct":
+            mapped_changes.append(mapped)  # type: ignore[arg-type]
+            continue
+        public_field = str(mapped)
+        dimension = dimension_changes[public_field]
+        label_field = dimension_label_fields[public_field]
+        previous_label = dimension.get("previous_label", prior.get(label_field, missing))
+        new_label = dimension.get("new_label", result.get(label_field, missing))
+        identity_changed = (
+            "previous_identity" in dimension
+            and dimension.get("previous_identity") != dimension.get("new_identity")
+        )
+        if (
+            previous_label is missing
+            or new_label is missing
+            or not isinstance(previous_label, (str, type(None)))
+            or not isinstance(new_label, (str, type(None)))
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
         mapped_changes.append(
             {
-                "field": field_map[str(change["field"])],
-                "previous_value": change.get("previous_value"),
-                "new_value": change.get("new_value"),
+                "field": public_field,
+                "previous_value": previous_label,
+                "new_value": new_label,
+                "identity_changed": identity_changed,
             }
         )
     action = str(value.get("action"))

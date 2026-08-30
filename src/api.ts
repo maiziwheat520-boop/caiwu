@@ -1,4 +1,5 @@
 import type {
+  AccountingDimensions,
   ApiCandidate,
   AuthenticationOptionsJson,
   AuthResult,
@@ -270,6 +271,9 @@ export const api = {
   getCandidate: (candidateId: string) =>
     requestJson<CandidateDetail>(`/api/v1/candidates/${encodeURIComponent(candidateId)}`),
 
+  getAccountingDimensions: () =>
+    requestJson<AccountingDimensions>('/api/v1/accounting-dimensions'),
+
   getEvidencePreview: (evidenceId: string, reference: string) => {
     const query = new URLSearchParams({ reference })
     return requestJson<EvidencePreview>(
@@ -383,3 +387,21 @@ export const api = {
 
 export const minorToMajor = (amountMinor: number) => amountMinor / 100
 export const majorToMinor = (amount: number) => Math.round(amount * 100)
+
+export function minorToMajorInput(amountMinor: number): string {
+  if (!Number.isSafeInteger(amountMinor)) throw new RangeError('amount_minor is not a safe integer')
+  const value = BigInt(amountMinor)
+  const absolute = value < 0n ? -value : value
+  const sign = value < 0n ? '-' : ''
+  return `${sign}${absolute / 100n}.${String(absolute % 100n).padStart(2, '0')}`
+}
+
+export function majorInputToMinor(amount: string): number | null {
+  if (amount.length > 18) return null
+  const match = /^(-?)([0-9]+)(?:\.([0-9]{1,2}))?$/.exec(amount)
+  if (!match) return null
+  const cents = BigInt(match[2]) * 100n + BigInt((match[3] ?? '').padEnd(2, '0') || '0')
+  const signed = match[1] === '-' ? -cents : cents
+  const limit = BigInt(Number.MAX_SAFE_INTEGER)
+  return signed < -limit || signed > limit ? null : Number(signed)
+}

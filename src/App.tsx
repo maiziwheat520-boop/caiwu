@@ -41,8 +41,16 @@ import {
   getCoreRowModel,
   useReactTable,
 } from '@tanstack/react-table'
-import { api, ApiError, majorToMinor, minorToMajor } from './api'
+import {
+  api,
+  ApiError,
+  majorInputToMinor,
+  majorToMinor,
+  minorToMajor,
+  minorToMajorInput,
+} from './api'
 import type {
+  AccountingDimensions,
   ApiCandidate,
   AuthResult,
   AuthStatus,
@@ -127,7 +135,9 @@ function toCandidate(candidate: ApiCandidate | CandidateDetail): Candidate {
     sourceChannel: candidate.source_channel,
     receivedAt: new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(candidate.received_at)),
     businessUnit: candidate.business_unit,
+    businessUnitRef: candidate.business_unit_ref ?? '',
     category: candidate.category,
+    categoryCode: candidate.category_code ?? '',
     amount: minorToMajor(candidate.amount_minor),
     amountMinor: candidate.amount_minor,
     accountingMonth: candidate.accounting_month,
@@ -241,6 +251,9 @@ function App() {
   const [passkeyError, setPasskeyError] = useState<string | null>(null)
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null)
   const [candidateDetailLoadingId, setCandidateDetailLoadingId] = useState<string | null>(null)
+  const [candidateDetailReadyId, setCandidateDetailReadyId] = useState<string | null>(null)
+  const [accountingDimensions, setAccountingDimensions] = useState<AccountingDimensions | null>(null)
+  const [accountingDimensionsError, setAccountingDimensionsError] = useState<string | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
 
   const navigate = useCallback((nextPage: Page, replace = false) => {
@@ -432,16 +445,35 @@ function App() {
 
   const openCandidate = async (candidate: Candidate) => {
     const requestId = ++candidateDetailRequestRef.current
+    const readOnly = ['CONFIRMED', 'IGNORED', 'SUPERSEDED'].includes(candidate.status)
+    setAccountingDimensions(null)
+    setAccountingDimensionsError(null)
+    setCandidateDetailReadyId(null)
     setSelectedCandidate(candidate)
     setCandidateDetailLoadingId(candidate.id)
-    try {
-      const detail = await api.getCandidate(candidate.id)
-      setSelectedCandidate((current) => current?.id === candidate.id ? toCandidate(detail) : current)
-    } catch (error) {
+    const [detailResult, dimensionsResult] = await Promise.allSettled([
+      api.getCandidate(candidate.id),
+      readOnly ? Promise.resolve(null) : api.getAccountingDimensions(),
+    ])
+    if (candidateDetailRequestRef.current !== requestId) return
+    if (detailResult.status === 'rejected') {
+      const error = detailResult.reason
+      setAccountingDimensions(null)
+      setAccountingDimensionsError('候选详情读取失败，不能提交更正')
       setNotice({ tone: 'error', message: error instanceof Error ? `证据详情读取失败：${error.message}` : '证据详情读取失败' })
-    } finally {
-      if (candidateDetailRequestRef.current === requestId) setCandidateDetailLoadingId(null)
+      setCandidateDetailLoadingId(null)
+      return
     }
+    setSelectedCandidate((current) => current?.id === candidate.id ? toCandidate(detailResult.value) : current)
+    setCandidateDetailReadyId(candidate.id)
+    if (!readOnly) {
+      if (dimensionsResult.status === 'fulfilled') {
+        setAccountingDimensions(dimensionsResult.value)
+      } else {
+        setAccountingDimensionsError('会计维度目录不可用，请先治理基础资料后重试；当前不能提交更正')
+      }
+    }
+    if (candidateDetailRequestRef.current === requestId) setCandidateDetailLoadingId(null)
   }
 
   const generateDraft = async () => {
@@ -497,6 +529,7 @@ function App() {
       candidateCursorRef.current = null
       setSelectedCandidate(null)
       setCandidateDetailLoadingId(null)
+      setCandidateDetailReadyId(null)
       candidateDetailRequestRef.current += 1
       navigate('overview', true)
       setLoading(true)
@@ -715,12 +748,15 @@ function App() {
 
       {selectedCandidate ? (
         <CandidateDialog
-          key={`${selectedCandidate.id}:${selectedCandidate.revision}`}
+          key={`${selectedCandidate.id}:${selectedCandidate.revision}:${selectedCandidate.businessUnitRef}:${selectedCandidate.categoryCode}:${selectedCandidate.amountMinor}:${selectedCandidate.accountingMonth ?? ''}`}
           candidate={selectedCandidate}
           onClose={() => setSelectedCandidate(null)}
           onUpdate={updateCandidate}
           busy={selectedCandidate.id === decisionBusyId}
           detailLoading={candidateDetailLoadingId === selectedCandidate.id}
+          detailReady={candidateDetailReadyId === selectedCandidate.id}
+          accountingDimensions={accountingDimensions}
+          accountingDimensionsError={accountingDimensionsError}
         />
       ) : null}
     </div>
@@ -1104,6 +1140,11 @@ const auditFieldLabels: Record<ReviewEvent['changes'][number]['field'], string> 
   amount_minor: '金额',
   accounting_month: '归属月份',
   status: '状态',
+}
+
+function auditChangeLabel(change: ReviewEvent['changes'][number]) {
+  const label = auditFieldLabels[change.field]
+  return change.identity_changed ? `${label}（标识已更新）` : label
 }
 
 const auditStatusLabels: Record<string, string> = {
@@ -2013,16 +2054,19 @@ function EvidencePreviewPanel({ evidence, reference }: {
   )
 }
 
-function CandidateDialog({ candidate, onClose, onUpdate, busy, detailLoading }: {
+function CandidateDialog({ candidate, onClose, onUpdate, busy, detailLoading, detailReady, accountingDimensions, accountingDimensionsError }: {
   candidate: Candidate
   onClose: () => void
   onUpdate: (candidate: Candidate, intent: CandidateUpdateIntent, corrections?: CandidateCorrections, conflictResolution?: string) => void
   busy: boolean
   detailLoading: boolean
+  detailReady: boolean
+  accountingDimensions: AccountingDimensions | null
+  accountingDimensionsError: string | null
 }) {
-  const [businessUnit, setBusinessUnit] = useState(candidate.businessUnit)
-  const [category, setCategory] = useState(candidate.category)
-  const [amount, setAmount] = useState(candidate.amount.toFixed(2))
+  const [businessUnitRef, setBusinessUnitRef] = useState(candidate.businessUnitRef)
+  const [categoryCode, setCategoryCode] = useState(candidate.categoryCode)
+  const [amount, setAmount] = useState(minorToMajorInput(candidate.amountMinor))
   const [accountingMonth, setAccountingMonth] = useState(candidate.accountingMonth ?? '')
   const [conflictResolution, setConflictResolution] = useState('')
   const readOnly = ['CONFIRMED', 'IGNORED', 'SUPERSEDED'].includes(candidate.status)
@@ -2061,21 +2105,40 @@ function CandidateDialog({ candidate, onClose, onUpdate, busy, detailLoading }: 
         ? '系统建议仅供参考，请人工核对。'
         : '确认后候选会进入月度对账草稿。'
 
-  const parsedAmount = Number(amount)
-  const formComplete = businessUnit.trim().length > 0
-    && category.trim().length > 0
-    && Number.isFinite(parsedAmount)
-    && accountingMonth.length > 0
-  const confirmBlocked = readOnly || busy || !formComplete || (candidate.conflict && conflictResolution.trim().length === 0)
+  const parsedAmountMinor = majorInputToMinor(amount)
+  const dimensionsContainSelection = Boolean(
+    accountingDimensions?.business_units.some((unit) => unit.ref === businessUnitRef)
+    && accountingDimensions.categories.some((item) => item.code === categoryCode),
+  )
+  const formComplete = businessUnitRef.length > 0
+    && categoryCode.length > 0
+    && parsedAmountMinor !== null
+    && /^[0-9]{4}-(0[1-9]|1[0-2])$/.test(accountingMonth)
+  const dimensionsStatusId = accountingDimensionsError
+    ? 'accounting-dimensions-error'
+    : !detailLoading && accountingDimensions && !dimensionsContainSelection
+      ? 'accounting-dimensions-selection-error'
+      : undefined
+  const confirmBlocked = readOnly
+    || busy
+    || !detailReady
+    || !dimensionsContainSelection
+    || !formComplete
+    || (candidate.conflict && conflictResolution.trim().length === 0)
 
   const submitCorrection = () => {
-    if (confirmBlocked) return
-    onUpdate(candidate, candidate.conflict ? 'RESOLVE_CONFLICT' : 'CONFIRM', {
-      business_unit: businessUnit.trim(),
-      category: category.trim(),
-      amount_minor: majorToMinor(parsedAmount),
-      accounting_month: accountingMonth,
-    }, candidate.conflict ? conflictResolution.trim() : undefined)
+    if (confirmBlocked || parsedAmountMinor === null) return
+    const corrections: CandidateCorrections = {}
+    if (businessUnitRef !== candidate.businessUnitRef) corrections.business_unit_ref = businessUnitRef
+    if (categoryCode !== candidate.categoryCode) corrections.category_code = categoryCode
+    if (parsedAmountMinor !== candidate.amountMinor) corrections.amount_minor = parsedAmountMinor
+    if (accountingMonth !== candidate.accountingMonth) corrections.accounting_month = accountingMonth
+    onUpdate(
+      candidate,
+      candidate.conflict ? 'RESOLVE_CONFLICT' : 'CONFIRM',
+      Object.keys(corrections).length > 0 ? corrections : undefined,
+      candidate.conflict ? conflictResolution.trim() : undefined,
+    )
   }
 
   return (
@@ -2104,17 +2167,36 @@ function CandidateDialog({ candidate, onClose, onUpdate, busy, detailLoading }: 
           <section className="dialog-fields-pane" aria-labelledby="fields-heading">
             <span className="section-label" id="fields-heading">提取字段</span>
             <div className="field-grid">
-              <label htmlFor="candidate-business-unit"><span>营业单元</span><TextField.Root id="candidate-business-unit" readOnly={readOnly} value={businessUnit} onChange={(event) => setBusinessUnit(event.target.value)} /></label>
-              <label htmlFor="candidate-category"><span>科目</span><TextField.Root id="candidate-category" readOnly={readOnly} value={category} onChange={(event) => setCategory(event.target.value)} /></label>
-              <label htmlFor="candidate-amount"><span>金额</span><TextField.Root id="candidate-amount" inputMode="decimal" readOnly={readOnly} value={amount} onChange={(event) => setAmount(event.target.value)} /></label>
-              <label>
-                <span id="candidate-month-label">归属月份</span>
-                <Select.Root disabled={readOnly} value={accountingMonth} onValueChange={setAccountingMonth}>
-                  <Select.Trigger aria-labelledby="candidate-month-label" placeholder="请选择归属月份" />
-                  <Select.Content><Select.Item value="2026-08">2026 年 8 月</Select.Item><Select.Item value="2026-07">2026 年 7 月</Select.Item></Select.Content>
-                </Select.Root>
+              <label htmlFor="candidate-business-unit">
+                <span>营业单元</span>
+                {readOnly ? (
+                  <TextField.Root id="candidate-business-unit" readOnly value={candidate.businessUnit} />
+                ) : (
+                  <select aria-describedby={dimensionsStatusId} id="candidate-business-unit" disabled={!accountingDimensions} value={businessUnitRef} onChange={(event) => setBusinessUnitRef(event.target.value)}>
+                    {!accountingDimensions?.business_units.some((unit) => unit.ref === businessUnitRef) ? <option value="">{accountingDimensions ? '请选择有效营业单元' : '目录加载中'}</option> : null}
+                    {accountingDimensions?.business_units.map((unit) => <option key={unit.ref} value={unit.ref}>{unit.label}</option>)}
+                  </select>
+                )}
+              </label>
+              <label htmlFor="candidate-category">
+                <span>科目</span>
+                {readOnly ? (
+                  <TextField.Root id="candidate-category" readOnly value={candidate.category} />
+                ) : (
+                  <select aria-describedby={dimensionsStatusId} id="candidate-category" disabled={!accountingDimensions} value={categoryCode} onChange={(event) => setCategoryCode(event.target.value)}>
+                    {!accountingDimensions?.categories.some((item) => item.code === categoryCode) ? <option value="">{accountingDimensions ? '请选择有效科目' : '目录加载中'}</option> : null}
+                    {accountingDimensions?.categories.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
+                  </select>
+                )}
+              </label>
+              <label htmlFor="candidate-amount"><span>金额</span><TextField.Root id="candidate-amount" inputMode="decimal" maxLength={18} readOnly={readOnly} value={amount} onChange={(event) => setAmount(event.target.value)} /></label>
+              <label htmlFor="candidate-accounting-month">
+                <span>归属月份</span>
+                <TextField.Root id="candidate-accounting-month" type="month" pattern="[0-9]{4}-(0[1-9]|1[0-2])" readOnly={readOnly} value={accountingMonth} onChange={(event) => setAccountingMonth(event.target.value)} />
               </label>
             </div>
+            {!readOnly && accountingDimensionsError ? <div className="blocking-note amber" id="accounting-dimensions-error" role="alert"><Info size={18} weight="fill" /><span><strong>{accountingDimensionsError}</strong></span></div> : null}
+            {!readOnly && !detailLoading && accountingDimensions && !dimensionsContainSelection ? <div className="blocking-note amber" id="accounting-dimensions-selection-error" role="status"><Info size={18} weight="fill" /><span><strong>当前会计维度不在授权目录中</strong>请先治理基础资料或选择有效维度后再处理。</span></div> : null}
             {candidate.conflict && !readOnly ? <>
               <label className="conflict-resolution-field" htmlFor="candidate-conflict-resolution">
                 <span>冲突处理依据</span>
@@ -2144,7 +2226,7 @@ function CandidateDialog({ candidate, onClose, onUpdate, busy, detailLoading }: 
                       <time dateTime={event.created_at}>{new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(event.created_at))}</time>
                     </div>
                     <strong>{event.reason}</strong>
-                    <span>修订 {event.from_revision} → {event.to_revision} · {event.changes.map((change) => auditFieldLabels[change.field]).join('、') || '无字段变化'}</span>
+                    <span>修订 {event.from_revision} → {event.to_revision} · {event.changes.map(auditChangeLabel).join('、') || '无字段变化'}</span>
                     {event.conflict_resolution ? <small>冲突依据：{event.conflict_resolution}</small> : null}
                   </div>
                 </li>
@@ -2155,8 +2237,8 @@ function CandidateDialog({ candidate, onClose, onUpdate, busy, detailLoading }: 
         <div className="dialog-actions">
           <Button variant="soft" color="gray" onClick={onClose}>{readOnly ? '关闭' : '取消'}</Button>
           {!readOnly ? <>
-            <Button disabled={busy} variant="outline" color="gray" onClick={() => onUpdate(candidate, 'IGNORE')}>忽略候选</Button>
-            <Button disabled={confirmBlocked} onClick={submitCorrection}>{candidate.conflict ? '解决冲突并确认' : '保存更正并确认'}</Button>
+            <Button disabled={busy || !detailReady} variant="outline" color="gray" onClick={() => onUpdate(candidate, 'IGNORE')}>忽略候选</Button>
+            <Button aria-describedby={dimensionsStatusId} disabled={confirmBlocked} onClick={submitCorrection}>{candidate.conflict ? '解决冲突并确认' : '保存更正并确认'}</Button>
           </> : null}
         </div>
       </Dialog.Content>
