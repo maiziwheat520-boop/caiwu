@@ -53,6 +53,9 @@ from ledgerbridge.internal_read_routes import (
     router as internal_read_router,
 )
 from ledgerbridge.models import DispatchState, ImportJobStatus, ReviewItemKind
+from ledgerbridge.original_reconciliation_routes import (
+    router as original_reconciliation_router,
+)
 from ledgerbridge.production_mtls import verify_configured_mtls_principal
 from ledgerbridge.review_service import ReviewConflict, ReviewNotFound, ReviewService
 from ledgerbridge.secure_spool import EncryptedSpool
@@ -86,6 +89,7 @@ app.include_router(company_reporting_router)
 app.include_router(internal_candidate_command_router)
 app.include_router(internal_evidence_unlock_router)
 app.include_router(internal_payroll_router)
+app.include_router(original_reconciliation_router)
 
 
 class UploadReadTimeoutError(TimeoutError):

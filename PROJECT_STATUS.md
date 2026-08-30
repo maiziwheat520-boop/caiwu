@@ -94,7 +94,21 @@ Local implementation validation passed 72 focused tests and the 823-test Core Wi
 198 platform/database integration cases were skipped by their existing environment gates. The
 remaining merge gate is to integrate the separately owned `0022` and `0023` migrations before
 `0024`, then replay the chain against a disposable PostgreSQL database.
+## Original reconciliation projection checkpoint (2026-08-30)
 
+Branch `ai/chatgpt/original-reconciliation-core` adds a default-private, read-only
+`ledgerbridge.original-reconciliation.v1` projection for the historical A:M / 40-row
+reconciliation layout. It keeps the existing monthly reconciliation route unchanged,
+requires exact entity and business-unit authorization, separates pending review, missing
+materials, confirmed-pending-posting facts, and formal POSTED ledger totals, and preserves
+unknown ledger totals or balances as null/GAP instead of zero. The deployed legacy layout and
+source-to-slot rules remain injected private configuration; no real labels, financial material,
+schema migration, production reader enablement, merge, or deployment is included. See
+`docs/tasks/2026-08-30-original-reconciliation-projection.md`.
+The route fails closed until that private layout is injected. The current Candidate-only reader
+also exposes `MISSING_TIME_GRANULARITY` rather than inferring the workbook's intra-month rows;
+future missing historical business-unit attribution is reserved as a breakdown GAP and must not
+invalidate an otherwise sound company-level formal total.
 ## Payroll publication adapter checkpoint (2026-08-30)
 
 The real-data cutover branch now contains a default-disabled, read-only adapter for the
