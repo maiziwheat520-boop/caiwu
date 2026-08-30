@@ -322,6 +322,18 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
 .report-entry-panel h2, .planning-panel h2 { margin: 0 0 5px; color: var(--ink); font-size: 17px; }
 .report-entry-panel p, .planning-panel p { margin: 0; color: var(--muted); font-size: 12px; }
 .planning-panel { display: flex; align-items: center; gap: 16px; padding: 24px; color: #56708f; }
+.payroll-status-banner { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 12px; margin-bottom: 18px; padding: 16px 18px; border: 1px solid #ecd6a6; border-radius: 12px; color: #9a670d; background: #fff9e9; }
+.payroll-status-banner strong, .payroll-status-banner span { display: block; }
+.payroll-status-banner strong { color: #4c3a1c; font-size: 14px; }
+.payroll-status-banner span { margin-top: 3px; color: #735e38; font-size: 11px; line-height: 1.6; }
+.payroll-status-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.payroll-status-card { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; min-height: 190px; padding: 20px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); box-shadow: var(--shadow); }
+.payroll-status-card.ready { color: #18794e; }
+.payroll-status-card.blocked { color: #b4232d; }
+.payroll-status-card.pending { color: #8b5b0a; }
+.payroll-status-card h2 { margin: 2px 0 14px; color: var(--ink); font-size: 16px; }
+.payroll-status-card strong { display: block; color: #31445e; font-size: 13px; line-height: 1.5; }
+.payroll-status-card p { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
 .transfer-object-section { margin: 0 0 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
 .transfer-object-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; padding: 0 16px 16px; }
 .transfer-object-card { display: grid; gap: 7px; padding: 13px; border: 1px solid #dce4ef; border-radius: 11px; color: #31445e; background: #fff; text-align: left; cursor: pointer; }
@@ -371,6 +383,8 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .candidate-card { grid-template-columns: 115px minmax(0, 1fr) 128px; }
   .candidate-actions { grid-column: 2 / 4; padding-top: 9px; border-top: 1px solid #edf0f5; }
   .connection-grid { grid-template-columns: 1fr; }
+  .payroll-status-grid { grid-template-columns: 1fr; }
+  .payroll-status-card { min-height: auto; }
   .connection-card { min-height: auto; }
   .connection-card > p { min-height: auto; }
 }
@@ -478,6 +492,8 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .audit-event { grid-template-columns: 1fr; }
   .audit-marker, .audit-event:not(:last-child)::before { display: none; }
   .connection-title { grid-template-columns: 42px 1fr; }
+  .payroll-status-banner { grid-template-columns: 22px minmax(0, 1fr); }
+  .payroll-status-banner > span { grid-column: 2; justify-self: start; }
   .connection-title > span { grid-column: 2; justify-self: start; }
 }
 

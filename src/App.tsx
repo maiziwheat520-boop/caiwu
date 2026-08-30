@@ -67,6 +67,7 @@ const navigation: Array<{ id: Page; label: string; icon: typeof House }> = [
   { id: 'review', label: '待审核', icon: ListChecks },
   { id: 'reconciliation', label: '原口径对账表', icon: Table },
   { id: 'company-reports', label: '各公司报表', icon: Database },
+  { id: 'payroll', label: '工资与发放验证', icon: FileXls },
   { id: 'files', label: '文件与连接', icon: FolderOpen },
 ]
 
@@ -76,6 +77,7 @@ const pagePaths: Record<Page, string> = {
   review: '/review',
   reconciliation: '/reconciliation',
   'company-reports': '/company-reports',
+  payroll: '/payroll',
   files: '/files',
   audit: '/audit',
 }
@@ -548,6 +550,9 @@ function App() {
     }
     if (page === 'company-reports') {
       return <CompanyReports />
+    }
+    if (page === 'payroll') {
+      return <PayrollVerificationStatus />
     }
     if (page === 'audit') {
       return (
@@ -1297,6 +1302,37 @@ function CompanyReports() {
       <section className="panel planning-panel">
         <Database size={34} weight="light" />
         <div><h2>按公司主体汇总将在后续接入</h2><p>当前不生成推测数据；待 Core 提供稳定的公司主体字段后再展示资产、收支与对账状态。</p></div>
+      </section>
+    </>
+  )
+}
+
+function PayrollVerificationStatus() {
+  return (
+    <>
+      <PageHeader
+        eyebrow="工资模块"
+        title="工资与发放验证"
+        description="主程序已经具备只读接入边界；这里仅展示真实连接状态，不生成工资或发放演示数据。"
+      />
+      <div className="payroll-status-banner" role="status">
+        <Info size={20} weight="fill" />
+        <div><strong>正式工资服务尚未连接</strong><span>当前入口用于说明能力边界，接通前不会读取员工、工资或发放数据。</span></div>
+        <Badge color="amber">待接通</Badge>
+      </div>
+      <section className="payroll-status-grid" aria-label="工资模块连接状态">
+        <article className="payroll-status-card ready">
+          <CheckCircle size={26} weight="fill" />
+          <div><h2>当前可做</h2><strong>只读工资发布契约已部署</strong><p>LedgerBridge 已能校验版本、公司范围、整数金额、批准审计链及不可付款标志。</p></div>
+        </article>
+        <article className="payroll-status-card blocked">
+          <Warning size={26} weight="fill" />
+          <div><h2>暂不可做</h2><strong>真实发薪和银行提交不可用</strong><p>当前不导入正式工资数据，不生成付款指令，也没有任何银行提交入口。</p></div>
+        </article>
+        <article className="payroll-status-card pending">
+          <Database size={26} weight="fill" />
+          <div><h2>接通条件</h2><strong>部署可达的工资服务并完成可信授权</strong><p>需要服务端配置认证地址、公司映射和发布授权；接通后仍只用于会计与对账读取。</p></div>
+        </article>
       </section>
     </>
   )

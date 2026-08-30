@@ -977,4 +977,21 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.getByRole('heading', { name: '各公司报表' })).toBeInTheDocument()
     expect(screen.getByText('按公司主体汇总将在后续接入')).toBeInTheDocument()
   })
+
+  it('keeps the payroll integration status reachable from its route and both navigation surfaces', async () => {
+    window.history.replaceState({}, '', '/payroll')
+    installFetch({ runtimeMode: 'core-backed' })
+    renderApp()
+
+    expect(await screen.findByRole('heading', { name: '工资与发放验证' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: '工资与发放验证' })).toHaveLength(2)
+    expect(screen.getByRole('heading', { name: '当前可做' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '暂不可做' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '接通条件' })).toBeInTheDocument()
+    expect(screen.getByText('只读工资发布契约已部署')).toBeInTheDocument()
+    expect(screen.getByText('正式工资服务尚未连接')).toBeInTheDocument()
+    expect(screen.getByText('真实发薪和银行提交不可用')).toBeInTheDocument()
+    expect(screen.queryByText(/127\.0\.0\.1/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /付款|发薪|银行提交/ })).not.toBeInTheDocument()
+  })
 })
