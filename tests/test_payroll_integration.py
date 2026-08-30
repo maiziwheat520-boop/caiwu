@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from typing import cast
 from uuid import UUID
@@ -26,6 +26,19 @@ def _stable_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _rehash_audit_events(events: list[dict[str, object]]) -> list[dict[str, object]]:
+    previous_hash: str | None = None
+    rehashed: list[dict[str, object]] = []
+    for index, event in enumerate(events):
+        unsigned = {key: value for key, value in event.items() if key != "hash"}
+        unsigned["sequence"] = index + 1
+        unsigned["previous_hash"] = previous_hash
+        event_hash = hashlib.sha256(_stable_json(unsigned).encode()).hexdigest()
+        rehashed.append({**unsigned, "hash": event_hash})
+        previous_hash = event_hash
+    return rehashed
+
+
 def _publication(*, company_id: str = COMPANY) -> dict[str, object]:
     batch: dict[str, object] = {
         "schema_version": "payroll-batch-export/v1",
@@ -47,11 +60,95 @@ def _publication(*, company_id: str = COMPANY) -> dict[str, object]:
         ],
         "exceptions": [],
     }
-    audit_events: list[object] = []
+    verification_results: list[object] = [
+        {
+            "schema_version": "payroll-receipt-verification/v1",
+            "verification_id": "verification_demo_001",
+            "company_id": company_id,
+            "batch_id": "batch_demo_2026_08",
+            "pay_period": "2026-08",
+            "version": 4,
+            "source_artifact_id": "artifact_statement_001",
+            "overall_status": "matched",
+            "unknown_receipt_count": 0,
+            "results": [
+                {
+                    "company_id": company_id,
+                    "employee_id": "employee_demo_001",
+                    "account_id": "account_demo_001",
+                    "expected_amount_minor": 524000,
+                    "match_status": "matched",
+                    "exception_codes": [],
+                }
+            ],
+        }
+    ]
+    material_summaries: list[object] = [
+        {
+            "schema_version": "payroll-material-summary/v1",
+            "artifact_id": "artifact_payroll_demo_001",
+            "company_id": company_id,
+            "period": "2026-08",
+            "kind": "PAYROLL_SHEET",
+            "source": "CONTROLLED_UPLOAD",
+            "sha256": "1" * 64,
+            "status": "READY_FOR_REVIEW",
+        }
+    ]
+    common_event = {
+        "schema_version": "payroll-audit-event/v1",
+        "occurred_at": "2026-08-30T06:00:00.000Z",
+        "batch_id": "batch_demo_2026_08",
+        "company_id": company_id,
+        "version": 4,
+        "reason": None,
+    }
+    locked_batch_sha256 = hashlib.sha256(_stable_json(batch).encode()).hexdigest()
+    audit_events: list[dict[str, object]] = _rehash_audit_events(
+        [
+            {
+                **common_event,
+                "action": "payroll.review_submitted",
+                "actor_id": "maker_demo_001",
+                "data": {"explicitly_confirmed": True},
+            },
+            {
+                **common_event,
+                "action": "payroll.review_completed",
+                "actor_id": "checker_demo_001",
+                "data": {"explicitly_confirmed": True},
+            },
+            {
+                **common_event,
+                "action": "payroll.version_approved_locked",
+                "actor_id": "approver_demo_001",
+                "data": {
+                    "explicitly_approved": True,
+                    "locked_version": 4,
+                    "active_exception_count": 0,
+                    "locked_batch_sha256": locked_batch_sha256,
+                },
+            },
+            {
+                **common_event,
+                "action": "payroll.receipts_verified",
+                "actor_id": "checker_demo_001",
+                "data": {
+                    "verification_id": "verification_demo_001",
+                    "source_artifact_id": "artifact_statement_001",
+                    "overall_status": "matched",
+                    "matched_count": 1,
+                    "attention_count": 0,
+                    "unknown_receipt_count": 0,
+                    "idempotency_key_hash": "2" * 64,
+                },
+            },
+        ]
+    )
     payload = {
         "payroll_batch": batch,
-        "verification_results": [],
-        "material_summaries": [],
+        "verification_results": verification_results,
+        "material_summaries": material_summaries,
         "audit_events": audit_events,
     }
     digest = hashlib.sha256(_stable_json(payload).encode()).hexdigest()
@@ -76,9 +173,9 @@ def _publication(*, company_id: str = COMPANY) -> dict[str, object]:
         "audit_chain_proof": {
             "schema_version": "payroll-audit-chain-proof/v1",
             "algorithm": "sha256",
-            "event_count": 0,
-            "head_hash": None,
-            "tail_hash": None,
+            "event_count": len(audit_events),
+            "head_hash": audit_events[0]["hash"],
+            "tail_hash": audit_events[-1]["hash"],
             "events_sha256": events_digest,
         },
         "payload_sha256": digest,
@@ -92,6 +189,29 @@ def _status() -> dict[str, object]:
         "demo_mode": True,
         "payment_submission_supported": False,
     }
+
+
+def _refresh_publication_integrity(publication: dict[str, object]) -> None:
+    audit_events = cast(list[object], publication["audit_events"])
+    payload = {
+        "payroll_batch": publication["payroll_batch"],
+        "verification_results": publication["verification_results"],
+        "material_summaries": publication["material_summaries"],
+        "audit_events": audit_events,
+    }
+    digest = hashlib.sha256(_stable_json(payload).encode()).hexdigest()
+    event_digest = hashlib.sha256(_stable_json(audit_events).encode()).hexdigest()
+    publication["publication_id"] = f"publication_{digest[:24]}"
+    publication["payload_sha256"] = digest
+    proof = cast(dict[str, object], publication["audit_chain_proof"])
+    proof["event_count"] = len(audit_events)
+    proof["head_hash"] = (
+        cast(dict[str, object], audit_events[0]).get("hash") if audit_events else None
+    )
+    proof["tail_hash"] = (
+        cast(dict[str, object], audit_events[-1]).get("hash") if audit_events else None
+    )
+    proof["events_sha256"] = event_digest
 
 
 class _Transport:
@@ -276,12 +396,216 @@ def test_source_never_guesses_or_reencodes_employee_and_account_ids(
 
 def test_source_rejects_payload_tampering_and_publication_id_mismatch() -> None:
     publication = _publication()
-    batch = cast(dict[str, object], publication["payroll_batch"])
-    line = cast(list[dict[str, object]], batch["lines"])[0]
-    line["net_pay_minor"] = 1
+    verification = cast(list[dict[str, object]], publication["verification_results"])[0]
+    verification["optional_note"] = "tampered"
     source, _ = _source(publication)
 
     _assert_error("PAYROLL_PAYLOAD_INTEGRITY_FAILED", lambda: _pull(source, publication))
+
+
+@pytest.mark.parametrize(
+    "section",
+    [
+        "verification_results",
+        "material_summaries",
+        "audit_events",
+    ],
+)
+def test_source_rejects_floats_in_nested_financial_sections(section: str) -> None:
+    publication = _publication()
+    nested = cast(list[dict[str, object]], publication[section])[0]
+    nested["optional_ratio"] = 0.5
+    _refresh_publication_integrity(publication)
+    source, _ = _source(publication)
+
+    _assert_error("PAYROLL_PROVIDER_RESPONSE", lambda: _pull(source, publication))
+
+
+@pytest.mark.parametrize("value", [True, "524000", 2**53])
+def test_source_requires_json_safe_integer_minor_values(value: object) -> None:
+    publication = _publication()
+    verification = cast(list[dict[str, object]], publication["verification_results"])[0]
+    result = cast(list[dict[str, object]], verification["results"])[0]
+    result["expected_amount_minor"] = value
+    _refresh_publication_integrity(publication)
+    source, _ = _source(publication)
+
+    _assert_error("PAYROLL_PROVIDER_RESPONSE", lambda: _pull(source, publication))
+
+
+def test_source_preserves_signed_integer_minor_optional_fields() -> None:
+    publication = _publication()
+    material = cast(list[dict[str, object]], publication["material_summaries"])[0]
+    material["adjustment_minor"] = -125
+    publication["optional_contract_metadata"] = {"revision": 1}
+    _refresh_publication_integrity(publication)
+    source, _ = _source(publication)
+
+    result = _pull(source, publication)
+
+    frozen_material = cast(tuple[dict[str, object], ...], result.payload["material_summaries"])[0]
+    assert frozen_material["adjustment_minor"] == -125
+    assert result.payload["optional_contract_metadata"] == {"revision": 1}
+
+
+@pytest.mark.parametrize(
+    ("section", "expected_code"),
+    [
+        ("verification_results", "PAYROLL_SCHEMA_UNSUPPORTED"),
+        ("material_summaries", "PAYROLL_SCHEMA_UNSUPPORTED"),
+        ("audit_events", "PAYROLL_SCHEMA_UNSUPPORTED"),
+    ],
+)
+def test_source_rejects_unsupported_nested_schema_versions(
+    section: str,
+    expected_code: str,
+) -> None:
+    publication = _publication()
+    nested = cast(list[dict[str, object]], publication[section])[0]
+    nested["schema_version"] = "unsupported/v2"
+    _refresh_publication_integrity(publication)
+    source, _ = _source(publication)
+
+    _assert_error(expected_code, lambda: _pull(source, publication))
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_code"),
+    [
+        ("account_id", "account_demo_002", "PAYROLL_IDENTITY_MAPPING_CONFLICT"),
+        ("expected_amount_minor", 523999, "PAYROLL_VERIFICATION_AMOUNT_MISMATCH"),
+    ],
+)
+def test_source_rejects_verification_identity_and_amount_drift(
+    field: str,
+    value: object,
+    expected_code: str,
+) -> None:
+    publication = _publication()
+    verification = cast(list[dict[str, object]], publication["verification_results"])[0]
+    result = cast(list[dict[str, object]], verification["results"])[0]
+    result[field] = value
+    _refresh_publication_integrity(publication)
+    source, _ = _source(publication)
+
+    _assert_error(expected_code, lambda: _pull(source, publication))
+
+
+def test_source_rejects_raw_bytes_in_material_projection() -> None:
+    publication = _publication()
+    material = cast(list[dict[str, object]], publication["material_summaries"])[0]
+    material["attachment"] = b"raw payroll bytes"
+    source, _ = _source(publication)
+
+    _assert_error("PAYROLL_PROVIDER_RESPONSE", lambda: _pull(source, publication))
+
+
+def test_source_rejects_prohibited_material_bytes_field() -> None:
+    publication = _publication()
+    material = cast(list[dict[str, object]], publication["material_summaries"])[0]
+    material["bytes"] = "not publishable"
+    _refresh_publication_integrity(publication)
+    source, _ = _source(publication)
+
+    _assert_error("PAYROLL_SENSITIVE_FIELD_NOT_ALLOWED", lambda: _pull(source, publication))
+
+
+def test_source_accepts_same_company_material_from_another_valid_period() -> None:
+    publication = _publication()
+    material = cast(list[dict[str, object]], publication["material_summaries"])[0]
+    material["period"] = "2026-07"
+    _refresh_publication_integrity(publication)
+    source, _ = _source(publication)
+
+    result = _pull(source, publication)
+
+    summaries = cast(tuple[object, ...], result.payload["material_summaries"])
+    assert cast(Mapping[str, object], summaries[0])["period"] == "2026-07"
+
+
+def test_source_rejects_empty_audit_chain_even_with_matching_summary() -> None:
+    publication = _publication()
+    publication["audit_events"] = []
+    _refresh_publication_integrity(publication)
+    source, _ = _source(publication)
+
+    _assert_error("PAYROLL_AUDIT_PROOF_INVALID", lambda: _pull(source, publication))
+
+
+def test_source_rejects_non_whitelisted_audit_action_data() -> None:
+    publication = _publication()
+    events = cast(list[dict[str, object]], publication["audit_events"])
+    approval_data = cast(dict[str, object], events[2]["data"])
+    approval_data["private_note"] = "must remain in the controlled audit store"
+    publication["audit_events"] = _rehash_audit_events(events)
+    _refresh_publication_integrity(publication)
+    source, _ = _source(publication)
+
+    _assert_error("PAYROLL_AUDIT_PROOF_INVALID", lambda: _pull(source, publication))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sequence", 9),
+        ("actor_id", "checker_demo_002"),
+        ("previous_hash", "0" * 64),
+    ],
+)
+def test_source_rejects_broken_audit_sequence_or_event_hash(
+    field: str,
+    value: object,
+) -> None:
+    publication = _publication()
+    events = cast(list[dict[str, object]], publication["audit_events"])
+    events[1][field] = value
+    _refresh_publication_integrity(publication)
+    source, _ = _source(publication)
+
+    _assert_error("PAYROLL_AUDIT_PROOF_INVALID", lambda: _pull(source, publication))
+
+
+def test_source_rejects_audit_chain_without_three_distinct_roles() -> None:
+    publication = _publication()
+    events = cast(list[dict[str, object]], publication["audit_events"])
+    events[2]["actor_id"] = events[1]["actor_id"]
+    publication["audit_events"] = _rehash_audit_events(events)
+    _refresh_publication_integrity(publication)
+    source, _ = _source(publication)
+
+    _assert_error("PAYROLL_AUDIT_PROOF_INVALID", lambda: _pull(source, publication))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("locked_batch_sha256", "0" * 64),
+        ("explicitly_approved", False),
+        ("active_exception_count", 1),
+    ],
+)
+def test_source_rejects_invalid_locked_approval(field: str, value: object) -> None:
+    publication = _publication()
+    events = cast(list[dict[str, object]], publication["audit_events"])
+    approval_data = cast(dict[str, object], events[2]["data"])
+    approval_data[field] = value
+    publication["audit_events"] = _rehash_audit_events(events)
+    _refresh_publication_integrity(publication)
+    source, _ = _source(publication)
+
+    _assert_error("PAYROLL_AUDIT_PROOF_INVALID", lambda: _pull(source, publication))
+
+
+def test_source_rejects_verification_audit_fact_mismatch() -> None:
+    publication = _publication()
+    events = cast(list[dict[str, object]], publication["audit_events"])
+    receipt_data = cast(dict[str, object], events[3]["data"])
+    receipt_data["matched_count"] = 0
+    publication["audit_events"] = _rehash_audit_events(events)
+    _refresh_publication_integrity(publication)
+    source, _ = _source(publication)
+
+    _assert_error("PAYROLL_AUDIT_PROOF_INVALID", lambda: _pull(source, publication))
 
 
 def test_idempotency_replays_exact_request_and_rejects_key_reuse() -> None:

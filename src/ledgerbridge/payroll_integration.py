@@ -16,6 +16,7 @@ import re
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from types import MappingProxyType
 from typing import Never, Protocol, cast
 from urllib.error import HTTPError, URLError
@@ -80,11 +81,113 @@ _LINE_FIELDS = frozenset(
 _PROOF_FIELDS = frozenset(
     {"schema_version", "algorithm", "event_count", "head_hash", "tail_hash", "events_sha256"}
 )
+_BATCH_EXCEPTION_FIELDS = frozenset({"exception_id", "code", "status"})
+_VERIFICATION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "verification_id",
+        "company_id",
+        "batch_id",
+        "pay_period",
+        "version",
+        "source_artifact_id",
+        "overall_status",
+        "unknown_receipt_count",
+        "results",
+    }
+)
+_VERIFICATION_RESULT_FIELDS = frozenset(
+    {
+        "company_id",
+        "employee_id",
+        "account_id",
+        "expected_amount_minor",
+        "match_status",
+        "exception_codes",
+    }
+)
+_MATERIAL_FIELDS = frozenset(
+    {"schema_version", "artifact_id", "company_id", "period", "kind", "source", "sha256", "status"}
+)
+_AUDIT_EVENT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "sequence",
+        "occurred_at",
+        "action",
+        "actor_id",
+        "batch_id",
+        "company_id",
+        "version",
+        "reason",
+        "data",
+        "previous_hash",
+        "hash",
+    }
+)
+_AUDIT_ACTION_DATA_FIELDS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "payroll.source_adopted": frozenset({"source_artifact_id", "explicitly_confirmed"}),
+        "payroll.review_submitted": frozenset({"explicitly_confirmed"}),
+        "payroll.review_completed": frozenset({"explicitly_confirmed"}),
+        "payroll.version_approved_locked": frozenset(
+            {
+                "explicitly_approved",
+                "locked_version",
+                "active_exception_count",
+                "locked_batch_sha256",
+            }
+        ),
+        "payroll.bank_draft_exported": frozenset(
+            {
+                "draft_id",
+                "draft_type",
+                "explicitly_requested",
+                "payable",
+                "submission_supported",
+                "idempotency_key_hash",
+            }
+        ),
+        "payroll.receipts_verified": frozenset(
+            {
+                "verification_id",
+                "source_artifact_id",
+                "overall_status",
+                "matched_count",
+                "attention_count",
+                "unknown_receipt_count",
+                "idempotency_key_hash",
+            }
+        ),
+    }
+)
+_AUDIT_REQUIRED_TRUE_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "payroll.source_adopted": ("explicitly_confirmed",),
+        "payroll.review_submitted": ("explicitly_confirmed",),
+        "payroll.review_completed": ("explicitly_confirmed",),
+        "payroll.version_approved_locked": ("explicitly_approved",),
+        "payroll.bank_draft_exported": ("explicitly_requested",),
+    }
+)
+_ALLOWED_DRAFT_TYPES = frozenset(
+    {
+        "normal_bank_payroll",
+        "cash_disbursement",
+        "supplemental_bank_payroll",
+        "payroll_summary",
+    }
+)
+_CONTROLLED_TOKEN = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
+_SHA256 = re.compile(r"^[a-f0-9]{64}$")
+_ACCOUNT_LIKE_NUMBER = re.compile(r"\d(?:[\s._:-]*\d){11,}")
+_LOCAL_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\[^\\]|file://|/(?:Users|home|mnt|private)/)", re.I)
 _SENSITIVE_FIELDS = frozenset(
     {
         "accountnumber",
         "bankaccount",
         "bankaccountnumber",
+        "bytes",
         "cardnumber",
         "employeename",
         "filename",
@@ -99,6 +202,17 @@ _SENSITIVE_FIELDS = frozenset(
         "localpath",
         "storagekey",
         "filecontent",
+    }
+)
+_SENSITIVE_VALUE_SKIP_FIELDS = frozenset(
+    {
+        "hash",
+        "previoushash",
+        "sha256",
+        "payloadsha256",
+        "eventssha256",
+        "idempotencykeyhash",
+        "publicationid",
     }
 )
 
@@ -152,6 +266,16 @@ class PayrollPublication:
         """Return JSON-ready data without changing any source identifier."""
 
         return cast(dict[str, object], _deep_thaw(self.payload))
+
+
+@dataclass(frozen=True, slots=True)
+class _VerificationProof:
+    verification_id: str
+    source_artifact_id: str
+    overall_status: str
+    matched_count: int
+    attention_count: int
+    unknown_receipt_count: int
 
 
 class PayrollCompanyMap:
@@ -451,7 +575,7 @@ def _validate_publication(
     company_id: str,
     entity_ref: UUID,
 ) -> PayrollPublication:
-    _require_exact_keys(raw, _TOP_LEVEL_FIELDS, "publication")
+    _require_required_keys(raw, _TOP_LEVEL_FIELDS, "publication")
     if raw.get("schema_version") != PUBLICATION_SCHEMA:
         raise PayrollIntegrationError(
             "PAYROLL_SCHEMA_UNSUPPORTED",
@@ -465,10 +589,11 @@ def _validate_publication(
     safety = _require_object(raw.get("safety"), "safety")
     batch = _require_object(raw.get("payroll_batch"), "payroll_batch")
     proof = _require_object(raw.get("audit_chain_proof"), "audit_chain_proof")
-    _require_exact_keys(scope, _SCOPE_FIELDS, "scope")
-    _require_exact_keys(safety, _SAFETY_FIELDS, "safety")
-    _require_exact_keys(batch, _BATCH_FIELDS, "payroll_batch")
-    _require_exact_keys(proof, _PROOF_FIELDS, "audit_chain_proof")
+    _require_required_keys(scope, _SCOPE_FIELDS, "scope")
+    _require_required_keys(safety, _SAFETY_FIELDS, "safety")
+    _require_required_keys(batch, _BATCH_FIELDS, "payroll_batch")
+    _require_required_keys(proof, _PROOF_FIELDS, "audit_chain_proof")
+    _validate_publication_tree(raw, expected_company_id=company_id)
 
     if scope.get("company_id") != company_id:
         raise PayrollIntegrationError(
@@ -521,16 +646,16 @@ def _validate_publication(
         )
 
     lines = _require_list(batch.get("lines"), "payroll_batch.lines")
-    _require_list(batch.get("exceptions"), "payroll_batch.exceptions")
+    exceptions = _require_list(batch.get("exceptions"), "payroll_batch.exceptions")
     verification_results = _require_list(raw.get("verification_results"), "verification_results")
     material_summaries = _require_list(raw.get("material_summaries"), "material_summaries")
     audit_events = _require_list(raw.get("audit_events"), "audit_events")
 
     identities: list[tuple[str, str]] = []
-    employees: set[str] = set()
+    identity_index: dict[str, tuple[str, int]] = {}
     for index, item in enumerate(lines):
         line = _require_object(item, f"payroll_batch.lines[{index}]")
-        _require_exact_keys(line, _LINE_FIELDS, f"payroll_batch.lines[{index}]")
+        _require_required_keys(line, _LINE_FIELDS, f"payroll_batch.lines[{index}]")
         if line.get("company_id") != company_id:
             raise PayrollIntegrationError(
                 "PAYROLL_IDENTITY_SCOPE_MISMATCH",
@@ -538,25 +663,33 @@ def _validate_publication(
             )
         employee_id = _require_stable_identifier(line.get("employee_id"), "employee_id")
         account_id = _require_stable_identifier(line.get("account_id"), "account_id", account=True)
-        if employee_id in employees:
+        if employee_id in identity_index:
             raise PayrollIntegrationError(
                 "PAYROLL_IDENTITY_MAPPING_CONFLICT",
                 "payroll employee mapping is duplicated",
             )
-        employees.add(employee_id)
+        _require_non_negative_integer(line.get("gross_pay_minor"), "gross_pay_minor")
+        net_pay_minor = _require_non_negative_integer(
+            line.get("net_pay_minor"),
+            "net_pay_minor",
+        )
+        identity_index[employee_id] = (account_id, net_pay_minor)
         identities.append((employee_id, account_id))
-        for field in ("gross_pay_minor", "net_pay_minor"):
-            amount = line.get(field)
-            if (
-                isinstance(amount, bool)
-                or not isinstance(amount, int)
-                or not 0 <= amount <= MAX_SAFE_INTEGER
-            ):
-                _invalid_response("payroll amount is invalid")
         if line.get("disbursement_channel") not in _ALLOWED_CHANNELS:
             _invalid_response("payroll disbursement channel is invalid")
 
-    _walk_publication_identities(raw, expected_company_id=company_id)
+    _validate_batch_exceptions(exceptions)
+    verification_proofs = _validate_verifications(
+        verification_results,
+        batch=batch,
+        identities=identity_index,
+    )
+    _validate_material_summaries(material_summaries, batch=batch)
+    _validate_audit_events(
+        audit_events,
+        batch=batch,
+        verification_proofs=verification_proofs,
+    )
     _verify_payload_integrity(
         raw,
         publication_id=publication_id,
@@ -573,6 +706,354 @@ def _validate_publication(
         pay_period=pay_period,
         employee_account_ids=tuple(identities),
         payload=cast(Mapping[str, object], _deep_freeze(raw)),
+    )
+
+
+def _validate_batch_exceptions(exceptions: list[object]) -> None:
+    for index, item in enumerate(exceptions):
+        field = f"payroll_batch.exceptions[{index}]"
+        exception = _require_object(item, field)
+        _require_required_keys(exception, _BATCH_EXCEPTION_FIELDS, field)
+        _require_stable_identifier(exception.get("exception_id"), "exception_id")
+        _require_controlled_token(exception.get("code"), f"{field}.code")
+        status = _require_controlled_token(exception.get("status"), f"{field}.status")
+        resolved = exception.get("resolved")
+        if resolved is not None and not isinstance(resolved, bool):
+            _invalid_response("payroll exception resolved flag is invalid")
+        if status != "RESOLVED" and resolved is not True:
+            raise PayrollIntegrationError(
+                "PAYROLL_BATCH_NOT_LOCKED",
+                "payroll publication contains an unresolved exception",
+            )
+
+
+def _validate_verifications(
+    verifications: list[object],
+    *,
+    batch: Mapping[str, object],
+    identities: Mapping[str, tuple[str, int]],
+) -> tuple[_VerificationProof, ...]:
+    batch_company_id = cast(str, batch["company_id"])
+    batch_id = cast(str, batch["batch_id"])
+    pay_period = cast(str, batch["pay_period"])
+    locked_version = cast(int, batch["locked_version"])
+    proofs: list[_VerificationProof] = []
+    verification_ids: set[str] = set()
+    verified_employees: set[str] = set()
+
+    for verification_index, item in enumerate(verifications):
+        field = f"verification_results[{verification_index}]"
+        verification = _require_object(item, field)
+        _require_required_keys(verification, _VERIFICATION_FIELDS, field)
+        if verification.get("schema_version") != "payroll-receipt-verification/v1":
+            raise PayrollIntegrationError(
+                "PAYROLL_SCHEMA_UNSUPPORTED",
+                "payroll verification schema is unsupported",
+            )
+        if (
+            verification.get("company_id") != batch_company_id
+            or verification.get("batch_id") != batch_id
+            or verification.get("pay_period") != pay_period
+            or verification.get("version") != locked_version
+        ):
+            raise PayrollIntegrationError(
+                "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+                "payroll verification does not match the locked batch scope",
+            )
+        verification_id = _require_stable_identifier(
+            verification.get("verification_id"),
+            "verification_id",
+        )
+        if verification_id in verification_ids:
+            raise PayrollIntegrationError(
+                "PAYROLL_IDENTITY_MAPPING_CONFLICT",
+                "payroll verification identifier is duplicated",
+            )
+        verification_ids.add(verification_id)
+        source_artifact_id = _require_stable_identifier(
+            verification.get("source_artifact_id"),
+            "source_artifact_id",
+        )
+        overall_status = verification.get("overall_status")
+        if overall_status not in {"matched", "attention_required"}:
+            _invalid_response("payroll verification status is invalid")
+        unknown_receipt_count = _require_non_negative_integer(
+            verification.get("unknown_receipt_count"),
+            "unknown_receipt_count",
+        )
+        results = _require_list(verification.get("results"), f"{field}.results")
+        if not results:
+            _invalid_response("payroll verification results cannot be empty")
+
+        matched_count = 0
+        attention_count = 0
+        for result_index, result_item in enumerate(results):
+            result_field = f"{field}.results[{result_index}]"
+            result = _require_object(result_item, result_field)
+            _require_required_keys(result, _VERIFICATION_RESULT_FIELDS, result_field)
+            if result.get("company_id") != batch_company_id:
+                raise PayrollIntegrationError(
+                    "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+                    "payroll verification result crosses company scope",
+                )
+            employee_id = _require_stable_identifier(result.get("employee_id"), "employee_id")
+            account_id = _require_stable_identifier(
+                result.get("account_id"),
+                "account_id",
+                account=True,
+            )
+            locked_identity = identities.get(employee_id)
+            if locked_identity is None or locked_identity[0] != account_id:
+                raise PayrollIntegrationError(
+                    "PAYROLL_IDENTITY_MAPPING_CONFLICT",
+                    "payroll verification identity does not match the locked batch",
+                )
+            if employee_id in verified_employees:
+                raise PayrollIntegrationError(
+                    "PAYROLL_IDENTITY_MAPPING_CONFLICT",
+                    "payroll employee verification is duplicated",
+                )
+            verified_employees.add(employee_id)
+            expected_amount_minor = _require_non_negative_integer(
+                result.get("expected_amount_minor"),
+                "expected_amount_minor",
+            )
+            if expected_amount_minor != locked_identity[1]:
+                raise PayrollIntegrationError(
+                    "PAYROLL_VERIFICATION_AMOUNT_MISMATCH",
+                    "payroll verification amount does not match locked net pay",
+                )
+            match_status = result.get("match_status")
+            if match_status not in {"matched", "attention_required"}:
+                _invalid_response("payroll verification match status is invalid")
+            exception_codes = _require_list(
+                result.get("exception_codes"),
+                f"{result_field}.exception_codes",
+            )
+            for code in exception_codes:
+                _require_controlled_token(code, "exception_code")
+            expects_attention = bool(exception_codes)
+            if (match_status == "matched" and expects_attention) or (
+                match_status == "attention_required" and not expects_attention
+            ):
+                _invalid_response("payroll verification status contradicts its exceptions")
+            if match_status == "matched":
+                matched_count += 1
+            else:
+                attention_count += 1
+
+        derived_status = (
+            "attention_required" if attention_count > 0 or unknown_receipt_count > 0 else "matched"
+        )
+        if overall_status != derived_status:
+            _invalid_response("payroll verification overall status is inconsistent")
+        proofs.append(
+            _VerificationProof(
+                verification_id=verification_id,
+                source_artifact_id=source_artifact_id,
+                overall_status=overall_status,
+                matched_count=matched_count,
+                attention_count=attention_count,
+                unknown_receipt_count=unknown_receipt_count,
+            )
+        )
+
+    if verifications and verified_employees != set(identities):
+        raise PayrollIntegrationError(
+            "PAYROLL_IDENTITY_MAPPING_CONFLICT",
+            "payroll verifications do not cover each locked employee exactly once",
+        )
+    return tuple(proofs)
+
+
+def _validate_material_summaries(
+    materials: list[object],
+    *,
+    batch: Mapping[str, object],
+) -> None:
+    batch_company_id = cast(str, batch["company_id"])
+    for index, item in enumerate(materials):
+        field = f"material_summaries[{index}]"
+        material = _require_object(item, field)
+        _require_required_keys(material, _MATERIAL_FIELDS, field)
+        if material.get("schema_version") != "payroll-material-summary/v1":
+            raise PayrollIntegrationError(
+                "PAYROLL_SCHEMA_UNSUPPORTED",
+                "payroll material summary schema is unsupported",
+            )
+        if material.get("company_id") != batch_company_id:
+            raise PayrollIntegrationError(
+                "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+                "payroll material summary does not match the locked batch company",
+            )
+        period = material.get("period")
+        if not isinstance(period, str) or re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", period) is None:
+            _invalid_response("payroll material summary period is invalid")
+        _require_stable_identifier(material.get("artifact_id"), "artifact_id")
+        for token_field in ("kind", "source", "status"):
+            _require_controlled_token(material.get(token_field), f"{field}.{token_field}")
+        _require_sha256(material.get("sha256"), f"{field}.sha256")
+
+
+def _validate_audit_events(
+    events: list[object],
+    *,
+    batch: Mapping[str, object],
+    verification_proofs: tuple[_VerificationProof, ...],
+) -> None:
+    if not events:
+        _invalid_audit("payroll audit chain cannot be empty")
+
+    batch_company_id = cast(str, batch["company_id"])
+    batch_id = cast(str, batch["batch_id"])
+    locked_version = cast(int, batch["locked_version"])
+    previous_hash: str | None = None
+    validated_events: list[Mapping[str, object]] = []
+
+    for index, item in enumerate(events):
+        field = f"audit_events[{index}]"
+        event = _require_object(item, field)
+        _require_required_keys(event, _AUDIT_EVENT_FIELDS, field)
+        if event.get("schema_version") != "payroll-audit-event/v1":
+            raise PayrollIntegrationError(
+                "PAYROLL_SCHEMA_UNSUPPORTED",
+                "payroll audit event schema is unsupported",
+            )
+        if (
+            event.get("company_id") != batch_company_id
+            or event.get("batch_id") != batch_id
+            or event.get("version") != locked_version
+        ):
+            raise PayrollIntegrationError(
+                "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+                "payroll audit event does not match the locked batch scope",
+            )
+        if event.get("sequence") != index + 1 or event.get("previous_hash") != previous_hash:
+            _invalid_audit("payroll audit sequence or previous hash is invalid")
+        _require_audit_timestamp(event.get("occurred_at"), f"{field}.occurred_at")
+        _require_stable_identifier(event.get("actor_id"), "actor_id")
+        if event.get("reason") is not None:
+            _invalid_audit("payroll audit free text cannot be published")
+        action = event.get("action")
+        if not isinstance(action, str) or action not in _AUDIT_ACTION_DATA_FIELDS:
+            _invalid_audit("payroll audit action is unsupported")
+        data = _require_object(event.get("data"), f"{field}.data")
+        expected_data_fields = _AUDIT_ACTION_DATA_FIELDS[action]
+        if set(data) != expected_data_fields:
+            _invalid_audit("payroll audit action data does not match its strict v1 whitelist")
+        for key, value in data.items():
+            if key.endswith("_hash"):
+                _require_sha256(value, f"{field}.data.{key}", audit=True)
+            if key.endswith("_id"):
+                _require_stable_identifier(value, key)
+            if key.endswith("_count"):
+                _require_non_negative_integer(value, key)
+        if any(data.get(key) is not True for key in _AUDIT_REQUIRED_TRUE_FIELDS.get(action, ())):
+            _invalid_audit("payroll audit confirmation facts must be strict true booleans")
+        if action == "payroll.version_approved_locked" and (
+            data.get("locked_version") != locked_version or data.get("active_exception_count") != 0
+        ):
+            _invalid_audit("payroll approval does not bind the locked exception-free version")
+        if action == "payroll.bank_draft_exported":
+            if data.get("payable") is not False or data.get("submission_supported") is not False:
+                raise PayrollIntegrationError(
+                    "PAYROLL_PAYMENT_MODE_NOT_ALLOWED",
+                    "payroll audit draft facts are not explicitly non-payable",
+                )
+            if data.get("draft_type") not in _ALLOWED_DRAFT_TYPES:
+                _invalid_audit("payroll audit draft type is unsupported")
+        if action == "payroll.receipts_verified" and data.get("overall_status") not in {
+            "matched",
+            "attention_required",
+        }:
+            _invalid_audit("payroll audit receipt status is unsupported")
+
+        current_hash = _require_sha256(event.get("hash"), f"{field}.hash", audit=True)
+        unsigned = dict(event)
+        del unsigned["hash"]
+        expected_hash = hashlib.sha256(_stable_json(unsigned).encode("utf-8")).hexdigest()
+        if current_hash != expected_hash:
+            _invalid_audit("payroll audit event hash is invalid")
+        previous_hash = current_hash
+        validated_events.append(event)
+
+    approval_indexes = [
+        index
+        for index, event in enumerate(validated_events)
+        if event.get("action") == "payroll.version_approved_locked"
+    ]
+    if len(approval_indexes) != 1:
+        _invalid_audit("payroll audit chain must contain exactly one locked approval")
+
+    submitted_index = _find_audit_action(validated_events, "payroll.review_submitted")
+    reviewed_index = _find_audit_action(
+        validated_events,
+        "payroll.review_completed",
+        after=submitted_index,
+    )
+    approved_index = _find_audit_action(
+        validated_events,
+        "payroll.version_approved_locked",
+        after=reviewed_index,
+    )
+    if submitted_index < 0 or reviewed_index < 0 or approved_index < 0:
+        _invalid_audit("payroll audit chain does not prove ordered review and approval")
+    actors = {
+        cast(str, validated_events[submitted_index]["actor_id"]),
+        cast(str, validated_events[reviewed_index]["actor_id"]),
+        cast(str, validated_events[approved_index]["actor_id"]),
+    }
+    if len(actors) != 3:
+        _invalid_audit("payroll audit chain does not prove three-role separation")
+    approval_data = cast(Mapping[str, object], validated_events[approved_index]["data"])
+    locked_batch_sha256 = hashlib.sha256(_stable_json(batch).encode("utf-8")).hexdigest()
+    if approval_data.get("locked_batch_sha256") != locked_batch_sha256:
+        _invalid_audit("payroll approval does not bind the published locked batch")
+
+    receipt_events = [
+        event for event in validated_events if event.get("action") == "payroll.receipts_verified"
+    ]
+    if len(receipt_events) != len(verification_proofs):
+        _invalid_audit("payroll verification and receipt audit counts do not match")
+    matched_receipts: set[int] = set()
+    for proof in verification_proofs:
+        matches = [
+            (index, event)
+            for index, event in enumerate(receipt_events)
+            if cast(Mapping[str, object], event["data"]).get("verification_id")
+            == proof.verification_id
+        ]
+        if len(matches) != 1:
+            _invalid_audit("payroll verification does not have exactly one receipt audit event")
+        receipt_index, receipt_event = matches[0]
+        receipt_data = cast(Mapping[str, object], receipt_event["data"])
+        expected = {
+            "source_artifact_id": proof.source_artifact_id,
+            "overall_status": proof.overall_status,
+            "matched_count": proof.matched_count,
+            "attention_count": proof.attention_count,
+            "unknown_receipt_count": proof.unknown_receipt_count,
+        }
+        if any(receipt_data.get(key) != value for key, value in expected.items()):
+            _invalid_audit("payroll receipt audit facts do not match verification results")
+        matched_receipts.add(receipt_index)
+    if len(matched_receipts) != len(receipt_events):
+        _invalid_audit("payroll receipt audit events are duplicated or unreferenced")
+
+
+def _find_audit_action(
+    events: list[Mapping[str, object]],
+    action: str,
+    *,
+    after: int = -1,
+) -> int:
+    return next(
+        (
+            index
+            for index, event in enumerate(events)
+            if index > after and event.get("action") == action
+        ),
+        -1,
     )
 
 
@@ -624,31 +1105,71 @@ def _verify_audit_proof(proof: Mapping[str, object], audit_events: list[object])
         )
 
 
-def _walk_publication_identities(value: object, *, expected_company_id: str) -> None:
+def _validate_publication_tree(
+    value: object,
+    *,
+    expected_company_id: str,
+    parent_key: str = "",
+    seen: set[int] | None = None,
+) -> None:
+    active = set() if seen is None else seen
     if isinstance(value, Mapping):
-        for key, nested in value.items():
-            if not isinstance(key, str):
-                _invalid_response("payroll publication field is invalid")
-            normalized = re.sub(r"[^a-z0-9]", "", key.lower())
-            if normalized in _SENSITIVE_FIELDS:
-                raise PayrollIntegrationError(
-                    "PAYROLL_SENSITIVE_FIELD_NOT_ALLOWED",
-                    "payroll publication contains a prohibited raw or sensitive field",
+        marker = id(value)
+        if marker in active:
+            _invalid_response("payroll publication must be acyclic JSON data")
+        active.add(marker)
+        try:
+            for key, nested in value.items():
+                if not isinstance(key, str):
+                    _invalid_response("payroll publication field is invalid")
+                normalized = re.sub(r"[^a-z0-9]", "", key.lower())
+                if normalized in _SENSITIVE_FIELDS:
+                    raise PayrollIntegrationError(
+                        "PAYROLL_SENSITIVE_FIELD_NOT_ALLOWED",
+                        "payroll publication contains a prohibited raw or sensitive field",
+                    )
+                if key == "company_id" and nested != expected_company_id:
+                    raise PayrollIntegrationError(
+                        "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+                        "payroll publication contains a cross-company identity",
+                    )
+                if key == "employee_id":
+                    _require_stable_identifier(nested, "employee_id")
+                if key == "account_id":
+                    _require_stable_identifier(nested, "account_id", account=True)
+                if key.endswith("_minor"):
+                    _require_minor_integer(nested, key)
+                _validate_publication_tree(
+                    nested,
+                    expected_company_id=expected_company_id,
+                    parent_key=key,
+                    seen=active,
                 )
-            if key == "company_id" and nested != expected_company_id:
-                raise PayrollIntegrationError(
-                    "PAYROLL_IDENTITY_SCOPE_MISMATCH",
-                    "payroll publication contains a cross-company identity",
+        finally:
+            active.remove(marker)
+    elif isinstance(value, list):
+        marker = id(value)
+        if marker in active:
+            _invalid_response("payroll publication must be acyclic JSON data")
+        active.add(marker)
+        try:
+            for nested in value:
+                _validate_publication_tree(
+                    nested,
+                    expected_company_id=expected_company_id,
+                    parent_key=parent_key,
+                    seen=active,
                 )
-            if key == "employee_id":
-                _require_stable_identifier(nested, "employee_id")
-            if key == "account_id":
-                _require_stable_identifier(nested, "account_id", account=True)
-            _walk_publication_identities(nested, expected_company_id=expected_company_id)
-    elif isinstance(value, (list, tuple)):
-        for nested in value:
-            _walk_publication_identities(nested, expected_company_id=expected_company_id)
-    elif value is not None and not isinstance(value, (str, int, float, bool)):
+        finally:
+            active.remove(marker)
+    elif isinstance(value, str):
+        _validate_publishable_string(value, parent_key=parent_key)
+    elif isinstance(value, bool) or value is None:
+        return
+    elif isinstance(value, int):
+        if not -MAX_SAFE_INTEGER <= value <= MAX_SAFE_INTEGER:
+            _invalid_response("payroll publication integer exceeds the JSON-safe range")
+    else:
         _invalid_response("payroll publication contains a non-JSON value")
 
 
@@ -697,6 +1218,48 @@ def _require_positive_integer(value: object, field: str) -> int:
     return value
 
 
+def _require_non_negative_integer(value: object, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_SAFE_INTEGER:
+        _invalid_response(f"payroll {field} must be a non-negative JSON-safe integer")
+    return value
+
+
+def _require_minor_integer(value: object, field: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not -MAX_SAFE_INTEGER <= value <= MAX_SAFE_INTEGER
+    ):
+        _invalid_response(f"payroll {field} must use signed JSON-safe integer minor units")
+    return value
+
+
+def _require_controlled_token(value: object, field: str) -> str:
+    if not isinstance(value, str) or _CONTROLLED_TOKEN.fullmatch(value) is None:
+        _invalid_response(f"payroll {field} must use a controlled uppercase token")
+    return value
+
+
+def _require_sha256(value: object, field: str, *, audit: bool = False) -> str:
+    if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+        if audit:
+            _invalid_audit(f"payroll {field} is not a lowercase SHA-256 digest")
+        _invalid_response(f"payroll {field} is not a lowercase SHA-256 digest")
+    return value
+
+
+def _require_audit_timestamp(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        _invalid_audit(f"payroll {field} is not a UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        _invalid_audit(f"payroll {field} is not a valid timestamp")
+    if parsed.utcoffset() is None:
+        _invalid_audit(f"payroll {field} is not a UTC timestamp")
+    return value
+
+
 def _require_object(value: object, field: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         _invalid_response(f"payroll {field} is invalid")
@@ -709,13 +1272,38 @@ def _require_list(value: object, field: str) -> list[object]:
     return value
 
 
-def _require_exact_keys(
+def _require_required_keys(
     value: Mapping[str, object],
     expected: frozenset[str],
     field: str,
 ) -> None:
-    if set(value) != expected:
-        _invalid_response(f"payroll {field} fields do not match the v1 contract")
+    missing = expected.difference(value)
+    if missing:
+        _invalid_response(f"payroll {field} is missing required v1 fields")
+
+
+def _validate_publishable_string(value: str, *, parent_key: str) -> None:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        _invalid_response("payroll publication contains invalid Unicode text")
+    normalized = re.sub(r"[^a-z0-9]", "", parent_key.lower())
+    if (
+        normalized not in _SENSITIVE_VALUE_SKIP_FIELDS
+        and not normalized.endswith("hash")
+        and not normalized.endswith("sha256")
+        and (
+            _ACCOUNT_LIKE_NUMBER.search(value) is not None or _LOCAL_PATH.search(value) is not None
+        )
+    ):
+        raise PayrollIntegrationError(
+            "PAYROLL_SENSITIVE_FIELD_NOT_ALLOWED",
+            "payroll publication contains an account-like number or local path",
+        )
+
+
+def _invalid_audit(summary: str) -> Never:
+    raise PayrollIntegrationError("PAYROLL_AUDIT_PROOF_INVALID", summary)
 
 
 def _stable_json(value: object) -> str:
