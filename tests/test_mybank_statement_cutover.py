@@ -183,9 +183,13 @@ def _plan(source_path: Path, digest: str, size: int) -> MyBankStatementCutoverPl
     )
 
 
-def _gates(before: ProductionCounts | None = None) -> MyBankStatementCutoverGates:
+def _gates(
+    before: ProductionCounts | None = None,
+    *,
+    schema_revision: str = "20260830_0023",
+) -> MyBankStatementCutoverGates:
     return MyBankStatementCutoverGates(
-        schema_revision="20260830_0023",
+        schema_revision=schema_revision,
         backup_verified=True,
         isolated_restore_verified=True,
         rollback_ready=True,
@@ -203,7 +207,12 @@ def _registry_principal() -> WorkloadPrincipal:
     )
 
 
-def _safety_proof(tmp_path: Path, before: ProductionCounts) -> MyBankCutoverSafetyProof:
+def _safety_proof(
+    tmp_path: Path,
+    before: ProductionCounts,
+    *,
+    schema_revision: str = "20260830_0023",
+) -> MyBankCutoverSafetyProof:
     backup = (tmp_path / "synthetic-encrypted-backup").resolve()
     backup.mkdir()
     ciphertext = backup / "ledgerbridge-backup.tar.gpg"
@@ -229,7 +238,7 @@ def _safety_proof(tmp_path: Path, before: ProductionCounts) -> MyBankCutoverSafe
         encoding="utf-8",
     )
     inventory = {
-        "schema_revision": "20260830_0023",
+        "schema_revision": schema_revision,
         "candidate_total": before.candidates,
         "latest_pending_candidates": before.latest_pending_candidates,
         "audit_events": before.audit_events,
@@ -454,6 +463,44 @@ def test_cutover_creates_whole_statement_facts_without_candidates(tmp_path: Path
     assert receipt.latest_pending_candidate_delta == 0
 
 
+def test_cutover_accepts_current_integrated_0025_schema(tmp_path: Path) -> None:
+    source, digest = _synthetic_source(tmp_path)
+    statement = _statement(digest, source.stat().st_size)
+    parser = _Parser(statement)
+    runner = MyBankStatementCutoverRunner(
+        parser=parser,
+        evidence_writer=_EvidenceWriter(),
+        account_registrar=_AccountRegistrar(
+            iter((_registry_result(created=True), _registry_result(created=False)))
+        ),
+        statement_importer=_StatementImporter(
+            iter((_import_result(created=True), _import_result(created=False)))
+        ),
+        counts_reader=_CountsReader(iter((_before_counts(), _after_counts(), _after_counts()))),
+        schema_reader=lambda: "20260830_0025",
+    )
+
+    receipt = runner.run(
+        _plan(source, digest, source.stat().st_size),
+        gates=_gates(schema_revision="20260830_0025"),
+    )
+
+    assert receipt.created is True
+
+
+def test_current_integrated_0025_safety_proof_is_accepted(tmp_path: Path) -> None:
+    proof = _safety_proof(
+        tmp_path,
+        _before_counts(),
+        schema_revision="20260830_0025",
+    )
+
+    verify_mybank_cutover_safety_proof(
+        proof,
+        gates=_gates(schema_revision="20260830_0025"),
+    )
+
+
 def test_cutover_orders_evidence_registry_statement_then_replays_registry_and_statement(
     tmp_path: Path,
 ) -> None:
@@ -575,6 +622,7 @@ def test_cutover_binds_evidence_to_exact_digest_size_and_explicit_scope(tmp_path
     ("field", "value", "message"),
     (
         ("schema_revision", "20260830_0020", "schema"),
+        ("schema_revision", "20260830_0026", "schema"),
         ("backup_verified", False, "backup"),
         ("isolated_restore_verified", False, "isolated restore"),
         ("rollback_ready", False, "rollback"),

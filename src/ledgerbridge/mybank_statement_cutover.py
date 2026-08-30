@@ -40,6 +40,13 @@ from ledgerbridge.models import EntityType
 from ledgerbridge.mybank_statement import MyBankStatement, parse_mybank_xlsx
 
 _SCHEMA_REVISION = "20260830_0023"
+_SUPPORTED_SCHEMA_REVISIONS = frozenset(
+    {
+        _SCHEMA_REVISION,
+        "20260830_0024",
+        "20260830_0025",
+    }
+)
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _ACCOUNT_SUFFIX = re.compile(r"^[0-9]{4,8}$")
@@ -399,7 +406,7 @@ class MyBankStatementCutoverRunner:
 
 
 def _require_gates(gates: MyBankStatementCutoverGates) -> None:
-    if gates.schema_revision != _SCHEMA_REVISION:
+    if gates.schema_revision not in _SUPPORTED_SCHEMA_REVISIONS:
         raise MyBankStatementCutoverError("cutover schema gate is not satisfied")
     if gates.backup_verified is not True:
         raise MyBankStatementCutoverError("cutover encrypted backup gate is not satisfied")
@@ -489,7 +496,13 @@ def verify_mybank_cutover_safety_proof(
         restored_inventory = restored_metadata.get("cutover_inventory")
         if source_inventory != restored_inventory:
             raise ValueError
-        if _counts_from_cutover_inventory(source_inventory) != gates.expected_before:
+        if (
+            _counts_from_cutover_inventory(
+                source_inventory,
+                expected_schema_revision=gates.schema_revision,
+            )
+            != gates.expected_before
+        ):
             raise ValueError
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         raise MyBankStatementCutoverError("cutover backup and restore proof is invalid") from None
@@ -512,7 +525,11 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _counts_from_cutover_inventory(value: object) -> ProductionCounts:
+def _counts_from_cutover_inventory(
+    value: object,
+    *,
+    expected_schema_revision: str,
+) -> ProductionCounts:
     if not isinstance(value, dict) or set(value) != {
         "schema_revision",
         "candidate_total",
@@ -521,7 +538,7 @@ def _counts_from_cutover_inventory(value: object) -> ProductionCounts:
         "row_counts",
     }:
         raise ValueError
-    if value.get("schema_revision") != _SCHEMA_REVISION:
+    if value.get("schema_revision") != expected_schema_revision:
         raise ValueError
     row_counts = value.get("row_counts")
     if not isinstance(row_counts, dict):

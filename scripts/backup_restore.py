@@ -1917,6 +1917,13 @@ SELECT jsonb_build_object(
 )
 
 COMPANY_REPORTING_SECURITY_REVISION = "20260830_0024"
+MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
+    {
+        ACCOUNT_REGISTRY_SECURITY_REVISION,
+        COMPANY_REPORTING_SECURITY_REVISION,
+        EVIDENCE_UNLOCK_SECURITY_REVISION,
+    }
+)
 COMPANY_REPORTING_SCHEMA = "company_reporting_read"
 COMPANY_REPORTING_FUNCTION_SIGNATURES = {
     "unavailable_balance_v1": "",
@@ -2521,7 +2528,7 @@ class CutoverInventory:
     row_counts: tuple[tuple[str, int], ...]
 
     def __post_init__(self) -> None:
-        if self.schema_revision != ACCOUNT_REGISTRY_SECURITY_REVISION:
+        if self.schema_revision not in MYBANK_CUTOVER_SCHEMA_REVISIONS:
             raise BackupError("cutover inventory schema revision is invalid")
         scalar_counts = (
             self.candidate_total,

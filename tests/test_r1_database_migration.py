@@ -900,7 +900,12 @@ def _append_audit_event(connection: Connection, action: str, payload: dict[str, 
     return cast(UUID, value)
 
 
-def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
+def _seed_read_facts(
+    connection: Connection,
+    *,
+    business_unit_retired_at: datetime | None = None,
+    category_retired_at: datetime | None = None,
+) -> dict[str, UUID | int | bytes]:
     entity_id = uuid4()
     other_entity_id = uuid4()
     business_unit_id = uuid4()
@@ -921,17 +926,29 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
     )
     connection.execute(
         text(
-            "INSERT INTO public.business_unit (id, entity_id, ref, label) "
-            "VALUES (:id, :entity, 'unit-a', 'Unit A')"
+            "INSERT INTO public.business_unit "
+            "(id, entity_id, ref, label, created_at, retired_at) "
+            "VALUES (:id, :entity, 'unit-a', 'Unit A', :now, :retired_at)"
         ),
-        {"id": business_unit_id, "entity": entity_id},
+        {
+            "id": business_unit_id,
+            "entity": entity_id,
+            "now": business_unit_retired_at or now,
+            "retired_at": business_unit_retired_at,
+        },
     )
     connection.execute(
         text(
-            "INSERT INTO public.reporting_category (id, entity_id, code, label) "
-            "VALUES (:id, :entity, 'category-a', 'Category A')"
+            "INSERT INTO public.reporting_category "
+            "(id, entity_id, code, label, created_at, retired_at) "
+            "VALUES (:id, :entity, 'category-a', 'Category A', :now, :retired_at)"
         ),
-        {"id": category_id, "entity": entity_id},
+        {
+            "id": category_id,
+            "entity": entity_id,
+            "now": category_retired_at or now,
+            "retired_at": category_retired_at,
+        },
     )
     evidence_event = _append_audit_event(
         connection,
@@ -1308,15 +1325,13 @@ def test_0022_replays_pending_correction_and_active_dimension_catalog_in_postgre
             ),
             {"id": duplicate_unit, "entity": duplicate_facts["entity"]},
         )
-        retired_current_unit_facts = _seed_read_facts(connection)
-        connection.execute(
-            text("UPDATE public.business_unit SET retired_at = :now WHERE id = :id"),
-            {"now": retired_at, "id": retired_current_unit_facts["unit"]},
+        retired_current_unit_facts = _seed_read_facts(
+            connection,
+            business_unit_retired_at=retired_at,
         )
-        retired_current_category_facts = _seed_read_facts(connection)
-        connection.execute(
-            text("UPDATE public.reporting_category SET retired_at = :now WHERE id = :id"),
-            {"now": retired_at, "id": retired_current_category_facts["category"]},
+        retired_current_category_facts = _seed_read_facts(
+            connection,
+            category_retired_at=retired_at,
         )
 
     with (
@@ -1483,9 +1498,15 @@ def test_0022_replays_pending_correction_and_active_dimension_catalog_in_postgre
             message=message,
         )
 
+    success_parameters = {
+        **base_parameters,
+        "target_business_unit_id": facts["unit"],
+        "set_business_unit": False,
+        "business_unit_ref": None,
+    }
     with engine.begin() as connection:
         receipt = connection.execute(
-            text(PENDING_CORRECTION_CALL_SQL), base_parameters
+            text(PENDING_CORRECTION_CALL_SQL), success_parameters
         ).scalar_one()
     assert receipt["replayed"] is False
     assert receipt["candidate"]["revision"] == 2
@@ -1541,7 +1562,7 @@ def test_0022_replays_pending_correction_and_active_dimension_catalog_in_postgre
     assert tuple(revisions[1]) == (
         2,
         "CONFIRMED",
-        "unit-reviewed",
+        "unit-a",
         "category-reviewed",
         -1_999,
         date(2026, 9, 1),
@@ -1549,8 +1570,6 @@ def test_0022_replays_pending_correction_and_active_dimension_catalog_in_postgre
     assert tuple(correction_event)[1:] == ("PENDING", "CONFIRMED", 1, 2)
     assert fields == {
         "status",
-        "business_unit_ref",
-        "business_unit_label",
         "category_code",
         "category_label",
         "amount_minor",
@@ -1565,7 +1584,7 @@ def test_0022_replays_pending_correction_and_active_dimension_catalog_in_postgre
             (
                 PENDING_CORRECTION_CALL_SQL,
                 {
-                    **base_parameters,
+                    **success_parameters,
                     "operation_id": uuid4(),
                     "assertion_jti": uuid4(),
                 },
@@ -1580,10 +1599,10 @@ def test_0022_replays_pending_correction_and_active_dimension_catalog_in_postgre
             (
                 PENDING_CORRECTION_CALL_SQL,
                 {
-                    **base_parameters,
+                    **success_parameters,
                     "operation_id": uuid4(),
                     "assertion_jti": uuid4(),
-                    "current_business_unit_id": active_unit,
+                    "current_business_unit_id": facts["unit"],
                     "expected_revision": 2,
                     "set_business_unit": False,
                     "business_unit_ref": None,
@@ -1601,7 +1620,7 @@ def test_0022_replays_pending_correction_and_active_dimension_catalog_in_postgre
 
     with pytest.raises(SQLAlchemyError) as raised:
         command.downgrade(_upgrade_config(isolated_r1_database), "20260830_0021")
-    assert "pending candidate correction events prevent destructive downgrade" in str(
+    assert "nonempty R1 fact database prevents destructive company-reporting downgrade" in str(
         getattr(raised.value, "orig", raised.value)
     )
     engine.dispose()
@@ -1610,12 +1629,14 @@ def test_0022_replays_pending_correction_and_active_dimension_catalog_in_postgre
 def test_0022_nonempty_r1_database_without_pending_correction_rejects_downgrade(
     isolated_r1_database: str,
 ) -> None:
+    config = _upgrade_config(isolated_r1_database)
+    command.downgrade(config, "20260830_0022")
     engine = create_engine(isolated_r1_database)
     with engine.begin() as connection:
         _seed_read_facts(connection)
 
     with pytest.raises(SQLAlchemyError) as raised:
-        command.downgrade(_upgrade_config(isolated_r1_database), "20260830_0021")
+        command.downgrade(config, "20260830_0021")
     assert "nonempty R1 fact database prevents destructive downgrade" in str(
         getattr(raised.value, "orig", raised.value)
     )
@@ -3373,11 +3394,12 @@ def test_r1_internal_read_empty_database_downgrade_round_trips() -> None:
 def test_r1_internal_read_nonempty_downgrade_is_rejected(
     isolated_r1_database: str,
 ) -> None:
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = isolated_r1_database
+    command.downgrade(config, "20260824_0015")
     engine = create_engine(isolated_r1_database)
     with engine.begin() as connection:
         _seed_nonempty_downgrade_marker(connection)
-    config = Config("alembic.ini")
-    config.attributes["database_url"] = isolated_r1_database
     with pytest.raises(RuntimeError, match="R1 internal-read data"):
         command.downgrade(config, "20260824_0014")
 

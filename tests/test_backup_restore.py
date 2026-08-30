@@ -87,6 +87,7 @@ FINGERPRINT = "0123456789ABCDEF0123456789ABCDEF01234567"
 
 def _cutover_inventory(
     *,
+    schema_revision: str = "20260830_0023",
     audit_events: int = 1_000,
     candidate_total: int = 20,
     latest_pending: int = 14,
@@ -95,12 +96,23 @@ def _cutover_inventory(
     row_counts = {table: 0 for table in R1_CUTOVER_INVENTORY_TABLES}
     row_counts.update(changes or {})
     return CutoverInventory(
-        schema_revision="20260830_0023",
+        schema_revision=schema_revision,
         candidate_total=candidate_total,
         latest_pending_candidates=latest_pending,
         audit_events=audit_events,
         row_counts=tuple(sorted(row_counts.items())),
     )
+
+
+def test_mybank_restore_inventory_accepts_current_integrated_schema_revision() -> None:
+    inventory = _cutover_inventory(schema_revision="20260830_0025")
+
+    assert inventory.schema_revision == "20260830_0025"
+
+
+def test_mybank_restore_inventory_rejects_unreviewed_future_schema_revision() -> None:
+    with pytest.raises(BackupError, match="schema revision"):
+        _cutover_inventory(schema_revision="20260830_0026")
 
 
 def test_mybank_restore_inventory_accepts_exact_import_replay_and_conflict_sequence() -> None:
