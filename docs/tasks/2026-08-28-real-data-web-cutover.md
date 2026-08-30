@@ -111,10 +111,14 @@ as evidence-bound candidates that remain pending human review.
   production rollback.
 - Non-PostgreSQL red/green tests cover the stopped writeback, retired-current
   dimension, synthetic conflict correction parity, downgrade ordering, and ACL
-  declarations. The full local suite is 778 passed / 200 skipped / one existing
-  warning; the focused Core slice is 141 passed / 43 PostgreSQL skips. Ruff,
-  mypy, sensitive-path, single-head, and diff checks pass. PostgreSQL tests cover
-  the real command/event chain and role ACLs, but this local host lacks a
-  disposable PostgreSQL runtime, so that gate must run in the PostgreSQL 15
-  CI/service before merge. No production data was modified and no deployment is
-  authorized by this handoff.
+  declarations. The full local suite is 779 passed / 200 skipped / one existing
+  warning; the focused Core slice is 142 passed / 43 PostgreSQL skips. Ruff,
+  mypy, sensitive-path, single-head, and diff checks pass. Dedicated PostgreSQL
+  15 run
+  [`33305314409`](https://github.com/maiziwheat520-boop/caiwu/actions/runs/33305314409)
+  passes 9 tests, including empty-database 0022 upgrade → downgrade to 0021 →
+  upgrade, the real four-field command/event chain, append-only evidence
+  preservation, and exact role ACLs. The general branch CI remains blocked
+  before that database gate by inherited full-repository formatting/type-check
+  debt also present at the base commit. No production data was modified and no
+  deployment is authorized by this handoff.

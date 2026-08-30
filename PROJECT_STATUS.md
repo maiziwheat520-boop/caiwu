@@ -25,13 +25,17 @@ The 0022 downgrade retains the precise new-event diagnostic and then refuses
 every nonempty R1 fact database, including durable 0017–0021 import receipts,
 evidence links, hotel cutover, counterparty, managed-account, and bank-statement
 facts; only an empty isolated database may round-trip.
-The full local suite passes **778 tests** with **200 skips** and one existing
-Starlette warning; the focused Core slice passes **141 tests** with **43
+The full local suite passes **779 tests** with **200 skips** and one existing
+Starlette warning; the focused Core slice passes **142 tests** with **43
 PostgreSQL skips**. Ruff format/check, changed-file mypy, sensitive-path,
-single-Alembic-head, and diff checks pass. PostgreSQL integration and ACL tests
-are present but remain unexecuted locally because this host has no configured
-disposable PostgreSQL URL or local PostgreSQL runtime. No production Candidate,
-database, migration, deployment, or Web release was changed.
+single-Alembic-head, and diff checks pass. Dedicated PostgreSQL 15 run
+[`33305314409`](https://github.com/maiziwheat520-boop/caiwu/actions/runs/33305314409)
+passes **9 tests**, including empty-database 0022 upgrade → downgrade to 0021 →
+upgrade, the real four-field correction/event chain, append-only evidence
+preservation, and exact role ACLs. The general branch CI remains blocked before
+that database gate by inherited full-repository formatting/type-check debt also
+present at the base commit. No production Candidate or database was modified;
+no production migration, deployment, or Web release was performed.
 
 ## Payroll publication adapter checkpoint (2026-08-30)
 

@@ -1324,9 +1324,12 @@ not grant direct broad DML merely because the tables exist.
 The D1 production writeback extension is the forward migration
 `20260830_0022_pending_candidate_corrections`, directly after `20260830_0021`.
 It adds the single append-only `PENDING -> CONFIRMED` CORRECT_AND_CONFIRM edge
-and patches the live closure validator so the status, field-change children,
-prior/result revisions, immutable source/evidence, and audit binding remain one
-atomic fact. Terminal states still have no outgoing correction edge.
+and patches the live closure and revision-dimension validators so the status,
+field-change children, prior/result revisions, immutable source/evidence, and
+audit binding remain one atomic fact. Evidence may retain the prior revision's
+business-unit scope only for that explicit correction edge; entity drift,
+evidence-snapshot drift, blocker drift, and ordinary revision mismatch still
+fail closed. Terminal states still have no outgoing correction edge.
 
 Every CORRECT_AND_CONFIRM resolves the final business-unit UUID/ref and
 category UUID/code against the Candidate entity and requires both dimension
