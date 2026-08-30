@@ -3485,10 +3485,7 @@ def test_evidence_unlock_round_trip_is_scoped_idempotent_and_projected(
             **identity,
         }
         prepared = connection.execute(
-            text(
-                "SELECT * FROM internal_command.prepare_evidence_unlock("
-                "CAST(:request AS jsonb))"
-            ),
+            text("SELECT * FROM internal_command.prepare_evidence_unlock(CAST(:request AS jsonb))"),
             {"request": json.dumps(command_request)},
         ).one()
         output_ref = uuid4()
@@ -3515,8 +3512,7 @@ def test_evidence_unlock_round_trip_is_scoped_idempotent_and_projected(
         }
         completed = connection.execute(
             text(
-                "SELECT * FROM internal_command.complete_evidence_unlock("
-                "CAST(:request AS jsonb))"
+                "SELECT * FROM internal_command.complete_evidence_unlock(CAST(:request AS jsonb))"
             ),
             {"request": json.dumps(completion_request)},
         ).one()
@@ -3561,8 +3557,7 @@ def test_evidence_unlock_round_trip_is_scoped_idempotent_and_projected(
         engine,
         [
             (
-                "SELECT * FROM internal_command.prepare_evidence_unlock("
-                "CAST(:request AS jsonb))",
+                "SELECT * FROM internal_command.prepare_evidence_unlock(CAST(:request AS jsonb))",
                 {"request": json.dumps(conflicting_identity)},
             )
         ],
@@ -3584,8 +3579,7 @@ def test_evidence_unlock_round_trip_is_scoped_idempotent_and_projected(
         engine,
         [
             (
-                "SELECT * FROM internal_command.prepare_evidence_unlock("
-                "CAST(:request AS jsonb))",
+                "SELECT * FROM internal_command.prepare_evidence_unlock(CAST(:request AS jsonb))",
                 {"request": json.dumps(out_of_scope)},
             )
         ],
@@ -3593,13 +3587,16 @@ def test_evidence_unlock_round_trip_is_scoped_idempotent_and_projected(
         message="reviewed evidence source was not found in granted scope",
     )
     with engine.connect() as connection:
-        assert connection.execute(
-            text(
-                "SELECT count(*) FROM internal_command.evidence_unlock_operation "
-                "WHERE operation_id = CAST(:operation_id AS uuid)"
-            ),
-            {"operation_id": out_of_scope["operation_id"]},
-        ).scalar_one() == 0
+        assert (
+            connection.execute(
+                text(
+                    "SELECT count(*) FROM internal_command.evidence_unlock_operation "
+                    "WHERE operation_id = CAST(:operation_id AS uuid)"
+                ),
+                {"operation_id": out_of_scope["operation_id"]},
+            ).scalar_one()
+            == 0
+        )
     engine.dispose()
 
 
