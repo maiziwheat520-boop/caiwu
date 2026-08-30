@@ -242,9 +242,7 @@ class EncryptedArtifactStore:
         with self.open_verified(artifact) as stream:
             return stream.read(limit)
 
-    def envelope_metadata(
-        self, artifact: EncryptedPublishedArtifact
-    ) -> EncryptedEnvelopeMetadata:
+    def envelope_metadata(self, artifact: EncryptedPublishedArtifact) -> EncryptedEnvelopeMetadata:
         """Return the authenticated envelope fields persisted beside one blob."""
 
         _require_artifact(artifact)

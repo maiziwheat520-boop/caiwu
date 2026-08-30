@@ -27,9 +27,7 @@ MAX_CLOCK_SKEW_SECONDS = 5
 class UserAssertionClaims(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    version: Literal["ledgerbridge.bff-user-assertion.v1"] = (
-        "ledgerbridge.bff-user-assertion.v1"
-    )
+    version: Literal["ledgerbridge.bff-user-assertion.v1"] = "ledgerbridge.bff-user-assertion.v1"
     issuer: str = Field(min_length=1, max_length=200)
     audience: str = Field(min_length=1, max_length=200)
     subject: str = Field(min_length=1, max_length=200)
