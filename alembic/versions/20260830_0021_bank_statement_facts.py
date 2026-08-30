@@ -184,7 +184,7 @@ CREATE FUNCTION public.r1_bank_statement_transaction_digest(
     p_currency text, p_counterparty_ref text, p_counterparty_name text,
     p_counterparty_account text, p_counterparty_institution text,
     p_transaction_serial text, p_transaction_name text
-) RETURNS bytea LANGUAGE sql IMMUTABLE SET search_path = pg_catalog, public
+) RETURNS bytea LANGUAGE sql IMMUTABLE SET search_path = pg_catalog
 AS $function$
 SELECT public.digest(
     convert_to(
@@ -226,8 +226,8 @@ BEGIN
         RAISE EXCEPTION 'bank statement audit action is invalid'
             USING ERRCODE = 'integrity_constraint_violation';
     END IF;
-    IF TG_TABLE_NAME = 'managed_account'
-       AND (v_payload->>'managed_account_ref' IS DISTINCT FROM NEW.managed_account_ref::text
+    IF TG_TABLE_NAME = 'managed_account' THEN
+        IF (v_payload->>'managed_account_ref' IS DISTINCT FROM NEW.managed_account_ref::text
          OR v_payload->>'entity_ref' IS DISTINCT FROM NEW.entity_id::text
          OR v_payload->>'account_key' IS DISTINCT FROM NEW.account_key
          OR v_payload->>'institution_code' IS DISTINCT FROM NEW.institution_code
@@ -236,17 +236,19 @@ BEGIN
          OR v_payload->>'owner_kind' IS DISTINCT FROM NEW.owner_kind
          OR v_payload->>'account_kind' IS DISTINCT FROM NEW.account_kind
          OR NEW.created_at IS DISTINCT FROM v_audit_time) THEN
-        RAISE EXCEPTION 'managed account audit binding is invalid'
-            USING ERRCODE = 'integrity_constraint_violation';
-    ELSIF TG_TABLE_NAME = 'managed_account_lifecycle'
-       AND (v_payload->>'managed_account_ref' IS DISTINCT FROM NEW.managed_account_ref::text
+            RAISE EXCEPTION 'managed account audit binding is invalid'
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+    ELSIF TG_TABLE_NAME = 'managed_account_lifecycle' THEN
+        IF (v_payload->>'managed_account_ref' IS DISTINCT FROM NEW.managed_account_ref::text
          OR v_payload->>'revision' IS DISTINCT FROM NEW.revision::text
          OR v_payload->>'status' IS DISTINCT FROM NEW.status
          OR NEW.effective_at IS DISTINCT FROM v_audit_time) THEN
-        RAISE EXCEPTION 'managed account lifecycle audit binding is invalid'
-            USING ERRCODE = 'integrity_constraint_violation';
-    ELSIF TG_TABLE_NAME = 'bank_statement'
-       AND (v_payload->>'statement_ref' IS DISTINCT FROM NEW.statement_ref::text
+            RAISE EXCEPTION 'managed account lifecycle audit binding is invalid'
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+    ELSIF TG_TABLE_NAME = 'bank_statement' THEN
+        IF (v_payload->>'statement_ref' IS DISTINCT FROM NEW.statement_ref::text
          OR v_payload->>'managed_account_ref' IS DISTINCT FROM NEW.managed_account_ref::text
          OR v_payload->>'evidence_ref' IS DISTINCT FROM NEW.evidence_ref::text
          OR v_payload->>'source_system' IS DISTINCT FROM NEW.source_system
@@ -260,10 +262,11 @@ BEGIN
          OR v_payload->>'transaction_set_sha256'
               IS DISTINCT FROM encode(NEW.transaction_set_sha256, 'hex')
          OR NEW.created_at IS DISTINCT FROM v_audit_time) THEN
-        RAISE EXCEPTION 'bank statement audit binding is invalid'
-            USING ERRCODE = 'integrity_constraint_violation';
-    ELSIF TG_TABLE_NAME = 'bank_statement_transaction'
-       AND (v_payload->>'transaction_ref' IS DISTINCT FROM NEW.transaction_ref::text
+            RAISE EXCEPTION 'bank statement audit binding is invalid'
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+    ELSIF TG_TABLE_NAME = 'bank_statement_transaction' THEN
+        IF (v_payload->>'transaction_ref' IS DISTINCT FROM NEW.transaction_ref::text
          OR v_payload->>'managed_account_ref' IS DISTINCT FROM NEW.managed_account_ref::text
          OR v_payload->>'fact_sha256' IS DISTINCT FROM encode(NEW.fact_sha256, 'hex')
          OR NEW.fact_sha256 IS DISTINCT FROM
@@ -275,10 +278,11 @@ BEGIN
                   NEW.transaction_serial, NEW.transaction_name
               )
          OR NEW.created_at IS DISTINCT FROM v_audit_time) THEN
-        RAISE EXCEPTION 'bank statement transaction audit binding is invalid'
-            USING ERRCODE = 'integrity_constraint_violation';
-    ELSIF TG_TABLE_NAME = 'bank_statement_observation'
-       AND (v_payload->>'source_event_ref' IS DISTINCT FROM NEW.source_event_ref::text
+            RAISE EXCEPTION 'bank statement transaction audit binding is invalid'
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+    ELSIF TG_TABLE_NAME = 'bank_statement_observation' THEN
+        IF (v_payload->>'source_event_ref' IS DISTINCT FROM NEW.source_event_ref::text
          OR v_payload->>'statement_ref' IS DISTINCT FROM NEW.statement_ref::text
          OR v_payload->>'managed_account_ref' IS DISTINCT FROM NEW.managed_account_ref::text
          OR v_payload->>'transaction_ref' IS DISTINCT FROM NEW.transaction_ref::text
@@ -286,10 +290,11 @@ BEGIN
          OR v_payload->>'source_row_sha256'
               IS DISTINCT FROM encode(NEW.source_row_sha256, 'hex')
          OR NEW.created_at IS DISTINCT FROM v_audit_time) THEN
-        RAISE EXCEPTION 'bank statement observation audit binding is invalid'
-            USING ERRCODE = 'integrity_constraint_violation';
-    ELSIF TG_TABLE_NAME = 'bank_statement_review'
-       AND (v_payload->>'statement_ref' IS DISTINCT FROM NEW.statement_ref::text
+            RAISE EXCEPTION 'bank statement observation audit binding is invalid'
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+    ELSIF TG_TABLE_NAME = 'bank_statement_review' THEN
+        IF (v_payload->>'statement_ref' IS DISTINCT FROM NEW.statement_ref::text
          OR v_payload->>'revision' IS DISTINCT FROM NEW.revision::text
          OR v_payload->>'status' IS DISTINCT FROM NEW.status
          OR NEW.reviewed_at IS DISTINCT FROM v_audit_time
@@ -313,11 +318,12 @@ BEGIN
                         )::text,
                         'UTF8'
                     ),
-                    'sha256'
-              )
-         ))) THEN
-        RAISE EXCEPTION 'bank statement review audit binding is invalid'
-            USING ERRCODE = 'integrity_constraint_violation';
+                     'sha256'
+               )
+          ))) THEN
+            RAISE EXCEPTION 'bank statement review audit binding is invalid'
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
     END IF;
     IF TG_TABLE_NAME = 'managed_account_lifecycle' THEN
         SELECT coalesce(max(revision), 0) + 1 INTO v_expected_revision
@@ -367,7 +373,7 @@ BEFORE INSERT ON public.bank_statement_review
 FOR EACH ROW EXECUTE FUNCTION public.r1_validate_bank_statement();
 
 CREATE FUNCTION public.r1_require_statement_backed_account()
-RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $function$
 BEGIN
     IF NOT EXISTS (
@@ -390,7 +396,7 @@ DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION public.r1_require_statement_backed_account();
 
 CREATE FUNCTION public.r1_validate_statement_facts()
-RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, public
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $function$
 DECLARE
     v_count integer; v_start date; v_end date; v_digest bytea;
@@ -402,7 +408,7 @@ BEGIN
     SELECT count(*),
            min((transaction.occurred_at AT TIME ZONE 'Asia/Shanghai')::date),
            max((transaction.occurred_at AT TIME ZONE 'Asia/Shanghai')::date),
-           digest(
+           public.digest(
                string_agg(
                    observation.source_event_ref::text || ':' ||
                    encode(observation.source_row_sha256, 'hex') || ':' ||
@@ -437,7 +443,7 @@ DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION public.r1_validate_statement_facts();
 
 CREATE FUNCTION public.r1_require_transaction_observation()
-RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $function$
 BEGIN
     IF NOT EXISTS (
@@ -458,13 +464,12 @@ DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION public.r1_require_transaction_observation();
 
 CREATE FUNCTION internal_import.import_bank_statement(p_request jsonb)
-RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $function$
 DECLARE
-    v_statement uuid := (p_request->>'statement_ref')::uuid;
-    v_account uuid := (p_request->>'managed_account_ref')::uuid;
-    v_entity uuid := (p_request->>'entity_ref')::uuid;
-    v_evidence uuid := (p_request->>'evidence_ref')::uuid;
+    v_statement uuid; v_account uuid; v_entity uuid; v_evidence uuid;
+    v_source_size bigint; v_transaction_count integer;
+    v_period_start date; v_period_end date;
     v_source bytea; v_set_digest bytea;
     v_existing public.bank_statement%ROWTYPE;
     v_account_row public.managed_account%ROWTYPE;
@@ -472,35 +477,110 @@ DECLARE
     v_transaction public.bank_statement_transaction%ROWTYPE;
     v_item jsonb; v_audit uuid; v_count integer := 0; v_review text;
     v_transaction_ref uuid; v_fact_digest bytea;
+    v_source_event uuid; v_source_row_number integer;
+    v_occurred_at timestamptz; v_amount_minor bigint; v_balance_minor bigint;
 BEGIN
-    IF jsonb_typeof(p_request) <> 'object'
-       OR jsonb_typeof(p_request->'transactions') <> 'array'
-       OR coalesce(p_request->>'source_sha256','') !~ '^[0-9a-f]{64}$'
+    IF jsonb_typeof(p_request) IS DISTINCT FROM 'object' THEN
+        RAISE EXCEPTION 'bank statement request is invalid' USING ERRCODE = '22023';
+    END IF;
+    IF jsonb_typeof(p_request->'transactions') IS DISTINCT FROM 'array' THEN
+        RAISE EXCEPTION 'bank statement request is invalid' USING ERRCODE = '22023';
+    END IF;
+    IF coalesce(p_request->>'source_sha256','') !~ '^[0-9a-f]{64}$'
        OR coalesce(p_request->>'transaction_set_sha256','') !~ '^[0-9a-f]{64}$'
        OR coalesce(p_request->>'account_key','') !~ '^[a-z0-9][a-z0-9._:-]{0,199}$'
-       OR p_request->>'institution_code' <> 'mybank'
+       OR (p_request->>'institution_code') IS DISTINCT FROM 'mybank'
        OR coalesce(p_request->>'account_suffix','') !~ '^[0-9]{4,8}$'
-       OR p_request->>'account_key' <> concat(
+       OR (p_request->>'account_key') IS DISTINCT FROM concat(
             'mybank:', lower(p_request->>'owner_kind'), ':',
             p_request->>'account_suffix'
        )
        OR coalesce(p_request->>'owner_ref','') !~ '^[a-z0-9][a-z0-9._:-]{0,199}$'
-       OR p_request->>'owner_kind' NOT IN ('PERSONAL','COMPANY')
+       OR coalesce(p_request->>'owner_kind','') NOT IN ('PERSONAL','COMPANY')
        OR coalesce(p_request->>'account_kind','') !~ '^[A-Z][A-Z0-9_]{0,31}$'
-       OR p_request->>'lifecycle_status' <> 'ACTIVE'
-       OR p_request->>'source_system' <> 'mybank_xlsx_export'
-       OR p_request->>'currency' <> 'CNY'
+       OR (p_request->>'lifecycle_status') IS DISTINCT FROM 'ACTIVE'
+       OR (p_request->>'source_system') IS DISTINCT FROM 'mybank_xlsx_export'
+       OR (p_request->>'currency') IS DISTINCT FROM 'CNY'
        OR jsonb_array_length(p_request->'transactions') NOT BETWEEN 1 AND 100000
-       OR (p_request->>'transaction_count')::integer
-            <> jsonb_array_length(p_request->'transactions')
-       OR (p_request->>'source_size')::bigint <= 0
-       OR (p_request->>'period_start')::date > (p_request->>'period_end')::date
+       OR coalesce(p_request->>'transaction_count','') !~ '^[0-9]{1,6}$'
+       OR coalesce(p_request->>'source_size','') !~ '^[0-9]{1,20}$'
+       OR coalesce(p_request->>'period_start','') !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+       OR coalesce(p_request->>'period_end','') !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+       OR btrim(coalesce(p_request->>'declared_media_type','')) = ''
+       OR length(p_request->>'declared_media_type') > 200
        OR btrim(coalesce(p_request->>'actor','')) = ''
        OR length(p_request->>'actor') > 200
        OR btrim(coalesce(p_request->>'reason','')) = ''
        OR length(p_request->>'reason') > 1000 THEN
         RAISE EXCEPTION 'bank statement request is invalid' USING ERRCODE = '22023';
     END IF;
+    BEGIN
+        v_statement := (p_request->>'statement_ref')::uuid;
+        v_account := (p_request->>'managed_account_ref')::uuid;
+        v_entity := (p_request->>'entity_ref')::uuid;
+        v_evidence := (p_request->>'evidence_ref')::uuid;
+        v_transaction_count := (p_request->>'transaction_count')::integer;
+        v_source_size := (p_request->>'source_size')::bigint;
+        v_period_start := (p_request->>'period_start')::date;
+        v_period_end := (p_request->>'period_end')::date;
+    EXCEPTION
+        WHEN invalid_text_representation OR numeric_value_out_of_range
+             OR invalid_datetime_format OR datetime_field_overflow THEN
+            RAISE EXCEPTION 'bank statement request is invalid'
+                USING ERRCODE = '22023';
+    END;
+    IF v_statement IS NULL OR v_account IS NULL OR v_entity IS NULL OR v_evidence IS NULL
+       OR v_transaction_count IS NULL
+       OR v_transaction_count <> jsonb_array_length(p_request->'transactions')
+       OR v_source_size IS NULL OR v_source_size <= 0
+       OR v_period_start IS NULL OR v_period_end IS NULL
+       OR v_period_start > v_period_end THEN
+        RAISE EXCEPTION 'bank statement request is invalid' USING ERRCODE = '22023';
+    END IF;
+    FOR v_item IN SELECT value FROM jsonb_array_elements(p_request->'transactions') LOOP
+        IF jsonb_typeof(v_item) IS DISTINCT FROM 'object' THEN
+            RAISE EXCEPTION 'bank statement transaction is invalid'
+                USING ERRCODE = '22023';
+        END IF;
+        IF coalesce(v_item->>'source_row_sha256','') !~ '^[0-9a-f]{64}$'
+           OR coalesce(v_item->>'counterparty_ref','') !~ '^cp_[a-z0-9_]{1,96}$'
+           OR coalesce(v_item->>'source_row_number','') !~ '^[0-9]{1,10}$'
+           OR coalesce(v_item->>'amount_minor','') !~ '^-?[0-9]{1,20}$'
+           OR coalesce(v_item->>'balance_minor','') !~ '^-?[0-9]{1,20}$'
+           OR coalesce(v_item->>'occurred_at','')
+                !~ 'T.*(Z|[+-][0-9]{2}:[0-9]{2})$'
+           OR length(coalesce(v_item->>'occurred_at','')) > 64
+           OR btrim(coalesce(v_item->>'source_event_ref','')) = ''
+           OR length(v_item->>'source_event_ref') > 64
+           OR btrim(coalesce(v_item->>'transaction_serial','')) = ''
+           OR length(v_item->>'transaction_serial') > 300
+           OR btrim(coalesce(v_item->>'transaction_name','')) = ''
+           OR length(v_item->>'transaction_name') > 300
+           OR length(coalesce(v_item->>'counterparty_name','')) > 300
+           OR length(coalesce(v_item->>'counterparty_account','')) > 300
+           OR length(coalesce(v_item->>'counterparty_institution','')) > 300 THEN
+            RAISE EXCEPTION 'bank statement transaction is invalid'
+                USING ERRCODE = '22023';
+        END IF;
+        BEGIN
+            v_source_event := (v_item->>'source_event_ref')::uuid;
+            v_source_row_number := (v_item->>'source_row_number')::integer;
+            v_occurred_at := (v_item->>'occurred_at')::timestamptz;
+            v_amount_minor := (v_item->>'amount_minor')::bigint;
+            v_balance_minor := (v_item->>'balance_minor')::bigint;
+        EXCEPTION
+            WHEN invalid_text_representation OR numeric_value_out_of_range
+                 OR invalid_datetime_format OR datetime_field_overflow THEN
+                RAISE EXCEPTION 'bank statement transaction is invalid'
+                    USING ERRCODE = '22023';
+        END;
+        IF v_source_event IS NULL OR v_source_row_number IS NULL
+           OR v_source_row_number <= 0 OR v_occurred_at IS NULL
+           OR v_amount_minor IS NULL OR v_balance_minor IS NULL THEN
+            RAISE EXCEPTION 'bank statement transaction is invalid'
+                USING ERRCODE = '22023';
+        END IF;
+    END LOOP;
     v_source := decode(p_request->>'source_sha256', 'hex');
     v_set_digest := decode(p_request->>'transaction_set_sha256', 'hex');
     PERFORM pg_advisory_xact_lock(hashtextextended(p_request->>'source_sha256', 0));
@@ -509,8 +589,7 @@ BEGIN
     IF NOT FOUND
        OR v_evidence_row.entity_id IS DISTINCT FROM v_entity
        OR v_evidence_row.plaintext_sha256 IS DISTINCT FROM v_source
-       OR v_evidence_row.plaintext_size
-            IS DISTINCT FROM (p_request->>'source_size')::bigint
+       OR v_evidence_row.plaintext_size IS DISTINCT FROM v_source_size
        OR v_evidence_row.media_type
             IS DISTINCT FROM p_request->>'declared_media_type' THEN
         RAISE EXCEPTION 'bank statement evidence binding is invalid'
@@ -525,14 +604,13 @@ BEGIN
            OR v_existing.evidence_ref IS DISTINCT FROM v_evidence
            OR v_existing.source_sha256 IS DISTINCT FROM v_source
            OR v_existing.source_system IS DISTINCT FROM p_request->>'source_system'
-           OR v_existing.source_size IS DISTINCT FROM (p_request->>'source_size')::bigint
+           OR v_existing.source_size IS DISTINCT FROM v_source_size
            OR v_existing.declared_media_type
                 IS DISTINCT FROM p_request->>'declared_media_type'
            OR v_existing.currency IS DISTINCT FROM p_request->>'currency'
-           OR v_existing.period_start IS DISTINCT FROM (p_request->>'period_start')::date
-           OR v_existing.period_end IS DISTINCT FROM (p_request->>'period_end')::date
-           OR v_existing.transaction_count
-                IS DISTINCT FROM (p_request->>'transaction_count')::integer
+           OR v_existing.period_start IS DISTINCT FROM v_period_start
+           OR v_existing.period_end IS DISTINCT FROM v_period_end
+           OR v_existing.transaction_count IS DISTINCT FROM v_transaction_count
            OR v_existing.transaction_set_sha256 IS DISTINCT FROM v_set_digest THEN
             RAISE EXCEPTION 'bank statement replay conflicts with persisted facts'
                 USING ERRCODE = 'integrity_constraint_violation';
@@ -548,7 +626,7 @@ BEGIN
     END IF;
 
     PERFORM pg_advisory_xact_lock(hashtextextended(
-        'managed-account:' || v_entity::text || ':' || p_request->>'account_key',
+        'managed-account:' || v_entity::text || ':' || (p_request->>'account_key'),
         0
     ));
     SELECT * INTO v_account_row FROM public.managed_account
@@ -625,12 +703,12 @@ BEGIN
             'evidence_ref', v_evidence,
             'source_system', p_request->>'source_system',
             'source_sha256', p_request->>'source_sha256',
-            'source_size', (p_request->>'source_size')::bigint,
+            'source_size', v_source_size,
             'declared_media_type', p_request->>'declared_media_type',
             'currency', p_request->>'currency',
             'period_start', p_request->>'period_start',
             'period_end', p_request->>'period_end',
-            'transaction_count', (p_request->>'transaction_count')::integer,
+            'transaction_count', v_transaction_count,
             'transaction_set_sha256', p_request->>'transaction_set_sha256'
         )
     );
@@ -641,30 +719,20 @@ BEGIN
         audit_event_id, created_at
     ) VALUES (
         v_statement, v_account, v_evidence, p_request->>'source_system',
-        v_source, (p_request->>'source_size')::bigint,
+        v_source, v_source_size,
         p_request->>'declared_media_type', p_request->>'currency',
-        (p_request->>'period_start')::date, (p_request->>'period_end')::date,
-        (p_request->>'transaction_count')::integer, v_set_digest, v_audit,
+        v_period_start, v_period_end, v_transaction_count, v_set_digest, v_audit,
         (SELECT occurred_at FROM public.audit_event WHERE id = v_audit)
     );
 
     FOR v_item IN SELECT value FROM jsonb_array_elements(p_request->'transactions') LOOP
-        IF coalesce(v_item->>'source_row_sha256','') !~ '^[0-9a-f]{64}$'
-           OR coalesce(v_item->>'counterparty_ref','') !~ '^cp_[a-z0-9_]{1,96}$'
-           OR (v_item->>'source_row_number')::integer <= 0
-           OR btrim(coalesce(v_item->>'transaction_serial','')) = ''
-           OR length(v_item->>'transaction_serial') > 300
-           OR btrim(coalesce(v_item->>'transaction_name','')) = ''
-           OR length(v_item->>'transaction_name') > 300
-           OR length(coalesce(v_item->>'counterparty_name','')) > 300
-           OR length(coalesce(v_item->>'counterparty_account','')) > 300
-           OR length(coalesce(v_item->>'counterparty_institution','')) > 300 THEN
-            RAISE EXCEPTION 'bank statement transaction is invalid'
-                USING ERRCODE = '22023';
-        END IF;
+        v_source_event := (v_item->>'source_event_ref')::uuid;
+        v_source_row_number := (v_item->>'source_row_number')::integer;
+        v_occurred_at := (v_item->>'occurred_at')::timestamptz;
+        v_amount_minor := (v_item->>'amount_minor')::bigint;
+        v_balance_minor := (v_item->>'balance_minor')::bigint;
         v_fact_digest := public.r1_bank_statement_transaction_digest(
-            v_account, (v_item->>'occurred_at')::timestamptz,
-            (v_item->>'amount_minor')::bigint, (v_item->>'balance_minor')::bigint,
+            v_account, v_occurred_at, v_amount_minor, v_balance_minor,
             'CNY', v_item->>'counterparty_ref',
             nullif(v_item->>'counterparty_name',''),
             nullif(v_item->>'counterparty_account',''),
@@ -683,12 +751,9 @@ BEGIN
          FOR UPDATE;
         IF FOUND THEN
             IF v_transaction.fact_sha256 IS DISTINCT FROM v_fact_digest
-               OR v_transaction.occurred_at
-                    IS DISTINCT FROM (v_item->>'occurred_at')::timestamptz
-               OR v_transaction.amount_minor
-                    IS DISTINCT FROM (v_item->>'amount_minor')::bigint
-               OR v_transaction.balance_minor
-                    IS DISTINCT FROM (v_item->>'balance_minor')::bigint
+               OR v_transaction.occurred_at IS DISTINCT FROM v_occurred_at
+               OR v_transaction.amount_minor IS DISTINCT FROM v_amount_minor
+               OR v_transaction.balance_minor IS DISTINCT FROM v_balance_minor
                OR v_transaction.currency IS DISTINCT FROM 'CNY'
                OR v_transaction.counterparty_ref
                     IS DISTINCT FROM v_item->>'counterparty_ref'
@@ -705,7 +770,7 @@ BEGIN
             END IF;
             v_transaction_ref := v_transaction.transaction_ref;
         ELSE
-            v_transaction_ref := (v_item->>'source_event_ref')::uuid;
+            v_transaction_ref := v_source_event;
             v_audit := public.append_audit_event(
                 p_request->>'actor', 'bank_statement.transaction.import',
                 p_request->>'reason', 'ledgerbridge.bank-statement.v1',
@@ -723,8 +788,7 @@ BEGIN
                 audit_event_id, created_at
             ) VALUES (
                 v_transaction_ref, v_account,
-                (v_item->>'occurred_at')::timestamptz,
-                (v_item->>'amount_minor')::bigint, (v_item->>'balance_minor')::bigint,
+                v_occurred_at, v_amount_minor, v_balance_minor,
                 'CNY', v_item->>'counterparty_ref',
                 nullif(v_item->>'counterparty_name',''),
                 nullif(v_item->>'counterparty_account',''),
@@ -738,11 +802,11 @@ BEGIN
             p_request->>'actor', 'bank_statement.observation.import',
             p_request->>'reason', 'ledgerbridge.bank-statement.v1',
             jsonb_build_object(
-                'source_event_ref', (v_item->>'source_event_ref')::uuid,
+                'source_event_ref', v_source_event,
                 'statement_ref', v_statement,
                 'managed_account_ref', v_account,
                 'transaction_ref', v_transaction_ref,
-                'source_row_number', (v_item->>'source_row_number')::integer,
+                'source_row_number', v_source_row_number,
                 'source_row_sha256', v_item->>'source_row_sha256'
             )
         );
@@ -750,14 +814,14 @@ BEGIN
             source_event_ref, statement_ref, managed_account_ref, transaction_ref,
             source_row_number, source_row_sha256, audit_event_id, created_at
         ) VALUES (
-            (v_item->>'source_event_ref')::uuid, v_statement, v_account,
-            v_transaction_ref, (v_item->>'source_row_number')::integer,
+            v_source_event, v_statement, v_account,
+            v_transaction_ref, v_source_row_number,
             decode(v_item->>'source_row_sha256', 'hex'), v_audit,
             (SELECT occurred_at FROM public.audit_event WHERE id = v_audit)
         );
         v_count := v_count + 1;
     END LOOP;
-    IF v_count <> (p_request->>'transaction_count')::integer THEN
+    IF v_count <> v_transaction_count THEN
         RAISE EXCEPTION 'bank statement transaction count changed'
             USING ERRCODE = 'integrity_constraint_violation';
     END IF;
@@ -787,7 +851,7 @@ CREATE FUNCTION internal_command.review_bank_statement(
     p_statement_ref uuid, p_operation_id uuid, p_assertion_jti uuid,
     p_actor_ref text, p_workload_principal_ref text,
     p_expected_revision integer, p_decision text, p_reason text
-) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $function$
 DECLARE
     v_existing public.bank_statement_review%ROWTYPE;

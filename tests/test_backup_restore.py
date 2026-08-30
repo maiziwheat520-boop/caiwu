@@ -13,6 +13,19 @@ from scripts.backup_restore import (
     BACKUP_FORMAT_V1,
     BACKUP_FORMAT_V2,
     BACKUP_FORMAT_V3,
+    BANK_STATEMENT_CONSTRAINT_CONTRACT,
+    BANK_STATEMENT_FUNCTION_RESULTS,
+    BANK_STATEMENT_FUNCTION_SIGNATURES,
+    BANK_STATEMENT_SECURITY_DEFINER_FUNCTIONS,
+    BANK_STATEMENT_SECURITY_SQL,
+    BANK_STATEMENT_TABLES,
+    BANK_STATEMENT_TRIGGER_CONTRACT,
+    COUNTERPARTY_CONSTRAINT_CONTRACT,
+    COUNTERPARTY_FUNCTION_RESULTS,
+    COUNTERPARTY_FUNCTION_SIGNATURES,
+    COUNTERPARTY_PROTECTED_TABLES,
+    COUNTERPARTY_SECURITY_SQL,
+    COUNTERPARTY_TRIGGER_CONTRACT,
     PHASE_1_FUNCTIONS,
     PHASE_1_TABLE_PRIVILEGES,
     PHASE_1_TRIGGERS,
@@ -271,6 +284,7 @@ def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
                     "insert": False,
                     "update": False,
                     "delete": False,
+                    "truncate": False,
                     "references": False,
                     "trigger": False,
                 }
@@ -286,6 +300,7 @@ def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
                     "insert": False,
                     "update": False,
                     "delete": False,
+                    "truncate": False,
                     "references": False,
                     "trigger": False,
                 }
@@ -300,6 +315,7 @@ def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
                 "insert": False,
                 "update": False,
                 "delete": False,
+                "truncate": False,
                 "references": False,
                 "trigger": False,
             }
@@ -343,6 +359,651 @@ def _r1_database_metadata(*, include_backup: bool = False) -> dict[str, object]:
             ]
         )
     return metadata
+
+
+def _counterparty_database_metadata() -> dict[str, object]:
+    metadata = _r1_database_metadata()
+    metadata["alembic_version"] = "20260830_0020"
+    schema_rows = cast(list[dict[str, object]], metadata["r1_effective_schema_privileges"])
+    metadata["r1_effective_schema_privileges"] = [
+        {**item, "usage": True}
+        if item.get("role") == "ledgerbridge_api" and item.get("schema") == "internal_read"
+        else item
+        for item in schema_rows
+    ]
+    metadata["counterparty_row_counts"] = {table: 0 for table in COUNTERPARTY_PROTECTED_TABLES}
+    metadata["counterparty_tables"] = [
+        {"table": table, "owner": "ledgerbridge_owner", "kind": "r"}
+        for table in COUNTERPARTY_PROTECTED_TABLES
+    ]
+    metadata["counterparty_functions"] = [
+        {
+            "schema": schema,
+            "name": name,
+            "identity_arguments": args,
+            "result": COUNTERPARTY_FUNCTION_RESULTS[(schema, name)],
+            "owner": "ledgerbridge_owner",
+            "security_definer": schema == "internal_read",
+            "proconfig": ["search_path=pg_catalog"],
+        }
+        for (schema, name), args in COUNTERPARTY_FUNCTION_SIGNATURES.items()
+    ]
+    metadata["counterparty_triggers"] = [
+        {
+            "table": table,
+            "name": name,
+            "enabled": "O",
+            "constraint": constraint,
+            "trigger_type": trigger_type,
+            "function_schema": "public",
+            "function_name": function_name,
+        }
+        for name, (table, constraint, trigger_type, function_name) in sorted(
+            COUNTERPARTY_TRIGGER_CONTRACT.items()
+        )
+    ]
+    metadata["counterparty_constraints"] = [
+        {
+            "table": table,
+            "name": name,
+            "type": constraint_type,
+            "validated": True,
+            "deferrable": False,
+            "initially_deferred": False,
+            "definition": definition,
+        }
+        for name, (table, constraint_type, definition) in COUNTERPARTY_CONSTRAINT_CONTRACT.items()
+    ]
+    metadata["counterparty_table_acls"] = [
+        {
+            "table": table,
+            "grantee": "ledgerbridge_owner",
+            "privilege": privilege,
+            "grantable": False,
+        }
+        for table in COUNTERPARTY_PROTECTED_TABLES
+        for privilege in (
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "TRUNCATE",
+            "REFERENCES",
+            "TRIGGER",
+        )
+    ]
+    executors = {
+        ("internal_read", "list_candidate_counterparty_facts"): "ledgerbridge_reader",
+        ("internal_read", "list_candidate_evidence_satisfactions"): "ledgerbridge_reader",
+    }
+    metadata["counterparty_function_acls"] = [
+        {
+            "schema": schema,
+            "name": name,
+            "identity_arguments": args,
+            "grantee": grantee,
+            "privilege": "EXECUTE",
+            "grantable": False,
+        }
+        for (schema, name), args in COUNTERPARTY_FUNCTION_SIGNATURES.items()
+        for grantee in (
+            ["ledgerbridge_owner", executors[(schema, name)]]
+            if (schema, name) in executors
+            else ["ledgerbridge_owner"]
+        )
+    ]
+    metadata["counterparty_effective_table_privileges"] = [
+        {
+            "role": role,
+            "table": table,
+            "select": False,
+            "insert": False,
+            "update": False,
+            "delete": False,
+            "truncate": False,
+            "references": False,
+            "trigger": False,
+        }
+        for role in R1_ROLES
+        for table in COUNTERPARTY_PROTECTED_TABLES
+    ]
+    metadata["counterparty_effective_function_privileges"] = [
+        {
+            "role": role,
+            "schema": schema,
+            "name": name,
+            "identity_arguments": args,
+            "execute": role == executors.get((schema, name)),
+        }
+        for role in R1_ROLES
+        for (schema, name), args in COUNTERPARTY_FUNCTION_SIGNATURES.items()
+    ]
+    return metadata
+
+
+def _bank_statement_database_metadata() -> dict[str, object]:
+    metadata = _counterparty_database_metadata()
+    metadata["alembic_version"] = "20260830_0021"
+    schema_rows = cast(list[dict[str, object]], metadata["r1_effective_schema_privileges"])
+    metadata["r1_effective_schema_privileges"] = [
+        {**item, "usage": True}
+        if item.get("role") == "ledgerbridge_api" and item.get("schema") == "internal_read"
+        else item
+        for item in schema_rows
+    ]
+    metadata["bank_statement_row_counts"] = {table: 0 for table in BANK_STATEMENT_TABLES}
+    metadata["bank_statement_tables"] = [
+        {"table": table, "owner": "ledgerbridge_owner", "kind": "r"}
+        for table in BANK_STATEMENT_TABLES
+    ]
+    metadata["bank_statement_schemas"] = [
+        {"schema": schema, "owner": "ledgerbridge_owner"}
+        for schema in ("internal_import", "internal_command", "internal_read")
+    ]
+    metadata["bank_statement_functions"] = [
+        {
+            "schema": schema,
+            "name": name,
+            "identity_arguments": args,
+            "result": BANK_STATEMENT_FUNCTION_RESULTS[(schema, name)],
+            "owner": "ledgerbridge_owner",
+            "security_definer": (schema, name) in BANK_STATEMENT_SECURITY_DEFINER_FUNCTIONS,
+            "proconfig": ["search_path=pg_catalog"],
+        }
+        for (schema, name), args in BANK_STATEMENT_FUNCTION_SIGNATURES.items()
+    ]
+    metadata["bank_statement_triggers"] = [
+        {
+            "table": table,
+            "name": name,
+            "enabled": "O",
+            "constraint": constraint,
+            "trigger_type": trigger_type,
+            "deferrable": deferrable,
+            "initially_deferred": initially_deferred,
+            "function_schema": "public",
+            "function_name": function_name,
+        }
+        for name, (
+            table,
+            constraint,
+            trigger_type,
+            deferrable,
+            initially_deferred,
+            function_name,
+        ) in sorted(BANK_STATEMENT_TRIGGER_CONTRACT.items())
+    ]
+    metadata["bank_statement_constraints"] = [
+        {
+            "table": table,
+            "name": name,
+            "type": constraint_type,
+            "validated": True,
+            "deferrable": False,
+            "initially_deferred": False,
+            "definition": definition,
+        }
+        for name, (table, constraint_type, definition) in sorted(
+            BANK_STATEMENT_CONSTRAINT_CONTRACT.items()
+        )
+    ]
+    metadata["bank_statement_table_acls"] = [
+        {
+            "table": table,
+            "grantee": "ledgerbridge_owner",
+            "privilege": privilege,
+            "grantable": False,
+        }
+        for table in BANK_STATEMENT_TABLES
+        for privilege in (
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "TRUNCATE",
+            "REFERENCES",
+            "TRIGGER",
+        )
+    ]
+    executors = {
+        ("internal_import", "import_bank_statement"): "ledgerbridge_worker",
+        ("internal_read", "get_bank_statement_summary"): "ledgerbridge_reader",
+        ("internal_read", "list_bank_statement_transactions"): "ledgerbridge_reader",
+    }
+    metadata["bank_statement_function_acls"] = [
+        {
+            "schema": schema,
+            "name": name,
+            "identity_arguments": args,
+            "grantee": grantee,
+            "privilege": "EXECUTE",
+            "grantable": False,
+        }
+        for (schema, name), args in BANK_STATEMENT_FUNCTION_SIGNATURES.items()
+        for grantee in (
+            ["ledgerbridge_owner", executors[(schema, name)]]
+            if (schema, name) in executors
+            else ["ledgerbridge_owner"]
+        )
+    ]
+    schema_grantees = {
+        "internal_import": ("ledgerbridge_owner", "ledgerbridge_worker"),
+        "internal_command": ("ledgerbridge_owner", "ledgerbridge_api"),
+        "internal_read": (
+            "ledgerbridge_owner",
+            "ledgerbridge_api",
+            "ledgerbridge_reader",
+        ),
+    }
+    metadata["bank_statement_schema_acls"] = [
+        {
+            "schema": schema,
+            "grantee": grantee,
+            "privilege": privilege,
+            "grantable": False,
+        }
+        for schema, grantees in schema_grantees.items()
+        for grantee in grantees
+        for privilege in (("USAGE", "CREATE") if grantee == "ledgerbridge_owner" else ("USAGE",))
+    ]
+    roles = R1_ROLES
+    metadata["bank_statement_effective_table_privileges"] = [
+        {
+            "role": role,
+            "table": table,
+            "select": False,
+            "insert": False,
+            "update": False,
+            "delete": False,
+            "truncate": False,
+            "references": False,
+            "trigger": False,
+        }
+        for role in roles
+        for table in BANK_STATEMENT_TABLES
+    ]
+    metadata["bank_statement_effective_function_privileges"] = [
+        {
+            "role": role,
+            "schema": schema,
+            "name": name,
+            "identity_arguments": args,
+            "execute": role == executors.get((schema, name)),
+        }
+        for role in roles
+        for (schema, name), args in BANK_STATEMENT_FUNCTION_SIGNATURES.items()
+    ]
+    schema_users = {
+        "internal_import": {"ledgerbridge_worker"},
+        "internal_command": {"ledgerbridge_api"},
+        "internal_read": {"ledgerbridge_api", "ledgerbridge_reader"},
+    }
+    metadata["bank_statement_effective_schema_privileges"] = [
+        {
+            "role": role,
+            "schema": schema,
+            "usage": role in users,
+            "create": False,
+        }
+        for role in roles
+        for schema, users in schema_users.items()
+    ]
+    return metadata
+
+
+def test_counterparty_restore_metadata_covers_0020_contract() -> None:
+    expected = _counterparty_database_metadata()
+    _validate_restored_database(expected, expected.copy())
+    assert set(cast(dict[str, int], expected["counterparty_row_counts"])) == set(
+        COUNTERPARTY_PROTECTED_TABLES
+    )
+    for table in COUNTERPARTY_PROTECTED_TABLES:
+        assert f"FROM public.{table}" in COUNTERPARTY_SECURITY_SQL
+    for (schema, name), args in COUNTERPARTY_FUNCTION_SIGNATURES.items():
+        assert f"('{schema}', '{name}', '{args}')" in COUNTERPARTY_SECURITY_SQL
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "row_counts",
+        "table_missing",
+        "table_owner",
+        "table_kind",
+        "function_missing",
+        "function_signature",
+        "function_result",
+        "function_owner",
+        "function_security_definer",
+        "function_search_path",
+        "function_extra_config",
+        "trigger_missing",
+        "trigger_table",
+        "trigger_disabled",
+        "trigger_type",
+        "trigger_function",
+        "trigger_function_schema",
+        "constraint_missing",
+        "constraint_values",
+        "constraint_validated",
+        "constraint_deferrable",
+        "effective_table_acl",
+        "effective_table_truncate",
+        "effective_function_acl",
+        "raw_table_acl",
+        "raw_function_acl",
+    ],
+)
+def test_counterparty_restore_metadata_rejects_drift(mutation: str) -> None:
+    expected = _counterparty_database_metadata()
+    actual = {**expected}
+    if mutation == "row_counts":
+        actual["counterparty_row_counts"] = {"candidate_evidence_link": 0}
+    elif mutation.startswith("table_"):
+        rows = cast(list[dict[str, object]], expected["counterparty_tables"])
+        if mutation == "table_missing":
+            actual["counterparty_tables"] = rows[1:]
+        else:
+            table_field, table_value = {
+                "table_owner": ("owner", "stale_owner"),
+                "table_kind": ("kind", "v"),
+            }[mutation]
+            actual["counterparty_tables"] = [
+                {**rows[0], table_field: table_value},
+                *rows[1:],
+            ]
+    elif mutation.startswith("function_"):
+        rows = cast(list[dict[str, object]], expected["counterparty_functions"])
+        if mutation == "function_missing":
+            actual["counterparty_functions"] = rows[1:]
+        else:
+            function_field, function_value = {
+                "function_signature": ("identity_arguments", "p_entity_id text"),
+                "function_result": ("result", "void"),
+                "function_owner": ("owner", "stale_owner"),
+                "function_security_definer": (
+                    "security_definer",
+                    not cast(bool, rows[0]["security_definer"]),
+                ),
+                "function_search_path": ("proconfig", ["search_path=pg_temp"]),
+                "function_extra_config": (
+                    "proconfig",
+                    ["search_path=pg_catalog", "statement_timeout=0"],
+                ),
+            }[mutation]
+            actual["counterparty_functions"] = [
+                {**rows[0], function_field: function_value},
+                *rows[1:],
+            ]
+    elif mutation.startswith("trigger_"):
+        rows = cast(list[dict[str, object]], expected["counterparty_triggers"])
+        if mutation == "trigger_missing":
+            actual["counterparty_triggers"] = rows[1:]
+        else:
+            trigger_field, trigger_value = {
+                "trigger_table": ("table", "candidate"),
+                "trigger_disabled": ("enabled", "D"),
+                "trigger_type": ("trigger_type", 7),
+                "trigger_function": ("function_name", "r1_validate_candidate_counterparty"),
+                "trigger_function_schema": ("function_schema", "pg_catalog"),
+            }[mutation]
+            actual["counterparty_triggers"] = [
+                {**rows[0], trigger_field: trigger_value},
+                *rows[1:],
+            ]
+    elif mutation.startswith("constraint_"):
+        rows = cast(list[dict[str, object]], expected["counterparty_constraints"])
+        if mutation == "constraint_missing":
+            actual["counterparty_constraints"] = rows[1:]
+        elif mutation == "constraint_values":
+            actual["counterparty_constraints"] = [
+                {**rows[0], "definition": "CHECK (risk_code IN ('UNSUPPORTED'))"},
+                *rows[1:],
+            ]
+        elif mutation == "constraint_validated":
+            actual["counterparty_constraints"] = [
+                {**rows[0], "validated": False},
+                *rows[1:],
+            ]
+        else:
+            actual["counterparty_constraints"] = [
+                {**rows[0], "deferrable": True},
+                *rows[1:],
+            ]
+    elif mutation == "effective_table_acl":
+        rows = cast(list[dict[str, object]], expected["counterparty_effective_table_privileges"])
+        actual["counterparty_effective_table_privileges"] = [
+            {**rows[0], "select": True},
+            *rows[1:],
+        ]
+    elif mutation == "effective_table_truncate":
+        rows = cast(list[dict[str, object]], expected["counterparty_effective_table_privileges"])
+        actual["counterparty_effective_table_privileges"] = [
+            {**rows[0], "truncate": True},
+            *rows[1:],
+        ]
+    elif mutation == "effective_function_acl":
+        rows = cast(list[dict[str, object]], expected["counterparty_effective_function_privileges"])
+        target = next(i for i, row in enumerate(rows) if row["execute"] is True)
+        actual["counterparty_effective_function_privileges"] = [
+            {**row, "execute": False} if i == target else row for i, row in enumerate(rows)
+        ]
+    else:
+        field = {
+            "raw_table_acl": "counterparty_table_acls",
+            "raw_function_acl": "counterparty_function_acls",
+        }[mutation]
+        rows = cast(list[dict[str, object]], expected[field])
+        actual[field] = [*rows, {**rows[0], "grantee": "stale_role"}]
+    if mutation == "row_counts":
+        with pytest.raises(BackupError, match="metadata differs"):
+            _validate_restored_database(expected, actual)
+    else:
+        with pytest.raises(BackupError, match="counterparty"):
+            _validate_restored_database(actual, actual.copy())
+
+
+def test_bank_statement_restore_metadata_covers_0021_contract() -> None:
+    expected = _bank_statement_database_metadata()
+    _validate_restored_database(expected, expected.copy())
+    assert set(cast(dict[str, int], expected["bank_statement_row_counts"])) == set(
+        BANK_STATEMENT_TABLES
+    )
+    for table in BANK_STATEMENT_TABLES:
+        assert f"FROM public.{table}" in BANK_STATEMENT_SECURITY_SQL
+    for (schema, name), args in BANK_STATEMENT_FUNCTION_SIGNATURES.items():
+        assert f"('{schema}', '{name}', '{args}')" in BANK_STATEMENT_SECURITY_SQL
+    assert "observed_constraints AS" in BANK_STATEMENT_SECURITY_SQL
+    assert "'bank_statement_constraints'" in BANK_STATEMENT_SECURITY_SQL
+    assert len(BANK_STATEMENT_CONSTRAINT_CONTRACT) == 62
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "row_counts",
+        "table_missing",
+        "table_owner",
+        "table_kind",
+        "schema_missing",
+        "schema_owner",
+        "function_missing",
+        "function_signature",
+        "function_result",
+        "function_owner",
+        "function_security_definer",
+        "function_search_path",
+        "function_extra_config",
+        "trigger_missing",
+        "trigger_table",
+        "trigger_constraint",
+        "trigger_disabled",
+        "trigger_type",
+        "trigger_deferrable",
+        "trigger_initially_deferred",
+        "trigger_function",
+        "trigger_function_schema",
+        "constraint_missing",
+        "constraint_table",
+        "constraint_type",
+        "constraint_definition",
+        "constraint_validated",
+        "constraint_deferrable",
+        "constraint_initially_deferred",
+        "constraint_extra",
+        "effective_table_acl",
+        "effective_table_truncate",
+        "effective_function_acl",
+        "raw_table_acl",
+        "raw_function_acl",
+        "raw_schema_acl",
+        "schema_usage",
+        "schema_create",
+    ],
+)
+def test_bank_statement_restore_metadata_rejects_drift(mutation: str) -> None:
+    expected = _bank_statement_database_metadata()
+    actual = {**expected}
+    if mutation == "row_counts":
+        actual["bank_statement_row_counts"] = {"bank_statement": 0}
+    elif mutation.startswith("table_"):
+        rows = cast(list[dict[str, object]], expected["bank_statement_tables"])
+        if mutation == "table_missing":
+            actual["bank_statement_tables"] = rows[1:]
+        else:
+            table_field, table_value = {
+                "table_owner": ("owner", "stale_owner"),
+                "table_kind": ("kind", "v"),
+            }[mutation]
+            actual["bank_statement_tables"] = [
+                {**rows[0], table_field: table_value},
+                *rows[1:],
+            ]
+    elif mutation.startswith("schema_") and mutation in {"schema_missing", "schema_owner"}:
+        rows = cast(list[dict[str, object]], expected["bank_statement_schemas"])
+        actual["bank_statement_schemas"] = (
+            rows[1:]
+            if mutation == "schema_missing"
+            else [{**rows[0], "owner": "stale_owner"}, *rows[1:]]
+        )
+    elif mutation.startswith("function_"):
+        rows = cast(list[dict[str, object]], expected["bank_statement_functions"])
+        if mutation == "function_missing":
+            actual["bank_statement_functions"] = rows[1:]
+        else:
+            function_field, function_value = {
+                "function_signature": ("identity_arguments", "p_request text"),
+                "function_result": ("result", "void"),
+                "function_owner": ("owner", "stale_owner"),
+                "function_security_definer": (
+                    "security_definer",
+                    not cast(bool, rows[0]["security_definer"]),
+                ),
+                "function_search_path": ("proconfig", ["search_path=pg_temp"]),
+                "function_extra_config": (
+                    "proconfig",
+                    ["search_path=pg_catalog", "row_security=off"],
+                ),
+            }[mutation]
+            actual["bank_statement_functions"] = [
+                {**rows[0], function_field: function_value},
+                *rows[1:],
+            ]
+    elif mutation == "trigger_missing":
+        actual["bank_statement_triggers"] = cast(
+            list[dict[str, object]], expected["bank_statement_triggers"]
+        )[1:]
+    elif mutation.startswith("trigger_"):
+        rows = cast(list[dict[str, object]], expected["bank_statement_triggers"])
+        trigger_field, trigger_value = {
+            "trigger_table": ("table", "bank_statement_review"),
+            "trigger_constraint": (
+                "constraint",
+                not cast(bool, rows[0]["constraint"]),
+            ),
+            "trigger_disabled": ("enabled", "D"),
+            "trigger_type": ("trigger_type", 7),
+            "trigger_deferrable": (
+                "deferrable",
+                not cast(bool, rows[0]["deferrable"]),
+            ),
+            "trigger_initially_deferred": (
+                "initially_deferred",
+                not cast(bool, rows[0]["initially_deferred"]),
+            ),
+            "trigger_function": ("function_name", "r1_validate_bank_statement"),
+            "trigger_function_schema": ("function_schema", "pg_catalog"),
+        }[mutation]
+        changed = {**rows[0], trigger_field: trigger_value}
+        actual["bank_statement_triggers"] = [changed, *rows[1:]]
+    elif mutation.startswith("constraint_"):
+        rows = cast(list[dict[str, object]], expected["bank_statement_constraints"])
+        if mutation == "constraint_missing":
+            actual["bank_statement_constraints"] = rows[1:]
+        elif mutation == "constraint_extra":
+            actual["bank_statement_constraints"] = [
+                *rows,
+                {**rows[0], "name": "unexpected_constraint"},
+            ]
+        else:
+            constraint_field, constraint_value = {
+                "constraint_table": ("table", "bank_statement_review"),
+                "constraint_type": ("type", "x"),
+                "constraint_definition": ("definition", "CHECK (false)"),
+                "constraint_validated": ("validated", False),
+                "constraint_deferrable": ("deferrable", True),
+                "constraint_initially_deferred": ("initially_deferred", True),
+            }[mutation]
+            actual["bank_statement_constraints"] = [
+                {**rows[0], constraint_field: constraint_value},
+                *rows[1:],
+            ]
+    elif mutation == "effective_table_acl":
+        rows = cast(list[dict[str, object]], expected["bank_statement_effective_table_privileges"])
+        actual["bank_statement_effective_table_privileges"] = [
+            {**rows[0], "select": True},
+            *rows[1:],
+        ]
+    elif mutation == "effective_table_truncate":
+        rows = cast(list[dict[str, object]], expected["bank_statement_effective_table_privileges"])
+        actual["bank_statement_effective_table_privileges"] = [
+            {**rows[0], "truncate": True},
+            *rows[1:],
+        ]
+    elif mutation == "effective_function_acl":
+        rows = cast(
+            list[dict[str, object]], expected["bank_statement_effective_function_privileges"]
+        )
+        target = next(i for i, row in enumerate(rows) if row["execute"] is True)
+        actual["bank_statement_effective_function_privileges"] = [
+            {**row, "execute": False} if i == target else row for i, row in enumerate(rows)
+        ]
+    elif mutation in {"raw_table_acl", "raw_function_acl", "raw_schema_acl"}:
+        field = {
+            "raw_table_acl": "bank_statement_table_acls",
+            "raw_function_acl": "bank_statement_function_acls",
+            "raw_schema_acl": "bank_statement_schema_acls",
+        }[mutation]
+        rows = cast(list[dict[str, object]], expected[field])
+        actual[field] = [*rows, {**rows[0], "grantee": "stale_role"}]
+    else:
+        rows = cast(list[dict[str, object]], expected["bank_statement_effective_schema_privileges"])
+        if mutation == "schema_usage":
+            target = next(i for i, row in enumerate(rows) if row["usage"] is True)
+            actual["bank_statement_effective_schema_privileges"] = [
+                {**row, "usage": False} if i == target else row for i, row in enumerate(rows)
+            ]
+        else:
+            actual["bank_statement_effective_schema_privileges"] = [
+                {**rows[0], "create": True},
+                *rows[1:],
+            ]
+    if mutation == "row_counts":
+        with pytest.raises(BackupError, match="metadata differs"):
+            _validate_restored_database(expected, actual)
+    else:
+        with pytest.raises(BackupError, match="bank statement"):
+            _validate_restored_database(actual, actual.copy())
 
 
 def test_fingerprint_normalization_and_validation() -> None:
@@ -599,6 +1260,23 @@ def test_r1_database_metadata_verifies_role_acl_catalog_and_effective_privileges
     with pytest.raises(BackupError, match=r"ledgerbridge_app.*R1 table grant"):
         _validate_restored_database(app_fact_grant, app_fact_grant.copy())
 
+    worker_truncate = {
+        **expected,
+        "r1_effective_table_privileges": [
+            {
+                **row,
+                "truncate": True,
+            }
+            if row.get("role") == "ledgerbridge_worker"
+            and row.get("schema") == "public"
+            and row.get("object") == R1_PUBLIC_TABLES[0]
+            else row
+            for row in cast(list[dict[str, object]], expected["r1_effective_table_privileges"])
+        ],
+    }
+    with pytest.raises(BackupError, match="fact table"):
+        _validate_restored_database(worker_truncate, worker_truncate.copy())
+
     public_create = {
         **expected,
         "r1_schema_acl": [
@@ -641,6 +1319,7 @@ def test_r1_security_sql_and_verifier_cover_optional_backup_role() -> None:
     ) in R1_SECURITY_SQL
     assert "FROM expected_roles AS e\n      JOIN pg_roles AS r" in R1_SECURITY_SQL
     assert "FROM observed_roles AS e\n      JOIN pg_roles AS r" in R1_SECURITY_SQL
+    assert "'truncate', has_table_privilege" in R1_SECURITY_SQL
     expected = _r1_database_metadata(include_backup=True)
     _validate_restored_database(expected, expected.copy())
 
@@ -907,9 +1586,10 @@ def test_r1_database_metadata_requires_ledger_summary_reader_execute() -> None:
         for item in functions
         if item.get("schema") == "internal_read" and item.get("name") == "get_ledger_summary_as_of"
     )
-    assert summary["identity_arguments"] == R1_INTERNAL_READ_FUNCTION_SIGNATURES[
-        "get_ledger_summary_as_of"
-    ]
+    assert (
+        summary["identity_arguments"]
+        == R1_INTERNAL_READ_FUNCTION_SIGNATURES["get_ledger_summary_as_of"]
+    )
     assert summary["owner"] == "ledgerbridge_owner"
     assert summary["security_definer"] is True
     assert summary["proconfig"] == ["search_path=pg_catalog"]

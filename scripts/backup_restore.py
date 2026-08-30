@@ -373,6 +373,994 @@ R1_REQUIRED_TRIGGERS = frozenset(
     }
 )
 
+COUNTERPARTY_SECURITY_REVISION = "20260830_0020"
+COUNTERPARTY_TABLES = (
+    "counterparty_identity",
+    "counterparty_classification",
+    "candidate_counterparty",
+)
+COUNTERPARTY_PROTECTED_TABLES = (*COUNTERPARTY_TABLES, "candidate_evidence_link")
+COUNTERPARTY_FUNCTION_SIGNATURES = {
+    ("public", "r1_counterparty_append_only"): "",
+    ("public", "r1_validate_counterparty_identity"): "",
+    ("public", "r1_validate_counterparty_classification"): "",
+    ("public", "r1_validate_candidate_counterparty"): "",
+    ("public", "r1_candidate_evidence_link_append_only"): "",
+    ("public", "r1_validate_candidate_evidence_link"): "",
+    ("internal_read", "list_candidate_counterparty_facts"): (
+        "p_entity_id uuid, p_business_unit_id uuid, p_candidate_ids uuid[], "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
+    ("internal_read", "list_candidate_evidence_satisfactions"): (
+        "p_entity_id uuid, p_business_unit_id uuid, p_candidate_ids uuid[], "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
+}
+COUNTERPARTY_FUNCTION_RESULTS = {
+    ("public", name): "trigger"
+    for name in (
+        "r1_counterparty_append_only",
+        "r1_validate_counterparty_identity",
+        "r1_validate_counterparty_classification",
+        "r1_validate_candidate_counterparty",
+        "r1_candidate_evidence_link_append_only",
+        "r1_validate_candidate_evidence_link",
+    )
+} | {
+    ("internal_read", "list_candidate_counterparty_facts"): (
+        "TABLE(candidate_id uuid, counterparty_ref character varying, "
+        "counterparty_class character varying)"
+    ),
+    ("internal_read", "list_candidate_evidence_satisfactions"): (
+        "TABLE(candidate_id uuid, risk_code character varying)"
+    ),
+}
+COUNTERPARTY_TRIGGER_CONTRACT = {
+    "r1_counterparty_identity_append_only_trigger": (
+        "counterparty_identity",
+        False,
+        27,
+        "r1_counterparty_append_only",
+    ),
+    "r1_counterparty_classification_append_only_trigger": (
+        "counterparty_classification",
+        False,
+        27,
+        "r1_counterparty_append_only",
+    ),
+    "r1_candidate_counterparty_append_only_trigger": (
+        "candidate_counterparty",
+        False,
+        27,
+        "r1_counterparty_append_only",
+    ),
+    "r1_validate_counterparty_identity_trigger": (
+        "counterparty_identity",
+        False,
+        7,
+        "r1_validate_counterparty_identity",
+    ),
+    "r1_validate_counterparty_classification_trigger": (
+        "counterparty_classification",
+        False,
+        7,
+        "r1_validate_counterparty_classification",
+    ),
+    "r1_validate_candidate_counterparty_trigger": (
+        "candidate_counterparty",
+        False,
+        7,
+        "r1_validate_candidate_counterparty",
+    ),
+    "r1_candidate_evidence_link_append_only_trigger": (
+        "candidate_evidence_link",
+        False,
+        27,
+        "r1_candidate_evidence_link_append_only",
+    ),
+    "r1_validate_candidate_evidence_link_trigger": (
+        "candidate_evidence_link",
+        False,
+        7,
+        "r1_validate_candidate_evidence_link",
+    ),
+}
+COUNTERPARTY_CONSTRAINT_CONTRACT = {
+    "fk_candidate_counterparty_audit_event_id_audit_event": (
+        "candidate_counterparty",
+        "f",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
+    ),
+    "fk_candidate_counterparty_candidate_id_candidate": (
+        "candidate_counterparty",
+        "f",
+        "FOREIGN KEY (candidate_id) REFERENCES candidate(id) ON DELETE RESTRICT",
+    ),
+    "fk_candidate_counterparty_entity_id_counterparty_identity": (
+        "candidate_counterparty",
+        "f",
+        "FOREIGN KEY (entity_id, counterparty_ref) REFERENCES "
+        "counterparty_identity(entity_id, counterparty_ref) ON DELETE RESTRICT",
+    ),
+    "pk_candidate_counterparty": ("candidate_counterparty", "p", "PRIMARY KEY (candidate_id)"),
+    "uq_candidate_counterparty_audit": (
+        "candidate_counterparty",
+        "u",
+        "UNIQUE (audit_event_id)",
+    ),
+    "ck_candidate_evidence_link_candidate_evidence_link_rela_edfc": (
+        "candidate_evidence_link",
+        "c",
+        "CHECK (((relation)::text = ANY ((ARRAY['SAME_ECONOMIC_TRANSACTION'::character "
+        "varying, 'PARTIAL_REFUND'::character varying])::text[])))",
+    ),
+    "ck_candidate_evidence_link_candidate_evidence_link_risk_allowed": (
+        "candidate_evidence_link",
+        "c",
+        "CHECK (((risk_code)::text = ANY ((ARRAY['HOTEL_PAYOUT_STATEMENT_REQUIRED'::character "
+        "varying, 'REVERSAL_MATCH_REQUIRED'::character varying])::text[])))",
+    ),
+    "ck_counterparty_classification_counterparty_classificat_056b": (
+        "counterparty_classification",
+        "c",
+        "CHECK ((classification_revision > 0))",
+    ),
+    "ck_counterparty_classification_counterparty_classificat_f4f6": (
+        "counterparty_classification",
+        "c",
+        "CHECK (((counterparty_class)::text = ANY ((ARRAY['self_managed'::character varying, "
+        "'related_party'::character varying, 'known_business'::character varying, "
+        "'unknown'::character varying])::text[])))",
+    ),
+    "fk_counterparty_classification_audit_event_id_audit_event": (
+        "counterparty_classification",
+        "f",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
+    ),
+    "fk_counterparty_classification_entity_id_counterparty_identity": (
+        "counterparty_classification",
+        "f",
+        "FOREIGN KEY (entity_id, counterparty_ref) REFERENCES "
+        "counterparty_identity(entity_id, counterparty_ref) ON DELETE RESTRICT",
+    ),
+    "pk_counterparty_classification": (
+        "counterparty_classification",
+        "p",
+        "PRIMARY KEY (entity_id, counterparty_ref, classification_revision)",
+    ),
+    "uq_counterparty_classification_audit": (
+        "counterparty_classification",
+        "u",
+        "UNIQUE (audit_event_id)",
+    ),
+    "ck_counterparty_identity_counterparty_identity_ref_format": (
+        "counterparty_identity",
+        "c",
+        "CHECK (((counterparty_ref)::text ~ '^cp_[a-z0-9_]{1,96}$'::text))",
+    ),
+    "fk_counterparty_identity_audit_event_id_audit_event": (
+        "counterparty_identity",
+        "f",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
+    ),
+    "fk_counterparty_identity_entity_id_entity": (
+        "counterparty_identity",
+        "f",
+        "FOREIGN KEY (entity_id) REFERENCES entity(id) ON DELETE RESTRICT",
+    ),
+    "pk_counterparty_identity": (
+        "counterparty_identity",
+        "p",
+        "PRIMARY KEY (entity_id, counterparty_ref)",
+    ),
+    "uq_counterparty_identity_audit": (
+        "counterparty_identity",
+        "u",
+        "UNIQUE (audit_event_id)",
+    ),
+}
+
+_COUNTERPARTY_NEW_TABLES_SQL = ", ".join(f"'{name}'" for name in COUNTERPARTY_TABLES)
+_COUNTERPARTY_TABLES_SQL = ", ".join(f"'{name}'" for name in COUNTERPARTY_PROTECTED_TABLES)
+_COUNTERPARTY_ROLES_SQL = ", ".join(f"('{name}'::name)" for name in R1_CONTROLLED_ROLES)
+_COUNTERPARTY_FUNCTIONS_SQL = ", ".join(
+    f"('{schema}', '{name}', '{args}')"
+    for (schema, name), args in COUNTERPARTY_FUNCTION_SIGNATURES.items()
+)
+_COUNTERPARTY_CONSTRAINTS_SQL = ", ".join(f"'{name}'" for name in COUNTERPARTY_CONSTRAINT_CONTRACT)
+COUNTERPARTY_SECURITY_SQL = (
+    ""  # nosec B608 - replacements use only fixed allowlists.
+    """
+WITH expected_roles(role_name) AS (VALUES __R1_ROLE_SQL__),
+present_roles(role_name) AS (
+ SELECT e.role_name FROM expected_roles e JOIN pg_roles r ON r.rolname=e.role_name
+), expected_functions(schema_name,function_name,identity_arguments) AS (
+ VALUES __COUNTERPARTY_FUNCTIONS_SQL__
+), observed_tables AS (
+ SELECT c.relname table_name,pg_get_userbyid(c.relowner) owner,c.relkind kind
+ FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='public' AND c.relname IN (__COUNTERPARTY_TABLES_SQL__)
+), observed_functions AS (
+ SELECT n.nspname schema_name,p.proname function_name,
+  pg_get_function_identity_arguments(p.oid) identity_arguments,
+  pg_get_function_result(p.oid) result,
+  pg_get_userbyid(p.proowner) owner,p.prosecdef security_definer,
+  COALESCE(to_json(p.proconfig),'[]'::json) proconfig,p.oid,p.proacl acl
+ FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+ WHERE EXISTS (SELECT 1 FROM expected_functions e
+  WHERE e.schema_name=n.nspname AND e.function_name=p.proname)
+), observed_triggers AS (
+ SELECT c.relname table_name,t.tgname trigger_name,t.tgenabled enabled,
+  t.tgconstraint<>0 is_constraint,t.tgtype trigger_type,
+  fn.proname function_name,fnn.nspname function_schema
+ FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+ JOIN pg_namespace n ON n.oid=c.relnamespace
+ JOIN pg_proc fn ON fn.oid=t.tgfoid
+ JOIN pg_namespace fnn ON fnn.oid=fn.pronamespace
+ WHERE n.nspname='public' AND NOT t.tgisinternal
+  AND c.relname IN (__COUNTERPARTY_TABLES_SQL__)
+), observed_constraints AS (
+ SELECT c.relname table_name,con.conname constraint_name,con.contype constraint_type,
+  con.convalidated is_validated,con.condeferrable is_deferrable,
+  con.condeferred is_initially_deferred,pg_get_constraintdef(con.oid,false) definition
+ FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid
+ JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='public' AND (
+  c.relname IN (__COUNTERPARTY_NEW_TABLES_SQL__)
+  OR (c.relname='candidate_evidence_link'
+      AND con.conname IN (__COUNTERPARTY_CONSTRAINTS_SQL__))
+ )
+), table_acls AS (
+ SELECT c.relname table_name,
+  CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ CROSS JOIN LATERAL aclexplode(c.relacl) a
+ WHERE n.nspname='public' AND c.relname IN (__COUNTERPARTY_TABLES_SQL__)
+), function_acls AS (
+ SELECT f.schema_name,f.function_name,f.identity_arguments,
+  CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM observed_functions f
+ CROSS JOIN LATERAL aclexplode(f.acl) a
+), table_privileges AS (
+ SELECT r.role_name role,o.object_name,
+  has_table_privilege(r.role_name,format('public.%I',o.object_name),'SELECT') can_select,
+  has_table_privilege(r.role_name,format('public.%I',o.object_name),'INSERT') can_insert,
+  has_table_privilege(r.role_name,format('public.%I',o.object_name),'UPDATE') can_update,
+  has_table_privilege(r.role_name,format('public.%I',o.object_name),'DELETE') can_delete,
+  has_table_privilege(r.role_name,format('public.%I',o.object_name),'TRUNCATE') can_truncate,
+  has_table_privilege(r.role_name,format('public.%I',o.object_name),'REFERENCES') can_reference,
+  has_table_privilege(r.role_name,format('public.%I',o.object_name),'TRIGGER') can_trigger
+ FROM present_roles r
+ CROSS JOIN unnest(ARRAY[__COUNTERPARTY_TABLES_SQL__]::text[]) o(object_name)
+), function_privileges AS (
+ SELECT r.role_name role,f.schema_name,f.function_name,f.identity_arguments,
+  has_function_privilege(r.role_name,f.oid,'EXECUTE') can_execute
+ FROM present_roles r CROSS JOIN observed_functions f
+)
+SELECT json_build_object(
+ 'counterparty_row_counts',json_build_object(
+  'counterparty_identity',(SELECT count(*) FROM public.counterparty_identity),
+  'counterparty_classification',(SELECT count(*) FROM public.counterparty_classification),
+  'candidate_counterparty',(SELECT count(*) FROM public.candidate_counterparty),
+  'candidate_evidence_link',(SELECT count(*) FROM public.candidate_evidence_link)),
+ 'counterparty_tables',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'owner',owner,'kind',kind) ORDER BY table_name)
+  FROM observed_tables),'[]'::json),
+ 'counterparty_functions',COALESCE((SELECT json_agg(json_build_object(
+  'schema',schema_name,'name',function_name,'identity_arguments',identity_arguments,
+  'result',result,'owner',owner,'security_definer',security_definer,'proconfig',proconfig)
+  ORDER BY schema_name,function_name,identity_arguments) FROM observed_functions),'[]'::json),
+ 'counterparty_triggers',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'name',trigger_name,'enabled',enabled,'constraint',is_constraint,
+  'trigger_type',trigger_type,'function_schema',function_schema,'function_name',function_name)
+  ORDER BY table_name,trigger_name) FROM observed_triggers),'[]'::json),
+ 'counterparty_constraints',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'name',constraint_name,'type',constraint_type,
+  'validated',is_validated,'deferrable',is_deferrable,
+  'initially_deferred',is_initially_deferred,'definition',definition)
+  ORDER BY table_name,constraint_name)
+  FROM observed_constraints),'[]'::json),
+ 'counterparty_table_acls',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'grantee',grantee,'privilege',privilege,'grantable',grantable)
+  ORDER BY table_name,grantee,privilege) FROM table_acls),'[]'::json),
+ 'counterparty_function_acls',COALESCE((SELECT json_agg(json_build_object(
+  'schema',schema_name,'name',function_name,'identity_arguments',identity_arguments,
+  'grantee',grantee,'privilege',privilege,'grantable',grantable)
+  ORDER BY schema_name,function_name,identity_arguments,grantee,privilege)
+  FROM function_acls),'[]'::json),
+ 'counterparty_effective_table_privileges',COALESCE((SELECT json_agg(json_build_object(
+  'role',role,'table',object_name,'select',can_select,'insert',can_insert,
+  'update',can_update,'delete',can_delete,'truncate',can_truncate,
+  'references',can_reference,'trigger',can_trigger)
+  ORDER BY role,object_name)
+  FROM table_privileges),'[]'::json),
+ 'counterparty_effective_function_privileges',COALESCE((SELECT json_agg(json_build_object(
+  'role',role,'schema',schema_name,'name',function_name,
+  'identity_arguments',identity_arguments,'execute',can_execute)
+  ORDER BY role,schema_name,function_name,identity_arguments) FROM function_privileges),'[]'::json)
+)::text;
+    """.replace("__R1_ROLE_SQL__", _COUNTERPARTY_ROLES_SQL)
+    .replace("__COUNTERPARTY_NEW_TABLES_SQL__", _COUNTERPARTY_NEW_TABLES_SQL)
+    .replace("__COUNTERPARTY_TABLES_SQL__", _COUNTERPARTY_TABLES_SQL)
+    .replace("__COUNTERPARTY_FUNCTIONS_SQL__", _COUNTERPARTY_FUNCTIONS_SQL)
+    .replace("__COUNTERPARTY_CONSTRAINTS_SQL__", _COUNTERPARTY_CONSTRAINTS_SQL)
+    .strip()
+)
+
+BANK_STATEMENT_SECURITY_REVISION = "20260830_0021"
+BANK_STATEMENT_TABLES = (
+    "managed_account",
+    "managed_account_lifecycle",
+    "bank_statement",
+    "bank_statement_transaction",
+    "bank_statement_observation",
+    "bank_statement_review",
+)
+BANK_STATEMENT_FUNCTION_SIGNATURES = {
+    ("public", "r1_bank_statement_append_only"): "",
+    ("public", "r1_bank_statement_transaction_digest"): (
+        "p_managed_account_ref uuid, p_occurred_at timestamp with time zone, "
+        "p_amount_minor bigint, p_balance_minor bigint, p_currency text, "
+        "p_counterparty_ref text, p_counterparty_name text, p_counterparty_account text, "
+        "p_counterparty_institution text, p_transaction_serial text, p_transaction_name text"
+    ),
+    ("public", "r1_validate_bank_statement"): "",
+    ("public", "r1_require_statement_backed_account"): "",
+    ("public", "r1_validate_statement_facts"): "",
+    ("public", "r1_require_transaction_observation"): "",
+    ("internal_import", "import_bank_statement"): "p_request jsonb",
+    ("internal_command", "review_bank_statement"): (
+        "p_statement_ref uuid, p_operation_id uuid, p_assertion_jti uuid, "
+        "p_actor_ref text, p_workload_principal_ref text, p_expected_revision integer, "
+        "p_decision text, p_reason text"
+    ),
+    ("internal_read", "get_bank_statement_summary"): (
+        "p_statement_ref uuid, p_entity_ref uuid, p_audit_horizon_sequence bigint, "
+        "p_audit_horizon_hash bytea"
+    ),
+    ("internal_read", "list_bank_statement_transactions"): (
+        "p_statement_ref uuid, p_entity_ref uuid, p_audit_horizon_sequence bigint, "
+        "p_audit_horizon_hash bytea, p_after_row integer, p_limit integer"
+    ),
+}
+BANK_STATEMENT_FUNCTION_RESULTS = {
+    ("public", "r1_bank_statement_append_only"): "trigger",
+    ("public", "r1_bank_statement_transaction_digest"): "bytea",
+    ("public", "r1_validate_bank_statement"): "trigger",
+    ("public", "r1_require_statement_backed_account"): "trigger",
+    ("public", "r1_validate_statement_facts"): "trigger",
+    ("public", "r1_require_transaction_observation"): "trigger",
+    ("internal_import", "import_bank_statement"): "jsonb",
+    ("internal_command", "review_bank_statement"): "jsonb",
+    ("internal_read", "get_bank_statement_summary"): (
+        "TABLE(statement_ref uuid, managed_account_ref uuid, evidence_ref uuid, "
+        "period_start date, period_end date, transaction_count integer, "
+        "review_status character varying, review_revision integer)"
+    ),
+    ("internal_read", "list_bank_statement_transactions"): (
+        "TABLE(source_row_number integer, occurred_at timestamp with time zone, "
+        "amount_minor bigint, balance_minor bigint, currency character varying, "
+        "counterparty_ref character varying, counterparty_name character varying, "
+        "counterparty_account_masked character varying, "
+        "counterparty_institution character varying, transaction_serial character varying, "
+        "transaction_name character varying)"
+    ),
+}
+BANK_STATEMENT_SECURITY_DEFINER_FUNCTIONS = frozenset(
+    {
+        ("public", "r1_require_statement_backed_account"),
+        ("public", "r1_validate_statement_facts"),
+        ("public", "r1_require_transaction_observation"),
+        ("internal_import", "import_bank_statement"),
+        ("internal_command", "review_bank_statement"),
+        ("internal_read", "get_bank_statement_summary"),
+        ("internal_read", "list_bank_statement_transactions"),
+    }
+)
+BANK_STATEMENT_TRIGGER_CONTRACT = {
+    "managed_account_append_only": (
+        "managed_account",
+        False,
+        27,
+        False,
+        False,
+        "r1_bank_statement_append_only",
+    ),
+    "managed_account_lifecycle_append_only": (
+        "managed_account_lifecycle",
+        False,
+        27,
+        False,
+        False,
+        "r1_bank_statement_append_only",
+    ),
+    "bank_statement_append_only": (
+        "bank_statement",
+        False,
+        27,
+        False,
+        False,
+        "r1_bank_statement_append_only",
+    ),
+    "bank_statement_transaction_append_only": (
+        "bank_statement_transaction",
+        False,
+        27,
+        False,
+        False,
+        "r1_bank_statement_append_only",
+    ),
+    "bank_statement_observation_append_only": (
+        "bank_statement_observation",
+        False,
+        27,
+        False,
+        False,
+        "r1_bank_statement_append_only",
+    ),
+    "bank_statement_review_append_only": (
+        "bank_statement_review",
+        False,
+        27,
+        False,
+        False,
+        "r1_bank_statement_append_only",
+    ),
+    "validate_managed_account_audit": (
+        "managed_account",
+        False,
+        7,
+        False,
+        False,
+        "r1_validate_bank_statement",
+    ),
+    "validate_managed_account_lifecycle_audit": (
+        "managed_account_lifecycle",
+        False,
+        7,
+        False,
+        False,
+        "r1_validate_bank_statement",
+    ),
+    "validate_bank_statement_audit": (
+        "bank_statement",
+        False,
+        7,
+        False,
+        False,
+        "r1_validate_bank_statement",
+    ),
+    "validate_bank_statement_transaction_audit": (
+        "bank_statement_transaction",
+        False,
+        7,
+        False,
+        False,
+        "r1_validate_bank_statement",
+    ),
+    "validate_bank_statement_observation_audit": (
+        "bank_statement_observation",
+        False,
+        7,
+        False,
+        False,
+        "r1_validate_bank_statement",
+    ),
+    "validate_bank_statement_review_audit": (
+        "bank_statement_review",
+        False,
+        7,
+        False,
+        False,
+        "r1_validate_bank_statement",
+    ),
+    "require_statement_backed_account": (
+        "managed_account",
+        True,
+        5,
+        True,
+        True,
+        "r1_require_statement_backed_account",
+    ),
+    "validate_statement_facts": (
+        "bank_statement",
+        True,
+        5,
+        True,
+        True,
+        "r1_validate_statement_facts",
+    ),
+    "validate_statement_observation_set": (
+        "bank_statement_observation",
+        True,
+        5,
+        True,
+        True,
+        "r1_validate_statement_facts",
+    ),
+    "require_transaction_observation": (
+        "bank_statement_transaction",
+        True,
+        5,
+        True,
+        True,
+        "r1_require_transaction_observation",
+    ),
+}
+BANK_STATEMENT_REQUIRED_TRIGGERS = frozenset(BANK_STATEMENT_TRIGGER_CONTRACT)
+BANK_STATEMENT_CONSTRAINT_CONTRACT = {
+    "bank_statement_audit_event_id_fkey": (
+        "bank_statement",
+        "f",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
+    ),
+    "bank_statement_audit_event_id_key": (
+        "bank_statement",
+        "u",
+        "UNIQUE (audit_event_id)",
+    ),
+    "bank_statement_check": (
+        "bank_statement",
+        "c",
+        "CHECK ((period_start <= period_end))",
+    ),
+    "bank_statement_currency_check": (
+        "bank_statement",
+        "c",
+        "CHECK (((currency)::text = 'CNY'::text))",
+    ),
+    "bank_statement_evidence_ref_fkey": (
+        "bank_statement",
+        "f",
+        "FOREIGN KEY (evidence_ref) REFERENCES evidence_object(evidence_ref) ON DELETE RESTRICT",
+    ),
+    "bank_statement_evidence_ref_key": (
+        "bank_statement",
+        "u",
+        "UNIQUE (evidence_ref)",
+    ),
+    "bank_statement_managed_account_ref_fkey": (
+        "bank_statement",
+        "f",
+        "FOREIGN KEY (managed_account_ref) REFERENCES managed_account(managed_account_ref) "
+        "ON DELETE RESTRICT",
+    ),
+    "bank_statement_pkey": ("bank_statement", "p", "PRIMARY KEY (statement_ref)"),
+    "bank_statement_source_sha256_check": (
+        "bank_statement",
+        "c",
+        "CHECK ((octet_length(source_sha256) = 32))",
+    ),
+    "bank_statement_source_sha256_key": (
+        "bank_statement",
+        "u",
+        "UNIQUE (source_sha256)",
+    ),
+    "bank_statement_source_size_check": (
+        "bank_statement",
+        "c",
+        "CHECK ((source_size > 0))",
+    ),
+    "bank_statement_source_system_check": (
+        "bank_statement",
+        "c",
+        "CHECK (((source_system)::text ~ '^[a-z0-9][a-z0-9_]{0,63}$'::text))",
+    ),
+    "bank_statement_statement_ref_managed_account_ref_key": (
+        "bank_statement",
+        "u",
+        "UNIQUE (statement_ref, managed_account_ref)",
+    ),
+    "bank_statement_transaction_count_check": (
+        "bank_statement",
+        "c",
+        "CHECK ((transaction_count > 0))",
+    ),
+    "bank_statement_transaction_set_sha256_check": (
+        "bank_statement",
+        "c",
+        "CHECK ((octet_length(transaction_set_sha256) = 32))",
+    ),
+    "bank_statement_observation_audit_event_id_fkey": (
+        "bank_statement_observation",
+        "f",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
+    ),
+    "bank_statement_observation_audit_event_id_key": (
+        "bank_statement_observation",
+        "u",
+        "UNIQUE (audit_event_id)",
+    ),
+    "bank_statement_observation_pkey": (
+        "bank_statement_observation",
+        "p",
+        "PRIMARY KEY (source_event_ref)",
+    ),
+    "bank_statement_observation_source_row_number_check": (
+        "bank_statement_observation",
+        "c",
+        "CHECK ((source_row_number > 0))",
+    ),
+    "bank_statement_observation_source_row_sha256_check": (
+        "bank_statement_observation",
+        "c",
+        "CHECK ((octet_length(source_row_sha256) = 32))",
+    ),
+    "bank_statement_observation_statement_ref_managed_account_r_fkey": (
+        "bank_statement_observation",
+        "f",
+        "FOREIGN KEY (statement_ref, managed_account_ref) REFERENCES "
+        "bank_statement(statement_ref, managed_account_ref) ON DELETE RESTRICT",
+    ),
+    "bank_statement_observation_statement_ref_source_row_number_key": (
+        "bank_statement_observation",
+        "u",
+        "UNIQUE (statement_ref, source_row_number)",
+    ),
+    "bank_statement_observation_statement_ref_transaction_ref_key": (
+        "bank_statement_observation",
+        "u",
+        "UNIQUE (statement_ref, transaction_ref)",
+    ),
+    "bank_statement_observation_transaction_ref_managed_account_fkey": (
+        "bank_statement_observation",
+        "f",
+        "FOREIGN KEY (transaction_ref, managed_account_ref) REFERENCES "
+        "bank_statement_transaction(transaction_ref, managed_account_ref) ON DELETE RESTRICT",
+    ),
+    "bank_statement_review_assertion_jti_key": (
+        "bank_statement_review",
+        "u",
+        "UNIQUE (assertion_jti)",
+    ),
+    "bank_statement_review_audit_event_id_fkey": (
+        "bank_statement_review",
+        "f",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
+    ),
+    "bank_statement_review_audit_event_id_key": (
+        "bank_statement_review",
+        "u",
+        "UNIQUE (audit_event_id)",
+    ),
+    "bank_statement_review_check": (
+        "bank_statement_review",
+        "c",
+        "CHECK ((((revision = 1) AND ((status)::text = 'PENDING'::text) AND "
+        "(operation_id IS NULL) AND (assertion_jti IS NULL) AND (actor_ref IS NULL) "
+        "AND (workload_principal_ref IS NULL) AND (expected_revision IS NULL) AND "
+        "(command_sha256 IS NULL)) OR ((revision > 1) AND ((status)::text = ANY "
+        "((ARRAY['CONFIRMED'::character varying, 'REJECTED'::character varying])::text[])) "
+        "AND (operation_id IS NOT NULL) AND (assertion_jti IS NOT NULL) AND "
+        "(btrim((actor_ref)::text) <> ''::text) AND "
+        "(btrim((workload_principal_ref)::text) <> ''::text) AND "
+        "(expected_revision = (revision - 1)) AND (command_sha256 IS NOT NULL))))",
+    ),
+    "bank_statement_review_command_sha256_check": (
+        "bank_statement_review",
+        "c",
+        "CHECK (((command_sha256 IS NULL) OR (octet_length(command_sha256) = 32)))",
+    ),
+    "bank_statement_review_operation_id_key": (
+        "bank_statement_review",
+        "u",
+        "UNIQUE (operation_id)",
+    ),
+    "bank_statement_review_pkey": (
+        "bank_statement_review",
+        "p",
+        "PRIMARY KEY (statement_ref, revision)",
+    ),
+    "bank_statement_review_revision_check": (
+        "bank_statement_review",
+        "c",
+        "CHECK ((revision > 0))",
+    ),
+    "bank_statement_review_statement_ref_fkey": (
+        "bank_statement_review",
+        "f",
+        "FOREIGN KEY (statement_ref) REFERENCES bank_statement(statement_ref) ON DELETE RESTRICT",
+    ),
+    "bank_statement_review_status_check": (
+        "bank_statement_review",
+        "c",
+        "CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, "
+        "'CONFIRMED'::character varying, 'REJECTED'::character varying])::text[])))",
+    ),
+    "bank_statement_transaction_audit_event_id_fkey": (
+        "bank_statement_transaction",
+        "f",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
+    ),
+    "bank_statement_transaction_audit_event_id_key": (
+        "bank_statement_transaction",
+        "u",
+        "UNIQUE (audit_event_id)",
+    ),
+    "bank_statement_transaction_counterparty_ref_check": (
+        "bank_statement_transaction",
+        "c",
+        "CHECK (((counterparty_ref)::text ~ '^cp_[a-z0-9_]{1,96}$'::text))",
+    ),
+    "bank_statement_transaction_currency_check": (
+        "bank_statement_transaction",
+        "c",
+        "CHECK (((currency)::text = 'CNY'::text))",
+    ),
+    "bank_statement_transaction_fact_sha256_check": (
+        "bank_statement_transaction",
+        "c",
+        "CHECK ((octet_length(fact_sha256) = 32))",
+    ),
+    "bank_statement_transaction_managed_account_ref_fkey": (
+        "bank_statement_transaction",
+        "f",
+        "FOREIGN KEY (managed_account_ref) REFERENCES managed_account(managed_account_ref) "
+        "ON DELETE RESTRICT",
+    ),
+    "bank_statement_transaction_managed_account_ref_transaction__key": (
+        "bank_statement_transaction",
+        "u",
+        "UNIQUE (managed_account_ref, transaction_serial)",
+    ),
+    "bank_statement_transaction_pkey": (
+        "bank_statement_transaction",
+        "p",
+        "PRIMARY KEY (transaction_ref)",
+    ),
+    "bank_statement_transaction_transaction_name_check": (
+        "bank_statement_transaction",
+        "c",
+        "CHECK ((btrim((transaction_name)::text) <> ''::text))",
+    ),
+    "bank_statement_transaction_transaction_ref_managed_account__key": (
+        "bank_statement_transaction",
+        "u",
+        "UNIQUE (transaction_ref, managed_account_ref)",
+    ),
+    "bank_statement_transaction_transaction_serial_check": (
+        "bank_statement_transaction",
+        "c",
+        "CHECK ((btrim((transaction_serial)::text) <> ''::text))",
+    ),
+    "managed_account_account_suffix_check": (
+        "managed_account",
+        "c",
+        "CHECK (((account_suffix)::text ~ '^[0-9]{4,8}$'::text))",
+    ),
+    "managed_account_audit_event_id_fkey": (
+        "managed_account",
+        "f",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
+    ),
+    "managed_account_audit_event_id_key": (
+        "managed_account",
+        "u",
+        "UNIQUE (audit_event_id)",
+    ),
+    "managed_account_entity_id_fkey": (
+        "managed_account",
+        "f",
+        "FOREIGN KEY (entity_id) REFERENCES entity(id) ON DELETE RESTRICT",
+    ),
+    "managed_account_institution_code_check": (
+        "managed_account",
+        "c",
+        "CHECK (((institution_code)::text = 'mybank'::text))",
+    ),
+    "managed_account_key_format": (
+        "managed_account",
+        "c",
+        "CHECK (((account_key)::text ~ '^[a-z0-9][a-z0-9._:-]{0,199}$'::text))",
+    ),
+    "managed_account_kind_format": (
+        "managed_account",
+        "c",
+        "CHECK (((account_kind)::text ~ '^[A-Z][A-Z0-9_]{0,31}$'::text))",
+    ),
+    "managed_account_owner_kind_check": (
+        "managed_account",
+        "c",
+        "CHECK (((owner_kind)::text = ANY ((ARRAY['PERSONAL'::character varying, "
+        "'COMPANY'::character varying])::text[])))",
+    ),
+    "managed_account_owner_ref_format": (
+        "managed_account",
+        "c",
+        "CHECK (((owner_ref)::text ~ '^[a-z0-9][a-z0-9._:-]{0,199}$'::text))",
+    ),
+    "managed_account_pkey": ("managed_account", "p", "PRIMARY KEY (managed_account_ref)"),
+    "uq_managed_account_entity_key": (
+        "managed_account",
+        "u",
+        "UNIQUE (entity_id, account_key)",
+    ),
+    "managed_account_lifecycle_audit_event_id_fkey": (
+        "managed_account_lifecycle",
+        "f",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
+    ),
+    "managed_account_lifecycle_audit_event_id_key": (
+        "managed_account_lifecycle",
+        "u",
+        "UNIQUE (audit_event_id)",
+    ),
+    "managed_account_lifecycle_managed_account_ref_fkey": (
+        "managed_account_lifecycle",
+        "f",
+        "FOREIGN KEY (managed_account_ref) REFERENCES managed_account(managed_account_ref) "
+        "ON DELETE RESTRICT",
+    ),
+    "managed_account_lifecycle_pkey": (
+        "managed_account_lifecycle",
+        "p",
+        "PRIMARY KEY (managed_account_ref, revision)",
+    ),
+    "managed_account_lifecycle_revision_check": (
+        "managed_account_lifecycle",
+        "c",
+        "CHECK ((revision > 0))",
+    ),
+    "managed_account_lifecycle_status_check": (
+        "managed_account_lifecycle",
+        "c",
+        "CHECK (((status)::text = ANY ((ARRAY['ACTIVE'::character varying, "
+        "'INACTIVE'::character varying, 'CLOSED'::character varying])::text[])))",
+    ),
+}
+
+_BANK_TABLES_SQL = ", ".join(f"'{name}'" for name in BANK_STATEMENT_TABLES)
+_BANK_ROLES_SQL = ", ".join(f"('{name}'::name)" for name in R1_CONTROLLED_ROLES)
+_BANK_FUNCTIONS_SQL = ", ".join(
+    f"('{schema}', '{name}', '{args}')"
+    for (schema, name), args in BANK_STATEMENT_FUNCTION_SIGNATURES.items()
+)
+BANK_STATEMENT_SECURITY_SQL = (
+    ""  # nosec B608 - replacements use only fixed allowlists.
+    """
+WITH expected_roles(role_name) AS (VALUES __R1_ROLE_SQL__),
+present_roles(role_name) AS (
+ SELECT e.role_name FROM expected_roles e JOIN pg_roles r ON r.rolname=e.role_name
+), expected_functions(schema_name,function_name,identity_arguments) AS (
+ VALUES __BANK_FUNCTIONS_SQL__
+), observed_tables AS (
+ SELECT c.relname table_name,pg_get_userbyid(c.relowner) owner,c.relkind kind
+ FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='public' AND c.relname IN (__BANK_TABLES_SQL__)
+), observed_schemas AS (
+ SELECT n.nspname schema_name,pg_get_userbyid(n.nspowner) owner
+ FROM pg_namespace n
+ WHERE n.nspname IN ('internal_import','internal_command','internal_read')
+), observed_functions AS (
+ SELECT n.nspname schema_name,p.proname function_name,
+  pg_get_function_identity_arguments(p.oid) identity_arguments,
+  pg_get_function_result(p.oid) result,
+  pg_get_userbyid(p.proowner) owner,p.prosecdef security_definer,
+  COALESCE(to_json(p.proconfig),'[]'::json) proconfig,p.oid,p.proacl acl
+ FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+ WHERE EXISTS (SELECT 1 FROM expected_functions e
+  WHERE e.schema_name=n.nspname AND e.function_name=p.proname)
+), observed_triggers AS (
+ SELECT c.relname table_name,t.tgname trigger_name,t.tgenabled enabled,
+  t.tgconstraint<>0 is_constraint,t.tgtype trigger_type,
+  t.tgdeferrable is_deferrable,t.tginitdeferred is_initially_deferred,
+  fnn.nspname function_schema,fn.proname function_name
+ FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+ JOIN pg_namespace n ON n.oid=c.relnamespace
+ JOIN pg_proc fn ON fn.oid=t.tgfoid
+ JOIN pg_namespace fnn ON fnn.oid=fn.pronamespace
+ WHERE n.nspname='public' AND NOT t.tgisinternal AND c.relname IN (__BANK_TABLES_SQL__)
+), observed_constraints AS (
+ SELECT c.relname table_name,con.conname constraint_name,con.contype constraint_type,
+  con.convalidated is_validated,con.condeferrable is_deferrable,
+  con.condeferred is_initially_deferred,pg_get_constraintdef(con.oid,false) definition
+ FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid
+ JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='public' AND c.relname IN (__BANK_TABLES_SQL__)
+  AND con.contype IN ('p','u','f','c','x')
+), table_acls AS (
+ SELECT c.relname table_name,
+  CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ CROSS JOIN LATERAL aclexplode(c.relacl) a
+ WHERE n.nspname='public' AND c.relname IN (__BANK_TABLES_SQL__)
+), function_acls AS (
+ SELECT f.schema_name,f.function_name,f.identity_arguments,
+  CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM observed_functions f
+ CROSS JOIN LATERAL aclexplode(f.acl) a
+), schema_acls AS (
+ SELECT n.nspname schema_name,
+  CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM pg_namespace n
+ CROSS JOIN LATERAL aclexplode(n.nspacl) a
+ WHERE n.nspname IN ('internal_import','internal_command','internal_read')
+), table_privileges AS (
+ SELECT r.role_name role,o.object_name,
+  has_table_privilege(r.role_name,format('public.%I',o.object_name),'SELECT') can_select,
+  has_table_privilege(r.role_name,format('public.%I',o.object_name),'INSERT') can_insert,
+  has_table_privilege(r.role_name,format('public.%I',o.object_name),'UPDATE') can_update,
+  has_table_privilege(r.role_name,format('public.%I',o.object_name),'DELETE') can_delete,
+  has_table_privilege(r.role_name,format('public.%I',o.object_name),'TRUNCATE') can_truncate,
+  has_table_privilege(r.role_name,format('public.%I',o.object_name),'REFERENCES') can_reference,
+  has_table_privilege(r.role_name,format('public.%I',o.object_name),'TRIGGER') can_trigger
+ FROM present_roles r CROSS JOIN unnest(ARRAY[__BANK_TABLES_SQL__]::text[]) o(object_name)
+), function_privileges AS (
+ SELECT r.role_name role,f.schema_name,f.function_name,f.identity_arguments,
+  has_function_privilege(r.role_name,f.oid,'EXECUTE') can_execute
+ FROM present_roles r CROSS JOIN observed_functions f
+), schema_privileges AS (
+ SELECT r.role_name role,s.schema_name,
+  has_schema_privilege(r.role_name,s.schema_name,'USAGE') can_use,
+  has_schema_privilege(r.role_name,s.schema_name,'CREATE') can_create
+ FROM present_roles r
+ CROSS JOIN (VALUES ('internal_import'::text),('internal_command'::text),
+  ('internal_read'::text)) s(schema_name)
+)
+SELECT json_build_object(
+ 'bank_statement_row_counts',json_build_object(
+  'managed_account',(SELECT count(*) FROM public.managed_account),
+  'managed_account_lifecycle',(SELECT count(*) FROM public.managed_account_lifecycle),
+  'bank_statement',(SELECT count(*) FROM public.bank_statement),
+  'bank_statement_transaction',(SELECT count(*) FROM public.bank_statement_transaction),
+  'bank_statement_observation',(SELECT count(*) FROM public.bank_statement_observation),
+ 'bank_statement_review',(SELECT count(*) FROM public.bank_statement_review)),
+ 'bank_statement_tables',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'owner',owner,'kind',kind) ORDER BY table_name)
+  FROM observed_tables),'[]'::json),
+ 'bank_statement_schemas',COALESCE((SELECT json_agg(json_build_object(
+  'schema',schema_name,'owner',owner) ORDER BY schema_name)
+  FROM observed_schemas),'[]'::json),
+ 'bank_statement_functions',COALESCE((SELECT json_agg(json_build_object(
+  'schema',schema_name,'name',function_name,'identity_arguments',identity_arguments,
+  'result',result,'owner',owner,'security_definer',security_definer,'proconfig',proconfig)
+  ORDER BY schema_name,function_name,identity_arguments) FROM observed_functions),'[]'::json),
+ 'bank_statement_triggers',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'name',trigger_name,'enabled',enabled,'constraint',is_constraint,
+  'trigger_type',trigger_type,'deferrable',is_deferrable,
+  'initially_deferred',is_initially_deferred,
+  'function_schema',function_schema,'function_name',function_name)
+  ORDER BY table_name,trigger_name) FROM observed_triggers),'[]'::json),
+ 'bank_statement_constraints',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'name',constraint_name,'type',constraint_type,
+  'validated',is_validated,'deferrable',is_deferrable,
+  'initially_deferred',is_initially_deferred,'definition',definition)
+  ORDER BY table_name,constraint_name) FROM observed_constraints),'[]'::json),
+ 'bank_statement_table_acls',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'grantee',grantee,'privilege',privilege,'grantable',grantable)
+  ORDER BY table_name,grantee,privilege) FROM table_acls),'[]'::json),
+ 'bank_statement_function_acls',COALESCE((SELECT json_agg(json_build_object(
+  'schema',schema_name,'name',function_name,'identity_arguments',identity_arguments,
+  'grantee',grantee,'privilege',privilege,'grantable',grantable)
+  ORDER BY schema_name,function_name,identity_arguments,grantee,privilege)
+  FROM function_acls),'[]'::json),
+ 'bank_statement_schema_acls',COALESCE((SELECT json_agg(json_build_object(
+  'schema',schema_name,'grantee',grantee,'privilege',privilege,'grantable',grantable)
+  ORDER BY schema_name,grantee,privilege) FROM schema_acls),'[]'::json),
+ 'bank_statement_effective_table_privileges',COALESCE((SELECT json_agg(json_build_object(
+  'role',role,'table',object_name,'select',can_select,'insert',can_insert,
+  'update',can_update,'delete',can_delete,'truncate',can_truncate,
+  'references',can_reference,'trigger',can_trigger) ORDER BY role,object_name)
+  FROM table_privileges),'[]'::json),
+ 'bank_statement_effective_function_privileges',COALESCE((SELECT json_agg(json_build_object(
+  'role',role,'schema',schema_name,'name',function_name,
+  'identity_arguments',identity_arguments,'execute',can_execute)
+  ORDER BY role,schema_name,function_name,identity_arguments) FROM function_privileges),'[]'::json),
+ 'bank_statement_effective_schema_privileges',COALESCE((SELECT json_agg(json_build_object(
+  'role',role,'schema',schema_name,'usage',can_use,'create',can_create)
+  ORDER BY role,schema_name) FROM schema_privileges),'[]'::json)
+)::text;
+    """.replace("__R1_ROLE_SQL__", _BANK_ROLES_SQL)
+    .replace("__BANK_TABLES_SQL__", _BANK_TABLES_SQL)
+    .replace("__BANK_FUNCTIONS_SQL__", _BANK_FUNCTIONS_SQL)
+    .strip()
+)
+
 _R1_PUBLIC_TABLE_SQL = ", ".join(f"'{name}'" for name in R1_PUBLIC_TABLES)
 _R1_VIEW_SQL = ", ".join(f"'{name}'" for name in R1_INTERNAL_READ_VIEWS)
 _R1_FUNCTION_SQL = ", ".join(
@@ -467,7 +1455,8 @@ WITH expected_roles(role_name) AS (
       FROM pg_default_acl AS d
       LEFT JOIN pg_namespace AS n ON n.oid = d.defaclnamespace
       CROSS JOIN LATERAL aclexplode(COALESCE(d.defaclacl, '{}'::aclitem[])) AS a
-     WHERE d.defaclnamespace = 0 OR n.nspname IN ('public', 'internal_read')
+     WHERE d.defaclnamespace = 0
+        OR n.nspname IN ('public', 'internal_read', 'internal_import', 'internal_command')
 ), r1_constraints AS (
     SELECT COALESCE(json_agg(json_build_object(
         'schema', n.nspname,
@@ -547,6 +1536,7 @@ WITH expected_roles(role_name) AS (
         'insert', has_table_privilege(e.role_name::text, format('%I.%I', o.schema_name, o.object_name), 'INSERT'),
         'update', has_table_privilege(e.role_name::text, format('%I.%I', o.schema_name, o.object_name), 'UPDATE'),
         'delete', has_table_privilege(e.role_name::text, format('%I.%I', o.schema_name, o.object_name), 'DELETE'),
+        'truncate', has_table_privilege(e.role_name::text, format('%I.%I', o.schema_name, o.object_name), 'TRUNCATE'),
         'references', has_table_privilege(e.role_name::text, format('%I.%I', o.schema_name, o.object_name), 'REFERENCES'),
         'trigger', has_table_privilege(e.role_name::text, format('%I.%I', o.schema_name, o.object_name), 'TRIGGER')
     ) ORDER BY e.role_name, o.schema_name, o.object_name), '[]'::json) AS value
@@ -1036,11 +2026,47 @@ def _database_metadata(
         if set(r1_security) != required_r1_keys:
             raise BackupError("R1 security query returned an incomplete object")
         metadata.update(cast(dict[str, Any], r1_security))
+    if revision >= COUNTERPARTY_SECURITY_REVISION:
+        counterparty_security = query(COUNTERPARTY_SECURITY_SQL)
+        required_counterparty_keys = {
+            "counterparty_row_counts",
+            "counterparty_tables",
+            "counterparty_functions",
+            "counterparty_triggers",
+            "counterparty_constraints",
+            "counterparty_table_acls",
+            "counterparty_function_acls",
+            "counterparty_effective_table_privileges",
+            "counterparty_effective_function_privileges",
+        }
+        if (
+            not isinstance(counterparty_security, dict)
+            or set(counterparty_security) != required_counterparty_keys
+        ):
+            raise BackupError("counterparty security query returned an incomplete object")
+        metadata.update(cast(dict[str, Any], counterparty_security))
+    if revision >= BANK_STATEMENT_SECURITY_REVISION:
+        bank_security = query(BANK_STATEMENT_SECURITY_SQL)
+        required_bank_keys = {
+            "bank_statement_row_counts",
+            "bank_statement_tables",
+            "bank_statement_schemas",
+            "bank_statement_functions",
+            "bank_statement_triggers",
+            "bank_statement_constraints",
+            "bank_statement_table_acls",
+            "bank_statement_function_acls",
+            "bank_statement_schema_acls",
+            "bank_statement_effective_table_privileges",
+            "bank_statement_effective_function_privileges",
+            "bank_statement_effective_schema_privileges",
+        }
+        if not isinstance(bank_security, dict) or set(bank_security) != required_bank_keys:
+            raise BackupError("bank statement security query returned an incomplete object")
+        metadata.update(cast(dict[str, Any], bank_security))
     if revision >= "20260821_0003":
         artifact_sql = (
-            R1_ARTIFACT_MANIFEST_SQL
-            if revision >= "20260824_0012"
-            else ARTIFACT_MANIFEST_SQL
+            R1_ARTIFACT_MANIFEST_SQL if revision >= "20260824_0012" else ARTIFACT_MANIFEST_SQL
         )
         artifact_manifest = query(artifact_sql)
         if not isinstance(artifact_manifest, dict):
@@ -2083,7 +3109,7 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
             raise BackupError("restored R1 default ACL contains an unknown or stale grantee")
         if owner != database_owner or grantee != database_owner:
             raise BackupError("restored R1 default ACL contains an excess entry")
-        if schema not in {"", "public", "internal_read"}:
+        if schema not in {"", "public", "internal_read", "internal_import", "internal_command"}:
             raise BackupError("restored R1 default ACL contains an unexpected schema")
         if privilege not in default_acl_privileges.get(object_type, set()):
             raise BackupError("restored R1 default ACL contains an excess privilege")
@@ -2174,7 +3200,15 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
     }
     if len(actual_keys) != len(table_privileges) or actual_keys != expected_keys:
         raise BackupError("restored R1 effective table privilege matrix is incomplete")
-    privilege_names = ("select", "insert", "update", "delete", "references", "trigger")
+    privilege_names = (
+        "select",
+        "insert",
+        "update",
+        "delete",
+        "truncate",
+        "references",
+        "trigger",
+    )
     for item in table_privileges:
         role = item.get("role")
         schema = item.get("schema")
@@ -2269,6 +3303,443 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
             raise BackupError("restored R1 schema privilege matrix is invalid")
 
 
+def _validate_counterparty_security(metadata: dict[str, Any]) -> None:
+    def _list(name: str) -> list[dict[str, Any]]:
+        value = metadata.get(name)
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise BackupError(f"restored counterparty metadata is invalid: {name}")
+        return cast(list[dict[str, Any]], value)
+
+    def _grantable(value: Any) -> bool:
+        return (
+            value is True or value is False or (isinstance(value, str) and value in {"YES", "NO"})
+        )
+
+    row_counts = metadata.get("counterparty_row_counts")
+    if (
+        not isinstance(row_counts, dict)
+        or set(row_counts) != set(COUNTERPARTY_PROTECTED_TABLES)
+        or any(not isinstance(value, int) or value < 0 for value in row_counts.values())
+    ):
+        raise BackupError("restored counterparty row-count metadata is invalid")
+
+    tables = _list("counterparty_tables")
+    actual_tables = {item.get("table") for item in tables}
+    owner = metadata.get("database_owner")
+    if not isinstance(owner, str):
+        raise BackupError("restored counterparty database owner is invalid")
+    if len(actual_tables) != len(tables) or actual_tables != set(COUNTERPARTY_PROTECTED_TABLES):
+        raise BackupError("restored counterparty tables differ from the required baseline")
+    if any(item.get("owner") != owner or item.get("kind") != "r" for item in tables):
+        raise BackupError("restored counterparty table security boundary is invalid")
+
+    functions = _list("counterparty_functions")
+    expected_functions = {
+        (schema, name, args) for (schema, name), args in COUNTERPARTY_FUNCTION_SIGNATURES.items()
+    }
+    actual_functions = {
+        (item.get("schema"), item.get("name"), item.get("identity_arguments")) for item in functions
+    }
+    if len(actual_functions) != len(functions) or actual_functions != expected_functions:
+        raise BackupError("restored counterparty functions differ from the required baseline")
+    for item in functions:
+        schema = item.get("schema")
+        name = item.get("name")
+        if (
+            item.get("owner") != owner
+            or item.get("security_definer") is not (schema == "internal_read")
+            or item.get("proconfig") != ["search_path=pg_catalog"]
+            or item.get("result")
+            != COUNTERPARTY_FUNCTION_RESULTS.get(cast(tuple[str, str], (schema, name)))
+        ):
+            raise BackupError("restored counterparty function security boundary is invalid")
+
+    triggers = _list("counterparty_triggers")
+    actual_trigger_contract = {
+        item.get("name"): (
+            item.get("table"),
+            item.get("constraint"),
+            item.get("trigger_type"),
+            item.get("function_name"),
+        )
+        for item in triggers
+    }
+    if (
+        len(actual_trigger_contract) != len(triggers)
+        or actual_trigger_contract != COUNTERPARTY_TRIGGER_CONTRACT
+    ):
+        raise BackupError(
+            "restored counterparty trigger contract differs from the required baseline"
+        )
+    if any(
+        item.get("enabled") != "O" or item.get("function_schema") != "public" for item in triggers
+    ):
+        raise BackupError("restored counterparty trigger security boundary is invalid")
+
+    constraints = _list("counterparty_constraints")
+    actual_constraint_contract = {
+        item.get("name"): (item.get("table"), item.get("type"), item.get("definition"))
+        for item in constraints
+    }
+    if (
+        len(actual_constraint_contract) != len(constraints)
+        or actual_constraint_contract != COUNTERPARTY_CONSTRAINT_CONTRACT
+    ):
+        raise BackupError("restored counterparty constraints differ from the required baseline")
+    for item in constraints:
+        if (
+            item.get("validated") is not True
+            or item.get("deferrable") is not False
+            or item.get("initially_deferred") is not False
+        ):
+            raise BackupError("restored counterparty constraint definition is invalid")
+
+    table_acls = _list("counterparty_table_acls")
+    table_acl_keys: set[tuple[Any, ...]] = set()
+    table_privileges = {
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "TRUNCATE",
+        "REFERENCES",
+        "TRIGGER",
+    }
+    for item in table_acls:
+        table_acl_key = (item.get("table"), item.get("grantee"), item.get("privilege"))
+        if table_acl_key in table_acl_keys:
+            raise BackupError("restored counterparty table ACL contains a duplicate entry")
+        table_acl_keys.add(table_acl_key)
+        if (
+            item.get("table") not in COUNTERPARTY_PROTECTED_TABLES
+            or item.get("grantee") != owner
+            or item.get("privilege") not in table_privileges
+            or not _grantable(item.get("grantable"))
+        ):
+            raise BackupError("restored counterparty table ACL contains an excess grant")
+
+    executors = {
+        ("internal_read", "list_candidate_counterparty_facts"): "ledgerbridge_reader",
+        ("internal_read", "list_candidate_evidence_satisfactions"): "ledgerbridge_reader",
+    }
+    function_acls = _list("counterparty_function_acls")
+    function_acl_keys: set[tuple[Any, ...]] = set()
+    for item in function_acls:
+        acl_function_key = (
+            item.get("schema"),
+            item.get("name"),
+            item.get("identity_arguments"),
+        )
+        function_acl_key = (*acl_function_key, item.get("grantee"), item.get("privilege"))
+        if function_acl_key in function_acl_keys:
+            raise BackupError("restored counterparty function ACL contains a duplicate entry")
+        function_acl_keys.add(function_acl_key)
+        executor = executors.get(cast(tuple[str, str], acl_function_key[:2]))
+        allowed_grantees = {owner} if executor is None else {owner, executor}
+        if (
+            acl_function_key not in expected_functions
+            or item.get("grantee") not in allowed_grantees
+            or item.get("privilege") != "EXECUTE"
+            or not _grantable(item.get("grantable"))
+            or (item.get("grantee") != owner and item.get("grantable") not in {False, "NO"})
+        ):
+            raise BackupError("restored counterparty function ACL contains an excess grant")
+
+    roles = _list("r1_role_matrix")
+    active_roles = {item.get("role") for item in roles if item.get("role") in R1_CONTROLLED_ROLES}
+    tables = _list("counterparty_effective_table_privileges")
+    expected_table_keys = {
+        (role, table) for role in active_roles for table in COUNTERPARTY_PROTECTED_TABLES
+    }
+    actual_table_keys = {(item.get("role"), item.get("table")) for item in tables}
+    privilege_names = (
+        "select",
+        "insert",
+        "update",
+        "delete",
+        "truncate",
+        "references",
+        "trigger",
+    )
+    if len(actual_table_keys) != len(tables) or actual_table_keys != expected_table_keys:
+        raise BackupError("restored counterparty table privilege matrix is incomplete")
+    if any(any(item.get(name) is not False for name in privilege_names) for item in tables):
+        raise BackupError("restored counterparty fact table has an unexpected privilege")
+
+    grants = _list("counterparty_effective_function_privileges")
+    expected_grant_keys = {
+        (role, schema, name, args)
+        for role in active_roles
+        for schema, name, args in expected_functions
+    }
+    actual_grant_keys = {
+        (item.get("role"), item.get("schema"), item.get("name"), item.get("identity_arguments"))
+        for item in grants
+    }
+    if len(actual_grant_keys) != len(grants) or actual_grant_keys != expected_grant_keys:
+        raise BackupError("restored counterparty function privilege matrix is incomplete")
+    for item in grants:
+        schema = item.get("schema")
+        name = item.get("name")
+        if not isinstance(schema, str) or not isinstance(name, str):
+            raise BackupError("restored counterparty function privilege metadata is invalid")
+        executor = executors.get((schema, name))
+        if item.get("execute") is not (item.get("role") == executor):
+            raise BackupError("restored counterparty function privilege matrix is invalid")
+
+
+def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
+    def _list(name: str) -> list[dict[str, Any]]:
+        value = metadata.get(name)
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise BackupError(f"restored bank statement metadata is invalid: {name}")
+        return cast(list[dict[str, Any]], value)
+
+    def _grantable(value: Any) -> bool:
+        return (
+            value is True or value is False or (isinstance(value, str) and value in {"YES", "NO"})
+        )
+
+    row_counts = metadata.get("bank_statement_row_counts")
+    if (
+        not isinstance(row_counts, dict)
+        or set(row_counts) != set(BANK_STATEMENT_TABLES)
+        or any(not isinstance(value, int) or value < 0 for value in row_counts.values())
+    ):
+        raise BackupError("restored bank statement row-count metadata is invalid")
+
+    owner = metadata.get("database_owner")
+    if not isinstance(owner, str):
+        raise BackupError("restored bank statement database owner is invalid")
+    tables = _list("bank_statement_tables")
+    actual_tables = {item.get("table") for item in tables}
+    if len(actual_tables) != len(tables) or actual_tables != set(BANK_STATEMENT_TABLES):
+        raise BackupError("restored bank statement tables differ from the required baseline")
+    if any(item.get("owner") != owner or item.get("kind") != "r" for item in tables):
+        raise BackupError("restored bank statement table security boundary is invalid")
+
+    observed_schemas = _list("bank_statement_schemas")
+    expected_schema_names = {"internal_import", "internal_command", "internal_read"}
+    actual_schema_names = {item.get("schema") for item in observed_schemas}
+    if (
+        len(actual_schema_names) != len(observed_schemas)
+        or actual_schema_names != expected_schema_names
+        or any(item.get("owner") != owner for item in observed_schemas)
+    ):
+        raise BackupError("restored bank statement schema security boundary is invalid")
+
+    functions = _list("bank_statement_functions")
+    expected_functions = {
+        (schema, name, args) for (schema, name), args in BANK_STATEMENT_FUNCTION_SIGNATURES.items()
+    }
+    actual_functions = {
+        (item.get("schema"), item.get("name"), item.get("identity_arguments")) for item in functions
+    }
+    if len(actual_functions) != len(functions) or actual_functions != expected_functions:
+        raise BackupError("restored bank statement functions differ from the required baseline")
+    for item in functions:
+        schema = item.get("schema")
+        name = item.get("name")
+        function_key = cast(tuple[str, str], (schema, name))
+        if (
+            item.get("owner") != owner
+            or item.get("security_definer")
+            is not (function_key in BANK_STATEMENT_SECURITY_DEFINER_FUNCTIONS)
+            or item.get("proconfig") != ["search_path=pg_catalog"]
+            or item.get("result") != BANK_STATEMENT_FUNCTION_RESULTS.get(function_key)
+        ):
+            raise BackupError("restored bank statement function security boundary is invalid")
+
+    executors = {
+        ("internal_import", "import_bank_statement"): "ledgerbridge_worker",
+        ("internal_read", "get_bank_statement_summary"): "ledgerbridge_reader",
+        ("internal_read", "list_bank_statement_transactions"): "ledgerbridge_reader",
+    }
+
+    triggers = _list("bank_statement_triggers")
+    actual_trigger_contract = {
+        item.get("name"): (
+            item.get("table"),
+            item.get("constraint"),
+            item.get("trigger_type"),
+            item.get("deferrable"),
+            item.get("initially_deferred"),
+            item.get("function_name"),
+        )
+        for item in triggers
+    }
+    if (
+        len(actual_trigger_contract) != len(triggers)
+        or actual_trigger_contract != BANK_STATEMENT_TRIGGER_CONTRACT
+    ):
+        raise BackupError(
+            "restored bank statement trigger contract differs from the required baseline"
+        )
+    if any(
+        item.get("enabled") != "O" or item.get("function_schema") != "public" for item in triggers
+    ):
+        raise BackupError("restored bank statement trigger security boundary is invalid")
+
+    constraints = _list("bank_statement_constraints")
+    actual_constraint_contract = {
+        item.get("name"): (item.get("table"), item.get("type"), item.get("definition"))
+        for item in constraints
+    }
+    if (
+        len(actual_constraint_contract) != len(constraints)
+        or actual_constraint_contract != BANK_STATEMENT_CONSTRAINT_CONTRACT
+    ):
+        raise BackupError("restored bank statement constraints differ from the required baseline")
+    for item in constraints:
+        if (
+            item.get("validated") is not True
+            or item.get("deferrable") is not False
+            or item.get("initially_deferred") is not False
+        ):
+            raise BackupError("restored bank statement constraint definition is invalid")
+
+    table_acls = _list("bank_statement_table_acls")
+    table_acl_keys: set[tuple[Any, ...]] = set()
+    table_privileges = {
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "TRUNCATE",
+        "REFERENCES",
+        "TRIGGER",
+    }
+    for item in table_acls:
+        table_acl_key = (item.get("table"), item.get("grantee"), item.get("privilege"))
+        if table_acl_key in table_acl_keys:
+            raise BackupError("restored bank statement table ACL contains a duplicate entry")
+        table_acl_keys.add(table_acl_key)
+        if (
+            item.get("table") not in BANK_STATEMENT_TABLES
+            or item.get("grantee") != owner
+            or item.get("privilege") not in table_privileges
+            or not _grantable(item.get("grantable"))
+        ):
+            raise BackupError("restored bank statement table ACL contains an excess grant")
+
+    function_acls = _list("bank_statement_function_acls")
+    function_acl_keys: set[tuple[Any, ...]] = set()
+    for item in function_acls:
+        acl_function_key = (
+            item.get("schema"),
+            item.get("name"),
+            item.get("identity_arguments"),
+        )
+        function_acl_key = (*acl_function_key, item.get("grantee"), item.get("privilege"))
+        if function_acl_key in function_acl_keys:
+            raise BackupError("restored bank statement function ACL contains a duplicate entry")
+        function_acl_keys.add(function_acl_key)
+        executor = executors.get(cast(tuple[str, str], acl_function_key[:2]))
+        allowed_grantees = {owner} if executor is None else {owner, executor}
+        if (
+            acl_function_key not in expected_functions
+            or item.get("grantee") not in allowed_grantees
+            or item.get("privilege") != "EXECUTE"
+            or not _grantable(item.get("grantable"))
+            or (item.get("grantee") != owner and item.get("grantable") not in {False, "NO"})
+        ):
+            raise BackupError("restored bank statement function ACL contains an excess grant")
+
+    schema_acls = _list("bank_statement_schema_acls")
+    schema_grants = {
+        "internal_import": {owner: {"USAGE", "CREATE"}, "ledgerbridge_worker": {"USAGE"}},
+        "internal_command": {owner: {"USAGE", "CREATE"}, "ledgerbridge_api": {"USAGE"}},
+        "internal_read": {
+            owner: {"USAGE", "CREATE"},
+            "ledgerbridge_api": {"USAGE"},
+            "ledgerbridge_reader": {"USAGE"},
+        },
+    }
+    schema_acl_keys: set[tuple[Any, ...]] = set()
+    for item in schema_acls:
+        schema_acl_key = (item.get("schema"), item.get("grantee"), item.get("privilege"))
+        if schema_acl_key in schema_acl_keys:
+            raise BackupError("restored bank statement schema ACL contains a duplicate entry")
+        schema_acl_keys.add(schema_acl_key)
+        allowed_privileges = schema_grants.get(cast(str, item.get("schema")), {}).get(
+            cast(str, item.get("grantee"))
+        )
+        if (
+            allowed_privileges is None
+            or item.get("privilege") not in allowed_privileges
+            or not _grantable(item.get("grantable"))
+            or (item.get("grantee") != owner and item.get("grantable") not in {False, "NO"})
+        ):
+            raise BackupError("restored bank statement schema ACL contains an excess grant")
+
+    roles = _list("r1_role_matrix")
+    active_roles = {item.get("role") for item in roles if item.get("role") in R1_CONTROLLED_ROLES}
+    tables = _list("bank_statement_effective_table_privileges")
+    expected_table_keys = {
+        (role, table) for role in active_roles for table in BANK_STATEMENT_TABLES
+    }
+    actual_table_keys = {(item.get("role"), item.get("table")) for item in tables}
+    privilege_names = (
+        "select",
+        "insert",
+        "update",
+        "delete",
+        "truncate",
+        "references",
+        "trigger",
+    )
+    if len(actual_table_keys) != len(tables) or actual_table_keys != expected_table_keys:
+        raise BackupError("restored bank statement table privilege matrix is incomplete")
+    if any(any(item.get(name) is not False for name in privilege_names) for item in tables):
+        raise BackupError("restored bank statement fact table has an unexpected privilege")
+
+    grants = _list("bank_statement_effective_function_privileges")
+    expected_grant_keys = {
+        (role, schema, name, args)
+        for role in active_roles
+        for schema, name, args in expected_functions
+    }
+    actual_grant_keys = {
+        (item.get("role"), item.get("schema"), item.get("name"), item.get("identity_arguments"))
+        for item in grants
+    }
+    if len(actual_grant_keys) != len(grants) or actual_grant_keys != expected_grant_keys:
+        raise BackupError("restored bank statement function privilege matrix is incomplete")
+    for item in grants:
+        schema = item.get("schema")
+        name = item.get("name")
+        if not isinstance(schema, str) or not isinstance(name, str):
+            raise BackupError("restored bank statement function privilege metadata is invalid")
+        executor = executors.get((schema, name))
+        if item.get("execute") is not (item.get("role") == executor):
+            raise BackupError("restored bank statement function privilege matrix is invalid")
+
+    schemas = _list("bank_statement_effective_schema_privileges")
+    expected_schema_keys = {
+        (role, schema)
+        for role in active_roles
+        for schema in ("internal_import", "internal_command", "internal_read")
+    }
+    actual_schema_keys = {(item.get("role"), item.get("schema")) for item in schemas}
+    if len(actual_schema_keys) != len(schemas) or actual_schema_keys != expected_schema_keys:
+        raise BackupError("restored bank statement schema privilege matrix is incomplete")
+    schema_users = {
+        "internal_import": {"ledgerbridge_worker"},
+        "internal_command": {"ledgerbridge_api"},
+        "internal_read": {"ledgerbridge_api", "ledgerbridge_reader"},
+    }
+    for item in schemas:
+        schema = item.get("schema")
+        role = item.get("role")
+        if not isinstance(schema, str) or not isinstance(role, str):
+            raise BackupError("restored bank statement schema privilege metadata is invalid")
+        if (
+            item.get("usage") is not (role in schema_users[schema])
+            or item.get("create") is not False
+        ):
+            raise BackupError("restored bank statement schema privilege matrix is invalid")
+
+
 def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
     if metadata.get("metadata_version") != 2:
         raise BackupError("restored database lacks v2 metadata observations")
@@ -2278,6 +3749,10 @@ def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
     legacy_role_retired = _legacy_runtime_role_is_retired(metadata)
     if revision >= R1_SECURITY_REVISION:
         _validate_r1_database_security(metadata)
+    if revision >= COUNTERPARTY_SECURITY_REVISION:
+        _validate_counterparty_security(metadata)
+    if revision >= BANK_STATEMENT_SECURITY_REVISION:
+        _validate_bank_statement_security(metadata)
     if metadata.get("database_temp_denied") is not True:
         raise BackupError("restored database TEMP privilege invariant failed")
     functions = metadata.get("security_functions")
@@ -2401,9 +3876,7 @@ def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
         if value.get("grantable") != "NO":
             raise BackupError("restored runtime function grant is grantable")
         runtime_function_grants.add((function, privilege))
-    expected_function_grants = (
-        set() if legacy_role_retired else {("append_audit_event", "EXECUTE")}
-    )
+    expected_function_grants = set() if legacy_role_retired else {("append_audit_event", "EXECUTE")}
     if runtime_function_grants != expected_function_grants:
         raise BackupError("restored runtime function grants differ from the required baseline")
 
@@ -2738,9 +4211,7 @@ def rehearse_restore(config: CommonConfig, backup: Path, runner: Runner | None =
                 )
                 expected_identity = f"{expected_role}|{expected_role}"
                 if not hmac.compare_digest(identity, expected_identity):
-                    raise BackupError(
-                        f"application image did not connect as {expected_role}"
-                    )
+                    raise BackupError(f"application image did not connect as {expected_role}")
         finally:
             _cleanup_restore_resources(runner, resources)
             after = _collect_source_state(config, runner)

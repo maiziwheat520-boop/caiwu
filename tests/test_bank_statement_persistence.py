@@ -27,6 +27,7 @@ from ledgerbridge.bank_statement_persistence import (
     BankStatementImportService,
     BankStatementPersistenceError,
     BankStatementReadService,
+    _build_request,
 )
 from ledgerbridge.internal_read_contract import (
     AuthorizationDenied,
@@ -37,6 +38,12 @@ from ledgerbridge.internal_read_contract import (
 )
 from ledgerbridge.mybank_statement import MyBankStatement, MyBankTransaction
 from ledgerbridge.reconciliation import AccountOwnerKind
+from scripts.backup_restore import (
+    BANK_STATEMENT_SECURITY_SQL,
+    R1_ROLES,
+    BackupError,
+    _validate_bank_statement_security,
+)
 
 STATEMENT_REF = UUID("82000000-0000-4000-8000-000000000001")
 ACCOUNT_REF = UUID("82000000-0000-4000-8000-000000000002")
@@ -616,7 +623,8 @@ def test_0021_postgresql_replay_overlap_conflict_scope_acl_and_downgrade(
                     "'r1-test', 'bank_statement.transaction.import', "
                     "'orphan fact rejection', 'ledgerbridge.bank-statement.v1', "
                     "jsonb_build_object('transaction_ref', :transaction, "
-                    "'managed_account_ref', :account, 'fact_sha256', :fact_hex))"
+                    "'managed_account_ref', :account, 'fact_sha256', "
+                    "CAST(:fact_hex AS text)))"
                 ),
                 {
                     "transaction": orphan_transaction_ref,
@@ -792,6 +800,127 @@ def test_0021_concurrent_first_account_imports_serialize_on_account_identity(
                 connection.execute(text("SELECT count(*) FROM public.bank_statement")).scalar_one()
                 == 2
             )
+        engine.dispose()
+
+
+def test_0021_postgresql_rejects_malformed_json_before_casting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LEDGERBRIDGE_ENV", raising=False)
+    with _legacy_r1_database(reader=True) as database_url:
+        command.upgrade(_upgrade_config(database_url), "head")
+        engine = create_engine(database_url)
+        valid = _build_request(_statement(), _context())
+        valid_transactions = cast(list[dict[str, object]], valid["transactions"])
+
+        def request_with(**changes: object) -> dict[str, object]:
+            return {**valid, **changes}
+
+        def transaction_with(**changes: object) -> dict[str, object]:
+            transactions = [dict(item) for item in valid_transactions]
+            transactions[0].update(changes)
+            return request_with(transactions=transactions)
+
+        missing_transactions = dict(valid)
+        missing_transactions.pop("transactions")
+        missing_institution = dict(valid)
+        missing_institution.pop("institution_code")
+        malformed: tuple[tuple[str, object, str], ...] = (
+            ("non-object request", "scalar", "bank statement request is invalid"),
+            ("missing transactions", missing_transactions, "bank statement request is invalid"),
+            ("missing institution", missing_institution, "bank statement request is invalid"),
+            (
+                "invalid statement uuid",
+                request_with(statement_ref="not-a-uuid"),
+                "bank statement request is invalid",
+            ),
+            (
+                "invalid source size",
+                request_with(source_size="not-an-integer"),
+                "bank statement request is invalid",
+            ),
+            (
+                "invalid period",
+                request_with(period_start="not-a-date"),
+                "bank statement request is invalid",
+            ),
+            (
+                "non-object transaction",
+                request_with(transactions=[42, dict(valid_transactions[1])]),
+                "bank statement transaction is invalid",
+            ),
+            (
+                "invalid source event uuid",
+                transaction_with(source_event_ref="not-a-uuid"),
+                "bank statement transaction is invalid",
+            ),
+            (
+                "invalid source row number",
+                transaction_with(source_row_number="not-an-integer"),
+                "bank statement transaction is invalid",
+            ),
+            (
+                "invalid occurrence time",
+                transaction_with(occurred_at="not-a-timestamp"),
+                "bank statement transaction is invalid",
+            ),
+            (
+                "invalid amount",
+                transaction_with(amount_minor="not-an-integer"),
+                "bank statement transaction is invalid",
+            ),
+            (
+                "invalid balance",
+                transaction_with(balance_minor="not-an-integer"),
+                "bank statement transaction is invalid",
+            ),
+        )
+        for label, request, message in malformed:
+            with pytest.raises(SQLAlchemyError) as raised, engine.begin() as connection:
+                connection.execute(
+                    text("SELECT internal_import.import_bank_statement(CAST(:request AS jsonb))"),
+                    {"request": json.dumps(request, separators=(",", ":"))},
+                )
+            database_error = getattr(raised.value, "orig", raised.value)
+            assert getattr(database_error, "sqlstate", None) == "22023", label
+            assert message in str(database_error), label
+        engine.dispose()
+
+
+def test_0021_postgresql_schema_contract_rejects_missing_unique_constraint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LEDGERBRIDGE_ENV", raising=False)
+    with _legacy_r1_database(reader=True) as database_url:
+        command.upgrade(_upgrade_config(database_url), "head")
+        engine = create_engine(database_url)
+        with engine.connect() as connection, connection.begin():
+            owner = connection.execute(text("SELECT current_user")).scalar_one()
+            observed = json.loads(
+                connection.execute(text(BANK_STATEMENT_SECURITY_SQL)).scalar_one()
+            )
+            metadata = {
+                "database_owner": owner,
+                "r1_role_matrix": [{"role": role} for role in R1_ROLES],
+                **observed,
+            }
+            _validate_bank_statement_security(metadata)
+
+            connection.execute(
+                text(
+                    "ALTER TABLE public.bank_statement_review "
+                    "DROP CONSTRAINT bank_statement_review_operation_id_key"
+                )
+            )
+            drifted = json.loads(connection.execute(text(BANK_STATEMENT_SECURITY_SQL)).scalar_one())
+            with pytest.raises(BackupError, match="constraints differ"):
+                _validate_bank_statement_security(
+                    {
+                        "database_owner": owner,
+                        "r1_role_matrix": [{"role": role} for role in R1_ROLES],
+                        **drifted,
+                    }
+                )
         engine.dispose()
 
 
