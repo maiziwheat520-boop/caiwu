@@ -54,6 +54,7 @@ EVIDENCE_PATH = re.compile(r"^/api/v1/evidence/([0-9a-f-]{36})/content$")
 EVIDENCE_PREVIEW_PATH = re.compile(r"^/api/v1/evidence/([0-9a-f-]{36})/preview$")
 EVIDENCE_UNLOCK_PATH = "/api/v1/evidence/unlocks"
 MAX_REQUEST_BYTES = 64 * 1024
+JSON_SAFE_INTEGER = 9_007_199_254_740_991
 STATUSES = {"INCOMPLETE", "PENDING", "CONFLICTED", "CONFIRMED", "IGNORED", "SUPERSEDED"}
 
 
@@ -66,6 +67,32 @@ def _problem(status: int, code: str, title: str, detail: str = "") -> dict[str, 
     if detail:
         payload["detail"] = detail
     return payload
+
+
+def _synthetic_dimension_identity(kind: str, label: object) -> str:
+    if not isinstance(label, str) or not label:
+        raise ValueError("synthetic accounting dimensions require non-empty labels")
+    digest = hashlib.sha256(f"{kind}\n{label}".encode("utf-8")).hexdigest()[:16]
+    return f"synthetic-{kind}-{digest}"
+
+
+def _add_synthetic_dimension_identities(candidate: dict[str, object]) -> dict[str, object]:
+    candidate["business_unit_ref"] = _synthetic_dimension_identity(
+        "bu", candidate.get("business_unit")
+    )
+    candidate["category_code"] = _synthetic_dimension_identity(
+        "category", candidate.get("category")
+    )
+    return candidate
+
+
+def _add_synthetic_event_identity_flags(event: dict[str, object]) -> dict[str, object]:
+    changes = event.get("changes")
+    if isinstance(changes, list):
+        for change in changes:
+            if isinstance(change, dict):
+                change.setdefault("identity_changed", False)
+    return event
 
 
 class SyntheticState:
@@ -81,13 +108,27 @@ class SyntheticState:
         self.lock = threading.RLock()
         self.persistence = persistence
         self.actor = actor
-        seeded_candidates = initial_candidates()
-        seeded_events = initial_review_events()
+        seeded_candidates = [
+            _add_synthetic_dimension_identities(candidate)
+            for candidate in initial_candidates()
+        ]
+        seeded_events = {
+            candidate_id: [
+                _add_synthetic_event_identity_flags(event) for event in events
+            ]
+            for candidate_id, events in initial_review_events().items()
+        }
         if persistence is not None:
             persistence.seed_if_empty(seeded_candidates, seeded_events, seed_version="synthetic-v1")
-            seeded_candidates = persistence.list_candidates()
+            seeded_candidates = [
+                _add_synthetic_dimension_identities(candidate)
+                for candidate in persistence.list_candidates()
+            ]
             seeded_events = {
-                str(candidate["id"]): persistence.get_review_events(str(candidate["id"]))
+                str(candidate["id"]): [
+                    _add_synthetic_event_identity_flags(event)
+                    for event in persistence.get_review_events(str(candidate["id"]))
+                ]
                 for candidate in seeded_candidates
             }
         self.candidates = {str(item["id"]): item for item in seeded_candidates}
@@ -103,7 +144,8 @@ class SyntheticState:
         self.reconciliation_revision = int(SYNTHETIC_RECONCILIATION["revision"])
 
     def _candidate_values(self) -> list[dict[str, object]]:
-        return self.persistence.list_candidates() if self.persistence is not None else list(self.candidates.values())
+        candidates = self.persistence.list_candidates() if self.persistence is not None else list(self.candidates.values())
+        return [_add_synthetic_dimension_identities(candidate) for candidate in candidates]
 
     def _reconciliation_revision(self) -> int:
         if self.persistence is None:
@@ -146,10 +188,37 @@ class SyntheticState:
             candidate = self.persistence.get_candidate(candidate_id) if self.persistence is not None else self.candidates.get(candidate_id)
             if candidate is None:
                 return None
-            detail = deepcopy(candidate)
+            detail = _add_synthetic_dimension_identities(deepcopy(candidate))
             events = self.persistence.get_review_events(candidate_id) if self.persistence is not None else self.review_events.get(candidate_id, [])
-            detail["review_events"] = deepcopy(events)
+            detail["review_events"] = [
+                _add_synthetic_event_identity_flags(deepcopy(event)) for event in events
+            ]
             return detail
+
+    def accounting_dimensions(self) -> dict[str, object]:
+        with self.lock:
+            candidates = self._candidate_values()
+        business_units = sorted(
+            {
+                (str(candidate["business_unit_ref"]), str(candidate["business_unit"]))
+                for candidate in candidates
+                if candidate.get("business_unit_ref") and candidate.get("business_unit")
+            },
+            key=lambda item: item[0],
+        )
+        categories = sorted(
+            {
+                (str(candidate["category_code"]), str(candidate["category"]))
+                for candidate in candidates
+                if candidate.get("category_code") and candidate.get("category")
+            },
+            key=lambda item: item[0],
+        )
+        return {
+            "contract_version": "ledgerbridge.accounting-dimensions.v1",
+            "business_units": [{"ref": ref, "label": label} for ref, label in business_units],
+            "categories": [{"code": code, "label": label} for code, label in categories],
+        }
 
     def list_candidates(self, *, status: str | None, month: str | None, cursor: str | None) -> dict[str, object]:
         offset = int(cursor) if cursor is not None else 0
@@ -172,9 +241,13 @@ class SyntheticState:
                 items = self.persistence.list_review_events()
             else:
                 items = [
-                    deepcopy(event)
+                    _add_synthetic_event_identity_flags(deepcopy(event))
                     for events in self.review_events.values()
                     for event in events
+                ]
+            if self.persistence is not None:
+                items = [
+                    _add_synthetic_event_identity_flags(event) for event in items
                 ]
         items.sort(
             key=lambda item: (
@@ -229,6 +302,7 @@ class SyntheticState:
             candidate = self.persistence.get_candidate(candidate_id) if self.persistence is not None else self.candidates.get(candidate_id)
             if candidate is None:
                 return 404, _problem(404, "CANDIDATE_NOT_FOUND", "候选不存在")
+            candidate = _add_synthetic_dimension_identities(candidate)
             if request["expected_revision"] != candidate["revision"]:
                 return 409, _problem(409, "STALE_REVISION", "候选版本已变化，请刷新后重试")
             if candidate["status"] in {"CONFIRMED", "IGNORED", "SUPERSEDED"}:
@@ -236,12 +310,60 @@ class SyntheticState:
 
             decision = str(request["decision"])
             corrections = deepcopy(request.get("corrections") or {})
+            if {"business_unit", "category"} & corrections.keys():
+                return 422, _problem(422, "INVALID_CORRECTIONS", "显示标签不属于更正合约")
+            dimensions = self.accounting_dimensions()
+            stable_fields = {
+                "business_unit_ref": (
+                    "business_unit",
+                    {item["ref"]: item["label"] for item in dimensions["business_units"]},  # type: ignore[index]
+                ),
+                "category_code": (
+                    "category",
+                    {item["code"]: item["label"] for item in dimensions["categories"]},  # type: ignore[index]
+                ),
+            }
+            selected_dimensions: dict[str, tuple[str, str, str]] = {}
+            for stable_field, (candidate_field, labels) in stable_fields.items():
+                if stable_field not in corrections:
+                    continue
+                stable_value = corrections.pop(stable_field)
+                if not isinstance(stable_value, str):
+                    return 422, _problem(422, "INVALID_CORRECTION_REFERENCE", "会计维度标识无效")
+                label = labels.get(stable_value)
+                if label is None:
+                    return 422, _problem(422, "INVALID_CORRECTION_REFERENCE", "会计维度不在授权目录中")
+                selected_dimensions[stable_field] = (candidate_field, stable_value, label)
             updated = deepcopy(candidate)
             changes: list[dict[str, object]] = []
-            for field in ("business_unit", "category", "amount_minor", "accounting_month"):
-                if field in corrections and updated[field] != corrections[field]:
-                    changes.append({"field": field, "previous_value": updated[field], "new_value": corrections[field]})
-                    updated[field] = corrections[field]
+            for stable_field, (candidate_field, stable_value, label) in selected_dimensions.items():
+                if updated.get(stable_field) == stable_value and updated.get(candidate_field) == label:
+                    continue
+                changes.append(
+                    {
+                        "field": candidate_field,
+                        "previous_value": updated.get(candidate_field),
+                        "new_value": label,
+                        "identity_changed": updated.get(stable_field) != stable_value,
+                    }
+                )
+                updated[stable_field] = stable_value
+                updated[candidate_field] = label
+            correction_fields = {
+                "amount_minor": "amount_minor",
+                "accounting_month": "accounting_month",
+            }
+            for supplied_field, candidate_field in correction_fields.items():
+                if supplied_field in corrections and updated[candidate_field] != corrections[supplied_field]:
+                    changes.append(
+                        {
+                            "field": candidate_field,
+                            "previous_value": updated[candidate_field],
+                            "new_value": corrections[supplied_field],
+                            "identity_changed": False,
+                        }
+                    )
+                    updated[candidate_field] = corrections[supplied_field]
 
             if updated.get("accounting_month") is not None:
                 updated["blockers"] = [
@@ -267,7 +389,14 @@ class SyntheticState:
                 updated["status"] = "CONFIRMED"
 
             if candidate["status"] != updated["status"]:
-                changes.append({"field": "status", "previous_value": candidate["status"], "new_value": updated["status"]})
+                changes.append(
+                    {
+                        "field": "status",
+                        "previous_value": candidate["status"],
+                        "new_value": updated["status"],
+                        "identity_changed": False,
+                    }
+                )
             from_revision = int(candidate["revision"])
             to_revision = from_revision + 1
             updated["revision"] = to_revision
@@ -521,16 +650,28 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         self._send_json(422, _problem(422, code, "审核请求不符合合约", detail))
 
     def _validate_corrections(self, corrections: Any) -> bool:
-        if not isinstance(corrections, dict) or not corrections or set(corrections) - {"business_unit", "category", "amount_minor", "accounting_month"}:
+        supported = {
+            "business_unit_ref",
+            "category_code",
+            "amount_minor",
+            "accounting_month",
+        }
+        if not isinstance(corrections, dict) or not corrections or set(corrections) - supported:
             self._invalid_decision("INVALID_CORRECTIONS", "corrections 必须包含至少一个受支持字段")
             return False
-        for field in ("business_unit", "category"):
-            if field in corrections and (not isinstance(corrections[field], str) or not 1 <= len(corrections[field]) <= 200):
+        for field in ("business_unit_ref", "category_code"):
+            if field in corrections and (not isinstance(corrections[field], str) or not 1 <= len(corrections[field]) <= 100):
                 self._invalid_decision("INVALID_CORRECTIONS", f"{field} 无效")
                 return False
-        if "amount_minor" in corrections and (isinstance(corrections["amount_minor"], bool) or not isinstance(corrections["amount_minor"], int)):
-            self._invalid_decision("INVALID_CORRECTIONS", "amount_minor 必须是整数")
-            return False
+        if "amount_minor" in corrections:
+            amount_minor = corrections["amount_minor"]
+            if (
+                isinstance(amount_minor, bool)
+                or not isinstance(amount_minor, int)
+                or not -JSON_SAFE_INTEGER <= amount_minor <= JSON_SAFE_INTEGER
+            ):
+                self._invalid_decision("INVALID_CORRECTIONS", "amount_minor 必须是 JSON 安全整数")
+                return False
         if "accounting_month" in corrections and (not isinstance(corrections["accounting_month"], str) or not MONTH_PATTERN.fullmatch(corrections["accounting_month"])):
             self._invalid_decision("INVALID_CORRECTIONS", "accounting_month 格式无效")
             return False
@@ -610,6 +751,15 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 )
             return
         if not self._require_session():
+            return
+        if path == "/api/v1/accounting-dimensions":
+            if query:
+                self._send_json(
+                    400,
+                    _problem(400, "INVALID_ACCOUNTING_DIMENSIONS_QUERY", "会计维度不接受浏览器实体参数"),
+                )
+                return
+            self._send_json(200, state.accounting_dimensions())
             return
         if path == "/api/v1/candidates":
             params = parse_qs(query, keep_blank_values=True)

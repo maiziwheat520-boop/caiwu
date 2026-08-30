@@ -268,6 +268,37 @@ paths:
       responses:
         "204":
           description: Session revoked and cookie expired
+  /api/v1/accounting-dimensions:
+    get:
+      operationId: getAccountingDimensions
+      description: >-
+        Return the business-unit references and category codes authorized for the
+        server-configured entity. Browser-supplied entity parameters are rejected.
+      responses:
+        "200":
+          description: Stable accounting identifiers paired with display labels
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountingDimensions"
+        "400":
+          description: Browser-supplied entity query parameters are rejected
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: Core accounting dimensions are unavailable or invalid
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/candidates:
     get:
       operationId: listCandidates
@@ -650,6 +681,12 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
+    Forbidden:
+      description: Authenticated principal is not authorized for the resource
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     NotFound:
       description: Resource not found or not visible to the principal
       content:
@@ -783,7 +820,9 @@ components:
         - source_message_id
         - received_at
         - business_unit
+        - business_unit_ref
         - category
+        - category_code
         - amount_minor
         - currency
         - accounting_month
@@ -817,13 +856,23 @@ components:
           type: string
           minLength: 1
           maxLength: 200
+        business_unit_ref:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 100
         category:
           type: string
           minLength: 1
           maxLength: 200
+        category_code:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 100
         amount_minor:
           type: integer
           format: int64
+          minimum: -9007199254740991
+          maximum: 9007199254740991
         currency:
           type: string
           const: CNY
@@ -1024,20 +1073,61 @@ components:
       additionalProperties: false
       minProperties: 1
       properties:
-        business_unit:
+        business_unit_ref:
           type: string
           minLength: 1
-          maxLength: 200
-        category:
+          maxLength: 100
+        category_code:
           type: string
           minLength: 1
-          maxLength: 200
+          maxLength: 100
         amount_minor:
           type: integer
           format: int64
+          minimum: -9007199254740991
+          maximum: 9007199254740991
         accounting_month:
           type: string
           pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+    AccountingDimensions:
+      type: object
+      additionalProperties: false
+      required: [contract_version, business_units, categories]
+      properties:
+        contract_version:
+          const: ledgerbridge.accounting-dimensions.v1
+        business_units:
+          type: array
+          maxItems: 1000
+          items:
+            type: object
+            additionalProperties: false
+            required: [ref, label]
+            properties:
+              ref:
+                type: string
+                minLength: 1
+                maxLength: 100
+              label:
+                type: string
+                minLength: 1
+                maxLength: 200
+        categories:
+          type: array
+          maxItems: 1000
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, label]
+            properties:
+              code:
+                type: string
+                minLength: 1
+                maxLength: 100
+              label:
+                type: string
+                minLength: 1
+                maxLength: 200
     ReviewEvent:
       type: object
       additionalProperties: false
@@ -1091,7 +1181,7 @@ components:
     FieldChange:
       type: object
       additionalProperties: false
-      required: [field, previous_value, new_value]
+      required: [field, previous_value, new_value, identity_changed]
       properties:
         field:
           type: string
@@ -1100,6 +1190,9 @@ components:
           type: [string, integer, "null"]
         new_value:
           type: [string, integer, "null"]
+        identity_changed:
+          type: boolean
+          description: True when the stable accounting identity changed, including when its display label did not.
     Reconciliation:
       type: object
       additionalProperties: false

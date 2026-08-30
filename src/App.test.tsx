@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Theme } from '@radix-ui/themes'
 import App from './App'
-import type { ApiCandidate, AuthStatus, EvidencePreview, ReviewEvent } from './types'
+import type { AccountingDimensions, ApiCandidate, AuthStatus, EvidencePreview, ReviewEvent } from './types'
 
 const session = {
   principal: 'finance-admin',
@@ -28,27 +28,27 @@ const candidates: ApiCandidate[] = [
   {
     id: 'candidate-1', short_id: 'C-8F21', revision: 3, status: 'PENDING', source_channel: 'telegram',
     source_message_id: 'message-1', received_at: '2026-08-24T09:42:00+08:00', business_unit: '城南店',
-    category: '布草', amount_minor: 638000, currency: 'CNY', accounting_month: '2026-08',
+    business_unit_ref: 'unit-south', category: '布草', category_code: 'LINEN', amount_minor: 638000, currency: 'CNY', accounting_month: '2026-08',
     summary: '城南店 8 月布草清洗费用，供应商月结单', confidence_basis_points: 9600, evidence, blockers: [], review_risks: [],
   },
   {
     id: 'candidate-2', short_id: 'C-62D9', revision: 1, status: 'INCOMPLETE', source_channel: 'weixin',
     source_message_id: 'message-2', received_at: '2026-08-23T17:35:00+08:00', business_unit: '机场店',
-    category: '水费', amount_minor: 483260, currency: 'CNY', accounting_month: null,
+    business_unit_ref: 'unit-airport', category: '水费', category_code: 'WATER', amount_minor: 483260, currency: 'CNY', accounting_month: null,
     summary: '机场店水费，原消息未说明归属月份', confidence_basis_points: 8800, evidence,
     blockers: [{ code: 'MISSING_ACCOUNTING_MONTH', message: '缺少归属月份' }], review_risks: [],
   },
   {
     id: 'candidate-3', short_id: 'C-5B17', revision: 2, status: 'CONFLICTED', source_channel: 'dingtalk',
     source_message_id: 'message-3', received_at: '2026-08-23T14:02:00+08:00', business_unit: '城南店',
-    category: '银行收款', amount_minor: 1268000, currency: 'CNY', accounting_month: '2026-08',
+    business_unit_ref: 'unit-south', category: '银行收款', category_code: 'SETTLEMENT', amount_minor: 1268000, currency: 'CNY', accounting_month: '2026-08',
     summary: '城南店银行收款，与另一条候选冲突', confidence_basis_points: 9400, evidence,
     blockers: [{ code: 'BUSINESS_KEY_CONFLICT', message: '相同凭证号金额不同' }], review_risks: [],
   },
   {
     id: 'candidate-4', short_id: 'C-49E3', revision: 4, status: 'CONFIRMED', source_channel: 'dingtalk',
     source_message_id: 'message-4', received_at: '2026-08-21T11:28:00+08:00', business_unit: '江景店',
-    category: '税费', amount_minor: 924050, currency: 'CNY', accounting_month: '2026-08',
+    business_unit_ref: 'unit-river', category: '税费', category_code: 'TAX', amount_minor: 924050, currency: 'CNY', accounting_month: '2026-08',
     summary: '江景店本月税费缴款', confidence_basis_points: 9800, evidence, blockers: [], review_risks: [],
   },
 ]
@@ -68,7 +68,7 @@ const reviewEvents: ReviewEvent[] = [{
   decision: 'CONFIRM',
   actor: 'finance-admin',
   reason: '已核对电子缴款书',
-  changes: [{ field: 'status', previous_value: 'PENDING', new_value: 'CONFIRMED' }],
+  changes: [{ field: 'status', previous_value: 'PENDING', new_value: 'CONFIRMED', identity_changed: false }],
   conflict_resolution: null,
   created_at: '2026-08-21T11:35:00+08:00',
 }]
@@ -95,6 +95,10 @@ function installFetch(options: {
   unlockFailure?: boolean
   unlockGate?: Promise<void>
   failCandidateRefreshAfterUnlock?: boolean
+  failAccountingDimensions?: boolean
+  failCandidateDetail?: boolean
+  candidateDetails?: Record<string, ApiCandidate>
+  accountingDimensions?: AccountingDimensions
 } = {}) {
   const {
     items = candidates,
@@ -115,6 +119,10 @@ function installFetch(options: {
     unlockFailure = false,
     unlockGate,
     failCandidateRefreshAfterUnlock = false,
+    failAccountingDimensions = false,
+    failCandidateDetail = false,
+    candidateDetails = {},
+    accountingDimensions,
   } = options
   let shouldFailSession = failSessionOnce
   let decisionSaved = false
@@ -187,6 +195,28 @@ function installFetch(options: {
       return response(reconciliation)
     }
     if (url === '/api/v1/connections') return response({ items: [] })
+    if (url === '/api/v1/accounting-dimensions') {
+      if (failAccountingDimensions) {
+        return response({ title: '会计维度暂不可用', status: 503, code: 'ACCOUNTING_DIMENSIONS_UNAVAILABLE' }, 503)
+      }
+      return response(accountingDimensions ?? {
+        contract_version: 'ledgerbridge.accounting-dimensions.v1',
+        business_units: [...new Map(items.flatMap((candidate) => {
+          const stable = candidate.business_unit_ref
+          return stable ? [[stable, {
+            ref: stable,
+            label: candidate.business_unit,
+          }] as const] : []
+        })).values()],
+        categories: [...new Map(items.flatMap((candidate) => {
+          const stable = candidate.category_code
+          return stable ? [[stable, {
+            code: stable,
+            label: candidate.category,
+          }] as const] : []
+        })).values()],
+      })
+    }
     if (url.includes('/api/v1/evidence/') && url.includes('/preview?')) return response(evidencePreview)
     if (url === '/api/v1/evidence/unlocks' && init?.method === 'POST') {
       if (unlockGate) await unlockGate
@@ -207,15 +237,18 @@ function installFetch(options: {
           id: 'event-1', candidate_id: original.id, sequence: 1,
           from_revision: original.revision, to_revision: original.revision + 1,
           decision: body.decision, actor: 'finance-admin', reason: 'review',
-          changes: [{ field: 'status', previous_value: original.status, new_value: body.decision === 'IGNORE' ? 'IGNORED' : 'CONFIRMED' }],
+          changes: [{ field: 'status', previous_value: original.status, new_value: body.decision === 'IGNORE' ? 'IGNORED' : 'CONFIRMED', identity_changed: false }],
           conflict_resolution: null, created_at: '2026-08-24T10:00:00+08:00',
         },
       })
     }
     if (url.startsWith('/api/v1/candidates/')) {
+      if (failCandidateDetail) {
+        return response({ title: '候选详情暂不可用', status: 503, code: 'CANDIDATE_DETAIL_UNAVAILABLE' }, 503)
+      }
       const candidate = candidatePages.flatMap((page) => page.items).find((item) => url.endsWith(item.id))!
       const candidateEvents = reviewEventPages.flatMap((page) => page.items).filter((event) => event.candidate_id === candidate.id)
-      return response({ ...candidate, review_events: candidateEvents })
+      return response({ ...(candidateDetails[candidate.id] ?? candidate), review_events: candidateEvents })
     }
     throw new Error(`Unexpected request: ${url}`)
   })
@@ -443,6 +476,254 @@ describe('LedgerBridge Web API client', () => {
     expect((init.headers as Record<string, string>)['Idempotency-Key']).toMatch(/^[0-9a-f-]{36}$/)
     expect(JSON.parse(String(init.body))).toMatchObject({ decision: 'CONFIRM', expected_revision: 3 })
     expect(fetchMock.mock.calls.filter(([input, requestInit]) => String(input) === '/api/v1/reconciliations/2026-08' && requestInit?.method !== 'POST')).toHaveLength(2)
+  })
+
+  it('posts only changed amount and month without resubmitting display labels', async () => {
+    const stableCandidate = {
+      ...candidates[0],
+      business_unit_ref: 'unit-south',
+      category_code: 'LINEN',
+    } as ApiCandidate
+    const fetchMock = installFetch({ items: [stableCandidate] })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(screen.getByText(stableCandidate.summary))
+
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText('金额'), { target: { value: '7000.00' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存更正并确认' }))
+
+    await screen.findByText(/C-8F21 已确认/)
+    const decisionCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/candidate-1/decisions'))
+    expect(JSON.parse(String(decisionCall?.[1]?.body))).toMatchObject({
+      decision: 'CORRECT_AND_CONFIRM',
+      expected_revision: 3,
+      corrections: {
+        amount_minor: 700000,
+      },
+    })
+    expect(JSON.parse(String(decisionCall?.[1]?.body)).corrections).not.toHaveProperty('business_unit')
+    expect(JSON.parse(String(decisionCall?.[1]?.body)).corrections).not.toHaveProperty('category')
+    expect(JSON.parse(String(decisionCall?.[1]?.body)).corrections).not.toHaveProperty('accounting_month')
+  })
+
+  it('blocks amounts outside the JSON safe-integer wire range', async () => {
+    const stableCandidate = {
+      ...candidates[0],
+      business_unit_ref: 'unit-south',
+      category_code: 'LINEN',
+    } as ApiCandidate
+    installFetch({ items: [stableCandidate] })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(screen.getByText(stableCandidate.summary))
+
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText('金额'), { target: { value: '90071992547410' } })
+    expect(within(dialog).getByRole('button', { name: '保存更正并确认' })).toBeDisabled()
+  })
+
+  it('round-trips safe-integer boundary cents without an unintended amount correction', async () => {
+    const boundaryCandidate = {
+      ...candidates[0],
+      business_unit_ref: 'unit-south',
+      category_code: 'LINEN',
+      amount_minor: 9_007_199_254_740_990,
+    } as ApiCandidate
+    const fetchMock = installFetch({ items: [boundaryCandidate] })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(screen.getByText(boundaryCandidate.summary))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByLabelText('金额')).toHaveValue('90071992547409.90')
+    fireEvent.change(within(dialog).getByLabelText('归属月份'), { target: { value: '2026-09' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存更正并确认' }))
+
+    await screen.findByText(/C-8F21 已确认/)
+    const decisionCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/candidate-1/decisions'))
+    expect(JSON.parse(String(decisionCall?.[1]?.body)).corrections).toEqual({ accounting_month: '2026-09' })
+  })
+
+  it('posts explicitly edited stable business-unit and category references', async () => {
+    const stableCandidate = {
+      ...candidates[0],
+      business_unit_ref: 'unit-south',
+      category_code: 'LINEN',
+    } as ApiCandidate
+    const alternativeDimensions = {
+      ...candidates[3],
+      id: 'candidate-dimension-option',
+      business_unit: '机场店',
+      business_unit_ref: 'unit-airport',
+      category: '水费',
+      category_code: 'WATER',
+    } as ApiCandidate
+    const fetchMock = installFetch({ items: [stableCandidate, alternativeDimensions], runtimeMode: 'core-backed' })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(screen.getByText(stableCandidate.summary))
+
+    const dialog = await screen.findByRole('dialog')
+    const businessUnitSelect = await within(dialog).findByRole('combobox', { name: '营业单元' })
+    const categorySelect = within(dialog).getByRole('combobox', { name: '科目' })
+    expect(within(businessUnitSelect).getByRole('option', { name: '城南店' })).toHaveValue('unit-south')
+    expect(within(categorySelect).getByRole('option', { name: '布草' })).toHaveValue('LINEN')
+    fireEvent.change(businessUnitSelect, { target: { value: 'unit-airport' } })
+    fireEvent.change(categorySelect, { target: { value: 'WATER' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存更正并确认' }))
+
+    await screen.findByText(/C-8F21 已确认/)
+    const decisionCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/candidate-1/decisions'))
+    expect(JSON.parse(String(decisionCall?.[1]?.body)).corrections).toEqual({
+      business_unit_ref: 'unit-airport',
+      category_code: 'WATER',
+    })
+  })
+
+  it('keeps correction submission closed when accounting dimensions are unavailable', async () => {
+    installFetch({ failAccountingDimensions: true, runtimeMode: 'core-backed' })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(screen.getByText(candidates[0].summary))
+
+    const dialog = await screen.findByRole('dialog')
+    const alert = await within(dialog).findByRole('alert')
+    expect(alert).toHaveTextContent('请先治理基础资料')
+    const submit = within(dialog).getByRole('button', { name: '保存更正并确认' })
+    expect(submit).toBeDisabled()
+    expect(submit).toHaveAttribute('aria-describedby', alert.id)
+  })
+
+  it('does not install accounting dimensions when candidate detail fails', async () => {
+    const stableCandidate = {
+      ...candidates[0],
+      business_unit_ref: 'unit-south',
+      category_code: 'LINEN',
+    } as ApiCandidate
+    installFetch({ items: [stableCandidate], failCandidateDetail: true, runtimeMode: 'core-backed' })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(screen.getByText(stableCandidate.summary))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('候选详情读取失败')
+    expect(within(dialog).getByRole('button', { name: '保存更正并确认' })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: '忽略候选' })).toBeDisabled()
+    expect(within(dialog).getByLabelText('营业单元')).toBeDisabled()
+  })
+
+  it('announces and describes a current dimension missing from the active catalog', async () => {
+    const stableCandidate = {
+      ...candidates[0],
+      business_unit_ref: 'unit-retired',
+      category_code: 'LINEN',
+    } as ApiCandidate
+    installFetch({
+      items: [stableCandidate],
+      accountingDimensions: {
+        contract_version: 'ledgerbridge.accounting-dimensions.v1',
+        business_units: [{ ref: 'unit-active', label: '机场店' }],
+        categories: [{ code: 'LINEN', label: '布草' }],
+      },
+      runtimeMode: 'core-backed',
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(screen.getByText(stableCandidate.summary))
+
+    const dialog = await screen.findByRole('dialog')
+    const message = await within(dialog).findByText('当前会计维度不在授权目录中')
+    const status = message.closest('[role="status"]')
+    expect(status).not.toBeNull()
+    expect(within(dialog).getByLabelText('营业单元')).toHaveAttribute('aria-describedby', status?.id)
+    expect(within(dialog).getByRole('button', { name: '保存更正并确认' })).toHaveAttribute('aria-describedby', status?.id)
+  })
+
+  it('synchronizes stable selections supplied by same-revision candidate detail', async () => {
+    const summaryCandidate = {
+      ...candidates[0],
+      business_unit_ref: undefined,
+      category_code: undefined,
+    }
+    const detailCandidate = {
+      ...summaryCandidate,
+      business_unit_ref: 'unit-south',
+      category_code: 'LINEN',
+    } as ApiCandidate
+    installFetch({
+      items: [summaryCandidate],
+      candidateDetails: { [summaryCandidate.id]: detailCandidate },
+      accountingDimensions: {
+        contract_version: 'ledgerbridge.accounting-dimensions.v1',
+        business_units: [{ ref: 'unit-south', label: '城南店' }],
+        categories: [{ code: 'LINEN', label: '布草' }],
+      },
+      runtimeMode: 'core-backed',
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(screen.getByText(summaryCandidate.summary))
+
+    await screen.findByRole('dialog')
+    await waitFor(() => expect(within(screen.getByRole('dialog')).getByLabelText('营业单元')).toHaveValue('unit-south'))
+    const currentDialog = screen.getByRole('dialog')
+    expect(within(currentDialog).getByLabelText('科目')).toHaveValue('LINEN')
+    expect(within(currentDialog).getByRole('button', { name: '保存更正并确认' })).toBeEnabled()
+  })
+
+  it('accepts any regex-valid accounting month instead of a hard-coded month list', async () => {
+    const stableCandidate = {
+      ...candidates[0],
+      business_unit_ref: 'unit-south',
+      category_code: 'LINEN',
+    } as ApiCandidate
+    const fetchMock = installFetch({ items: [stableCandidate], runtimeMode: 'core-backed' })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(screen.getByText(stableCandidate.summary))
+
+    const dialog = await screen.findByRole('dialog')
+    const month = await within(dialog).findByLabelText('归属月份')
+    expect(month).toHaveAttribute('type', 'month')
+    fireEvent.change(month, { target: { value: '2025-12' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存更正并确认' }))
+
+    await screen.findByText(/C-8F21 已确认/)
+    const decisionCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/candidate-1/decisions'))
+    expect(JSON.parse(String(decisionCall?.[1]?.body)).corrections).toEqual({ accounting_month: '2025-12' })
+  })
+
+  it('shows identity-only accounting dimension changes in audit history without identifiers', async () => {
+    const identityEvent: ReviewEvent = {
+      ...reviewEvents[0],
+      id: 'event-identity-change',
+      candidate_id: candidates[0].id,
+      changes: [{
+        field: 'business_unit',
+        previous_value: '同名门店',
+        new_value: '同名门店',
+        identity_changed: true,
+      }],
+    }
+    installFetch({ reviewEventPages: [{ items: [identityEvent], next_cursor: null }] })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(screen.getByText(candidates[0].summary))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByText(/营业单元（标识已更新）/)).toBeInTheDocument()
+    expect(dialog).not.toHaveTextContent('unit-demo')
   })
 
   it('posts a confirmed decision when the browser lacks crypto.randomUUID', async () => {

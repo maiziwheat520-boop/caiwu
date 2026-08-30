@@ -94,7 +94,9 @@ export type ApiCandidate = {
   source_message_id: string
   received_at: string
   business_unit: string
+  business_unit_ref?: string | null
   category: string
+  category_code?: string | null
   amount_minor: number
   currency: 'CNY'
   accounting_month: string | null
@@ -122,7 +124,9 @@ export type Candidate = {
   sourceChannel: SourceChannel
   receivedAt: string
   businessUnit: string
+  businessUnitRef: string
   category: string
+  categoryCode: string
   amount: number
   amountMinor: number
   accountingMonth: string | null
@@ -146,11 +150,23 @@ export type CandidateListResponse = {
 export type CandidateDecision = 'CONFIRM' | 'CORRECT_AND_CONFIRM' | 'IGNORE' | 'RESOLVE_CONFLICT'
 
 export type CandidateCorrections = Partial<{
-  business_unit: string
-  category: string
+  business_unit_ref: string
+  category_code: string
   amount_minor: number
   accounting_month: string
 }>
+
+export type AccountingDimensions = {
+  contract_version: 'ledgerbridge.accounting-dimensions.v1'
+  business_units: Array<{
+    ref: string
+    label: string
+  }>
+  categories: Array<{
+    code: string
+    label: string
+  }>
+}
 
 export type ReviewEvent = {
   id: string
@@ -165,6 +181,7 @@ export type ReviewEvent = {
     field: 'business_unit' | 'category' | 'amount_minor' | 'accounting_month' | 'status'
     previous_value: string | number | null
     new_value: string | number | null
+    identity_changed: boolean
   }>
   conflict_resolution: string | null
   created_at: string

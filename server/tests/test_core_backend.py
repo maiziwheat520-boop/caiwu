@@ -133,6 +133,19 @@ class FakeCoreClient:
             }
         if path.startswith("/internal/v1/candidate-events"):
             return {"items": [core_event()], "next_cursor": None}
+        if path.startswith("/internal/v1/accounting-dimensions?"):
+            return {
+                "contract_version": "ledgerbridge.accounting-dimensions.v1",
+                "entity_ref": ENTITY_ID,
+                "business_units": [
+                    {"ref": "unit-demo-a", "label": "演示门店"},
+                    {"ref": "unit-demo-b", "label": "机场门店"},
+                ],
+                "categories": [
+                    {"code": "OTHER", "label": "其他"},
+                    {"code": "SETTLEMENT", "label": "银行收款"},
+                ],
+            }
         if path.startswith(f"/internal/v1/candidates/{CANDIDATE_ID}"):
             return self.candidate_payload
         if path.startswith("/internal/v1/candidates?"):
@@ -147,6 +160,27 @@ class FakeCoreClient:
             "disposition": "attachment",
             "filename": "evidence.bin",
         }
+
+
+class StableReferenceCoreClient(FakeCoreClient):
+    """Model Core's fail-closed ref/code lookup for correction commands."""
+
+    def json(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        if method == "POST":
+            assert body is not None
+            corrections = json.loads(body)["corrections"]
+            if corrections.get("business_unit") not in {"unit-demo-a", "unit-demo-b"} or corrections.get(
+                "category"
+            ) not in {"SETTLEMENT", "OTHER"}:
+                raise CoreBackendError(404, {"code": "RESOURCE_NOT_VISIBLE"})
+        return super().json(method, path, body=body, headers=headers)
 
 
 class FakeAuthStore:
@@ -241,6 +275,306 @@ def build_state(
 
 
 class CoreBackedAdapterTests(unittest.TestCase):
+    def test_review_event_merges_dimension_identity_and_label_without_exposing_identifiers(self) -> None:
+        client = FakeCoreClient()
+        event = core_event()
+        prior = core_candidate()
+        result = core_candidate(status="CONFIRMED", revision=2)
+        prior.update(
+            {
+                "business_unit_ref": "unit-demo-a",
+                "business_unit_label": "同名门店",
+                "category_code": "SETTLEMENT",
+                "category_label": "银行收款",
+            }
+        )
+        result.update(
+            {
+                "business_unit_ref": "unit-demo-b",
+                "business_unit_label": "同名门店",
+                "category_code": "OTHER",
+                "category_label": "其他",
+            }
+        )
+        event.update(
+            {
+                "action": "COMPLETE_FIELDS",
+                "prior_projection": prior,
+                "result_projection": result,
+                "changes": [
+                    {
+                        "field": "business_unit_ref",
+                        "previous_value": "unit-demo-a",
+                        "new_value": "unit-demo-b",
+                    },
+                    {
+                        "field": "category_code",
+                        "previous_value": "SETTLEMENT",
+                        "new_value": "OTHER",
+                    },
+                    {
+                        "field": "category_label",
+                        "previous_value": "银行收款",
+                        "new_value": "其他",
+                    },
+                    {
+                        "field": "status",
+                        "previous_value": "PENDING",
+                        "new_value": "CONFIRMED",
+                    },
+                ],
+            }
+        )
+        original_json = client.json
+
+        def identity_event(*args: object, **kwargs: object) -> dict[str, object]:
+            if str(args[1]).startswith("/internal/v1/candidate-events"):
+                return {"items": [event], "next_cursor": None}
+            return original_json(*args, **kwargs)  # type: ignore[arg-type]
+
+        client.json = identity_event  # type: ignore[method-assign]
+
+        mapped = build_state(client).list_review_events(cursor=None)["items"][0]  # type: ignore[index]
+
+        self.assertEqual(
+            mapped["changes"],
+            [
+                {
+                    "field": "business_unit",
+                    "previous_value": "同名门店",
+                    "new_value": "同名门店",
+                    "identity_changed": True,
+                },
+                {
+                    "field": "category",
+                    "previous_value": "银行收款",
+                    "new_value": "其他",
+                    "identity_changed": True,
+                },
+                {
+                    "field": "status",
+                    "previous_value": "PENDING",
+                    "new_value": "CONFIRMED",
+                    "identity_changed": False,
+                },
+            ],
+        )
+        public_json = json.dumps(mapped, ensure_ascii=False)
+        self.assertNotIn("unit-demo-a", public_json)
+        self.assertNotIn("unit-demo-b", public_json)
+        self.assertNotIn("SETTLEMENT", public_json)
+        self.assertNotIn("OTHER", public_json)
+
+    def test_candidate_rejects_invalid_or_unpaired_dimension_identity_and_label(self) -> None:
+        invalid_values: tuple[tuple[str, object], ...] = (
+            ("business_unit_ref", 7),
+            ("category_code", "x" * 101),
+            ("business_unit_label", None),
+            ("category_label", "x" * 201),
+        )
+        for field, value in invalid_values:
+            with self.subTest(field=field):
+                client = FakeCoreClient()
+                client.candidate_payload[field] = value
+
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(client).list_candidates(status=None, month=None, cursor=None)
+
+                self.assertEqual(raised.exception.status, 503)
+                self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_accounting_dimensions_are_scoped_to_the_configured_entity(self) -> None:
+        client = FakeCoreClient()
+
+        options = build_state(client).accounting_dimensions()
+
+        self.assertEqual(
+            client.calls[-1][1],
+            f"/internal/v1/accounting-dimensions?entity_ref={ENTITY_ID}",
+        )
+        self.assertEqual(options["business_units"][1], {"ref": "unit-demo-b", "label": "机场门店"})
+        self.assertEqual(options["categories"][0], {"code": "OTHER", "label": "其他"})
+
+    def test_accounting_dimensions_reject_a_mismatched_entity_contract(self) -> None:
+        client = FakeCoreClient()
+        original_json = client.json
+
+        def mismatched_entity(*args: object, **kwargs: object) -> dict[str, object]:
+            payload = original_json(*args, **kwargs)  # type: ignore[arg-type]
+            if str(args[1]).startswith("/internal/v1/accounting-dimensions?"):
+                payload["entity_ref"] = "10000000-0000-4000-8000-000000000099"
+            return payload
+
+        client.json = mismatched_entity  # type: ignore[method-assign]
+
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(client).accounting_dimensions()
+        self.assertEqual(raised.exception.status, 503)
+        self.assertEqual(raised.exception.payload["code"], "ACCOUNTING_DIMENSIONS_INVALID")
+
+    def test_accounting_dimensions_reject_an_unsorted_core_contract(self) -> None:
+        client = FakeCoreClient()
+        original_json = client.json
+
+        def unsorted_dimensions(*args: object, **kwargs: object) -> dict[str, object]:
+            payload = original_json(*args, **kwargs)  # type: ignore[arg-type]
+            if str(args[1]).startswith("/internal/v1/accounting-dimensions?"):
+                payload["business_units"] = list(reversed(payload["business_units"]))  # type: ignore[arg-type]
+            return payload
+
+        client.json = unsorted_dimensions  # type: ignore[method-assign]
+
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(client).accounting_dimensions()
+        self.assertEqual(raised.exception.status, 503)
+        self.assertEqual(raised.exception.payload["code"], "ACCOUNTING_DIMENSIONS_INVALID")
+
+    def test_accounting_dimensions_reject_extra_top_level_fields_and_duplicate_labels(self) -> None:
+        for mutation in ("extra", "duplicate-label"):
+            with self.subTest(mutation=mutation):
+                client = FakeCoreClient()
+                original_json = client.json
+
+                def invalid_dimensions(*args: object, **kwargs: object) -> dict[str, object]:
+                    payload = original_json(*args, **kwargs)  # type: ignore[arg-type]
+                    if str(args[1]).startswith("/internal/v1/accounting-dimensions?"):
+                        if mutation == "extra":
+                            payload["internal_id"] = "must-not-cross-bff"
+                        else:
+                            payload["business_units"] = [
+                                {"ref": "unit-demo-a", "label": "同名门店"},
+                                {"ref": "unit-demo-b", "label": "同名门店"},
+                            ]
+                    return payload
+
+                client.json = invalid_dimensions  # type: ignore[method-assign]
+
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(client).accounting_dimensions()
+                self.assertEqual(raised.exception.status, 503)
+                self.assertEqual(raised.exception.payload["code"], "ACCOUNTING_DIMENSIONS_INVALID")
+
+    def test_accounting_dimensions_normalize_upstream_errors_without_leaking_payloads(self) -> None:
+        client = FakeCoreClient()
+        original_json = client.json
+
+        def missing_dimensions(*args: object, **kwargs: object) -> dict[str, object]:
+            if str(args[1]).startswith("/internal/v1/accounting-dimensions?"):
+                raise CoreBackendError(
+                    404,
+                    {"code": "RESOURCE_NOT_FOUND", "detail": "secret upstream entity metadata"},
+                )
+            return original_json(*args, **kwargs)  # type: ignore[arg-type]
+
+        client.json = missing_dimensions  # type: ignore[method-assign]
+
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(client).accounting_dimensions()
+        self.assertEqual(raised.exception.status, 404)
+        self.assertEqual(raised.exception.payload["code"], "ACCOUNTING_DIMENSIONS_NOT_FOUND")
+        self.assertNotIn("secret", json.dumps(raised.exception.payload))
+
+        def unexpected_dimensions(*args: object, **kwargs: object) -> dict[str, object]:
+            if str(args[1]).startswith("/internal/v1/accounting-dimensions?"):
+                raise CoreBackendError(418, {"code": "UPSTREAM_INTERNAL", "detail": "secret"})
+            return original_json(*args, **kwargs)  # type: ignore[arg-type]
+
+        client.json = unexpected_dimensions  # type: ignore[method-assign]
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(client).accounting_dimensions()
+        self.assertEqual(raised.exception.status, 503)
+        self.assertEqual(raised.exception.payload["code"], "ACCOUNTING_DIMENSIONS_UNAVAILABLE")
+        self.assertNotIn("secret", json.dumps(raised.exception.payload))
+
+    def test_legacy_display_label_corrections_are_rejected_even_when_labels_match(self) -> None:
+        client = StableReferenceCoreClient()
+        state = build_state(client)
+
+        status, payload = state.append_decision(
+            CANDIDATE_ID,
+            str(uuid.uuid4()),
+            {
+                "decision": "CORRECT_AND_CONFIRM",
+                "expected_revision": 1,
+                "reason": "人工更正金额和月份",
+                "corrections": {
+                    "business_unit": "演示门店",
+                    "category": "银行收款",
+                    "amount_minor": 23456,
+                    "accounting_month": "2026-07",
+                },
+            },
+        )
+
+        self.assertEqual(status, 422, payload)
+        self.assertEqual(payload["code"], "INVALID_CORRECTIONS")
+        self.assertFalse(any(call[0] == "POST" for call in client.calls))
+
+    def test_correction_forwards_explicit_new_stable_references(self) -> None:
+        client = StableReferenceCoreClient()
+        state = build_state(client)
+
+        status, payload = state.append_decision(
+            CANDIDATE_ID,
+            str(uuid.uuid4()),
+            {
+                "decision": "CORRECT_AND_CONFIRM",
+                "expected_revision": 1,
+                "reason": "人工更正营业单元和科目",
+                "corrections": {
+                    "business_unit_ref": "unit-demo-b",
+                    "category_code": "OTHER",
+                },
+            },
+        )
+
+        self.assertEqual(status, 200, payload)
+        _, _, body, _ = client.calls[-1]
+        assert body is not None
+        corrections = json.loads(body)["corrections"]
+        self.assertEqual(corrections, {"business_unit": "unit-demo-b", "category": "OTHER"})
+
+    def test_unknown_explicit_reference_remains_core_fail_closed(self) -> None:
+        client = StableReferenceCoreClient()
+
+        status, payload = build_state(client).append_decision(
+            CANDIDATE_ID,
+            str(uuid.uuid4()),
+            {
+                "decision": "CORRECT_AND_CONFIRM",
+                "expected_revision": 1,
+                "reason": "未知营业单元不得写入",
+                "corrections": {
+                    "business_unit_ref": "unit-unknown",
+                    "category_code": "SETTLEMENT",
+                },
+            },
+        )
+
+        self.assertEqual(status, 404)
+        self.assertEqual(payload["code"], "RESOURCE_NOT_VISIBLE")
+
+    def test_legacy_display_label_cannot_select_a_different_dimension(self) -> None:
+        client = StableReferenceCoreClient()
+
+        status, payload = build_state(client).append_decision(
+            CANDIDATE_ID,
+            str(uuid.uuid4()),
+            {
+                "decision": "CORRECT_AND_CONFIRM",
+                "expected_revision": 1,
+                "reason": "不得按显示名称反查新维度",
+                "corrections": {
+                    "business_unit": "机场门店",
+                    "category": "其他",
+                },
+            },
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "INVALID_CORRECTIONS")
+        self.assertFalse(any(call[0] == "POST" for call in client.calls))
+
     def test_maps_only_valid_structured_evidence_unlock_state(self) -> None:
         source_ref = "21000000-0000-4000-8000-000000000001"
         client = FakeCoreClient()
@@ -333,6 +667,8 @@ class CoreBackedAdapterTests(unittest.TestCase):
         candidate = page["items"][0]  # type: ignore[index]
         self.assertEqual(candidate["source_channel"], "outlook")
         self.assertEqual(candidate["business_unit"], "演示门店")
+        self.assertEqual(candidate["business_unit_ref"], "unit-demo-a")
+        self.assertEqual(candidate["category_code"], "SETTLEMENT")
         self.assertIsNone(candidate["evidence"][0]["sha256"])
 
         operation = str(uuid.uuid4())
@@ -407,6 +743,15 @@ class CoreBackedAdapterTests(unittest.TestCase):
                     f"cursor={client.candidate_next_cursor}",
                     client.calls[-1][1],
                 )
+
+                request = urllib.request.Request(
+                    f"{base_url}/api/v1/accounting-dimensions",
+                    headers={"Cookie": cookie},
+                )
+                with urllib.request.urlopen(request, timeout=2) as response:
+                    dimensions = json.load(response)
+                self.assertEqual(dimensions["business_units"][0]["ref"], "unit-demo-a")
+                self.assertEqual(dimensions["categories"][1]["code"], "SETTLEMENT")
 
                 body = json.dumps(
                     {
