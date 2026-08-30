@@ -14,16 +14,25 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session
 from test_mybank_statement import _write_synthetic_mybank_xlsx
 from test_r1_database_migration import _legacy_r1_database, _upgrade_config
 
 from alembic import command
+from ledgerbridge.account_registry import (
+    AccountAliasRegistration,
+    AccountRegistryPlan,
+    AccountRegistryPlanResult,
+    ManagedAccountRegistration,
+)
 from ledgerbridge.bank_statement_persistence import (
     BankStatementImportContext,
     BankStatementImportResult,
     BankStatementPersistenceError,
 )
 from ledgerbridge.file_key_provider import bootstrap_file_key
+from ledgerbridge.internal_read_contract import Capability, EntityGrant, WorkloadPrincipal
+from ledgerbridge.models import EntityType
 from ledgerbridge.mybank_statement import MyBankStatement, MyBankTransaction
 from ledgerbridge.mybank_statement_cutover import (
     MyBankCutoverSafetyProof,
@@ -32,10 +41,10 @@ from ledgerbridge.mybank_statement_cutover import (
     MyBankStatementCutoverPlan,
     MyBankStatementCutoverRunner,
     ProductionCounts,
+    _require_import_identity,
     run_database_mybank_statement_cutover,
     verify_mybank_cutover_safety_proof,
 )
-from ledgerbridge.reconciliation import AccountOwnerKind
 
 STATEMENT_REF = UUID("83000000-0000-4000-8000-000000000001")
 EVIDENCE_REF = UUID("83000000-0000-4000-8000-000000000002")
@@ -43,6 +52,8 @@ ENTITY_REF = UUID("83000000-0000-4000-8000-000000000003")
 BUSINESS_UNIT_REF = UUID("83000000-0000-4000-8000-000000000004")
 MANAGED_ACCOUNT_REF = UUID("83000000-0000-4000-8000-000000000005")
 OTHER_ENTITY_REF = UUID("83000000-0000-4000-8000-000000000006")
+REGISTRY_OPERATION_REF = UUID("83000000-0000-4000-8000-000000000007")
+ACCOUNT_ALIAS_REF = UUID("83000000-0000-4000-8000-000000000008")
 MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -95,6 +106,11 @@ def _before_counts() -> ProductionCounts:
         encrypted_blob_versions=12,
         managed_accounts=0,
         managed_account_lifecycles=0,
+        account_registry_operations=0,
+        managed_account_aliases=0,
+        account_business_unit_assignments=0,
+        fact_business_unit_allocation_sets=0,
+        fact_business_unit_allocation_items=0,
         bank_statements=0,
         bank_statement_transactions=0,
         bank_statement_observations=0,
@@ -112,13 +128,18 @@ def _after_counts(transaction_count: int = 2) -> ProductionCounts:
         encrypted_blob_versions=13,
         managed_accounts=1,
         managed_account_lifecycles=1,
+        account_registry_operations=1,
+        managed_account_aliases=1,
+        account_business_unit_assignments=0,
+        fact_business_unit_allocation_sets=0,
+        fact_business_unit_allocation_items=0,
         bank_statements=1,
         bank_statement_transactions=transaction_count,
         bank_statement_observations=transaction_count,
         bank_statement_reviews=1,
         candidates=20,
         latest_pending_candidates=14,
-        audit_events=1_006 + 2 * transaction_count,
+        audit_events=1_008 + 2 * transaction_count,
     )
 
 
@@ -130,12 +151,31 @@ def _plan(source_path: Path, digest: str, size: int) -> MyBankStatementCutoverPl
         evidence_ref=EVIDENCE_REF,
         entity_ref=ENTITY_REF,
         business_unit_ref=BUSINESS_UNIT_REF,
-        managed_account_ref=MANAGED_ACCOUNT_REF,
-        owner_entity_ref=ENTITY_REF,
-        owner_ref="owner:confirmed-person",
-        owner_kind=AccountOwnerKind.PERSONAL,
-        account_kind="BANK_CHECKING",
-        business_unit_attribution_ref=BUSINESS_UNIT_REF,
+        registry_plan=AccountRegistryPlan(
+            operation_id=REGISTRY_OPERATION_REF,
+            owner_entity_ref=ENTITY_REF,
+            expected_owner_kind=EntityType.PERSON,
+            expected_registry_revision=0,
+            actor_ref="worker:mybank-private-cutover",
+            reason="operator-confirmed whole-statement import",
+            accounts=(
+                ManagedAccountRegistration(
+                    managed_account_ref=MANAGED_ACCOUNT_REF,
+                    admission_evidence_ref=EVIDENCE_REF,
+                    account_key="managed-account:synthetic-personal",
+                    institution_code="mybank",
+                    account_suffix="1357",
+                    account_kind="BANK_CHECKING",
+                    aliases=(
+                        AccountAliasRegistration(
+                            alias_ref=ACCOUNT_ALIAS_REF,
+                            alias_kind="ACCOUNT_NUMBER",
+                            alias_value="0000 0000 0000 1357",
+                        ),
+                    ),
+                ),
+            ),
+        ),
         account_suffix="1357",
         expected_transaction_count=2,
         actor="worker:mybank-private-cutover",
@@ -145,11 +185,21 @@ def _plan(source_path: Path, digest: str, size: int) -> MyBankStatementCutoverPl
 
 def _gates(before: ProductionCounts | None = None) -> MyBankStatementCutoverGates:
     return MyBankStatementCutoverGates(
-        schema_revision="20260830_0021",
+        schema_revision="20260830_0023",
         backup_verified=True,
         isolated_restore_verified=True,
         rollback_ready=True,
         expected_before=before or _before_counts(),
+    )
+
+
+def _registry_principal() -> WorkloadPrincipal:
+    return WorkloadPrincipal(
+        principal_ref="workload:synthetic-cutover",
+        san_uri="spiffe://ledgerbridge.test/synthetic-cutover",
+        policy_generation=1,
+        capabilities=frozenset({Capability.ACCOUNT_REGISTRY_WRITE}),
+        grants=(EntityGrant(entity_ref=ENTITY_REF, allow_account_registry=True),),
     )
 
 
@@ -179,7 +229,7 @@ def _safety_proof(tmp_path: Path, before: ProductionCounts) -> MyBankCutoverSafe
         encoding="utf-8",
     )
     inventory = {
-        "schema_revision": "20260830_0021",
+        "schema_revision": "20260830_0023",
         "candidate_total": before.candidates,
         "latest_pending_candidates": before.latest_pending_candidates,
         "audit_events": before.audit_events,
@@ -189,6 +239,11 @@ def _safety_proof(tmp_path: Path, before: ProductionCounts) -> MyBankCutoverSafe
             "encrypted_blob_version": before.encrypted_blob_versions,
             "managed_account": before.managed_accounts,
             "managed_account_lifecycle": before.managed_account_lifecycles,
+            "account_registry_operation": before.account_registry_operations,
+            "managed_account_alias": before.managed_account_aliases,
+            "account_business_unit_assignment": before.account_business_unit_assignments,
+            "fact_business_unit_allocation_set": before.fact_business_unit_allocation_sets,
+            "fact_business_unit_allocation_item": before.fact_business_unit_allocation_items,
             "bank_statement": before.bank_statements,
             "bank_statement_transaction": before.bank_statement_transactions,
             "bank_statement_observation": before.bank_statement_observations,
@@ -233,20 +288,45 @@ class _Parser:
 
 
 class _EvidenceWriter:
-    def __init__(self) -> None:
+    def __init__(self, events: list[str] | None = None) -> None:
         self.calls: list[tuple[Path, object]] = []
+        self._events = events
 
     def __call__(self, source_path: Path, evidence: object) -> None:
+        if self._events is not None:
+            self._events.append("evidence")
         self.calls.append((source_path, evidence))
+
+
+class _AccountRegistrar:
+    def __init__(
+        self,
+        results: Iterator[AccountRegistryPlanResult | BaseException],
+        events: list[str] | None = None,
+    ) -> None:
+        self._results = results
+        self.calls: list[AccountRegistryPlan] = []
+        self._events = events
+
+    def register(self, plan: AccountRegistryPlan) -> AccountRegistryPlanResult:
+        if self._events is not None:
+            self._events.append("registry")
+        self.calls.append(plan)
+        result = next(self._results)
+        if isinstance(result, BaseException):
+            raise result
+        return result
 
 
 class _StatementImporter:
     def __init__(
         self,
         results: Iterator[BankStatementImportResult | BaseException],
+        events: list[str] | None = None,
     ) -> None:
         self._results = results
         self.calls: list[tuple[MyBankStatement, BankStatementImportContext]] = []
+        self._events = events
 
     def import_statement(
         self,
@@ -254,6 +334,8 @@ class _StatementImporter:
         *,
         context: BankStatementImportContext,
     ) -> BankStatementImportResult:
+        if self._events is not None:
+            self._events.append("statement")
         self.calls.append((statement, context))
         result = next(self._results)
         if isinstance(result, BaseException):
@@ -271,6 +353,29 @@ class _CountsReader:
         return next(self._values)
 
 
+class _MappingResult:
+    def __init__(self, *, one: object = None, rows: list[object] | None = None) -> None:
+        self._one = one
+        self._rows = rows or []
+
+    def mappings(self) -> _MappingResult:
+        return self
+
+    def one_or_none(self) -> object:
+        return self._one
+
+    def all(self) -> list[object]:
+        return self._rows
+
+
+class _IdentitySession:
+    def __init__(self, results: Iterator[_MappingResult]) -> None:
+        self._results = results
+
+    def execute(self, *_args: object, **_kwargs: object) -> _MappingResult:
+        return next(self._results)
+
+
 def _import_result(*, created: bool, transaction_count: int = 2) -> BankStatementImportResult:
     return BankStatementImportResult(
         statement_ref=STATEMENT_REF,
@@ -283,17 +388,31 @@ def _import_result(*, created: bool, transaction_count: int = 2) -> BankStatemen
     )
 
 
+def _registry_result(*, created: bool) -> AccountRegistryPlanResult:
+    return AccountRegistryPlanResult(
+        operation_id=REGISTRY_OPERATION_REF,
+        owner_entity_ref=ENTITY_REF,
+        registry_revision=1,
+        created=created,
+        managed_account_refs=(MANAGED_ACCOUNT_REF,),
+    )
+
+
 def _successful_runner(
     statement: MyBankStatement,
 ) -> tuple[
     MyBankStatementCutoverRunner,
     _Parser,
     _EvidenceWriter,
+    _AccountRegistrar,
     _StatementImporter,
     _CountsReader,
 ]:
     parser = _Parser(statement)
     evidence_writer = _EvidenceWriter()
+    registrar = _AccountRegistrar(
+        iter((_registry_result(created=True), _registry_result(created=False)))
+    )
     importer = _StatementImporter(
         iter((_import_result(created=True), _import_result(created=False)))
     )
@@ -301,10 +420,11 @@ def _successful_runner(
     runner = MyBankStatementCutoverRunner(
         parser=parser,
         evidence_writer=evidence_writer,
+        account_registrar=registrar,
         statement_importer=importer,
         counts_reader=counts_reader,
     )
-    return runner, parser, evidence_writer, importer, counts_reader
+    return runner, parser, evidence_writer, registrar, importer, counts_reader
 
 
 def _synthetic_source(
@@ -318,7 +438,7 @@ def _synthetic_source(
 def test_cutover_creates_whole_statement_facts_without_candidates(tmp_path: Path) -> None:
     source, digest = _synthetic_source(tmp_path)
     statement = _statement(digest, source.stat().st_size)
-    runner, _, _, _, _ = _successful_runner(statement)
+    runner, _, _, _, _, _ = _successful_runner(statement)
 
     receipt = runner.run(
         _plan(source, digest, source.stat().st_size),
@@ -334,13 +454,96 @@ def test_cutover_creates_whole_statement_facts_without_candidates(tmp_path: Path
     assert receipt.latest_pending_candidate_delta == 0
 
 
+def test_cutover_orders_evidence_registry_statement_then_replays_registry_and_statement(
+    tmp_path: Path,
+) -> None:
+    source, digest = _synthetic_source(tmp_path)
+    statement = _statement(digest, source.stat().st_size)
+    events: list[str] = []
+    evidence_writer = _EvidenceWriter(events)
+    registrar = _AccountRegistrar(
+        iter((_registry_result(created=True), _registry_result(created=False))),
+        events,
+    )
+    importer = _StatementImporter(
+        iter((_import_result(created=True), _import_result(created=False))),
+        events,
+    )
+    runner = MyBankStatementCutoverRunner(
+        parser=_Parser(statement),
+        evidence_writer=evidence_writer,
+        account_registrar=registrar,
+        statement_importer=importer,
+        counts_reader=_CountsReader(iter((_before_counts(), _after_counts(), _after_counts()))),
+    )
+
+    runner.run(_plan(source, digest, source.stat().st_size), gates=_gates())
+
+    assert events == ["evidence", "registry", "statement", "registry", "statement"]
+
+
+def test_cutover_stops_before_statement_when_registry_plan_fails(tmp_path: Path) -> None:
+    source, digest = _synthetic_source(tmp_path)
+    statement = _statement(digest, source.stat().st_size)
+    events: list[str] = []
+    importer = _StatementImporter(iter(()), events)
+    runner = MyBankStatementCutoverRunner(
+        parser=_Parser(statement),
+        evidence_writer=_EvidenceWriter(events),
+        account_registrar=_AccountRegistrar(iter((RuntimeError("registry rejected"),)), events),
+        statement_importer=importer,
+        counts_reader=_CountsReader(iter((_before_counts(),))),
+    )
+
+    with pytest.raises(MyBankStatementCutoverError, match="import conflict"):
+        runner.run(_plan(source, digest, source.stat().st_size), gates=_gates())
+
+    assert events == ["evidence", "registry"]
+    assert importer.calls == []
+
+
+def test_statement_identity_check_rejects_missing_registered_account(
+    tmp_path: Path,
+) -> None:
+    source, digest = _synthetic_source(tmp_path)
+    statement = _statement(digest, source.stat().st_size)
+    plan = _plan(source, digest, source.stat().st_size)
+    session = _IdentitySession(
+        iter(
+            (
+                _MappingResult(one={"entity_type": EntityType.PERSON.value}),
+                _MappingResult(
+                    one={
+                        "entity_id": ENTITY_REF,
+                        "business_unit_id": BUSINESS_UNIT_REF,
+                        "media_type": MEDIA_TYPE,
+                        "plaintext_sha256": bytes.fromhex(digest),
+                        "plaintext_size": source.stat().st_size,
+                    }
+                ),
+                _MappingResult(rows=[]),
+            )
+        )
+    )
+    context = BankStatementImportContext(
+        owner_entity_ref=ENTITY_REF,
+        managed_account_ref=MANAGED_ACCOUNT_REF,
+        evidence_ref=EVIDENCE_REF,
+        actor=plan.actor,
+        reason=plan.reason,
+    )
+
+    with pytest.raises(MyBankStatementCutoverError, match="not registered"):
+        _require_import_identity(cast(Session, session), plan, statement, context)
+
+
 def test_cutover_binds_evidence_to_exact_digest_size_and_explicit_scope(tmp_path: Path) -> None:
     source, digest = _synthetic_source(
         tmp_path,
         name="misleading-company-owner-account-9999.xlsx",
     )
     statement = _statement(digest, source.stat().st_size)
-    runner, parser, evidence_writer, importer, _ = _successful_runner(statement)
+    runner, parser, evidence_writer, registrar, importer, _ = _successful_runner(statement)
     plan = _plan(source, digest, source.stat().st_size)
 
     runner.run(plan, gates=_gates())
@@ -359,16 +562,13 @@ def test_cutover_binds_evidence_to_exact_digest_size_and_explicit_scope(tmp_path
     assert source.name not in repr(evidence)
 
     assert len(importer.calls) == 2
+    assert registrar.calls == [plan.registry_plan, plan.registry_plan]
     for imported_statement, context in importer.calls:
         assert imported_statement is statement
-        assert context.entity_ref == ENTITY_REF
+        assert context.owner_entity_ref == ENTITY_REF
         assert context.managed_account_ref == MANAGED_ACCOUNT_REF
         assert context.evidence_ref == EVIDENCE_REF
-        assert context.owner_ref == "owner:confirmed-person"
-        assert context.owner_kind is AccountOwnerKind.PERSONAL
-        assert context.account_kind == "BANK_CHECKING"
-        assert context.account_key == "mybank:personal:1357"
-    assert all(context.entity_ref != OTHER_ENTITY_REF for _, context in importer.calls)
+    assert all(context.owner_entity_ref != OTHER_ENTITY_REF for _, context in importer.calls)
 
 
 @pytest.mark.parametrize(
@@ -388,7 +588,9 @@ def test_cutover_rejects_missing_safety_gate_before_side_effects(
 ) -> None:
     source, digest = _synthetic_source(tmp_path)
     statement = _statement(digest, source.stat().st_size)
-    runner, parser, evidence_writer, importer, counts_reader = _successful_runner(statement)
+    runner, parser, evidence_writer, registrar, importer, counts_reader = _successful_runner(
+        statement
+    )
     gates = replace(_gates(), **{field: value})
 
     with pytest.raises(MyBankStatementCutoverError, match=message):
@@ -396,6 +598,7 @@ def test_cutover_rejects_missing_safety_gate_before_side_effects(
 
     assert parser.calls == []
     assert evidence_writer.calls == []
+    assert registrar.calls == []
     assert importer.calls == []
     assert counts_reader.calls == 0
 
@@ -420,12 +623,14 @@ def test_cutover_rejects_preflight_count_drift_before_reading_private_source(
     statement = _statement(digest, source.stat().st_size)
     parser = _Parser(statement)
     evidence_writer = _EvidenceWriter()
+    registrar = _AccountRegistrar(iter(()))
     importer = _StatementImporter(iter((_import_result(created=True),)))
     drifted = replace(_before_counts(), candidates=21)
     counts_reader = _CountsReader(iter((drifted,)))
     runner = MyBankStatementCutoverRunner(
         parser=parser,
         evidence_writer=evidence_writer,
+        account_registrar=registrar,
         statement_importer=importer,
         counts_reader=counts_reader,
     )
@@ -453,11 +658,13 @@ def test_cutover_rejects_parser_identity_drift_before_evidence_write(
     statement = _statement(observed_digest, source.stat().st_size + size_delta)
     parser = _Parser(statement)
     evidence_writer = _EvidenceWriter()
+    registrar = _AccountRegistrar(iter(()))
     importer = _StatementImporter(iter((_import_result(created=True),)))
     counts_reader = _CountsReader(iter((_before_counts(),)))
     runner = MyBankStatementCutoverRunner(
         parser=parser,
         evidence_writer=evidence_writer,
+        account_registrar=registrar,
         statement_importer=importer,
         counts_reader=counts_reader,
     )
@@ -475,7 +682,7 @@ def test_cutover_replays_same_package_with_created_false_and_no_count_drift(
 ) -> None:
     source, digest = _synthetic_source(tmp_path)
     statement = _statement(digest, source.stat().st_size)
-    runner, _, evidence_writer, importer, counts_reader = _successful_runner(statement)
+    runner, _, evidence_writer, registrar, importer, counts_reader = _successful_runner(statement)
 
     receipt = runner.run(_plan(source, digest, source.stat().st_size), gates=_gates())
 
@@ -484,6 +691,7 @@ def test_cutover_replays_same_package_with_created_false_and_no_count_drift(
         importer.calls[0][1],
     ]
     assert len(evidence_writer.calls) == 1
+    assert len(registrar.calls) == 2
     assert counts_reader.calls == 3
     assert receipt.replay_created is False
     assert receipt.after_counts == receipt.replay_counts == _after_counts()
@@ -496,6 +704,9 @@ def test_cutover_fails_closed_when_replay_receipt_conflicts_with_first_import(
     statement = _statement(digest, source.stat().st_size)
     parser = _Parser(statement)
     evidence_writer = _EvidenceWriter()
+    registrar = _AccountRegistrar(
+        iter((_registry_result(created=True), _registry_result(created=False)))
+    )
     importer = _StatementImporter(
         iter((_import_result(created=True), _import_result(created=False, transaction_count=3)))
     )
@@ -503,6 +714,7 @@ def test_cutover_fails_closed_when_replay_receipt_conflicts_with_first_import(
     runner = MyBankStatementCutoverRunner(
         parser=parser,
         evidence_writer=evidence_writer,
+        account_registrar=registrar,
         statement_importer=importer,
         counts_reader=counts_reader,
     )
@@ -520,11 +732,13 @@ def test_cutover_fails_closed_when_first_import_is_an_unexpected_replay(
     statement = _statement(digest, source.stat().st_size)
     parser = _Parser(statement)
     evidence_writer = _EvidenceWriter()
+    registrar = _AccountRegistrar(iter((_registry_result(created=True),)))
     importer = _StatementImporter(iter((_import_result(created=False),)))
     counts_reader = _CountsReader(iter((_before_counts(),)))
     runner = MyBankStatementCutoverRunner(
         parser=parser,
         evidence_writer=evidence_writer,
+        account_registrar=registrar,
         statement_importer=importer,
         counts_reader=counts_reader,
     )
@@ -542,11 +756,13 @@ def test_completed_package_replay_skips_evidence_write_and_changes_no_counts(
     statement = _statement(digest, source.stat().st_size)
     parser = _Parser(statement)
     evidence_writer = _EvidenceWriter()
+    registrar = _AccountRegistrar(iter((_registry_result(created=False),)))
     importer = _StatementImporter(iter((_import_result(created=False),)))
     counts_reader = _CountsReader(iter((_after_counts(), _after_counts())))
     runner = MyBankStatementCutoverRunner(
         parser=parser,
         evidence_writer=evidence_writer,
+        account_registrar=registrar,
         statement_importer=importer,
         counts_reader=counts_reader,
     )
@@ -560,6 +776,7 @@ def test_completed_package_replay_skips_evidence_write_and_changes_no_counts(
     assert receipt.replay_created is False
     assert receipt.before_counts == receipt.after_counts == receipt.replay_counts
     assert evidence_writer.calls == []
+    assert len(registrar.calls) == 1
     assert len(importer.calls) == 1
     assert counts_reader.calls == 2
 
@@ -581,12 +798,14 @@ def test_cutover_error_and_logs_do_not_disclose_private_path_or_source_content(
         raise BankStatementPersistenceError(f"{source_path}: {private_marker}")
 
     evidence_writer = _EvidenceWriter()
+    registrar = _AccountRegistrar(iter(()))
     importer = _StatementImporter(iter((_import_result(created=True),)))
     counts_reader = _CountsReader(iter((_before_counts(),)))
     logger = logging.getLogger("ledgerbridge.test.mybank-cutover")
     runner = MyBankStatementCutoverRunner(
         parser=cast(Callable[..., MyBankStatement], failing_parser),
         evidence_writer=evidence_writer,
+        account_registrar=registrar,
         statement_importer=importer,
         counts_reader=counts_reader,
         logger=logger,
@@ -613,7 +832,7 @@ def test_success_receipt_does_not_disclose_source_path_or_transaction_fields(
 ) -> None:
     source, digest = _synthetic_source(tmp_path, name="private-owner-identity.xlsx")
     statement = _statement(digest, source.stat().st_size)
-    runner, _, _, _, _ = _successful_runner(statement)
+    runner, _, _, _, _, _ = _successful_runner(statement)
 
     receipt = runner.run(_plan(source, digest, source.stat().st_size), gates=_gates())
 
@@ -662,6 +881,11 @@ def test_database_cutover_persists_encrypted_evidence_and_replays_atomically(
             encrypted_blob_versions=0,
             managed_accounts=0,
             managed_account_lifecycles=0,
+            account_registry_operations=0,
+            managed_account_aliases=0,
+            account_business_unit_assignments=0,
+            fact_business_unit_allocation_sets=0,
+            fact_business_unit_allocation_items=0,
             bank_statements=0,
             bank_statement_transactions=0,
             bank_statement_observations=0,
@@ -676,6 +900,7 @@ def test_database_cutover_persists_encrypted_evidence_and_replays_atomically(
             _plan(source, digest, len(raw)),
             gates=replace(_gates(before), verify_fact_conflict=True),
             safety_proof=_safety_proof(tmp_path, before),
+            registry_principal=_registry_principal(),
             key_file=key_file,
             artifact_root=artifact_root,
         )
@@ -688,13 +913,18 @@ def test_database_cutover_persists_encrypted_evidence_and_replays_atomically(
             encrypted_blob_versions=1,
             managed_accounts=1,
             managed_account_lifecycles=1,
+            account_registry_operations=1,
+            managed_account_aliases=1,
+            account_business_unit_assignments=0,
+            fact_business_unit_allocation_sets=0,
+            fact_business_unit_allocation_items=0,
             bank_statements=1,
             bank_statement_transactions=2,
             bank_statement_observations=2,
             bank_statement_reviews=1,
             candidates=0,
             latest_pending_candidates=0,
-            audit_events=10,
+            audit_events=12,
         )
         with engine.connect() as connection:
             evidence = connection.execute(

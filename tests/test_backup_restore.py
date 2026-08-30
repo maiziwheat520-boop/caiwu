@@ -95,7 +95,7 @@ def _cutover_inventory(
     row_counts = {table: 0 for table in R1_CUTOVER_INVENTORY_TABLES}
     row_counts.update(changes or {})
     return CutoverInventory(
-        schema_revision="20260830_0021",
+        schema_revision="20260830_0023",
         candidate_total=candidate_total,
         latest_pending_candidates=latest_pending,
         audit_events=audit_events,
@@ -106,13 +106,15 @@ def _cutover_inventory(
 def test_mybank_restore_inventory_accepts_exact_import_replay_and_conflict_sequence() -> None:
     before = _cutover_inventory()
     after = _cutover_inventory(
-        audit_events=1_012,
+        audit_events=1_014,
         changes={
             "evidence_object": 1,
             "encrypted_object_identity": 1,
             "encrypted_blob_version": 1,
             "managed_account": 1,
             "managed_account_lifecycle": 1,
+            "account_registry_operation": 1,
+            "managed_account_alias": 1,
             "bank_statement": 1,
             "bank_statement_transaction": 3,
             "bank_statement_observation": 3,
@@ -126,11 +128,13 @@ def test_mybank_restore_inventory_accepts_exact_import_replay_and_conflict_seque
         replay=after,
         conflict=after,
         transaction_count=3,
+        alias_count=1,
+        assignment_count=0,
     )
 
     assert report["candidate_total"] == 20
     assert report["latest_pending_candidates"] == 14
-    assert report["audit_event_delta"] == 12
+    assert report["audit_event_delta"] == 14
     assert report["replay_delta"] == 0
     assert report["conflict_delta"] == 0
 
@@ -138,13 +142,15 @@ def test_mybank_restore_inventory_accepts_exact_import_replay_and_conflict_seque
 def test_mybank_restore_inventory_rejects_unrelated_r1_table_drift() -> None:
     before = _cutover_inventory()
     after = _cutover_inventory(
-        audit_events=1_012,
+        audit_events=1_014,
         changes={
             "evidence_object": 1,
             "encrypted_object_identity": 1,
             "encrypted_blob_version": 1,
             "managed_account": 1,
             "managed_account_lifecycle": 1,
+            "account_registry_operation": 1,
+            "managed_account_alias": 1,
             "bank_statement": 1,
             "bank_statement_transaction": 3,
             "bank_statement_observation": 3,
@@ -160,6 +166,8 @@ def test_mybank_restore_inventory_rejects_unrelated_r1_table_drift() -> None:
             replay=after,
             conflict=after,
             transaction_count=3,
+            alias_count=1,
+            assignment_count=0,
         )
 
 

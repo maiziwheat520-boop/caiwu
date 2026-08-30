@@ -17,6 +17,11 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from ledgerbridge.account_registry import (
+    AccountRegistryOperator,
+    AccountRegistryPlan,
+    AccountRegistryPlanResult,
+)
 from ledgerbridge.artifacts import ArtifactStore
 from ledgerbridge.bank_statement_persistence import (
     BankStatementImportContext,
@@ -25,16 +30,18 @@ from ledgerbridge.bank_statement_persistence import (
     BankStatementPersistenceError,
 )
 from ledgerbridge.crypto import ENVELOPE_ALGORITHM, ENVELOPE_SCHEMA, SecretStreamCipher
-from ledgerbridge.encrypted_artifacts import EncryptedArtifactStore
+from ledgerbridge.encrypted_artifacts import (
+    EncryptedArtifactPublication,
+    EncryptedArtifactStore,
+)
 from ledgerbridge.file_key_provider import FileKeyProvider
+from ledgerbridge.internal_read_contract import WorkloadPrincipal
+from ledgerbridge.models import EntityType
 from ledgerbridge.mybank_statement import MyBankStatement, parse_mybank_xlsx
-from ledgerbridge.reconciliation import AccountOwnerKind
 
-_SCHEMA_REVISION = "20260830_0021"
+_SCHEMA_REVISION = "20260830_0023"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
-_SAFE_REF = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,199}$")
-_ACCOUNT_KIND = re.compile(r"^[A-Z][A-Z0-9_]{0,31}$")
 _ACCOUNT_SUFFIX = re.compile(r"^[0-9]{4,8}$")
 _CONFLICT_NAMESPACE = UUID("581080ab-fcd4-414f-af6a-f00ed1424f87")
 
@@ -50,6 +57,11 @@ class ProductionCounts:
     encrypted_blob_versions: int
     managed_accounts: int
     managed_account_lifecycles: int
+    account_registry_operations: int
+    managed_account_aliases: int
+    account_business_unit_assignments: int
+    fact_business_unit_allocation_sets: int
+    fact_business_unit_allocation_items: int
     bank_statements: int
     bank_statement_transactions: int
     bank_statement_observations: int
@@ -69,6 +81,11 @@ class ProductionCounts:
             self.encrypted_blob_versions,
             self.managed_accounts,
             self.managed_account_lifecycles,
+            self.account_registry_operations,
+            self.managed_account_aliases,
+            self.account_business_unit_assignments,
+            self.fact_business_unit_allocation_sets,
+            self.fact_business_unit_allocation_items,
             self.bank_statements,
             self.bank_statement_transactions,
             self.bank_statement_observations,
@@ -87,12 +104,7 @@ class MyBankStatementCutoverPlan:
     evidence_ref: UUID
     entity_ref: UUID
     business_unit_ref: UUID
-    managed_account_ref: UUID
-    owner_entity_ref: UUID
-    owner_ref: str
-    owner_kind: AccountOwnerKind
-    account_kind: str
-    business_unit_attribution_ref: UUID | None
+    registry_plan: AccountRegistryPlan
     account_suffix: str
     expected_transaction_count: int
     actor: str
@@ -105,25 +117,39 @@ class MyBankStatementCutoverPlan:
             raise ValueError("expected source digest is invalid")
         if type(self.expected_size) is not int or self.expected_size <= 0:
             raise ValueError("expected source size is invalid")
-        if _SAFE_REF.fullmatch(self.owner_ref) is None:
-            raise ValueError("owner reference is invalid")
-        if not isinstance(self.owner_kind, AccountOwnerKind):
-            raise ValueError("owner kind is invalid")
-        if _ACCOUNT_KIND.fullmatch(self.account_kind) is None:
-            raise ValueError("account kind is invalid")
-        if self.owner_entity_ref != self.entity_ref:
-            raise ValueError("owner entity does not match accounting entity")
-        if (
-            self.business_unit_attribution_ref is not None
-            and self.business_unit_attribution_ref != self.business_unit_ref
-        ):
-            raise ValueError("business unit attribution conflicts with evidence scope")
         if _ACCOUNT_SUFFIX.fullmatch(self.account_suffix) is None:
             raise ValueError("MYbank cutover account suffix is invalid")
         if type(self.expected_transaction_count) is not int or self.expected_transaction_count <= 0:
             raise ValueError("expected transaction count is invalid")
         if not self.actor.strip() or not self.reason.strip():
             raise ValueError("cutover audit context is invalid")
+        if self.registry_plan.owner_entity_ref != self.entity_ref:
+            raise ValueError("registry owner does not match accounting entity")
+        if self.registry_plan.actor_ref != self.actor or self.registry_plan.reason != self.reason:
+            raise ValueError("registry audit context does not match cutover")
+        if len(self.registry_plan.accounts) != 1 or self.registry_plan.fact_allocations:
+            raise ValueError("cutover registry plan must register exactly one account")
+        account = self.registry_plan.accounts[0]
+        if (
+            account.admission_evidence_ref != self.evidence_ref
+            or account.institution_code != "mybank"
+            or account.account_suffix != self.account_suffix
+        ):
+            raise ValueError("registry account identity does not match cutover")
+        if len(self.registry_plan.business_unit_assignments) > 1 or any(
+            assignment.managed_account_ref != account.managed_account_ref
+            or assignment.business_unit_id != self.business_unit_ref
+            for assignment in self.registry_plan.business_unit_assignments
+        ):
+            raise ValueError("registry business unit assignment does not match cutover")
+
+    @property
+    def managed_account_ref(self) -> UUID:
+        return self.registry_plan.accounts[0].managed_account_ref
+
+    @property
+    def owner_kind(self) -> EntityType:
+        return self.registry_plan.expected_owner_kind
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +190,9 @@ class MyBankStatementCutoverReceipt:
     statement_ref: UUID
     evidence_ref: UUID
     managed_account_ref: UUID
+    registry_created: bool
     created: bool
+    registry_replay_created: bool
     replay_created: bool
     transaction_count: int
     review_status: str
@@ -194,6 +222,10 @@ class _StatementImporter(Protocol):
     ) -> BankStatementImportResult: ...
 
 
+class _AccountRegistrar(Protocol):
+    def register(self, plan: AccountRegistryPlan) -> AccountRegistryPlanResult: ...
+
+
 class MyBankStatementCutoverRunner:
     """Run one checked import and its mandatory idempotent replay."""
 
@@ -202,6 +234,7 @@ class MyBankStatementCutoverRunner:
         *,
         parser: Callable[..., MyBankStatement],
         evidence_writer: Callable[[Path, MyBankEvidenceDescriptor], None],
+        account_registrar: _AccountRegistrar,
         statement_importer: _StatementImporter,
         counts_reader: Callable[[], ProductionCounts],
         schema_reader: Callable[[], str] | None = None,
@@ -209,6 +242,7 @@ class MyBankStatementCutoverRunner:
     ) -> None:
         self._parser = parser
         self._evidence_writer = evidence_writer
+        self._account_registrar = account_registrar
         self._statement_importer = statement_importer
         self._counts_reader = counts_reader
         self._schema_reader = schema_reader
@@ -226,7 +260,7 @@ class MyBankStatementCutoverRunner:
         before = self._counts_reader()
         expected_completed = _expected_after(
             gates.expected_before,
-            plan.expected_transaction_count,
+            plan,
         )
         is_fresh = before == gates.expected_before
         is_completed_replay = before == expected_completed
@@ -263,12 +297,8 @@ class MyBankStatementCutoverRunner:
             display_name=f"mybank-statement-{statement.statement_ref}.xlsx",
         )
         context = BankStatementImportContext(
-            entity_ref=plan.entity_ref,
+            owner_entity_ref=plan.entity_ref,
             managed_account_ref=plan.managed_account_ref,
-            account_key=(f"mybank:{plan.owner_kind.value.lower()}:{plan.account_suffix}"),
-            owner_ref=plan.owner_ref,
-            owner_kind=plan.owner_kind,
-            account_kind=plan.account_kind,
             evidence_ref=plan.evidence_ref,
             actor=plan.actor,
             reason=plan.reason,
@@ -276,11 +306,17 @@ class MyBankStatementCutoverRunner:
 
         if is_completed_replay:
             try:
+                registry_replay = self._account_registrar.register(plan.registry_plan)
                 replay = self._statement_importer.import_statement(statement, context=context)
             except Exception:
                 self._logger.error("MYbank completed-package replay failed")
                 raise MyBankStatementCutoverError("completed statement replay conflict") from None
-            if replay.created or not _receipt_matches(replay, statement, plan):
+            if (
+                registry_replay.created
+                or not _registry_result_matches(registry_replay, plan)
+                or replay.created
+                or not _receipt_matches(replay, statement, plan)
+            ):
                 raise MyBankStatementCutoverError("completed statement replay receipt conflicts")
             replay_counts = self._counts_reader()
             if replay_counts != before:
@@ -289,7 +325,9 @@ class MyBankStatementCutoverRunner:
                 statement_ref=replay.statement_ref,
                 evidence_ref=plan.evidence_ref,
                 managed_account_ref=replay.managed_account_ref,
+                registry_created=False,
                 created=False,
+                registry_replay_created=False,
                 replay_created=False,
                 transaction_count=replay.transaction_count,
                 review_status=replay.review_status,
@@ -301,25 +339,35 @@ class MyBankStatementCutoverRunner:
 
         try:
             self._evidence_writer(plan.source_path, descriptor)
+            registry_first = self._account_registrar.register(plan.registry_plan)
             first = self._statement_importer.import_statement(statement, context=context)
         except Exception:
             self._logger.error("MYbank cutover persistence failed")
             raise MyBankStatementCutoverError("statement import conflict") from None
-        if not first.created or not _receipt_matches(first, statement, plan):
+        if (
+            not registry_first.created
+            or not _registry_result_matches(registry_first, plan)
+            or not first.created
+            or not _receipt_matches(first, statement, plan)
+        ):
             raise MyBankStatementCutoverError("first statement import receipt conflicts")
 
         after = self._counts_reader()
-        expected_after = _expected_after(before, len(statement.transactions))
+        expected_after = _expected_after(before, plan)
         if after != expected_after:
             raise MyBankStatementCutoverError("post-import count acceptance conflict")
 
         try:
+            registry_replay = self._account_registrar.register(plan.registry_plan)
             replay = self._statement_importer.import_statement(statement, context=context)
         except Exception:
             self._logger.error("MYbank cutover replay failed")
             raise MyBankStatementCutoverError("statement replay conflict") from None
         if (
-            replay.created
+            registry_replay.created
+            or not _registry_result_matches(registry_replay, plan)
+            or registry_replay != _as_registry_replay(registry_first)
+            or replay.created
             or not _receipt_matches(replay, statement, plan)
             or replay != _as_replay(first)
         ):
@@ -337,7 +385,9 @@ class MyBankStatementCutoverRunner:
             statement_ref=first.statement_ref,
             evidence_ref=plan.evidence_ref,
             managed_account_ref=first.managed_account_ref,
+            registry_created=registry_first.created,
             created=first.created,
+            registry_replay_created=registry_replay.created,
             replay_created=replay.created,
             transaction_count=first.transaction_count,
             review_status=first.review_status,
@@ -495,6 +545,11 @@ def _counts_from_cutover_inventory(value: object) -> ProductionCounts:
         encrypted_blob_versions=count("encrypted_blob_version"),
         managed_accounts=count("managed_account"),
         managed_account_lifecycles=count("managed_account_lifecycle"),
+        account_registry_operations=count("account_registry_operation"),
+        managed_account_aliases=count("managed_account_alias"),
+        account_business_unit_assignments=count("account_business_unit_assignment"),
+        fact_business_unit_allocation_sets=count("fact_business_unit_allocation_set"),
+        fact_business_unit_allocation_items=count("fact_business_unit_allocation_item"),
         bank_statements=count("bank_statement"),
         bank_statement_transactions=count("bank_statement_transaction"),
         bank_statement_observations=count("bank_statement_observation"),
@@ -505,20 +560,57 @@ def _counts_from_cutover_inventory(value: object) -> ProductionCounts:
     )
 
 
-def _expected_after(before: ProductionCounts, transaction_count: int) -> ProductionCounts:
+def _expected_after(
+    before: ProductionCounts,
+    plan: MyBankStatementCutoverPlan,
+) -> ProductionCounts:
+    transaction_count = plan.expected_transaction_count
+    alias_count = len(plan.registry_plan.accounts[0].aliases)
+    assignment_count = len(plan.registry_plan.business_unit_assignments)
     return ProductionCounts(
         evidence_objects=before.evidence_objects + 1,
         encrypted_object_identities=before.encrypted_object_identities + 1,
         encrypted_blob_versions=before.encrypted_blob_versions + 1,
         managed_accounts=before.managed_accounts + 1,
         managed_account_lifecycles=before.managed_account_lifecycles + 1,
+        account_registry_operations=before.account_registry_operations + 1,
+        managed_account_aliases=before.managed_account_aliases + alias_count,
+        account_business_unit_assignments=(
+            before.account_business_unit_assignments + assignment_count
+        ),
+        fact_business_unit_allocation_sets=before.fact_business_unit_allocation_sets,
+        fact_business_unit_allocation_items=before.fact_business_unit_allocation_items,
         bank_statements=before.bank_statements + 1,
         bank_statement_transactions=before.bank_statement_transactions + transaction_count,
         bank_statement_observations=before.bank_statement_observations + transaction_count,
         bank_statement_reviews=before.bank_statement_reviews + 1,
         candidates=before.candidates,
         latest_pending_candidates=before.latest_pending_candidates,
-        audit_events=before.audit_events + 6 + 2 * transaction_count,
+        audit_events=(
+            before.audit_events + 7 + alias_count + assignment_count + 2 * transaction_count
+        ),
+    )
+
+
+def _registry_result_matches(
+    result: AccountRegistryPlanResult,
+    plan: MyBankStatementCutoverPlan,
+) -> bool:
+    return (
+        result.operation_id == plan.registry_plan.operation_id
+        and result.owner_entity_ref == plan.entity_ref
+        and result.registry_revision == plan.registry_plan.expected_registry_revision + 1
+        and result.managed_account_refs == (plan.managed_account_ref,)
+    )
+
+
+def _as_registry_replay(result: AccountRegistryPlanResult) -> AccountRegistryPlanResult:
+    return AccountRegistryPlanResult(
+        operation_id=result.operation_id,
+        owner_entity_ref=result.owner_entity_ref,
+        registry_revision=result.registry_revision,
+        created=False,
+        managed_account_refs=result.managed_account_refs,
     )
 
 
@@ -555,6 +647,7 @@ def run_database_mybank_statement_cutover(
     *,
     gates: MyBankStatementCutoverGates,
     safety_proof: MyBankCutoverSafetyProof,
+    registry_principal: WorkloadPrincipal,
     key_file: Path,
     artifact_root: Path,
     logger: logging.Logger | None = None,
@@ -571,6 +664,7 @@ def run_database_mybank_statement_cutover(
     runner = MyBankStatementCutoverRunner(
         parser=parse_mybank_xlsx,
         evidence_writer=boundary.write,
+        account_registrar=_DatabaseAccountRegistrar(boundary, registry_principal),
         statement_importer=_DatabaseStatementImporter(boundary, plan),
         counts_reader=lambda: _read_production_counts(engine),
         schema_reader=lambda: _read_schema_revision(engine),
@@ -611,13 +705,70 @@ class _DatabaseStatementImporter:
         session = self._boundary.session()
         try:
             _require_import_identity(session, self._plan, statement, context)
+            result = BankStatementImportService(lambda: session).import_statement(
+                statement,
+                context=context,
+                session=session,
+            )
+            expected_created = self._boundary.take_statement_expectation()
+            if result.created is not expected_created or not _receipt_matches(
+                result, statement, self._plan
+            ):
+                raise MyBankStatementCutoverError("statement import receipt conflicts")
+            session.commit()
+            self._boundary.commit_publication()
+            return result
         except BaseException:
-            session.close()
+            try:
+                session.rollback()
+            finally:
+                try:
+                    session.close()
+                finally:
+                    self._boundary.clear(session)
             raise
-        return BankStatementImportService(lambda: session).import_statement(
-            statement,
-            context=context,
-        )
+        finally:
+            session.close()
+
+
+class _DatabaseAccountRegistrar:
+    def __init__(
+        self,
+        boundary: _DatabaseEvidenceBoundary,
+        principal: WorkloadPrincipal,
+    ) -> None:
+        self._boundary = boundary
+        self._principal = principal
+
+    def register(self, plan: AccountRegistryPlan) -> AccountRegistryPlanResult:
+        session = self._boundary.ensure_session()
+        expected_created = self._boundary.evidence_staged
+        try:
+            result = AccountRegistryOperator(lambda: session).apply(
+                plan,
+                principal=self._principal,
+                session=session,
+            )
+            if (
+                result.operation_id != plan.operation_id
+                or result.created is not expected_created
+                or result.owner_entity_ref != plan.owner_entity_ref
+                or result.registry_revision != plan.expected_registry_revision + 1
+                or result.managed_account_refs
+                != tuple(account.managed_account_ref for account in plan.accounts)
+            ):
+                raise MyBankStatementCutoverError("registry plan receipt conflicts")
+            self._boundary.set_statement_expectation(expected_created)
+            return result
+        except BaseException:
+            try:
+                session.rollback()
+            finally:
+                try:
+                    session.close()
+                finally:
+                    self._boundary.clear(session)
+            raise
 
 
 class _DatabaseEvidenceBoundary:
@@ -648,24 +799,32 @@ class _DatabaseEvidenceBoundary:
             max_plaintext_bytes=134_217_728,
         )
         self._pending_session: Session | None = None
+        self._pending_publication: EncryptedArtifactPublication | None = None
+        self._evidence_staged = False
+        self._expected_statement_created: bool | None = None
 
     def write(self, source_path: Path, evidence: MyBankEvidenceDescriptor) -> None:
         if self._pending_session is not None:
             raise MyBankStatementCutoverError("evidence transaction is already active")
-        with source_path.open("rb") as source:
-            published = self._store.publish(source)
-        metadata = self._store.envelope_metadata(published)
-        with self._store.open_verified(published, envelope_metadata=metadata) as verified:
-            verified_digest = hashlib.sha256(verified.read()).hexdigest()
-        if (
-            published.plaintext_sha256.hex() != evidence.plaintext_sha256
-            or published.plaintext_size != evidence.plaintext_size
-            or verified_digest != evidence.plaintext_sha256
-        ):
-            raise MyBankStatementCutoverError("encrypted evidence source identity conflicts")
-
-        session = Session(self._engine)
+        if self._pending_publication is not None:
+            raise MyBankStatementCutoverError("evidence publication is already active")
+        session: Session | None = None
         try:
+            with source_path.open("rb") as source:
+                publication = self._store.begin_publication(source)
+            self._pending_publication = publication
+            published = publication.artifact
+            metadata = self._store.envelope_metadata(published)
+            with self._store.open_verified(published, envelope_metadata=metadata) as verified:
+                verified_digest = hashlib.sha256(verified.read()).hexdigest()
+            if (
+                published.plaintext_sha256.hex() != evidence.plaintext_sha256
+                or published.plaintext_size != evidence.plaintext_size
+                or verified_digest != evidence.plaintext_sha256
+            ):
+                raise MyBankStatementCutoverError("encrypted evidence source identity conflicts")
+
+            session = Session(self._engine)
             _require_unique_scope(session, evidence, owner_kind=self._plan.owner_kind)
             _require_new_evidence(session, evidence)
             evidence_audit = _append_audit(
@@ -763,16 +922,70 @@ class _DatabaseEvidenceBoundary:
                 },
             )
         except BaseException:
-            session.close()
+            if session is not None:
+                try:
+                    session.rollback()
+                finally:
+                    try:
+                        session.close()
+                    finally:
+                        self._abort_publication()
+            else:
+                self._abort_publication()
             raise
+        assert session is not None
         self._pending_session = session
+        self._evidence_staged = True
 
     def session(self) -> Session:
         pending = self._pending_session
         if pending is not None:
             self._pending_session = None
+            self._evidence_staged = False
             return pending
         return Session(self._engine)
+
+    def ensure_session(self) -> Session:
+        pending = self._pending_session
+        if pending is None:
+            pending = Session(self._engine)
+            self._pending_session = pending
+        return pending
+
+    def clear(self, session: Session) -> None:
+        if self._pending_session is session:
+            self._pending_session = None
+        self._evidence_staged = False
+        self._expected_statement_created = None
+        self._abort_publication()
+
+    def commit_publication(self) -> None:
+        publication = self._pending_publication
+        if publication is not None:
+            publication.commit()
+            self._pending_publication = None
+
+    def _abort_publication(self) -> None:
+        publication = self._pending_publication
+        if publication is not None:
+            publication.abort()
+            self._pending_publication = None
+
+    @property
+    def evidence_staged(self) -> bool:
+        return self._evidence_staged
+
+    def set_statement_expectation(self, created: bool) -> None:
+        if self._expected_statement_created is not None:
+            raise MyBankStatementCutoverError("statement transaction expectation conflicts")
+        self._expected_statement_created = created
+
+    def take_statement_expectation(self) -> bool:
+        created = self._expected_statement_created
+        self._expected_statement_created = None
+        if created is None:
+            raise MyBankStatementCutoverError("statement transaction is not registry-authorized")
+        return created
 
 
 def _require_import_identity(
@@ -783,14 +996,10 @@ def _require_import_identity(
 ) -> None:
     """Recheck the explicit owner, account, and evidence identity on every import."""
 
-    expected_account_key = f"mybank:{plan.owner_kind.value.lower()}:{plan.account_suffix}"
+    registered = plan.registry_plan.accounts[0]
     if (
-        context.entity_ref != plan.entity_ref
+        context.owner_entity_ref != plan.entity_ref
         or context.managed_account_ref != plan.managed_account_ref
-        or context.account_key != expected_account_key
-        or context.owner_ref != plan.owner_ref
-        or context.owner_kind is not plan.owner_kind
-        or context.account_kind != plan.account_kind
         or context.evidence_ref != plan.evidence_ref
         or statement.institution_code != "mybank"
         or statement.account_suffix != plan.account_suffix
@@ -838,7 +1047,8 @@ def _require_import_identity(
             text(
                 "SELECT ma.managed_account_ref, ma.entity_id, ma.account_key, "
                 "ma.institution_code, ma.account_suffix, ma.owner_ref, ma.owner_kind, "
-                "ma.account_kind, latest.status AS lifecycle_status "
+                "ma.account_kind, ma.admission_evidence_ref, "
+                "latest.status AS lifecycle_status "
                 "FROM public.managed_account ma JOIN LATERAL "
                 "(SELECT status FROM public.managed_account_lifecycle lifecycle "
                 "WHERE lifecycle.managed_account_ref=ma.managed_account_ref "
@@ -849,36 +1059,30 @@ def _require_import_identity(
             {
                 "account": plan.managed_account_ref,
                 "entity": plan.entity_ref,
-                "account_key": expected_account_key,
+                "account_key": registered.account_key,
             },
         )
         .mappings()
         .all()
     )
     if not accounts:
-        return
+        raise MyBankStatementCutoverError("managed account is not registered")
     if len(accounts) != 1:
         raise MyBankStatementCutoverError("managed account identity is not unique")
     account = accounts[0]
     if (
         account["managed_account_ref"] != plan.managed_account_ref
         or account["entity_id"] != plan.entity_ref
-        or account["account_key"] != expected_account_key
+        or account["account_key"] != registered.account_key
         or account["institution_code"] != "mybank"
         or account["account_suffix"] != plan.account_suffix
-        or account["owner_ref"] != plan.owner_ref
-        or account["owner_kind"] != plan.owner_kind.value
-        or account["account_kind"] != plan.account_kind
+        or account["owner_ref"] != str(plan.entity_ref)
+        or account["owner_kind"] != _legacy_owner_kind(plan.owner_kind)
+        or account["account_kind"] != registered.account_kind
+        or account["admission_evidence_ref"] != plan.evidence_ref
         or account["lifecycle_status"] != "ACTIVE"
     ):
         raise MyBankStatementCutoverError("managed account conflicts with explicit owner identity")
-
-
-class _RollbackOnlySession(Session):
-    """Let the real import function flush a negative probe without committing it."""
-
-    def commit(self) -> None:
-        self.flush()
 
 
 def _run_database_fact_conflict_probe(
@@ -910,7 +1114,7 @@ def _run_database_fact_conflict_probe(
             ),
         ),
     )
-    session = _RollbackOnlySession(engine)
+    session = Session(engine)
     try:
         audit_ref = _append_audit(
             session,
@@ -944,12 +1148,8 @@ def _run_database_fact_conflict_probe(
             },
         )
         context = BankStatementImportContext(
-            entity_ref=plan.entity_ref,
+            owner_entity_ref=plan.entity_ref,
             managed_account_ref=plan.managed_account_ref,
-            account_key=f"mybank:{plan.owner_kind.value.lower()}:{plan.account_suffix}",
-            owner_ref=plan.owner_ref,
-            owner_kind=plan.owner_kind,
-            account_kind=plan.account_kind,
             evidence_ref=probe_evidence_ref,
             actor=plan.actor,
             reason=plan.reason,
@@ -958,6 +1158,7 @@ def _run_database_fact_conflict_probe(
             BankStatementImportService(lambda: session).import_statement(
                 probe_statement,
                 context=context,
+                session=session,
             )
         except BankStatementPersistenceError as exc:
             database_error = exc.__cause__
@@ -976,7 +1177,7 @@ def _require_unique_scope(
     session: Session,
     evidence: MyBankEvidenceDescriptor,
     *,
-    owner_kind: AccountOwnerKind,
+    owner_kind: EntityType,
 ) -> None:
     scope = (
         session.execute(
@@ -992,9 +1193,12 @@ def _require_unique_scope(
     )
     if scope is None:
         raise MyBankStatementCutoverError("accounting scope binding conflicts")
-    expected_entity_type = "PERSON" if owner_kind is AccountOwnerKind.PERSONAL else "COMPANY"
-    if scope["entity_type"] != expected_entity_type:
+    if scope["entity_type"] != owner_kind.value:
         raise MyBankStatementCutoverError("accounting owner kind conflicts with entity")
+
+
+def _legacy_owner_kind(owner_kind: EntityType) -> str:
+    return "PERSONAL" if owner_kind is EntityType.PERSON else "COMPANY"
 
 
 def _require_new_evidence(session: Session, evidence: MyBankEvidenceDescriptor) -> None:
@@ -1069,6 +1273,16 @@ def _read_production_counts(engine: Engine) -> ProductionCounts:
                     "(SELECT count(*) FROM public.managed_account) AS managed_accounts, "
                     "(SELECT count(*) FROM public.managed_account_lifecycle) "
                     "AS managed_account_lifecycles, "
+                    "(SELECT count(*) FROM public.account_registry_operation) "
+                    "AS account_registry_operations, "
+                    "(SELECT count(*) FROM public.managed_account_alias) "
+                    "AS managed_account_aliases, "
+                    "(SELECT count(*) FROM public.account_business_unit_assignment) "
+                    "AS account_business_unit_assignments, "
+                    "(SELECT count(*) FROM public.fact_business_unit_allocation_set) "
+                    "AS fact_business_unit_allocation_sets, "
+                    "(SELECT count(*) FROM public.fact_business_unit_allocation_item) "
+                    "AS fact_business_unit_allocation_items, "
                     "(SELECT count(*) FROM public.bank_statement) AS bank_statements, "
                     "(SELECT count(*) FROM public.bank_statement_transaction) "
                     "AS bank_statement_transactions, "

@@ -57,6 +57,30 @@ def test_publish_persists_only_randomized_ciphertext_and_round_trips(tmp_path: P
     assert store.read_prefix(first, 2) == marker[:2]
 
 
+def test_uncommitted_publication_is_removed_on_abort_and_kept_on_commit(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+
+    aborted = store.begin_publication(io.BytesIO(b"aborted evidence"))
+    aborted_path = tmp_path / aborted.artifact.storage_key
+    assert aborted_path.is_file()
+
+    aborted.abort()
+
+    assert aborted.state == "aborted"
+    assert not aborted_path.exists()
+    aborted.abort()
+
+    committed = store.begin_publication(io.BytesIO(b"committed evidence"))
+    committed_path = tmp_path / committed.artifact.storage_key
+    committed.commit()
+    committed.abort()
+
+    assert committed.state == "committed"
+    assert committed_path.is_file()
+
+
 def test_encrypted_handoff_never_places_plaintext_in_durable_staging(tmp_path: Path) -> None:
     marker = b"S1-HANDOFF-CANARY"
     store = _store(tmp_path)

@@ -703,8 +703,20 @@ BANK_STATEMENT_TABLES = (
     "bank_statement_observation",
     "bank_statement_review",
 )
+ACCOUNT_REGISTRY_TABLES = (
+    "account_registry_operation",
+    "managed_account_alias",
+    "account_business_unit_assignment",
+    "fact_business_unit_allocation_set",
+    "fact_business_unit_allocation_item",
+)
 R1_CUTOVER_INVENTORY_TABLES = tuple(
-    sorted(set(R1_PUBLIC_TABLES) | set(COUNTERPARTY_PROTECTED_TABLES) | set(BANK_STATEMENT_TABLES))
+    sorted(
+        set(R1_PUBLIC_TABLES)
+        | set(COUNTERPARTY_PROTECTED_TABLES)
+        | set(BANK_STATEMENT_TABLES)
+        | set(ACCOUNT_REGISTRY_TABLES)
+    )
 )
 _R1_CUTOVER_ROW_COUNTS_SQL = ", ".join(
     f"'{table}', (SELECT count(*) FROM public.{table})" for table in R1_CUTOVER_INVENTORY_TABLES
@@ -1268,13 +1280,6 @@ ACCOUNT_REGISTRY_MANAGED_ACCOUNT_CONSTRAINT_CONTRACT = {
         "UNIQUE (managed_account_ref, entity_id)",
     ),
 }
-ACCOUNT_REGISTRY_TABLES = (
-    "account_registry_operation",
-    "managed_account_alias",
-    "account_business_unit_assignment",
-    "fact_business_unit_allocation_set",
-    "fact_business_unit_allocation_item",
-)
 ACCOUNT_REGISTRY_FUNCTION_SIGNATURES = {
     ("public", "account_registry_normalize_alias"): "p_value text",
     ("public", "account_registry_append_only"): "",
@@ -2516,7 +2521,7 @@ class CutoverInventory:
     row_counts: tuple[tuple[str, int], ...]
 
     def __post_init__(self) -> None:
-        if self.schema_revision != BANK_STATEMENT_SECURITY_REVISION:
+        if self.schema_revision != ACCOUNT_REGISTRY_SECURITY_REVISION:
             raise BackupError("cutover inventory schema revision is invalid")
         scalar_counts = (
             self.candidate_total,
@@ -2575,11 +2580,17 @@ def validate_mybank_cutover_inventory_sequence(
     replay: CutoverInventory,
     conflict: CutoverInventory,
     transaction_count: int,
+    alias_count: int,
+    assignment_count: int,
 ) -> dict[str, int]:
     """Prove the fixed whole-statement delta and two zero-delta follow-ups."""
 
     if type(transaction_count) is not int or transaction_count <= 0:
         raise BackupError("cutover transaction count is invalid")
+    if type(alias_count) is not int or alias_count <= 0:
+        raise BackupError("cutover account alias count is invalid")
+    if type(assignment_count) is not int or assignment_count < 0:
+        raise BackupError("cutover account assignment count is invalid")
     if any(
         item.candidate_total != before.candidate_total
         or item.latest_pending_candidates != before.latest_pending_candidates
@@ -2592,6 +2603,9 @@ def validate_mybank_cutover_inventory_sequence(
         "encrypted_blob_version": 1,
         "managed_account": 1,
         "managed_account_lifecycle": 1,
+        "account_registry_operation": 1,
+        "managed_account_alias": alias_count,
+        "account_business_unit_assignment": assignment_count,
         "bank_statement": 1,
         "bank_statement_transaction": transaction_count,
         "bank_statement_observation": transaction_count,
@@ -2605,7 +2619,7 @@ def validate_mybank_cutover_inventory_sequence(
         if observed != expected:
             label = "required" if table in expected_deltas else "unrelated"
             raise BackupError(f"cutover {label} table inventory changed: {table}")
-    expected_audit_delta = 6 + 2 * transaction_count
+    expected_audit_delta = 7 + alias_count + assignment_count + 2 * transaction_count
     if after.audit_events - before.audit_events != expected_audit_delta:
         raise BackupError("cutover audit inventory changed unexpectedly")
     if replay != after:
@@ -2617,6 +2631,8 @@ def validate_mybank_cutover_inventory_sequence(
         "latest_pending_candidates": after.latest_pending_candidates,
         "audit_event_delta": expected_audit_delta,
         "transaction_count": transaction_count,
+        "alias_count": alias_count,
+        "assignment_count": assignment_count,
         "replay_delta": 0,
         "conflict_delta": 0,
     }

@@ -15,6 +15,7 @@ import secrets
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Literal
 
 from ledgerbridge.artifacts import ArtifactStore, BinarySource, PublishedArtifact
 from ledgerbridge.crypto import CryptoError, SecretStreamCipher, _parse_envelope
@@ -72,6 +73,52 @@ class EncryptedEnvelopeMetadata:
             raise ValueError("encrypted envelope chunk size is invalid")
         if type(self.stream_header) is not bytes or len(self.stream_header) != 24:
             raise ValueError("encrypted envelope stream header is invalid")
+
+
+PublicationState = Literal["open", "committed", "aborted"]
+
+
+class EncryptedArtifactPublication:
+    """A new encrypted blob held until its database reference commits."""
+
+    __slots__ = ("_artifact", "_state", "_store")
+
+    def __init__(
+        self,
+        store: EncryptedArtifactStore,
+        artifact: EncryptedPublishedArtifact,
+    ) -> None:
+        self._store = store
+        self._artifact = artifact
+        self._state: PublicationState = "open"
+
+    @property
+    def artifact(self) -> EncryptedPublishedArtifact:
+        return self._artifact
+
+    @property
+    def state(self) -> PublicationState:
+        return self._state
+
+    def commit(self) -> None:
+        if self._state == "aborted":
+            raise EncryptedArtifactError("encrypted artifact publication is aborted")
+        self._state = "committed"
+
+    def abort(self) -> None:
+        if self._state != "open":
+            return
+        self._store._discard_uncommitted(self._artifact)
+        self._state = "aborted"
+
+    def __enter__(self) -> EncryptedArtifactPublication:
+        if self._state != "open":
+            raise EncryptedArtifactError(f"encrypted artifact publication is {self._state}")
+        return self
+
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        if self._state == "open":
+            self.abort()
 
 
 class EncryptedArtifactHandoff:
@@ -158,6 +205,14 @@ class EncryptedArtifactStore:
         return EncryptedArtifactHandoff(self)
 
     def publish(self, stream: BinarySource) -> EncryptedPublishedArtifact:
+        publication = self.begin_publication(stream)
+        publication.commit()
+        return publication.artifact
+
+    def begin_publication(self, stream: BinarySource) -> EncryptedArtifactPublication:
+        return EncryptedArtifactPublication(self, self._publish(stream))
+
+    def _publish(self, stream: BinarySource) -> EncryptedPublishedArtifact:
         object_ref = secrets.token_hex(32)
         hasher = hashlib.sha256()
         plaintext_size = 0
@@ -194,6 +249,10 @@ class EncryptedArtifactStore:
             plaintext_size=plaintext_size,
             ciphertext=published,
         )
+
+    def _discard_uncommitted(self, artifact: EncryptedPublishedArtifact) -> None:
+        _require_artifact(artifact)
+        self._durable._discard_created(artifact.ciphertext)
 
     @contextmanager
     def open_verified(
@@ -242,9 +301,7 @@ class EncryptedArtifactStore:
         with self.open_verified(artifact) as stream:
             return stream.read(limit)
 
-    def envelope_metadata(
-        self, artifact: EncryptedPublishedArtifact
-    ) -> EncryptedEnvelopeMetadata:
+    def envelope_metadata(self, artifact: EncryptedPublishedArtifact) -> EncryptedEnvelopeMetadata:
         """Return the authenticated envelope fields persisted beside one blob."""
 
         _require_artifact(artifact)

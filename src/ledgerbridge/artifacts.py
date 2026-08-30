@@ -487,6 +487,52 @@ class ArtifactStore:
                 with suppress(FileNotFoundError):
                     temporary.unlink()
 
+    def _discard_created(self, artifact: PublishedArtifact) -> bool:
+        """Remove a publication that has not been exposed as durable state.
+
+        This is deliberately private: content-addressed blobs can be shared, so
+        only the publication owner may compensate a newly created blob before
+        publishing its database reference.
+        """
+
+        if not isinstance(artifact, PublishedArtifact):
+            raise ArtifactIntegrityError("published artifact metadata is invalid")
+        if not artifact.created:
+            return False
+        if (
+            len(artifact.sha256) != hashlib.sha256().digest_size
+            or type(artifact.byte_size) is not int
+            or artifact.byte_size < 0
+            or artifact.storage_key != storage_key_for_digest(artifact.sha256)
+        ):
+            raise ArtifactIntegrityError("published artifact metadata is invalid")
+
+        with self._quota_lock():
+            self._validate_root_entries()
+            destination = self._destination(artifact.sha256)
+            descriptor = self._open_regular(destination)
+            try:
+                self._verify_descriptor(descriptor, artifact.sha256, artifact.byte_size)
+                metadata = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            try:
+                current = destination.lstat()
+            except FileNotFoundError as exc:
+                raise ArtifactIntegrityError(
+                    "uncommitted artifact disappeared before compensation"
+                ) from exc
+            if (
+                not stat.S_ISREG(current.st_mode)
+                or current.st_dev != metadata.st_dev
+                or current.st_ino != metadata.st_ino
+                or current.st_size != metadata.st_size
+            ):
+                raise ArtifactIntegrityError("uncommitted artifact changed before compensation")
+            destination.unlink()
+            self._fsync_directory(destination.parent)
+            return True
+
     def quota_snapshot(self) -> ArtifactQuotaSnapshot:
         """Return one lock-consistent view of published and staging capacity."""
 
