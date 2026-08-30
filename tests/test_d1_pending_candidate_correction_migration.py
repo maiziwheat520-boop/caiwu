@@ -103,6 +103,14 @@ def test_0022_command_and_event_sql_keep_terminal_states_closed() -> None:
     legacy_sql = namespace["_command_functions_sql"](allow_pending_corrections=False)
     constraint_sql = namespace["_event_constraints_sql"](allow_pending_corrections=True)
 
+    assert "FROM pg_catalog.pg_constraint AS c" in constraint_sql
+    assert "c.conkey = ARRAY[" in constraint_sql
+    assert "v_type_count IS DISTINCT FROM 1" in constraint_sql
+    assert "v_action_count IS DISTINCT FROM 1" in constraint_sql
+    assert constraint_sql.count("DROP CONSTRAINT %I") == 2
+    assert constraint_sql.count("ADD CONSTRAINT %I CHECK") == 2
+    assert "DROP CONSTRAINT candidate_event_type_allowed" not in constraint_sql
+    assert "DROP CONSTRAINT candidate_event_action_allowed" not in constraint_sql
     assert "WHEN 'CORRECT_AND_CONFIRM' THEN 'CONFIRMED'" in command_sql
     assert "p_action = 'CORRECT_AND_CONFIRM' AND v_previous.status = 'PENDING'" in command_sql
     assert "pending correction must change a normalized field" in command_sql

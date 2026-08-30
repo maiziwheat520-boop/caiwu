@@ -101,22 +101,77 @@ def downgrade() -> None:
 def _event_constraints_sql(*, allow_pending_corrections: bool) -> str:
     correction = ",'CORRECT_AND_CONFIRM'" if allow_pending_corrections else ""
     return f"""
-        ALTER TABLE public.candidate_event
-            DROP CONSTRAINT candidate_event_type_allowed,
-            DROP CONSTRAINT candidate_event_action_allowed;
-        ALTER TABLE public.candidate_event
-            ADD CONSTRAINT candidate_event_type_allowed CHECK (
-                event_type IN (
-                    'CREATE','COMPLETE_FIELDS','RESOLVE_CONFLICT'{correction},
-                    'CONFIRM','IGNORE','SUPERSEDE'
-                )
-            ),
-            ADD CONSTRAINT candidate_event_action_allowed CHECK (
-                action IS NULL OR action IN (
-                    'COMPLETE_FIELDS','RESOLVE_CONFLICT'{correction},
-                    'CONFIRM','IGNORE','SUPERSEDE'
-                )
+        DO $constraints$
+        DECLARE
+            v_type_count integer;
+            v_type_constraint name;
+            v_action_count integer;
+            v_action_constraint name;
+        BEGIN
+            SELECT count(*)::integer, min(c.conname::text)::name
+              INTO v_type_count, v_type_constraint
+              FROM pg_catalog.pg_constraint AS c
+              JOIN pg_catalog.pg_class AS r ON r.oid = c.conrelid
+              JOIN pg_catalog.pg_namespace AS n ON n.oid = r.relnamespace
+             WHERE n.nspname = 'public'
+               AND r.relname = 'candidate_event'
+               AND c.contype = 'c'
+               AND c.conkey = ARRAY[(
+                    SELECT a.attnum
+                      FROM pg_catalog.pg_attribute AS a
+                     WHERE a.attrelid = r.oid
+                       AND a.attname = 'event_type'
+                       AND NOT a.attisdropped
+               )]::smallint[];
+            SELECT count(*)::integer, min(c.conname::text)::name
+              INTO v_action_count, v_action_constraint
+              FROM pg_catalog.pg_constraint AS c
+              JOIN pg_catalog.pg_class AS r ON r.oid = c.conrelid
+              JOIN pg_catalog.pg_namespace AS n ON n.oid = r.relnamespace
+             WHERE n.nspname = 'public'
+               AND r.relname = 'candidate_event'
+               AND c.contype = 'c'
+               AND c.conkey = ARRAY[(
+                    SELECT a.attnum
+                      FROM pg_catalog.pg_attribute AS a
+                     WHERE a.attrelid = r.oid
+                       AND a.attname = 'action'
+                       AND NOT a.attisdropped
+               )]::smallint[];
+            IF v_type_count IS DISTINCT FROM 1
+               OR v_action_count IS DISTINCT FROM 1 THEN
+                RAISE EXCEPTION
+                    'candidate event action constraints are missing or ambiguous'
+                    USING ERRCODE = '55000';
+            END IF;
+            EXECUTE format(
+                'ALTER TABLE public.candidate_event DROP CONSTRAINT %I',
+                v_type_constraint
             );
+            EXECUTE format(
+                'ALTER TABLE public.candidate_event DROP CONSTRAINT %I',
+                v_action_constraint
+            );
+            EXECUTE format(
+                $sql$ALTER TABLE public.candidate_event ADD CONSTRAINT %I CHECK (
+                    event_type IN (
+                        'CREATE','COMPLETE_FIELDS','RESOLVE_CONFLICT'{correction},
+                        'CONFIRM','IGNORE','SUPERSEDE'
+                    )
+                )$sql$,
+                v_type_constraint
+            );
+            EXECUTE format(
+                $sql$ALTER TABLE public.candidate_event ADD CONSTRAINT %I CHECK (
+                    action IS NULL OR action IN (
+                        'COMPLETE_FIELDS','RESOLVE_CONFLICT'{correction},
+                        'CONFIRM','IGNORE','SUPERSEDE'
+                    )
+                )$sql$,
+                v_action_constraint
+            );
+        END
+        $constraints$;
     """
 
 
