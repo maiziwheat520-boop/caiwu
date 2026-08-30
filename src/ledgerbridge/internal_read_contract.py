@@ -33,6 +33,8 @@ class Capability(StrEnum):
     CANDIDATE_CREATE = "candidate:create"
     CANDIDATE_DECIDE = "candidate:decide"
     CANDIDATE_SUPERSEDE = "candidate:supersede"
+    ACCOUNT_REGISTRY_READ = "account-registry:read"
+    ACCOUNT_REGISTRY_WRITE = "account-registry:write"
     PAYROLL_PUBLICATION_READ = "payroll-publication:read"
 
 
@@ -49,6 +51,7 @@ READ_CAPABILITIES = frozenset(
         Capability.EVIDENCE_READ,
         Capability.RECONCILIATION_READ,
         Capability.LEDGER_READ,
+        Capability.ACCOUNT_REGISTRY_READ,
     }
 )
 
@@ -170,6 +173,7 @@ class EntityGrant(_FrozenModel):
     # queried by a SECURITY DEFINER function.
     business_unit_bindings: tuple[tuple[BusinessUnitRef, UUID], ...] = ()
     allow_unassigned_candidates: bool = False
+    allow_account_registry: bool = False
 
     @model_validator(mode="after")
     def has_at_least_one_scope(self) -> EntityGrant:
@@ -177,6 +181,7 @@ class EntityGrant(_FrozenModel):
             not self.business_unit_refs
             and not self.business_unit_ids
             and not self.allow_unassigned_candidates
+            and not self.allow_account_registry
         ):
             raise ValueError("entity grant must include a business unit or unassigned candidates")
         binding_refs = frozenset(ref for ref, _ in self.business_unit_bindings)

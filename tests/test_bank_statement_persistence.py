@@ -23,6 +23,13 @@ from test_r1_database_migration import (
 )
 
 from alembic import command
+from ledgerbridge.account_registry import (
+    AccountAliasRegistration,
+    AccountRegistryOperator,
+    AccountRegistryPlan,
+    AccountRegistryPlanResult,
+    ManagedAccountRegistration,
+)
 from ledgerbridge.bank_statement_persistence import (
     BankStatementImportContext,
     BankStatementImportService,
@@ -37,8 +44,8 @@ from ledgerbridge.internal_read_contract import (
     ResourceNotVisible,
     WorkloadPrincipal,
 )
+from ledgerbridge.models import EntityType
 from ledgerbridge.mybank_statement import MyBankStatement, MyBankTransaction
-from ledgerbridge.reconciliation import AccountOwnerKind
 from scripts.backup_restore import (
     BANK_STATEMENT_SECURITY_SQL,
     BackupError,
@@ -212,16 +219,143 @@ class _StatementDatabase:
 
 def _context() -> BankStatementImportContext:
     return BankStatementImportContext(
-        entity_ref=ENTITY_REF,
+        owner_entity_ref=ENTITY_REF,
         managed_account_ref=ACCOUNT_REF,
-        account_key="mybank:personal:7968",
-        owner_ref="owner:synthetic",
-        owner_kind=AccountOwnerKind.PERSONAL,
-        account_kind="BANK_CHECKING",
         evidence_ref=EVIDENCE_REF,
         actor="worker:controlled-import",
         reason="synthetic statement import test",
     )
+
+
+def _registry_principal() -> WorkloadPrincipal:
+    return WorkloadPrincipal(
+        principal_ref="workload:registry-operator",
+        san_uri="spiffe://ledgerbridge.test/registry-operator",
+        policy_generation=1,
+        capabilities=frozenset({Capability.ACCOUNT_REGISTRY_WRITE}),
+        grants=(EntityGrant(entity_ref=ENTITY_REF, allow_account_registry=True),),
+    )
+
+
+def _register_managed_account(
+    session: Session,
+    *,
+    evidence_ref: UUID = EVIDENCE_REF,
+    operation_id: UUID | None = None,
+    alias_ref: UUID | None = None,
+) -> AccountRegistryPlanResult:
+    return AccountRegistryOperator(lambda: session).apply(
+        AccountRegistryPlan(
+            operation_id=operation_id or uuid4(),
+            owner_entity_ref=ENTITY_REF,
+            expected_owner_kind=EntityType.COMPANY,
+            expected_registry_revision=0,
+            actor_ref="operator:synthetic",
+            reason="register synthetic MYbank account",
+            accounts=(
+                ManagedAccountRegistration(
+                    managed_account_ref=ACCOUNT_REF,
+                    admission_evidence_ref=evidence_ref,
+                    account_key="mybank:company:7968",
+                    institution_code="mybank",
+                    account_suffix="7968",
+                    account_kind="BANK_CHECKING",
+                    aliases=(
+                        AccountAliasRegistration(
+                            alias_ref=alias_ref or uuid4(),
+                            alias_kind="ACCOUNT_NUMBER",
+                            alias_value="0000000000007968",
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        principal=_registry_principal(),
+        session=session,
+    )
+
+
+def test_0023_evidence_registry_and_statement_can_commit_as_one_idempotent_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LEDGERBRIDGE_ENV", raising=False)
+    with _legacy_r1_database(reader=True) as database_url:
+        command.upgrade(_upgrade_config(database_url), "head")
+        engine = create_engine(database_url)
+        operation_id = uuid4()
+        alias_ref = uuid4()
+        with engine.begin() as connection:
+            _seed_statement_evidence(
+                connection,
+                entity_ref=ENTITY_REF,
+                business_unit_ref=uuid4(),
+                evidence_ref=EVIDENCE_REF,
+                statement=_statement(),
+            )
+            audit_before_registry = connection.execute(
+                text("SELECT count(*) FROM public.audit_event")
+            ).scalar_one()
+            created = _register_managed_account(
+                cast(Session, connection), operation_id=operation_id, alias_ref=alias_ref
+            )
+            replay = _register_managed_account(
+                cast(Session, connection), operation_id=operation_id, alias_ref=alias_ref
+            )
+            audit_after_replay = connection.execute(
+                text("SELECT count(*) FROM public.audit_event")
+            ).scalar_one()
+            imported = BankStatementImportService(
+                lambda: cast(Session, connection)
+            ).import_statement(_statement(), context=_context(), session=cast(Session, connection))
+
+            assert created.created is True
+            assert replay.created is False
+            assert imported.created is True
+            assert audit_after_replay - audit_before_registry == 4
+            assert (
+                connection.execute(text("SELECT count(*) FROM public.managed_account")).scalar_one()
+                == 1
+            )
+            assert (
+                connection.execute(
+                    text("SELECT count(*) FROM public.managed_account_lifecycle")
+                ).scalar_one()
+                == 1
+            )
+            assert (
+                connection.execute(
+                    text("SELECT count(*) FROM public.managed_account_alias")
+                ).scalar_one()
+                == 1
+            )
+            assert (
+                connection.execute(
+                    text("SELECT count(*) FROM public.account_registry_operation")
+                ).scalar_one()
+                == 1
+            )
+        engine.dispose()
+
+
+def test_statement_request_uses_pre_registered_account_refs_without_owner_guess_fields() -> None:
+    context = BankStatementImportContext(
+        owner_entity_ref=ENTITY_REF,
+        managed_account_ref=ACCOUNT_REF,
+        evidence_ref=EVIDENCE_REF,
+        actor="worker:controlled-import",
+        reason="synthetic statement import test",
+    )
+
+    request = _build_request(_statement(), context)
+
+    assert request["owner_entity_ref"] == str(ENTITY_REF)
+    assert request["managed_account_ref"] == str(ACCOUNT_REF)
+    assert request["institution_code"] == "mybank"
+    assert request["account_suffix"] == "7968"
+    assert "owner_ref" not in request
+    assert "owner_kind" not in request
+    assert "account_kind" not in request
+    assert "account_key" not in request
 
 
 def _overlapping_statement() -> MyBankStatement:
@@ -331,6 +465,17 @@ def test_import_statement_is_idempotent_and_requires_one_statement_review() -> N
     )
     assert "candidates" not in request
     assert all(item["counterparty_ref"].startswith("cp_") for item in request["transactions"])
+
+
+def test_statement_import_can_join_registry_registration_transaction() -> None:
+    database = _StatementDatabase()
+
+    result = BankStatementImportService(lambda: cast(Session, database)).import_statement(
+        _statement(), context=_context(), session=cast(Session, database)
+    )
+
+    assert result.created is True
+    assert database.commits == 0
 
 
 def test_statement_review_is_not_exposed_without_verified_user_assertion_route() -> None:
@@ -487,6 +632,7 @@ def test_0021_postgresql_replay_overlap_conflict_scope_acl_and_downgrade(
                 evidence_ref=conflict_evidence,
                 statement=conflict,
             )
+            _register_managed_account(cast(Session, connection))
 
         def worker_session() -> Session:
             session = Session(engine)
@@ -749,7 +895,7 @@ def test_0021_postgresql_replay_overlap_conflict_scope_acl_and_downgrade(
             command.downgrade(config, "20260830_0020")
 
 
-def test_0021_concurrent_first_account_imports_serialize_on_account_identity(
+def test_0023_concurrent_statement_imports_use_one_pre_registered_account(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LEDGERBRIDGE_ENV", raising=False)
@@ -775,6 +921,7 @@ def test_0021_concurrent_first_account_imports_serialize_on_account_identity(
                 evidence_ref=second_evidence,
                 statement=overlap,
             )
+            _register_managed_account(cast(Session, connection))
         barrier = Barrier(2)
 
         def import_one(statement: MyBankStatement, evidence_ref: UUID) -> bool:
@@ -810,6 +957,15 @@ def test_0021_postgresql_rejects_malformed_json_before_casting(
     with _legacy_r1_database(reader=True) as database_url:
         command.upgrade(_upgrade_config(database_url), "head")
         engine = create_engine(database_url)
+        with engine.begin() as connection:
+            _seed_statement_evidence(
+                connection,
+                entity_ref=ENTITY_REF,
+                business_unit_ref=uuid4(),
+                evidence_ref=EVIDENCE_REF,
+                statement=_statement(),
+            )
+            _register_managed_account(cast(Session, connection))
         valid = _build_request(_statement(), _context())
         valid_transactions = cast(list[dict[str, object]], valid["transactions"])
 
@@ -904,6 +1060,9 @@ def test_0021_postgresql_schema_contract_rejects_missing_unique_constraint(
             )
             metadata = {
                 "database_owner": owner,
+                "alembic_version": connection.execute(
+                    text("SELECT version_num FROM alembic_version")
+                ).scalar_one(),
                 "r1_role_matrix": [{"role": role} for role in observed_roles],
                 **observed,
             }
@@ -920,6 +1079,9 @@ def test_0021_postgresql_schema_contract_rejects_missing_unique_constraint(
                 _validate_bank_statement_security(
                     {
                         "database_owner": owner,
+                        "alembic_version": connection.execute(
+                            text("SELECT version_num FROM alembic_version")
+                        ).scalar_one(),
                         "r1_role_matrix": [{"role": role} for role in observed_roles],
                         **drifted,
                     }
@@ -927,12 +1089,12 @@ def test_0021_postgresql_schema_contract_rejects_missing_unique_constraint(
         engine.dispose()
 
 
-def test_import_rejects_account_key_that_does_not_match_verified_statement() -> None:
+def test_import_rejects_statement_with_an_unexpected_institution() -> None:
     service = BankStatementImportService(lambda: cast(Session, _StatementDatabase()))
     with pytest.raises(Exception, match="identity"):
         service.import_statement(
-            _statement(),
-            context=replace(_context(), account_key="mybank:company:7968"),
+            replace(_statement(), institution_code="other_bank"),
+            context=_context(),
         )
 
 

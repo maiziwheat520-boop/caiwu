@@ -2,6 +2,24 @@
 
 Updated: 2026-08-30
 
+## Accounting Owner registry checkpoint (2026-08-30)
+
+The isolated `ai/chatgpt/account-owner-registry` branch now provides the Shared Financial
+Foundation's explicit Entity-owned Managed Account registry. Migration `20260830_0023` keeps
+`20260830_0022` as its final predecessor and adds evidence-backed account admission, normalized
+aliases, effective-dated business-unit assignments, fact allocation revisions, immutable
+business-unit ref/label snapshots, audit-bound idempotent writes, and an audit-horizon-bound v1
+read projection. MyBank statement import now accepts only a pre-registered owner Entity UUID and
+Managed Account UUID, and its external-Session seam allows Evidence, registry admission, and
+statement import to share one caller-owned transaction. No owner, account, statement, private
+sample, credential, production data, merge, or deployment was created.
+
+Local verification passes 772 tests with 199 PostgreSQL/environment tests skipped, including
+the new migration replay tests that await the centrally owned 0022 migration and a PostgreSQL
+URL. Changed-file lint, format, typing, sensitive-path, and backup/restore checks pass. The
+repository-wide format/type gates still report pre-existing failures in unchanged hotel-payout,
+configuration, and D1 files. See `docs/tasks/2026-08-30-account-owner-registry.md`.
+
 ## Payroll publication adapter checkpoint (2026-08-30)
 
 The real-data cutover branch now contains a default-disabled, read-only adapter for the

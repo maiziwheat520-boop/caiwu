@@ -60,11 +60,6 @@ class SuspenseStatus(StrEnum):
     RESOLVED = "RESOLVED"
 
 
-class AccountOwnerKind(StrEnum):
-    PERSONAL = "PERSONAL"
-    COMPANY = "COMPANY"
-
-
 class ManagedTransferKind(StrEnum):
     EXTERNAL = "EXTERNAL"
     INTERNAL = "INTERNAL"
@@ -82,14 +77,14 @@ class ManagedAccount:
     """An account admitted because at least one statement was provided."""
 
     account_key: str
-    owner_ref: str
-    owner_kind: AccountOwnerKind
+    owner_entity_ref: UUID
     aliases: tuple[str, ...]
     statement_evidence_refs: tuple[UUID, ...]
 
     def __post_init__(self) -> None:
         _require_text("account_key", self.account_key, MAX_IDENTIFIER_TEXT)
-        _require_text("owner_ref", self.owner_ref, MAX_IDENTIFIER_TEXT)
+        if not isinstance(self.owner_entity_ref, UUID):
+            raise Phase5Error("managed account owner Entity ref is invalid")
         if not self.aliases or not self.statement_evidence_refs:
             raise Phase5Error("managed account requires an alias and statement evidence")
         normalized = [_normalize_account_alias(value) for value in self.aliases]
@@ -176,7 +171,7 @@ def assess_managed_transfer(
         )
     kind = (
         ManagedTransferKind.INTERNAL
-        if source.owner_ref == counterparty.owner_ref
+        if source.owner_entity_ref == counterparty.owner_entity_ref
         else ManagedTransferKind.RELATED_PARTY
     )
     earliest = observation.occurred_on - timedelta(days=maximum_day_gap)
