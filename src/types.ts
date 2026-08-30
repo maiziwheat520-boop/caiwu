@@ -1,4 +1,4 @@
-export type Page = 'overview' | 'personal-finance' | 'review' | 'reconciliation' | 'company-reports' | 'payroll' | 'files' | 'audit'
+export type Page = 'overview' | 'personal-finance' | 'review' | 'reconciliation' | 'original-reconciliation' | 'company-reports' | 'payroll' | 'files' | 'audit'
 
 export type CandidateStatus =
   | 'INCOMPLETE'
@@ -342,6 +342,67 @@ export type CompanyReportsResponse = {
   from_month: string
   to_month: string
   layers: CompanyReportLayer[]
+}
+
+export type OriginalReconciliationColumn = {
+  column: string
+  ordinal: number
+  role: 'MAIN' | 'SPACER' | 'DETAIL'
+}
+
+export type OriginalReconciliationCell = {
+  coordinate: string
+  column: string
+  row_number: number
+  kind: 'BLANK' | 'LABEL' | 'AMOUNT' | 'GAP'
+  label: string | null
+  amount_minor: number | null
+  currency: 'CNY' | null
+  gap_code: 'MISSING_LEGACY_SLOT_MAPPING' | 'MISSING_BALANCE_MAPPING' | 'MISSING_ECONOMIC_EFFECT' | 'POSTED_LEDGER_UNAVAILABLE' | null
+  source_fact_refs: string[]
+}
+
+export type OriginalReconciliation = {
+  contract_version: 'ledgerbridge.original-reconciliation.v1'
+  taxonomy_version: 'ledgerbridge.financial-foundation-blocker-taxonomy.v1'
+  layout_version: string
+  mapping_version: string
+  is_complete: boolean
+  posted_ledger_complete: boolean
+  projection_gaps: Array<'MISSING_TIME_GRANULARITY' | 'MISSING_BUSINESS_UNIT_ATTRIBUTION'>
+  month: string
+  scope: {
+    entity_ref: string
+    business_unit_ref: string
+  }
+  columns: OriginalReconciliationColumn[]
+  rows: Array<{
+    row_number: number
+    cells: OriginalReconciliationCell[]
+  }>
+  totals: {
+    posted_income_minor: number | null
+    posted_expense_minor: number | null
+    posted_profit_minor: number | null
+    opening_balance_minor: number | null
+    closing_balance_minor: number | null
+    mapped_cell_count: number
+    confirmed_candidate_amount_minor: number
+    posted_amount_minor: number | null
+    currency: 'CNY'
+  }
+  pending_review_count: number
+  confirmed_pending_posting_count: number
+  missing_material_count: number
+  unmapped_confirmed_count: number
+  sources: Array<{
+    source_kind: 'POSTED_LEDGER' | 'CONFIRMED_CANDIDATE' | 'ACCOUNT_STATEMENT'
+    source_system: string
+    source_label: string | null
+    fact_count: number
+    mapped_fact_count: number
+    amount_minor: number
+  }>
 }
 
 export type WorkbookDraft = {

@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Theme } from '@radix-ui/themes'
 import App from './App'
-import type { AccountingDimensions, ApiCandidate, AuthStatus, EvidencePreview, ReviewEvent } from './types'
+import type { AccountingDimensions, ApiCandidate, AuthStatus, EvidencePreview, OriginalReconciliation, ReviewEvent } from './types'
+import { originalReconciliationFixture } from './test-fixtures/original-reconciliation'
 
 const session = {
   principal: 'finance-admin',
@@ -348,6 +349,9 @@ function installFetch(options: {
   accountingDimensions?: AccountingDimensions
   companyReportResponse?: unknown
   failCompanyReportsOnce?: boolean
+  failOriginalReconciliation?: boolean
+  originalReconciliation?: OriginalReconciliation
+  originalReconciliationGate?: Promise<void>
 } = {}) {
   const {
     items = candidates,
@@ -404,6 +408,9 @@ function installFetch(options: {
     accountingDimensions,
     companyReportResponse = companyReports(),
     failCompanyReportsOnce = false,
+    failOriginalReconciliation = false,
+    originalReconciliation = originalReconciliationFixture,
+    originalReconciliationGate,
   } = options
   let shouldFailSession = failSessionOnce
   let decisionSaved = false
@@ -486,6 +493,12 @@ function installFetch(options: {
     if (url.startsWith('/api/v1/reconciliations/') && init?.method !== 'POST') {
       if (decisionSaved && failReconciliationAfterDecision) return response({ title: '对账投影暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
       return response(reconciliation)
+    }
+    if (url.startsWith('/api/v1/original-reconciliations/')) {
+      if (originalReconciliationGate) await originalReconciliationGate
+      if (failOriginalReconciliation) return response({ title: '原口径投影暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
+      const requestedMonth = new URL(url, 'http://ledgerbridge.local').pathname.split('/').at(-1)!
+      return response({ ...originalReconciliation, month: requestedMonth })
     }
     if (url === '/api/v1/connections') return response({ items: [] })
     if (url === '/api/v1/accounting-dimensions') {
@@ -1539,14 +1552,18 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.queryByText('C-ZS01')).not.toBeInTheDocument()
   })
 
-  it('reaches the three business reporting entry points', async () => {
+  it('keeps the original-layout report independent from the monthly draft and other reporting entry points', async () => {
     installFetch()
     renderApp()
     await screen.findByText('早上好，今天有几项需要确认')
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
     expect(screen.getByRole('heading', { name: '完整个人财务对账' })).toBeInTheDocument()
-    fireEvent.click(screen.getAllByRole('button', { name: /原口径对账表/ })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: /月度对账/ })[0])
     expect(screen.getByRole('heading', { name: '2026 年 8 月对账草稿' })).toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('button', { name: /原口径对账表/ })[0])
+    expect(window.location.pathname).toBe('/original-reconciliation')
+    expect(screen.getByRole('heading', { name: '原口径对账表' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '2026 年 8 月对账草稿' })).not.toBeInTheDocument()
     fireEvent.click(screen.getAllByRole('button', { name: /各公司报表/ })[0])
     expect(screen.getByRole('heading', { name: '各公司报表' })).toBeInTheDocument()
     expect(await screen.findByText('当前期间没有可展示的公司报表')).toBeInTheDocument()
@@ -1638,7 +1655,123 @@ describe('LedgerBridge Web API client', () => {
     expect(await screen.findByText('当前期间没有可展示的公司报表')).toBeInTheDocument()
   })
 
-  it('keeps the payroll integration status reachable and explains when the live projection is not ready', async () => {
+  it('renders the fixed original columns and uses projection totals without mixing pending review', async () => {
+    window.history.replaceState({}, '', '/original-reconciliation')
+    const fetchMock = installFetch()
+    renderApp()
+
+    expect(await screen.findByRole('heading', { name: '原口径对账表' })).toBeInTheDocument()
+    const table = await screen.findByRole('table', { name: '原口径固定列对账表' })
+    expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual(
+      ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M'],
+    )
+    expect(within(table).getByText('示例科目')).toBeInTheDocument()
+    expect(within(table).getByText('¥123.45')).toBeInTheDocument()
+    expect(within(table).getByText('-¥23.45')).toBeInTheDocument()
+    expect(within(table).getByText('待补经济影响')).toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: '原口径合计' })).getByText('¥100.00')).toBeInTheDocument()
+    expect(screen.getByText('3 条待审核未计入')).toBeInTheDocument()
+    expect(screen.getByText('2 条已确认待入账')).toBeInTheDocument()
+    expect(screen.getByText('1 份待补材料')).toBeInTheDocument()
+    expect(screen.getByText('1 条已确认但未映射')).toBeInTheDocument()
+    expect(screen.getByText('月内时间粒度待补')).toBeInTheDocument()
+    expect(screen.getByText('不解析摘要猜周次')).toBeInTheDocument()
+    expect(screen.getByText('不完整 / 有缺口')).toBeInTheDocument()
+    expect(screen.getByText('synthetic_confirmed')).toBeInTheDocument()
+    expect(screen.getByText('synthetic_statement')).toBeInTheDocument()
+    expect(screen.getAllByText('待补账户映射')).toHaveLength(2)
+    expect(screen.getByText('分类、布局与映射版本可追溯')).toHaveAttribute(
+      'title',
+      `${originalReconciliationFixture.taxonomy_version} · ${originalReconciliationFixture.layout_version} · ${originalReconciliationFixture.mapping_version}`,
+    )
+
+    fireEvent.change(screen.getByLabelText('选择原口径对账月份'), { target: { value: '2026-07' } })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      `/api/v1/original-reconciliations/2026-07?entity_ref=${originalReconciliationFixture.scope.entity_ref}&business_unit=${originalReconciliationFixture.scope.business_unit_ref}`,
+      expect.objectContaining({ credentials: 'same-origin' }),
+    ))
+  })
+
+  it('shows loading, error, and empty states for the original-layout projection', async () => {
+    window.history.replaceState({}, '', '/original-reconciliation')
+    let releaseProjection: () => void = () => undefined
+    const projectionGate = new Promise<void>((resolve) => { releaseProjection = resolve })
+    installFetch({ originalReconciliationGate: projectionGate })
+    const loadingView = renderApp()
+    expect(await screen.findByText('正在读取原口径对账表')).toBeInTheDocument()
+    await act(async () => releaseProjection())
+    expect(await screen.findByRole('table', { name: '原口径固定列对账表' })).toBeInTheDocument()
+    loadingView.unmount()
+
+    vi.restoreAllMocks()
+    installFetch({ failOriginalReconciliation: true })
+    const errorView = renderApp()
+    expect(await screen.findByRole('alert')).toHaveTextContent('原口径投影暂不可用')
+    expect(screen.getByRole('button', { name: /重试/ })).toBeInTheDocument()
+    errorView.unmount()
+
+    vi.restoreAllMocks()
+    const blankRows = originalReconciliationFixture.rows.map((row) => ({
+      ...row,
+      cells: row.cells.map((cell) => ({
+        ...cell,
+        kind: 'BLANK' as const,
+        label: null,
+        amount_minor: null,
+        currency: null,
+        gap_code: null,
+        source_fact_refs: [],
+      })),
+    }))
+    installFetch({
+      originalReconciliation: {
+        ...originalReconciliationFixture,
+        rows: blankRows,
+        totals: {
+          ...originalReconciliationFixture.totals,
+          posted_income_minor: 0,
+          posted_expense_minor: 0,
+          posted_profit_minor: 0,
+          confirmed_candidate_amount_minor: 0,
+          posted_amount_minor: 0,
+          mapped_cell_count: 0,
+        },
+        pending_review_count: 0,
+        confirmed_pending_posting_count: 0,
+        missing_material_count: 0,
+        unmapped_confirmed_count: 0,
+        sources: [],
+      },
+    })
+    renderApp()
+    expect(await screen.findByRole('heading', { name: '本月没有可映射的原口径数据' })).toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: '原口径合计' })).getAllByText('¥0.00')).toHaveLength(3)
+    expect(screen.getByRole('table', { name: '原口径固定列对账表' })).toBeInTheDocument()
+  })
+
+  it('shows unavailable posted-ledger totals as missing instead of zero', async () => {
+    window.history.replaceState({}, '', '/original-reconciliation')
+    installFetch({
+      originalReconciliation: {
+        ...originalReconciliationFixture,
+        posted_ledger_complete: false,
+        totals: {
+          ...originalReconciliationFixture.totals,
+          posted_income_minor: null,
+          posted_expense_minor: null,
+          posted_profit_minor: null,
+          posted_amount_minor: null,
+        },
+      },
+    })
+    renderApp()
+
+    const totals = await screen.findByRole('region', { name: '原口径合计' })
+    expect(within(totals).getAllByText('待接正式账簿')).toHaveLength(3)
+    expect(within(totals).queryByText('¥0.00')).not.toBeInTheDocument()
+  })
+
+  it('keeps the payroll integration status reachable from its route and both navigation surfaces', async () => {
     window.history.replaceState({}, '', '/payroll')
     const fetchMock = installFetch({
       runtimeMode: 'core-backed',

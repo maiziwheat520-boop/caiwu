@@ -12,6 +12,7 @@ import type {
   ConnectionStatus,
   EvidenceUnlockResult,
   EvidencePreview,
+  OriginalReconciliation,
   PasskeyAdditionResult,
   PayrollBatchListData,
   PayrollCommandResult,
@@ -330,6 +331,20 @@ export const api = {
 
   getReconciliation: (accountingMonth: string) =>
     requestJson<Reconciliation>(`/api/v1/reconciliations/${encodeURIComponent(accountingMonth)}`),
+
+  getOriginalReconciliation: ({ accountingMonth, entityRef, businessUnitRef }: {
+    accountingMonth: string
+    entityRef?: string
+    businessUnitRef?: string
+  }) => {
+    const params = new URLSearchParams()
+    if (entityRef) params.set('entity_ref', entityRef)
+    if (businessUnitRef) params.set('business_unit', businessUnitRef)
+    const query = params.size > 0 ? `?${params.toString()}` : ''
+    return requestJson<OriginalReconciliation>(
+      `/api/v1/original-reconciliations/${encodeURIComponent(accountingMonth)}${query}`,
+    )
+  },
 
   createWorkbookDraft: ({ accountingMonth, expectedRevision, csrfToken }: {
     accountingMonth: string

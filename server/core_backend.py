@@ -579,6 +579,34 @@ class CoreBackedState:
             ],
         }
 
+    def original_reconciliation(
+        self,
+        month: str,
+        *,
+        entity_ref: str | None,
+        business_unit_ref: str | None,
+    ) -> dict[str, object]:
+        if entity_ref is not None and entity_ref != self.entity_ref:
+            raise CoreBackendError(403, _problem(403, "SCOPE_NOT_AUTHORIZED"))
+        if business_unit_ref is not None and business_unit_ref != self.business_unit_ref:
+            raise CoreBackendError(403, _problem(403, "SCOPE_NOT_AUTHORIZED"))
+        query = urlencode(
+            {
+                "entity_ref": self.entity_ref,
+                "business_unit": self.business_unit_ref,
+            }
+        )
+        payload = self.client.json(
+            "GET",
+            f"/internal/v1/original-reconciliations/{month}?{query}",
+        )
+        return _original_reconciliation_from_core(
+            payload,
+            month=month,
+            entity_ref=self.entity_ref,
+            business_unit_ref=self.business_unit_ref,
+        )
+
     def connections(self) -> list[dict[str, str]]:
         checked_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         return [
@@ -1626,6 +1654,328 @@ def _event_from_core(value: object) -> dict[str, object]:
         "changes": mapped_changes,
         "conflict_resolution": resolution,
         "created_at": value.get("created_at"),
+    }
+
+
+def _original_reconciliation_from_core(
+    value: object,
+    *,
+    month: str,
+    entity_ref: str,
+    business_unit_ref: str,
+) -> dict[str, object]:
+    invalid = lambda: CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    if not isinstance(value, dict):
+        raise invalid()
+    if set(value) != {
+        "contract_version",
+        "taxonomy_version",
+        "layout_version",
+        "mapping_version",
+        "is_complete",
+        "posted_ledger_complete",
+        "projection_gaps",
+        "month",
+        "scope",
+        "columns",
+        "rows",
+        "totals",
+        "pending_review_count",
+        "confirmed_pending_posting_count",
+        "missing_material_count",
+        "unmapped_confirmed_count",
+        "sources",
+    }:
+        raise invalid()
+    scope = value.get("scope")
+    columns = value.get("columns")
+    rows = value.get("rows")
+    totals = value.get("totals")
+    sources = value.get("sources")
+    projection_gaps = value.get("projection_gaps")
+    if (
+        value.get("contract_version") != "ledgerbridge.original-reconciliation.v1"
+        or value.get("taxonomy_version") != "ledgerbridge.financial-foundation-blocker-taxonomy.v1"
+        or not isinstance(value.get("layout_version"), str)
+        or not 1 <= len(value["layout_version"]) <= 100
+        or not isinstance(value.get("mapping_version"), str)
+        or not 1 <= len(value["mapping_version"]) <= 100
+        or type(value.get("is_complete")) is not bool
+        or type(value.get("posted_ledger_complete")) is not bool
+        or value.get("month") != month
+        or not isinstance(scope, dict)
+        or set(scope) != {"entity_ref", "business_unit_ref"}
+        or scope.get("entity_ref") != entity_ref
+        or scope.get("business_unit_ref") != business_unit_ref
+        or not isinstance(columns, list)
+        or not isinstance(rows, list)
+        or not isinstance(totals, dict)
+        or not isinstance(sources, list)
+        or not isinstance(projection_gaps, list)
+        or any(
+            not isinstance(gap, str)
+            or gap
+            not in {"MISSING_TIME_GRANULARITY", "MISSING_BUSINESS_UNIT_ATTRIBUTION"}
+            for gap in projection_gaps
+        )
+        or len(projection_gaps) != len(set(projection_gaps))
+    ):
+        raise invalid()
+
+    expected_columns = [chr(ord("A") + offset) for offset in range(13)]
+    safe_columns: list[dict[str, object]] = []
+    if len(columns) != len(expected_columns):
+        raise invalid()
+    for ordinal, (column, expected_column) in enumerate(zip(columns, expected_columns), start=1):
+        if not isinstance(column, dict):
+            raise invalid()
+        role = column.get("role")
+        expected_role = "MAIN" if ordinal <= 5 else "SPACER" if ordinal <= 7 else "DETAIL"
+        if (
+            set(column) != {"column", "ordinal", "role"}
+            or
+            column.get("column") != expected_column
+            or column.get("ordinal") != ordinal
+            or role != expected_role
+        ):
+            raise invalid()
+        safe_columns.append({"column": expected_column, "ordinal": ordinal, "role": role})
+
+    safe_rows: list[dict[str, object]] = []
+    if len(rows) != 40:
+        raise invalid()
+    for expected_row_number, row in enumerate(rows, start=1):
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"row_number", "cells"}
+            or row.get("row_number") != expected_row_number
+        ):
+            raise invalid()
+        cells = row.get("cells")
+        if not isinstance(cells, list) or len(cells) != len(expected_columns):
+            raise invalid()
+        safe_cells: list[dict[str, object]] = []
+        for cell, expected_column in zip(cells, expected_columns):
+            if not isinstance(cell, dict):
+                raise invalid()
+            kind = cell.get("kind")
+            label = cell.get("label")
+            amount_minor = cell.get("amount_minor")
+            currency = cell.get("currency")
+            gap_code = cell.get("gap_code")
+            source_fact_refs = cell.get("source_fact_refs")
+            if (
+                set(cell) != {
+                    "coordinate",
+                    "column",
+                    "row_number",
+                    "kind",
+                    "label",
+                    "amount_minor",
+                    "currency",
+                    "gap_code",
+                    "source_fact_refs",
+                }
+                or cell.get("coordinate") != f"{expected_column}{expected_row_number}"
+                or cell.get("column") != expected_column
+                or cell.get("row_number") != expected_row_number
+                or kind not in {"BLANK", "LABEL", "AMOUNT", "GAP"}
+                or not isinstance(source_fact_refs, list)
+                or any(not isinstance(item, str) or not 1 <= len(item) <= 200 for item in source_fact_refs)
+                or len(set(source_fact_refs)) != len(source_fact_refs)
+                or (label is not None and (not isinstance(label, str) or not 1 <= len(label) <= 200))
+                or expected_column in {"F", "G"} and kind != "BLANK"
+            ):
+                raise invalid()
+            if kind == "BLANK":
+                valid_kind = label is None and amount_minor is None and currency is None and gap_code is None and not source_fact_refs
+            elif kind == "LABEL":
+                valid_kind = isinstance(label, str) and amount_minor is None and currency is None and gap_code is None
+            elif kind == "AMOUNT":
+                valid_kind = (
+                    type(amount_minor) is int
+                    and abs(amount_minor) <= 9_007_199_254_740_991
+                    and currency == "CNY"
+                    and gap_code is None
+                )
+            else:
+                valid_kind = (
+                    label is None
+                    and amount_minor is None
+                    and currency is None
+                    and gap_code in {
+                        "MISSING_LEGACY_SLOT_MAPPING",
+                        "MISSING_BALANCE_MAPPING",
+                        "MISSING_ECONOMIC_EFFECT",
+                        "POSTED_LEDGER_UNAVAILABLE",
+                    }
+                )
+            if not valid_kind:
+                raise invalid()
+            safe_cells.append(
+                {
+                    "coordinate": f"{expected_column}{expected_row_number}",
+                    "column": expected_column,
+                    "row_number": expected_row_number,
+                    "kind": kind,
+                    "label": label,
+                    "amount_minor": amount_minor,
+                    "currency": currency,
+                    "gap_code": gap_code,
+                    "source_fact_refs": list(source_fact_refs),
+                }
+            )
+        safe_rows.append({"row_number": expected_row_number, "cells": safe_cells})
+
+    posted_money_fields = (
+        "posted_income_minor",
+        "posted_expense_minor",
+        "posted_profit_minor",
+        "posted_amount_minor",
+    )
+    if set(totals) != {
+        "posted_income_minor",
+        "posted_expense_minor",
+        "posted_profit_minor",
+        "opening_balance_minor",
+        "closing_balance_minor",
+        "mapped_cell_count",
+        "confirmed_candidate_amount_minor",
+        "posted_amount_minor",
+        "currency",
+    }:
+        raise invalid()
+    if (
+        type(totals.get("confirmed_candidate_amount_minor")) is not int
+        or abs(totals["confirmed_candidate_amount_minor"]) > 9_007_199_254_740_991
+    ):
+        raise invalid()
+    posted_ledger_complete = value["posted_ledger_complete"]
+    if posted_ledger_complete:
+        if any(type(totals.get(field)) is not int or abs(totals[field]) > 9_007_199_254_740_991 for field in posted_money_fields):
+            raise invalid()
+        if totals.get("posted_profit_minor") != totals.get("posted_income_minor") - totals.get("posted_expense_minor"):
+            raise invalid()
+    elif any(totals.get(field) is not None for field in posted_money_fields):
+        raise invalid()
+    opening_balance = totals.get("opening_balance_minor")
+    closing_balance = totals.get("closing_balance_minor")
+    if (
+        totals.get("currency") != "CNY"
+        or type(totals.get("mapped_cell_count")) is not int
+        or not 0 <= totals.get("mapped_cell_count") <= 520
+        or opening_balance is not None and (type(opening_balance) is not int or abs(opening_balance) > 9_007_199_254_740_991)
+        or closing_balance is not None and (type(closing_balance) is not int or abs(closing_balance) > 9_007_199_254_740_991)
+    ):
+        raise invalid()
+    safe_totals = {
+        field: totals[field]
+        for field in (
+            *posted_money_fields,
+            "confirmed_candidate_amount_minor",
+            "opening_balance_minor",
+            "closing_balance_minor",
+            "mapped_cell_count",
+            "currency",
+        )
+    }
+
+    count_fields = (
+        "pending_review_count",
+        "confirmed_pending_posting_count",
+        "missing_material_count",
+        "unmapped_confirmed_count",
+    )
+    if any(type(value.get(field)) is not int or value[field] < 0 for field in count_fields):
+        raise invalid()
+    safe_sources: list[dict[str, object]] = []
+    for source in sources:
+        if not isinstance(source, dict) or set(source) != {
+            "source_kind",
+            "source_system",
+            "source_label",
+            "fact_count",
+            "mapped_fact_count",
+            "amount_minor",
+        }:
+            raise invalid()
+        source_kind = source.get("source_kind")
+        source_system = source.get("source_system")
+        source_label = source.get("source_label")
+        fact_count = source.get("fact_count")
+        mapped_fact_count = source.get("mapped_fact_count")
+        amount_minor = source.get("amount_minor")
+        if (
+            source_kind not in {"POSTED_LEDGER", "CONFIRMED_CANDIDATE", "ACCOUNT_STATEMENT"}
+            or not isinstance(source_system, str)
+            or not 1 <= len(source_system) <= 100
+            or source_label is not None and (not isinstance(source_label, str) or not 1 <= len(source_label) <= 200)
+            or type(fact_count) is not int
+            or fact_count < 1
+            or type(mapped_fact_count) is not int
+            or not 0 <= mapped_fact_count <= fact_count
+            or type(amount_minor) is not int
+            or abs(amount_minor) > 9_007_199_254_740_991
+        ):
+            raise invalid()
+        safe_sources.append(
+            {
+                "source_kind": source_kind,
+                "source_system": source_system,
+                "source_label": source_label,
+                "fact_count": fact_count,
+                "mapped_fact_count": mapped_fact_count,
+                "amount_minor": amount_minor,
+            }
+        )
+
+    confirmed_source_count = sum(
+        source["fact_count"]
+        for source in safe_sources
+        if source["source_kind"] == "CONFIRMED_CANDIDATE"
+    )
+    posted_sources_fully_mapped = all(
+        source["mapped_fact_count"] == source["fact_count"]
+        for source in safe_sources
+        if source["source_kind"] == "POSTED_LEDGER"
+    )
+    if (
+        value["confirmed_pending_posting_count"] != confirmed_source_count
+        or value["unmapped_confirmed_count"] > confirmed_source_count
+    ):
+        raise invalid()
+
+    has_gap = any(
+        cell["kind"] == "GAP"
+        for row in safe_rows
+        for cell in row["cells"]  # type: ignore[index]
+    )
+    if value["is_complete"] and (
+        has_gap
+        or projection_gaps
+        or any(value[field] > 0 for field in count_fields)
+        or opening_balance is None
+        or closing_balance is None
+        or not posted_ledger_complete
+        or not posted_sources_fully_mapped
+    ):
+        raise invalid()
+
+    return {
+        "contract_version": "ledgerbridge.original-reconciliation.v1",
+        "taxonomy_version": value["taxonomy_version"],
+        "layout_version": value["layout_version"],
+        "mapping_version": value["mapping_version"],
+        "is_complete": value["is_complete"],
+        "posted_ledger_complete": posted_ledger_complete,
+        "projection_gaps": list(projection_gaps),
+        "month": month,
+        "scope": {"entity_ref": entity_ref, "business_unit_ref": business_unit_ref},
+        "columns": safe_columns,
+        "rows": safe_rows,
+        "totals": safe_totals,
+        **{field: value[field] for field in count_fields},
+        "sources": safe_sources,
     }
 
 

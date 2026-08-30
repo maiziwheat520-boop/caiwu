@@ -8,6 +8,7 @@
 - 待审核：按消息来源筛选，查看原始消息与附件证据，确认或忽略候选。
 - 审核操作记录：按时间倒序查看追加式确认、更正、冲突处置和忽略记录，支持筛选、搜索，并可下钻到只读候选详情、原始证据和单候选审核历史。
 - 月度对账：按营业单元汇总水费、税费、布草、瓶装水和银行收款。
+- 原口径对账表：独立只读入口，按 Core 的固定 A–M、40 行历史口径投影展示；不复用月度草稿或公司报表。
 - 文件与连接：展示 OneDrive App Folder、Hermes 消息入口和 LibreOffice 计算服务的预期边界。
 - 移动端：支持审核和摘要；完整科目网格保留给平板和电脑。
 
@@ -34,6 +35,8 @@ python deploy/server.py
 Hermes 合成数据预览的容器部署方式见 [DEPLOYMENT.md](./DEPLOYMENT.md)。
 
 后续真实接入的运行边界见 [集成架构](./docs/ARCHITECTURE.md)，草拟接口见 [OpenAPI 合同](./contracts/openapi.yaml)。
+
+原口径对账表的 scope、金额和缺口显示边界见 [原口径对账投影](./docs/ORIGINAL_RECONCILIATION.md)。
 
 旧 Tkinter 对账规则的渐进提取方案见 [工作簿适配边界](./docs/WORKBOOK_ADAPTER.md)。
 

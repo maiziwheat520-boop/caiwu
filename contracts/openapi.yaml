@@ -554,6 +554,60 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Reconciliation"
+  /api/v1/original-reconciliations/{accounting_month}:
+    get:
+      operationId: getOriginalReconciliation
+      description: >-
+        Read the fixed A-M, 40-row legacy-layout projection. The authenticated
+        BFF fixes the Core scope; optional browser scope parameters may only
+        repeat that authorized entity and business unit.
+      parameters:
+        - $ref: "#/components/parameters/AccountingMonthPath"
+        - name: entity_ref
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: business_unit
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+      responses:
+        "200":
+          description: Read-only original-layout reconciliation projection
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OriginalReconciliation"
+        "400":
+          description: Invalid month or scope query
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The requested scope differs from the session-authorized scope
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "503":
+          description: Core is unavailable or returned an invalid projection contract
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/reconciliations/{accounting_month}/drafts:
     post:
       operationId: createWorkbookDraft
@@ -2184,6 +2238,240 @@ components:
           type: "null"
         gap:
           const: AUTHORITATIVE_BALANCE_UNAVAILABLE
+    OriginalReconciliation:
+      type: object
+      additionalProperties: false
+      required:
+        - contract_version
+        - taxonomy_version
+        - layout_version
+        - mapping_version
+        - is_complete
+        - posted_ledger_complete
+        - projection_gaps
+        - month
+        - scope
+        - columns
+        - rows
+        - totals
+        - pending_review_count
+        - confirmed_pending_posting_count
+        - missing_material_count
+        - unmapped_confirmed_count
+        - sources
+      properties:
+        contract_version:
+          type: string
+          const: ledgerbridge.original-reconciliation.v1
+        taxonomy_version:
+          type: string
+          const: ledgerbridge.financial-foundation-blocker-taxonomy.v1
+        layout_version:
+          type: string
+          minLength: 1
+          maxLength: 100
+        mapping_version:
+          type: string
+          minLength: 1
+          maxLength: 100
+        is_complete:
+          type: boolean
+          description: False whenever any review, material, mapping, GAP, or balance input is missing.
+        posted_ledger_complete:
+          type: boolean
+          description: False means all POSTED total fields are null and must not be presented as zero.
+        projection_gaps:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum: [MISSING_TIME_GRANULARITY, MISSING_BUSINESS_UNIT_ATTRIBUTION]
+          description: Layout-independent gaps; Web must not infer missing subperiod or historical unit attribution.
+        month:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        scope:
+          type: object
+          additionalProperties: false
+          required: [entity_ref, business_unit_ref]
+          properties:
+            entity_ref:
+              type: string
+              format: uuid
+            business_unit_ref:
+              type: string
+              minLength: 1
+              maxLength: 100
+        columns:
+          type: array
+          minItems: 13
+          maxItems: 13
+          items:
+            $ref: "#/components/schemas/OriginalReconciliationColumn"
+        rows:
+          type: array
+          minItems: 40
+          maxItems: 40
+          items:
+            $ref: "#/components/schemas/OriginalReconciliationRow"
+        totals:
+          $ref: "#/components/schemas/OriginalReconciliationTotals"
+        pending_review_count:
+          type: integer
+          minimum: 0
+        confirmed_pending_posting_count:
+          type: integer
+          minimum: 0
+          description: Confirmed facts awaiting posting; excluded from POSTED totals.
+        missing_material_count:
+          type: integer
+          minimum: 0
+        unmapped_confirmed_count:
+          type: integer
+          minimum: 0
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/OriginalReconciliationSource"
+    OriginalReconciliationColumn:
+      type: object
+      additionalProperties: false
+      required: [column, ordinal, role]
+      properties:
+        column:
+          type: string
+          enum: [A, B, C, D, E, F, G, H, I, J, K, L, M]
+        ordinal:
+          type: integer
+          minimum: 1
+          maximum: 13
+        role:
+          type: string
+          enum: [MAIN, SPACER, DETAIL]
+    OriginalReconciliationRow:
+      type: object
+      additionalProperties: false
+      required: [row_number, cells]
+      properties:
+        row_number:
+          type: integer
+          minimum: 1
+          maximum: 40
+        cells:
+          type: array
+          minItems: 13
+          maxItems: 13
+          items:
+            $ref: "#/components/schemas/OriginalReconciliationCell"
+    OriginalReconciliationCell:
+      type: object
+      description: GAP cells use gap_code with label null; only LABEL cells carry label text.
+      additionalProperties: false
+      required: [coordinate, column, row_number, kind, label, amount_minor, currency, gap_code, source_fact_refs]
+      properties:
+        coordinate:
+          type: string
+          pattern: "^[A-M]([1-9]|[1-3][0-9]|40)$"
+        column:
+          type: string
+          enum: [A, B, C, D, E, F, G, H, I, J, K, L, M]
+        row_number:
+          type: integer
+          minimum: 1
+          maximum: 40
+        kind:
+          type: string
+          enum: [BLANK, LABEL, AMOUNT, GAP]
+        label:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 200
+        amount_minor:
+          type: [integer, "null"]
+          format: int64
+        currency:
+          type: [string, "null"]
+          enum: [CNY, null]
+        gap_code:
+          type: [string, "null"]
+          enum: [MISSING_LEGACY_SLOT_MAPPING, MISSING_BALANCE_MAPPING, MISSING_ECONOMIC_EFFECT, POSTED_LEDGER_UNAVAILABLE, null]
+        source_fact_refs:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 200
+    OriginalReconciliationTotals:
+      type: object
+      additionalProperties: false
+      required:
+        - posted_income_minor
+        - posted_expense_minor
+        - posted_profit_minor
+        - opening_balance_minor
+        - closing_balance_minor
+        - mapped_cell_count
+        - confirmed_candidate_amount_minor
+        - posted_amount_minor
+        - currency
+      properties:
+        posted_income_minor:
+          type: [integer, "null"]
+          format: int64
+        posted_expense_minor:
+          type: [integer, "null"]
+          format: int64
+        posted_profit_minor:
+          type: [integer, "null"]
+          format: int64
+          description: Core-validated posted_income_minor minus posted_expense_minor.
+        opening_balance_minor:
+          type: [integer, "null"]
+          format: int64
+        closing_balance_minor:
+          type: [integer, "null"]
+          format: int64
+        mapped_cell_count:
+          type: integer
+          minimum: 0
+          maximum: 520
+        confirmed_candidate_amount_minor:
+          type: integer
+          format: int64
+          description: Signed audit amount for confirmed facts; not a posted P&L total.
+        posted_amount_minor:
+          type: [integer, "null"]
+          format: int64
+          description: Signed audit amount for posted sources.
+        currency:
+          type: string
+          const: CNY
+    OriginalReconciliationSource:
+      type: object
+      additionalProperties: false
+      required: [source_kind, source_system, source_label, fact_count, mapped_fact_count, amount_minor]
+      properties:
+        source_kind:
+          type: string
+          enum: [POSTED_LEDGER, CONFIRMED_CANDIDATE, ACCOUNT_STATEMENT]
+        source_system:
+          type: string
+          minLength: 1
+          maxLength: 100
+        source_label:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 200
+        fact_count:
+          type: integer
+          minimum: 0
+        mapped_fact_count:
+          type: integer
+          minimum: 0
+        amount_minor:
+          type: integer
+          format: int64
     WorkbookDraft:
       type: object
       additionalProperties: false
