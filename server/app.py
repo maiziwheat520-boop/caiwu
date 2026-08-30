@@ -53,6 +53,9 @@ DRAFT_PATH = re.compile(r"^/api/v1/workbook-drafts/([0-9a-f-]{36})$")
 EVIDENCE_PATH = re.compile(r"^/api/v1/evidence/([0-9a-f-]{36})/content$")
 EVIDENCE_PREVIEW_PATH = re.compile(r"^/api/v1/evidence/([0-9a-f-]{36})/preview$")
 EVIDENCE_UNLOCK_PATH = "/api/v1/evidence/unlocks"
+PAYROLL_BATCH_COMMAND_PATH = re.compile(
+    r"^/api/v1/payroll/batches/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/verify-receipts$"
+)
 MAX_REQUEST_BYTES = 64 * 1024
 STATUSES = {"INCOMPLETE", "PENDING", "CONFLICTED", "CONFIRMED", "IGNORED", "SUPERSEDED"}
 
@@ -457,6 +460,39 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         self._send_json(401, _problem(401, "AUTHENTICATION_REQUIRED", "需要先完成身份验证"))
         return False
 
+    def _payroll_session_identity(self) -> tuple[str, str] | None:
+        manager = self.preview_server.auth_manager
+        session_token = self._session_token()
+        if manager is None or session_token is None:
+            self._send_json(401, _problem(401, "AUTHENTICATION_REQUIRED", "工资接口需要完整认证会话"))
+            return None
+        session_subject = manager.payroll_session_subject(session_token)
+        configured_subject = getattr(self.preview_server.state, "user_subject", None)
+        if session_subject is None:
+            self._send_json(401, _problem(401, "AUTHENTICATION_REQUIRED", "工资接口需要完整认证会话"))
+            return None
+        if not isinstance(configured_subject, str) or not hmac.compare_digest(
+            session_subject.encode("utf-8"),
+            configured_subject.encode("utf-8"),
+        ):
+            self._send_json(
+                403,
+                _problem(403, "PAYROLL_SESSION_SCOPE_MISMATCH", "当前会话不属于已配置的工资主体"),
+            )
+            return None
+        configured_entity_ref = getattr(self.preview_server.state, "entity_ref", None)
+        try:
+            canonical_entity_ref = str(uuid.UUID(configured_entity_ref))
+        except (AttributeError, TypeError, ValueError):
+            canonical_entity_ref = ""
+        if not canonical_entity_ref or configured_entity_ref != canonical_entity_ref:
+            self._send_json(
+                409,
+                _problem(409, "ENTITY_SELECTION_REQUIRED", "工资接口需要唯一的服务器端公司选择"),
+            )
+            return None
+        return session_token, session_subject
+
     def _require_same_origin(self) -> bool:
         manager = self.preview_server.auth_manager
         if manager is None:
@@ -610,6 +646,27 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 )
             return
         if not self._require_session():
+            return
+        payroll_reads = {
+            "/api/v1/payroll/status": "payroll_status",
+            "/api/v1/payroll/dashboard": "payroll_dashboard",
+            "/api/v1/payroll/materials": "payroll_materials",
+            "/api/v1/payroll/batches": "payroll_batches",
+            "/api/v1/payroll/verification": "payroll_verification",
+        }
+        payroll_method = payroll_reads.get(path)
+        if payroll_method is not None:
+            if query:
+                self._send_json(400, _problem(400, "INVALID_PAYROLL_QUERY", "工资接口不接受浏览器作用域参数"))
+                return
+            identity = self._payroll_session_identity()
+            if identity is None:
+                return
+            session_token, session_subject = identity
+            if not hasattr(state, payroll_method):
+                self._send_json(503, _problem(503, "PAYROLL_INTEGRATION_UNAVAILABLE", "工资服务尚未配置"))
+                return
+            self._send_json(200, getattr(state, payroll_method)(session_token, session_subject))
             return
         if path == "/api/v1/candidates":
             params = parse_qs(query, keep_blank_values=True)
@@ -913,7 +970,13 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         decision_match = DECISION_PATH.fullmatch(path)
         draft_match = DRAFT_CREATE_PATH.fullmatch(path)
         evidence_unlock = path == EVIDENCE_UNLOCK_PATH
-        if decision_match is None and draft_match is None and not evidence_unlock:
+        payroll_batch_command = PAYROLL_BATCH_COMMAND_PATH.fullmatch(path)
+        if (
+            decision_match is None
+            and draft_match is None
+            and not evidence_unlock
+            and payroll_batch_command is None
+        ):
             self._send_json(404 if path.startswith("/api/") else 405, _problem(404 if path.startswith("/api/") else 405, "API_ROUTE_NOT_FOUND" if path.startswith("/api/") else "METHOD_NOT_ALLOWED", "路径不接受该请求"))
             return
         if not self._require_session():
@@ -929,8 +992,76 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         if str(parsed_key) != idempotency_key.lower():
             self._send_json(400, _problem(400, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key 必须使用规范 UUID 格式"))
             return
+        payroll_identity: tuple[str, str] | None = None
+        if payroll_batch_command is not None:
+            payroll_identity = self._payroll_session_identity()
+            if payroll_identity is None:
+                return
+        if payroll_identity is not None and not bool(
+            getattr(self.preview_server.state, "payroll_commands_enabled", False)
+        ):
+            self._send_json(
+                503,
+                _problem(503, "PAYROLL_COMMAND_UNAVAILABLE", "工资写操作尚未通过可信授权闸门"),
+            )
+            return
         request = self._read_json_object()
         if request is None:
+            return
+        if payroll_batch_command is not None:
+            if payroll_identity is None or not hasattr(self.preview_server.state, "payroll_batch_command"):
+                self._send_json(503, _problem(503, "PAYROLL_COMMAND_UNAVAILABLE", "工资写操作尚未配置"))
+                return
+            session_token, session_subject = payroll_identity
+            command = "verify-receipts"
+            expected_fields = {
+                "expected_revision",
+                "reason_code",
+                "source_artifact_ids",
+            }
+            if set(request) != expected_fields:
+                self._send_json(422, _problem(422, "INVALID_PAYROLL_COMMAND", "工资批次请求字段不符合合约"))
+                return
+            expected_revision = request.get("expected_revision")
+            if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 1:
+                self._send_json(422, _problem(422, "INVALID_PAYROLL_VERSION", "expected_revision 必须是正整数"))
+                return
+            source_artifact_ids = request.get("source_artifact_ids")
+            if not isinstance(source_artifact_ids, list) or not source_artifact_ids:
+                self._send_json(422, _problem(422, "VERIFICATION_EVIDENCE_REQUIRED", "必须选择非空的发放证据"))
+                return
+            if (
+                len(source_artifact_ids) > 100
+                or len({value for value in source_artifact_ids if isinstance(value, str)})
+                != len(source_artifact_ids)
+                or any(
+                    not isinstance(value, str)
+                    or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value) is None
+                    or value.startswith(("artifact_demo_", "receipt_demo_"))
+                    for value in source_artifact_ids
+                )
+            ):
+                self._send_json(422, _problem(422, "INVALID_PAYROLL_VERIFICATION_EVIDENCE", "发放证据标识无效"))
+                return
+            if request.get("reason_code") != "MANUAL_DISBURSEMENT_VERIFICATION":
+                self._send_json(422, _problem(422, "INVALID_PAYROLL_VERIFICATION_REASON", "发放验证原因码无效"))
+                return
+            command_request = {
+                "contract_version": "ledgerbridge.payroll-receipt-verification-command.v1",
+                "expected_revision": expected_revision,
+                "explicitly_confirmed": True,
+                "reason_code": "MANUAL_DISBURSEMENT_VERIFICATION",
+                "source_artifact_ids": source_artifact_ids,
+            }
+            status, payload = self.preview_server.state.payroll_batch_command(
+                session_token=session_token,
+                session_subject=session_subject,
+                batch_ref=payroll_batch_command.group(1),
+                command=command,
+                idempotency_key=idempotency_key.lower(),
+                request=command_request,
+            )
+            self._send_json(status, payload)
             return
         if evidence_unlock:
             try:
@@ -1168,6 +1299,33 @@ def run() -> None:
             raise SystemExit(
                 f"Refusing core-backed mode: required Core settings are missing: {', '.join(missing)}"
             )
+        payroll_commands_enabled = os.environ.get("PAYROLL_COMMANDS_ENABLED", "0") in {
+            "1",
+            "true",
+            "True",
+        }
+        payroll_role_bindings: dict[str, frozenset[str]] = {}
+        raw_payroll_bindings = os.environ.get("PAYROLL_ROLE_BINDINGS_JSON", "").strip()
+        if payroll_commands_enabled and not raw_payroll_bindings:
+            raise SystemExit(
+                "Refusing payroll commands without PAYROLL_ROLE_BINDINGS_JSON"
+            )
+        if raw_payroll_bindings:
+            try:
+                parsed_bindings = json.loads(raw_payroll_bindings)
+                if not isinstance(parsed_bindings, dict) or any(
+                    not isinstance(subject, str)
+                    or not isinstance(roles, list)
+                    or any(not isinstance(role, str) for role in roles)
+                    for subject, roles in parsed_bindings.items()
+                ):
+                    raise ValueError("invalid payroll role bindings")
+                payroll_role_bindings = {
+                    subject: frozenset(roles)
+                    for subject, roles in parsed_bindings.items()
+                }
+            except (json.JSONDecodeError, ValueError) as error:
+                raise SystemExit("Refusing invalid PAYROLL_ROLE_BINDINGS_JSON") from error
         try:
             client = CoreHttpClient(
                 base_url=required["CORE_BASE_URL"],
@@ -1188,6 +1346,8 @@ def run() -> None:
                 entity_ref=required["CORE_ENTITY_REF"],
                 business_unit_ref=required["CORE_BUSINESS_UNIT_REF"],
                 evidence_unlock_path=os.environ.get("CORE_EVIDENCE_UNLOCK_PATH", "").strip() or None,
+                payroll_commands_enabled=payroll_commands_enabled,
+                payroll_role_bindings=payroll_role_bindings,
             )
         except (OSError, ValueError) as error:
             raise SystemExit("Refusing core-backed mode: invalid Core settings") from error

@@ -28,6 +28,31 @@ MAX_EVIDENCE_RESPONSE_BYTES = 128 * 1024 * 1024
 SAFE_HEADER_VALUE = re.compile(r"^[\x21-\x7e]+$")
 EVIDENCE_UNLOCK_CORE_PATH = "/internal/v1/evidence/unlocks"
 EVIDENCE_UNLOCK_STATUSES = {"NOT_REQUIRED", "PASSWORD_REQUIRED", "UNLOCKED"}
+PAYROLL_STATUS_CORE_PATH = "/internal/v1/payroll/status"
+PAYROLL_USER_ASSERTION_VERSION = "ledgerbridge.payroll-bff-user-assertion.v1"
+PAYROLL_RESOURCE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+PAYROLL_PROJECTION_REVISION = re.compile(r"^[0-9a-f]{64}$")
+PAYROLL_PERIOD = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+PAYROLL_BLOCKING_REASON_ORDER = (
+    "UNASSIGNED_MATERIALS",
+    "MATERIAL_REVIEW_REQUIRED",
+    "PAYROLL_BATCH_REQUIRED",
+    "LIVE_DATA_NOT_READY",
+)
+PAYROLL_SAFETY_FLAGS = frozenset(
+    {
+        "payable",
+        "payment_execution_allowed",
+        "payment_execution_supported",
+        "payment_submission_allowed",
+        "payment_submission_supported",
+        "payment_operations_exposed",
+        "submission_supported",
+    }
+)
+PAYROLL_COMMAND_ROLES = {
+    "verify-receipts": "checker",
+}
 
 
 class CoreBackendError(RuntimeError):
@@ -196,6 +221,8 @@ class CoreBackedState:
         entity_ref: str,
         business_unit_ref: str,
         evidence_unlock_path: str | None = None,
+        payroll_commands_enabled: bool = False,
+        payroll_role_bindings: dict[str, frozenset[str]] | None = None,
     ) -> None:
         if not 32 <= len(assertion_key) <= 256:
             raise ValueError("CORE_USER_ASSERTION_KEY must contain 32 to 256 bytes")
@@ -211,6 +238,15 @@ class CoreBackedState:
         self.authentication_generation = authentication_generation
         self.entity_ref = str(uuid.UUID(entity_ref))
         self.business_unit_ref = _bounded(business_unit_ref, maximum=100)
+        self.payroll_commands_enabled = payroll_commands_enabled
+        supplied_bindings = payroll_role_bindings or {}
+        self.payroll_role_bindings: dict[str, frozenset[str]] = {}
+        for subject, roles in supplied_bindings.items():
+            canonical_subject = _bounded(subject)
+            canonical_roles = frozenset(roles)
+            if not canonical_roles.issubset({"maker", "checker", "approver"}):
+                raise ValueError("payroll role binding contains an unsupported role")
+            self.payroll_role_bindings[canonical_subject] = canonical_roles
         if evidence_unlock_path not in {None, "", EVIDENCE_UNLOCK_CORE_PATH}:
             raise ValueError("Core evidence unlock path is unsupported")
         self.evidence_unlock_path = EVIDENCE_UNLOCK_CORE_PATH if evidence_unlock_path else None
@@ -447,6 +483,271 @@ class CoreBackedState:
 
     def get_draft(self, draft_id: str) -> None:
         return None
+
+    def payroll_status(self, session_token: str, session_subject: str) -> dict[str, object]:
+        payload = self._payroll_read(
+            session_token=session_token,
+            session_subject=session_subject,
+            action="payroll.status.read",
+            path=PAYROLL_STATUS_CORE_PATH,
+            resource_ref="payroll-status",
+        )
+        result = deepcopy(payload)
+        data = result["data"]
+        if not isinstance(data, dict):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        _validate_payroll_status_data(data)
+        core_capabilities = data.get("capabilities")
+        core_allows_verification = bool(
+            isinstance(core_capabilities, dict)
+            and core_capabilities.get("commands_enabled") is True
+            and core_capabilities.get("allowed_actions") == ["VERIFY_RECEIPTS"]
+        )
+        locally_allows_verification = bool(
+            self.payroll_commands_enabled
+            and data.get("live_data_ready") is True
+            and "checker" in self.payroll_role_bindings.get(session_subject, frozenset())
+        )
+        allowed = core_allows_verification and locally_allows_verification
+        data["capabilities"] = {
+            "commands_enabled": allowed,
+            "allowed_actions": ["VERIFY_RECEIPTS"] if allowed else [],
+        }
+        return result
+
+    def payroll_dashboard(self, session_token: str, session_subject: str) -> dict[str, object]:
+        return self._payroll_read(
+            session_token=session_token,
+            session_subject=session_subject,
+            action="payroll.dashboard.read",
+            path="/internal/v1/payroll/dashboard",
+            resource_ref="payroll-dashboard",
+        )
+
+    def payroll_materials(self, session_token: str, session_subject: str) -> dict[str, object]:
+        return self._payroll_read(
+            session_token=session_token,
+            session_subject=session_subject,
+            action="payroll.materials.list",
+            path="/internal/v1/payroll/materials",
+            resource_ref="payroll-materials",
+        )
+
+    def payroll_batches(self, session_token: str, session_subject: str) -> dict[str, object]:
+        return self._payroll_read(
+            session_token=session_token,
+            session_subject=session_subject,
+            action="payroll.batches.list",
+            path="/internal/v1/payroll/batches",
+            resource_ref="payroll-batches",
+        )
+
+    def payroll_verification(self, session_token: str, session_subject: str) -> dict[str, object]:
+        payload = self._payroll_read(
+            session_token=session_token,
+            session_subject=session_subject,
+            action="payroll.verification.list",
+            path="/internal/v1/payroll/verification",
+            resource_ref="payroll-verification",
+        )
+        _payroll_available_evidence_ids(payload)
+        return payload
+
+    def payroll_batch_command(
+        self,
+        *,
+        session_token: str,
+        session_subject: str,
+        batch_ref: str,
+        command: str,
+        idempotency_key: str,
+        request: dict[str, object],
+    ) -> tuple[int, dict[str, object]]:
+        if not self.payroll_commands_enabled:
+            return 503, _problem(503, "PAYROLL_COMMAND_UNAVAILABLE")
+        required_role = PAYROLL_COMMAND_ROLES.get(command)
+        if required_role is None:
+            return 404, _problem(404, "PAYROLL_ACTION_NOT_FOUND")
+        if not hmac.compare_digest(
+            session_subject.encode("utf-8"),
+            self.user_subject.encode("utf-8"),
+        ):
+            return 403, _problem(403, "PAYROLL_SESSION_SCOPE_MISMATCH")
+        if required_role not in self.payroll_role_bindings.get(session_subject, frozenset()):
+            return 403, _problem(403, "PAYROLL_ROLE_NOT_AUTHORIZED")
+        if command == "verify-receipts":
+            try:
+                status_payload = self.payroll_status(session_token, session_subject)
+            except CoreBackendError as error:
+                return error.status, error.payload
+            status_data = status_payload.get("data")
+            capabilities = (
+                status_data.get("capabilities") if isinstance(status_data, dict) else None
+            )
+            if not (
+                isinstance(capabilities, dict)
+                and capabilities.get("commands_enabled") is True
+                and capabilities.get("allowed_actions") == ["VERIFY_RECEIPTS"]
+            ):
+                return 403, _problem(403, "PAYROLL_ACTION_NOT_AUTHORIZED")
+            requested = request.get("source_artifact_ids")
+            if not isinstance(requested, list) or not requested:
+                return 422, _problem(422, "VERIFICATION_EVIDENCE_REQUIRED")
+            try:
+                verification = self.payroll_verification(session_token, session_subject)
+            except CoreBackendError as error:
+                return error.status, error.payload
+            available_ids = _payroll_available_evidence_ids(verification)
+            if any(not isinstance(value, str) or value not in available_ids for value in requested):
+                return 422, _problem(422, "PAYROLL_VERIFICATION_EVIDENCE_NOT_AVAILABLE")
+        resource_ref = _payroll_resource_ref(batch_ref)
+        operation_id = str(uuid.UUID(idempotency_key))
+        expected_revision = request.get("expected_revision")
+        if type(expected_revision) is not int or expected_revision < 1:
+            return 422, _problem(422, "INVALID_PAYROLL_VERSION")
+        action = f"payroll.batch.{command}"
+        path = f"/internal/v1/payroll/batches/{resource_ref}/{command}"
+        body = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        assertion = self._payroll_user_assertion(
+            session_token=session_token,
+            session_subject=session_subject,
+            action=action,
+            method="POST",
+            path=path,
+            body=body,
+            resource_ref=resource_ref,
+            expected_revision=expected_revision,
+            operation_id=operation_id,
+        )
+        try:
+            payload = self.client.json(
+                "POST",
+                path,
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": operation_id,
+                    "X-LedgerBridge-User-Assertion": assertion,
+                },
+            )
+        except CoreBackendError as error:
+            return error.status, error.payload
+        _validate_payroll_payload(
+            payload,
+            expected_contract_version="ledgerbridge.payroll-command-result.v1",
+            expected_entity_ref=self.entity_ref,
+        )
+        _validate_payroll_command_receipt_data(
+            payload["data"],
+            company_id=str(payload["company_id"]),
+            resource_ref=resource_ref,
+            idempotency_key=operation_id,
+        )
+        if (
+            set(payload)
+            != {
+                "contract_version",
+                "entity_ref",
+                "company_id",
+                "action",
+                "resource_ref",
+                "replayed",
+                "data",
+            }
+            or payload.get("action") != action
+            or payload.get("resource_ref") != resource_ref
+            or type(payload.get("replayed")) is not bool
+        ):
+            return 503, _problem(503, "CORE_CONTRACT_INVALID")
+        return 200, payload
+
+    def _payroll_read(
+        self,
+        *,
+        session_token: str,
+        session_subject: str,
+        action: str,
+        path: str,
+        resource_ref: str,
+    ) -> dict[str, object]:
+        assertion = self._payroll_user_assertion(
+            session_token=session_token,
+            session_subject=session_subject,
+            action=action,
+            method="GET",
+            path=path,
+            body=b"",
+            resource_ref=resource_ref,
+        )
+        payload = self.client.json(
+            "GET",
+            path,
+            headers={"X-LedgerBridge-User-Assertion": assertion},
+        )
+        _validate_payroll_payload(
+            payload,
+            expected_contract_version="ledgerbridge.payroll-read.v1",
+            expected_entity_ref=self.entity_ref,
+        )
+        if path != PAYROLL_STATUS_CORE_PATH:
+            _validate_payroll_view_data(
+                payload["data"],
+                path=path,
+                company_id=str(payload["company_id"]),
+            )
+        return payload
+
+    def _payroll_user_assertion(
+        self,
+        *,
+        session_token: str,
+        session_subject: str,
+        action: str,
+        method: str,
+        path: str,
+        body: bytes,
+        operation_id: str | None = None,
+        expected_revision: int | None = None,
+        resource_ref: str,
+    ) -> str:
+        issued_at = int(time.time())
+        session_ref = hmac.new(
+            self.assertion_key,
+            b"ledgerbridge.payroll-session.v1\x00" + session_token.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        claims: dict[str, object] = {
+            "version": PAYROLL_USER_ASSERTION_VERSION,
+            "issuer": self.assertion_issuer,
+            "audience": self.assertion_audience,
+            "subject": session_subject,
+            "authentication_generation": self.authentication_generation,
+            "session_ref": session_ref,
+            "entity_ref": self.entity_ref,
+            "action": action,
+            "method": method,
+            "canonical_path": path,
+            "body_sha256": hashlib.sha256(body).hexdigest(),
+            "resource_ref": resource_ref,
+            "expected_revision": expected_revision,
+            "operation_id": operation_id,
+            "workload_principal": self.workload_principal,
+            "policy_generation": self.policy_generation,
+            "issued_at": issued_at,
+            "expires_at": issued_at + 45,
+            "jti": str(uuid.uuid4()),
+        }
+        encoded = _b64url(
+            json.dumps(
+                claims,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        signed = f"v1.{encoded}".encode("ascii")
+        signature = hmac.new(self.assertion_key, signed, hashlib.sha256).digest()
+        return f"v1.{encoded}.{_b64url(signature)}"
 
     def _user_assertion(
         self,
@@ -689,6 +990,446 @@ def _opaque_source_ref(value: object) -> str:
 
 def _b64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _validate_payroll_payload(
+    payload: dict[str, object],
+    *,
+    expected_contract_version: str,
+    expected_entity_ref: str,
+) -> None:
+    if (
+        payload.get("contract_version") != expected_contract_version
+        or payload.get("entity_ref") != expected_entity_ref
+        or not isinstance(payload.get("data"), dict)
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    company_id = payload.get("company_id")
+    if not isinstance(company_id, str) or PAYROLL_RESOURCE_REF.fullmatch(company_id) is None:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+    pending: list[object] = [payload]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                if key in PAYROLL_SAFETY_FLAGS and nested is not False:
+                    raise CoreBackendError(503, _problem(503, "PAYROLL_PAYMENT_MODE_NOT_ALLOWED"))
+                pending.append(nested)
+        elif isinstance(value, list):
+            pending.extend(value)
+
+
+def _validate_payroll_status_data(data: dict[str, object]) -> None:
+    expected_fields = {
+        "schema_version",
+        "live_data_ready",
+        "live_projection_schema",
+        "payment_operations_exposed",
+        "projection_revision",
+        "etag",
+        "setup_summary",
+        "capabilities",
+    }
+    setup = data.get("setup_summary")
+    capabilities = data.get("capabilities")
+    if (
+        set(data) != expected_fields
+        or data.get("schema_version") != "ledgerbridge.payroll-status.v1"
+        or type(data.get("live_data_ready")) is not bool
+        or data.get("live_projection_schema")
+        != "payroll-ledgerbridge-live-projection/v1"
+        or data.get("payment_operations_exposed") is not False
+        or not isinstance(data.get("projection_revision"), str)
+        or PAYROLL_PROJECTION_REVISION.fullmatch(str(data.get("projection_revision"))) is None
+        or data.get("etag") != f'"{data.get("projection_revision")}"'
+        or not isinstance(setup, dict)
+        or not isinstance(capabilities, dict)
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+    setup_fields = {
+        "provider_connected",
+        "runtime_mode",
+        "unassigned_material_count",
+        "ready_material_count",
+        "company_mapped_material_count",
+        "blocking_reason_codes",
+    }
+    counts = (
+        setup.get("unassigned_material_count"),
+        setup.get("ready_material_count"),
+        setup.get("company_mapped_material_count"),
+    )
+    reason_codes = setup.get("blocking_reason_codes")
+    if (
+        set(setup) != setup_fields
+        or setup.get("provider_connected") is not True
+        or setup.get("runtime_mode") != "live-provider"
+        or any(type(value) is not int or value < 0 for value in counts)
+        or not isinstance(reason_codes, list)
+        or any(
+            not isinstance(code, str) or code not in PAYROLL_BLOCKING_REASON_ORDER
+            for code in reason_codes
+        )
+        or len(set(reason_codes)) != len(reason_codes)
+        or reason_codes
+        != sorted(reason_codes, key=PAYROLL_BLOCKING_REASON_ORDER.index)
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+    allowed_actions = capabilities.get("allowed_actions")
+    commands_enabled = capabilities.get("commands_enabled")
+    if (
+        set(capabilities) != {"commands_enabled", "allowed_actions"}
+        or type(commands_enabled) is not bool
+        or allowed_actions
+        != (["VERIFY_RECEIPTS"] if commands_enabled else [])
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+    _reject_unsafe_payroll_values(data)
+
+
+def _validate_payroll_view_data(
+    value: object,
+    *,
+    path: str,
+    company_id: str,
+) -> None:
+    if not isinstance(value, dict):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    expected_schema = {
+        "/internal/v1/payroll/dashboard": "ledgerbridge.payroll-dashboard.v1",
+        "/internal/v1/payroll/materials": "ledgerbridge.payroll-material-list.v1",
+        "/internal/v1/payroll/batches": "ledgerbridge.payroll-batch-list.v1",
+        "/internal/v1/payroll/verification": "ledgerbridge.payroll-verification-list.v1",
+    }.get(path)
+    if expected_schema is None or value.get("schema_version") != expected_schema:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    _validate_payroll_snapshot(value)
+    if path == "/internal/v1/payroll/dashboard":
+        _validate_payroll_dashboard(value)
+    elif path == "/internal/v1/payroll/materials":
+        _validate_payroll_materials(value, company_id=company_id)
+    elif path == "/internal/v1/payroll/batches":
+        _validate_payroll_batches(value, company_id=company_id)
+    else:
+        _validate_payroll_verification(value, company_id=company_id)
+    _reject_unsafe_payroll_values(value)
+
+
+def _validate_payroll_snapshot(value: dict[str, object]) -> None:
+    revision = value.get("projection_revision")
+    generated_at = value.get("generated_at")
+    if (
+        not isinstance(revision, str)
+        or PAYROLL_PROJECTION_REVISION.fullmatch(revision) is None
+        or value.get("etag") != f'"{revision}"'
+        or not isinstance(generated_at, str)
+        or not generated_at.endswith("Z")
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+
+def _validate_payroll_dashboard(value: dict[str, object]) -> None:
+    ready = value.get("live_data_ready")
+    expected = {
+        "schema_version",
+        "projection_revision",
+        "etag",
+        "generated_at",
+        "live_data_ready",
+        "setup_summary",
+    }
+    if ready is True:
+        expected.add("dashboard")
+    if type(ready) is not bool or set(value) != expected:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    setup = value.get("setup_summary")
+    if not isinstance(setup, dict):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    _validate_setup_summary(setup)
+    if ready is False:
+        return
+    dashboard = value.get("dashboard")
+    fields = {
+        "batch_count",
+        "material_count",
+        "materials_needing_review_count",
+        "verification_attention_count",
+        "unassigned_material_count",
+        "net_pay_minor",
+    }
+    if not isinstance(dashboard, dict) or set(dashboard) != fields or any(
+        type(item) is not int or item < 0 for item in dashboard.values()
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+
+def _validate_setup_summary(setup: dict[str, object]) -> None:
+    fields = {
+        "provider_connected",
+        "runtime_mode",
+        "unassigned_material_count",
+        "ready_material_count",
+        "company_mapped_material_count",
+        "blocking_reason_codes",
+    }
+    counts = (
+        setup.get("unassigned_material_count"),
+        setup.get("ready_material_count"),
+        setup.get("company_mapped_material_count"),
+    )
+    reasons = setup.get("blocking_reason_codes")
+    if (
+        set(setup) != fields
+        or setup.get("provider_connected") is not True
+        or setup.get("runtime_mode") != "live-provider"
+        or any(type(item) is not int or item < 0 for item in counts)
+        or not isinstance(reasons, list)
+        or any(reason not in PAYROLL_BLOCKING_REASON_ORDER for reason in reasons)
+        or len(reasons) != len(set(reasons))
+        or reasons != sorted(reasons, key=PAYROLL_BLOCKING_REASON_ORDER.index)
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+
+def _validate_payroll_materials(value: dict[str, object], *, company_id: str) -> None:
+    if set(value) != {
+        "schema_version", "projection_revision", "etag", "generated_at", "items"
+    } or not isinstance(value.get("items"), list):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    fields = {
+        "company_id", "material_id", "material_type", "period", "status",
+        "review_revision", "payable", "submission_supported",
+    }
+    for item in value["items"]:
+        if (
+            not isinstance(item, dict)
+            or set(item) != fields
+            or item.get("company_id") != company_id
+            or not _payroll_identifier(item.get("material_id"))
+            or item.get("material_type") is not None
+            and not isinstance(item.get("material_type"), str)
+            or item.get("period") is not None
+            and (
+                not isinstance(item.get("period"), str)
+                or PAYROLL_PERIOD.fullmatch(str(item.get("period"))) is None
+            )
+            or not isinstance(item.get("status"), str)
+            or type(item.get("review_revision")) is not int
+            or int(item["review_revision"]) < 0
+            or item.get("payable") is not False
+            or item.get("submission_supported") is not False
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+
+def _validate_payroll_batches(value: dict[str, object], *, company_id: str) -> None:
+    if set(value) != {
+        "schema_version", "projection_revision", "etag", "generated_at", "items"
+    } or not isinstance(value.get("items"), list):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    required = {
+        "company_id", "batch_id", "pay_period", "revision", "status", "payable",
+        "submission_supported", "payment_submission_supported", "lines",
+    }
+    line_fields = {
+        "company_id", "employee_id", "employee_display", "account_id",
+        "account_display", "net_pay_minor",
+    }
+    for item in value["items"]:
+        if (
+            not isinstance(item, dict)
+            or set(item) not in (required, required | {"audit_closure"})
+            or item.get("company_id") != company_id
+            or not _payroll_identifier(item.get("batch_id"))
+            or not isinstance(item.get("pay_period"), str)
+            or PAYROLL_PERIOD.fullmatch(str(item.get("pay_period"))) is None
+            or type(item.get("revision")) is not int
+            or int(item["revision"]) < 1
+            or not isinstance(item.get("status"), str)
+            or item.get("payable") is not False
+            or item.get("submission_supported") is not False
+            or item.get("payment_submission_supported") is not False
+            or not isinstance(item.get("lines"), list)
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        for line in item["lines"]:
+            if (
+                not isinstance(line, dict)
+                or set(line) != line_fields
+                or line.get("company_id") != company_id
+                or not _payroll_identifier(line.get("employee_id"))
+                or not _payroll_identifier(line.get("account_id"))
+                or not isinstance(line.get("employee_display"), str)
+                or not isinstance(line.get("account_display"), str)
+                or type(line.get("net_pay_minor")) is not int
+                or int(line["net_pay_minor"]) < 0
+            ):
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+
+def _validate_payroll_verification(value: dict[str, object], *, company_id: str) -> None:
+    if set(value) != {
+        "schema_version", "projection_revision", "etag", "generated_at", "items",
+        "available_evidence",
+    } or not isinstance(value.get("items"), list):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    verification_fields = {
+        "company_id", "verification_id", "batch_id", "status", "source_artifact_ids",
+        "results", "payable", "submission_supported", "payment_submission_supported",
+    }
+    result_fields = {
+        "company_id", "employee_id", "employee_display", "account_id",
+        "account_display", "status",
+    }
+    for item in value["items"]:
+        if (
+            not isinstance(item, dict)
+            or set(item) != verification_fields
+            or item.get("company_id") != company_id
+            or not _payroll_identifier(item.get("verification_id"))
+            or not _payroll_identifier(item.get("batch_id"))
+            or not isinstance(item.get("status"), str)
+            or not isinstance(item.get("source_artifact_ids"), list)
+            or any(not _payroll_identifier(ref) for ref in item["source_artifact_ids"])
+            or not isinstance(item.get("results"), list)
+            or item.get("payable") is not False
+            or item.get("submission_supported") is not False
+            or item.get("payment_submission_supported") is not False
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        for result in item["results"]:
+            if (
+                not isinstance(result, dict)
+                or set(result) != result_fields
+                or result.get("company_id") != company_id
+                or not _payroll_identifier(result.get("employee_id"))
+                or not _payroll_identifier(result.get("account_id"))
+                or not isinstance(result.get("employee_display"), str)
+                or not isinstance(result.get("account_display"), str)
+                or not isinstance(result.get("status"), str)
+            ):
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+
+def _validate_payroll_command_receipt_data(
+    value: object,
+    *,
+    company_id: str,
+    resource_ref: str,
+    idempotency_key: str,
+) -> None:
+    fields = {
+        "schema_version", "company_id", "resource_id", "action", "audit_event_id",
+        "audit_hash", "occurred_at", "idempotency_key", "replayed", "audit_closure",
+    }
+    closure_fields = {
+        "company_id", "resource_id", "action", "actor_subject", "actor_id",
+        "audit_event_id", "audit_hash", "occurred_at",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != fields
+        or value.get("schema_version") != "payroll-ledgerbridge-command-receipt/v1"
+        or value.get("company_id") != company_id
+        or value.get("resource_id") != resource_ref
+        or value.get("action") != "payroll.receipts.verify"
+        or value.get("idempotency_key") != idempotency_key
+        or type(value.get("replayed")) is not bool
+        or not isinstance(value.get("audit_hash"), str)
+        or PAYROLL_PROJECTION_REVISION.fullmatch(str(value.get("audit_hash"))) is None
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    closure = value.get("audit_closure")
+    if (
+        not isinstance(closure, dict)
+        or set(closure) != closure_fields
+        or closure.get("company_id") != company_id
+        or closure.get("resource_id") != resource_ref
+        or closure.get("action") != "payroll.receipts.verify"
+        or closure.get("audit_event_id") != value.get("audit_event_id")
+        or closure.get("audit_hash") != value.get("audit_hash")
+        or closure.get("occurred_at") != value.get("occurred_at")
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    _reject_unsafe_payroll_values(value)
+
+
+def _payroll_identifier(value: object) -> bool:
+    return isinstance(value, str) and PAYROLL_RESOURCE_REF.fullmatch(value) is not None
+
+
+def _reject_unsafe_payroll_values(value: object) -> None:
+    pending = [value]
+    forbidden_keys = {
+        "employee_name", "filename", "file_name", "file_path", "filepath",
+        "source_path", "local_path", "account_number", "raw_account",
+    }
+    while pending:
+        item = pending.pop()
+        if type(item) is float:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        if isinstance(item, str) and (
+            "artifact_demo_" in item.lower()
+            or "receipt_demo_" in item.lower()
+            or "demo_mode" in item.lower()
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        if isinstance(item, dict):
+            if any(str(key).lower() in forbidden_keys for key in item):
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+
+
+def _payroll_available_evidence_ids(payload: dict[str, object]) -> set[str]:
+    data = payload.get("data")
+    available = data.get("available_evidence") if isinstance(data, dict) else None
+    if not isinstance(available, list):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    available_ids: set[str] = set()
+    expected_fields = {
+        "company_id",
+        "artifact_id",
+        "period",
+        "evidence_type",
+        "status",
+        "display_label",
+    }
+    for item in available:
+        if (
+            not isinstance(item, dict)
+            or set(item) != expected_fields
+            or item.get("company_id") != payload.get("company_id")
+            or item.get("status") != "READY_FOR_MATCHING"
+            or item.get("evidence_type")
+            not in {
+                "MYBANK_STATEMENT",
+                "BOC_RECEIPT",
+                "WECHAT_RECEIPT",
+                "CASH_SIGNOFF",
+                "BANK_RECEIPT",
+            }
+            or not isinstance(item.get("artifact_id"), str)
+            or PAYROLL_RESOURCE_REF.fullmatch(str(item.get("artifact_id"))) is None
+            or str(item.get("artifact_id")).startswith(("artifact_demo_", "receipt_demo_"))
+            or not isinstance(item.get("period"), str)
+            or PAYROLL_PERIOD.fullmatch(str(item.get("period"))) is None
+            or item.get("display_label")
+            != f"{item.get('evidence_type')} · {item.get('period')}"
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        available_ids.add(str(item["artifact_id"]))
+    return available_ids
+
+def _payroll_resource_ref(value: object) -> str:
+    if not isinstance(value, str) or PAYROLL_RESOURCE_REF.fullmatch(value) is None:
+        raise CoreBackendError(400, _problem(400, "INVALID_PAYROLL_RESOURCE_REF"))
+    return value
 
 
 def _problem(status: int, code: str) -> dict[str, object]:

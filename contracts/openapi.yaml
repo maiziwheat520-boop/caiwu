@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: LedgerBridge Web API
-  version: 0.2.0-draft
+  version: 0.3.0-draft
   description: >-
     Hotel finance review and reconciliation contract. This draft intentionally
     has no endpoint that posts journal entries or enables real message ingestion.
@@ -580,6 +580,100 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/ConnectionStatus"
+  /api/v1/payroll/status:
+    get:
+      operationId: getPayrollStatus
+      description: Read Core's truthful provider readiness and live-projection availability.
+      responses:
+        "200":
+          description: Session- and entity-scoped payroll status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PayrollStatusEnvelope"
+        "409":
+          $ref: "#/components/responses/PayrollEntitySelectionRequired"
+        "503":
+          $ref: "#/components/responses/PayrollUnavailable"
+  /api/v1/payroll/dashboard:
+    get:
+      operationId: getPayrollDashboard
+      responses:
+        "200":
+          description: Core-validated live payroll dashboard projection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PayrollDashboardEnvelope"
+        "409":
+          $ref: "#/components/responses/PayrollEntitySelectionRequired"
+        "503":
+          $ref: "#/components/responses/PayrollUnavailable"
+  /api/v1/payroll/materials:
+    get:
+      operationId: listPayrollMaterials
+      description: Material list and safe detail fields from Core's integration projection.
+      responses:
+        "200":
+          description: Core-validated payroll materials view
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PayrollMaterialsEnvelope"
+        "409":
+          $ref: "#/components/responses/PayrollEntitySelectionRequired"
+        "503":
+          $ref: "#/components/responses/PayrollUnavailable"
+  /api/v1/payroll/batches:
+    get:
+      operationId: listPayrollBatches
+      responses:
+        "200":
+          description: Core-validated payroll batches view
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PayrollBatchesEnvelope"
+        "409":
+          $ref: "#/components/responses/PayrollEntitySelectionRequired"
+        "503":
+          $ref: "#/components/responses/PayrollUnavailable"
+  /api/v1/payroll/verification:
+    get:
+      operationId: getPayrollVerification
+      responses:
+        "200":
+          description: Verification results and currently eligible evidence
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PayrollVerificationEnvelope"
+        "409":
+          $ref: "#/components/responses/PayrollEntitySelectionRequired"
+        "503":
+          $ref: "#/components/responses/PayrollUnavailable"
+  /api/v1/payroll/batches/{batch_ref}/verify-receipts:
+    post:
+      operationId: verifyPayrollReceipts
+      parameters:
+        - $ref: "#/components/parameters/PayrollBatchRef"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PayrollVerificationRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/PayrollCommandSucceeded"
+        "409":
+          $ref: "#/components/responses/PayrollCommandConflict"
+        "422":
+          $ref: "#/components/responses/PayrollCommandRejected"
+        "503":
+          $ref: "#/components/responses/PayrollUnavailable"
 components:
   securitySchemes:
     sessionCookie:
@@ -643,6 +737,12 @@ components:
         type: string
         minLength: 32
         maxLength: 256
+    PayrollBatchRef:
+      name: batch_ref
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/PayrollResourceRef"
   responses:
     Unauthorized:
       description: Authentication required
@@ -662,7 +762,614 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
+    PayrollEntitySelectionRequired:
+      description: The authenticated session has no unique server-controlled entity selection.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    PayrollUnavailable:
+      description: Payroll integration or its trusted command boundary is unavailable.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    PayrollCommandConflict:
+      description: Version, idempotency, or concurrent workflow conflict.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    PayrollCommandRejected:
+      description: Confirmation, role, metadata, or verification evidence was rejected.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    PayrollCommandSucceeded:
+      description: Core committed the command or returned its original idempotent result.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PayrollCommandResult"
   schemas:
+    PayrollResourceRef:
+      type: string
+      pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    PayrollStableIdentifier:
+      type: string
+      pattern: "^[A-Za-z][A-Za-z0-9._:-]{2,127}$"
+    PayrollStatusEnvelope:
+      type: object
+      additionalProperties: false
+      required: [contract_version, entity_ref, company_id, data]
+      properties:
+        contract_version:
+          const: ledgerbridge.payroll-read.v1
+        entity_ref:
+          type: string
+          format: uuid
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        data:
+          $ref: "#/components/schemas/PayrollStatusData"
+    PayrollDashboardEnvelope:
+      type: object
+      additionalProperties: false
+      required: [contract_version, entity_ref, company_id, data]
+      properties:
+        contract_version:
+          const: ledgerbridge.payroll-read.v1
+        entity_ref:
+          type: string
+          format: uuid
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        data:
+          $ref: "#/components/schemas/PayrollDashboardData"
+    PayrollMaterialsEnvelope:
+      type: object
+      additionalProperties: false
+      required: [contract_version, entity_ref, company_id, data]
+      properties:
+        contract_version:
+          const: ledgerbridge.payroll-read.v1
+        entity_ref:
+          type: string
+          format: uuid
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        data:
+          $ref: "#/components/schemas/PayrollMaterialListData"
+    PayrollBatchesEnvelope:
+      type: object
+      additionalProperties: false
+      required: [contract_version, entity_ref, company_id, data]
+      properties:
+        contract_version:
+          const: ledgerbridge.payroll-read.v1
+        entity_ref:
+          type: string
+          format: uuid
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        data:
+          $ref: "#/components/schemas/PayrollBatchListData"
+    PayrollVerificationEnvelope:
+      type: object
+      additionalProperties: false
+      required: [contract_version, entity_ref, company_id, data]
+      properties:
+        contract_version:
+          const: ledgerbridge.payroll-read.v1
+        entity_ref:
+          type: string
+          format: uuid
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        data:
+          $ref: "#/components/schemas/PayrollVerificationListData"
+    PayrollStatusData:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - live_data_ready
+        - live_projection_schema
+        - payment_operations_exposed
+        - projection_revision
+        - etag
+        - setup_summary
+        - capabilities
+      properties:
+        schema_version:
+          const: ledgerbridge.payroll-status.v1
+        live_data_ready:
+          type: boolean
+        live_projection_schema:
+          const: payroll-ledgerbridge-live-projection/v1
+        payment_operations_exposed:
+          const: false
+        projection_revision:
+          $ref: "#/components/schemas/PayrollProjectionRevision"
+        etag:
+          $ref: "#/components/schemas/PayrollProjectionEtag"
+        setup_summary:
+          $ref: "#/components/schemas/PayrollSetupSummary"
+        capabilities:
+          $ref: "#/components/schemas/PayrollCapabilities"
+    PayrollProjectionRevision:
+      type: string
+      pattern: "^[0-9a-f]{64}$"
+    PayrollProjectionEtag:
+      type: string
+      pattern: '^"[0-9a-f]{64}"$'
+    PayrollGeneratedAt:
+      type: string
+      format: date-time
+    PayrollSetupSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - provider_connected
+        - runtime_mode
+        - unassigned_material_count
+        - ready_material_count
+        - company_mapped_material_count
+        - blocking_reason_codes
+      properties:
+        provider_connected:
+          const: true
+        runtime_mode:
+          const: live-provider
+        unassigned_material_count:
+          type: integer
+          minimum: 0
+        ready_material_count:
+          type: integer
+          minimum: 0
+        company_mapped_material_count:
+          type: integer
+          minimum: 0
+        blocking_reason_codes:
+          type: array
+          uniqueItems: true
+          maxItems: 4
+          items:
+            type: string
+            enum:
+              - UNASSIGNED_MATERIALS
+              - MATERIAL_REVIEW_REQUIRED
+              - PAYROLL_BATCH_REQUIRED
+              - LIVE_DATA_NOT_READY
+    PayrollCapabilities:
+      type: object
+      additionalProperties: false
+      required: [commands_enabled, allowed_actions]
+      properties:
+        commands_enabled:
+          type: boolean
+        allowed_actions:
+          type: array
+          uniqueItems: true
+          maxItems: 1
+          items:
+            const: VERIFY_RECEIPTS
+    PayrollDashboardData:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - projection_revision
+        - etag
+        - generated_at
+        - live_data_ready
+        - setup_summary
+      properties:
+        schema_version:
+          const: ledgerbridge.payroll-dashboard.v1
+        projection_revision:
+          $ref: "#/components/schemas/PayrollProjectionRevision"
+        etag:
+          $ref: "#/components/schemas/PayrollProjectionEtag"
+        generated_at:
+          $ref: "#/components/schemas/PayrollGeneratedAt"
+        live_data_ready:
+          type: boolean
+        setup_summary:
+          $ref: "#/components/schemas/PayrollSetupSummary"
+        dashboard:
+          $ref: "#/components/schemas/PayrollDashboardMetrics"
+      allOf:
+        - if:
+            properties:
+              live_data_ready:
+                const: true
+          then:
+            required: [dashboard]
+          else:
+            not:
+              required: [dashboard]
+    PayrollDashboardMetrics:
+      type: object
+      additionalProperties: false
+      required:
+        - batch_count
+        - material_count
+        - materials_needing_review_count
+        - verification_attention_count
+        - unassigned_material_count
+        - net_pay_minor
+      properties:
+        batch_count:
+          type: integer
+          minimum: 0
+        material_count:
+          type: integer
+          minimum: 0
+        materials_needing_review_count:
+          type: integer
+          minimum: 0
+        verification_attention_count:
+          type: integer
+          minimum: 0
+        unassigned_material_count:
+          type: integer
+          minimum: 0
+        net_pay_minor:
+          type: integer
+          minimum: 0
+    PayrollMaterialListData:
+      type: object
+      additionalProperties: false
+      required: [schema_version, projection_revision, etag, generated_at, items]
+      properties:
+        schema_version:
+          const: ledgerbridge.payroll-material-list.v1
+        projection_revision:
+          $ref: "#/components/schemas/PayrollProjectionRevision"
+        etag:
+          $ref: "#/components/schemas/PayrollProjectionEtag"
+        generated_at:
+          $ref: "#/components/schemas/PayrollGeneratedAt"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PayrollMaterial"
+    PayrollMaterial:
+      type: object
+      additionalProperties: false
+      required:
+        - company_id
+        - material_id
+        - material_type
+        - period
+        - status
+        - review_revision
+        - payable
+        - submission_supported
+      properties:
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        material_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        material_type:
+          type: [string, "null"]
+        period:
+          type: [string, "null"]
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        status:
+          type: string
+          minLength: 1
+        review_revision:
+          type: integer
+          minimum: 0
+        payable:
+          const: false
+        submission_supported:
+          const: false
+    PayrollBatchListData:
+      type: object
+      additionalProperties: false
+      required: [schema_version, projection_revision, etag, generated_at, items]
+      properties:
+        schema_version:
+          const: ledgerbridge.payroll-batch-list.v1
+        projection_revision:
+          $ref: "#/components/schemas/PayrollProjectionRevision"
+        etag:
+          $ref: "#/components/schemas/PayrollProjectionEtag"
+        generated_at:
+          $ref: "#/components/schemas/PayrollGeneratedAt"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PayrollBatch"
+    PayrollBatch:
+      type: object
+      additionalProperties: false
+      required:
+        - company_id
+        - batch_id
+        - pay_period
+        - revision
+        - status
+        - payable
+        - submission_supported
+        - payment_submission_supported
+        - lines
+      properties:
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        batch_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        pay_period:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        revision:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          minLength: 1
+        payable:
+          const: false
+        submission_supported:
+          const: false
+        payment_submission_supported:
+          const: false
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/PayrollBatchLine"
+        audit_closure:
+          $ref: "#/components/schemas/PayrollBatchAuditClosure"
+    PayrollBatchLine:
+      type: object
+      additionalProperties: false
+      required:
+        - company_id
+        - employee_id
+        - employee_display
+        - account_id
+        - account_display
+        - net_pay_minor
+      properties:
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        employee_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        employee_display:
+          type: string
+        account_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        account_display:
+          type: string
+        net_pay_minor:
+          type: integer
+          minimum: 0
+    PayrollBatchAuditClosure:
+      type: object
+      additionalProperties: false
+      required: [audit_event_id, audit_hash]
+      properties:
+        audit_event_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        audit_hash:
+          $ref: "#/components/schemas/PayrollProjectionRevision"
+    PayrollVerificationListData:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - projection_revision
+        - etag
+        - generated_at
+        - items
+        - available_evidence
+      properties:
+        schema_version:
+          const: ledgerbridge.payroll-verification-list.v1
+        projection_revision:
+          $ref: "#/components/schemas/PayrollProjectionRevision"
+        etag:
+          $ref: "#/components/schemas/PayrollProjectionEtag"
+        generated_at:
+          $ref: "#/components/schemas/PayrollGeneratedAt"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PayrollVerification"
+        available_evidence:
+          type: array
+          items:
+            $ref: "#/components/schemas/PayrollAvailableEvidence"
+    PayrollVerification:
+      type: object
+      additionalProperties: false
+      required:
+        - company_id
+        - verification_id
+        - batch_id
+        - status
+        - source_artifact_ids
+        - results
+        - payable
+        - submission_supported
+        - payment_submission_supported
+      properties:
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        verification_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        batch_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        status:
+          type: string
+          minLength: 1
+        source_artifact_ids:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/PayrollResourceRef"
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/PayrollVerificationResult"
+        payable:
+          const: false
+        submission_supported:
+          const: false
+        payment_submission_supported:
+          const: false
+    PayrollVerificationResult:
+      type: object
+      additionalProperties: false
+      required:
+        - company_id
+        - employee_id
+        - employee_display
+        - account_id
+        - account_display
+        - status
+      properties:
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        employee_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        employee_display:
+          type: string
+        account_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        account_display:
+          type: string
+        status:
+          type: string
+          minLength: 1
+    PayrollAvailableEvidence:
+      type: object
+      additionalProperties: false
+      required: [company_id, artifact_id, period, evidence_type, status, display_label]
+      properties:
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        artifact_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        period:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        evidence_type:
+          type: string
+          enum: [MYBANK_STATEMENT, BOC_RECEIPT, WECHAT_RECEIPT, CASH_SIGNOFF, BANK_RECEIPT]
+        status:
+          const: READY_FOR_MATCHING
+        display_label:
+          type: string
+          pattern: "^(MYBANK_STATEMENT|BOC_RECEIPT|WECHAT_RECEIPT|CASH_SIGNOFF|BANK_RECEIPT) · [0-9]{4}-(0[1-9]|1[0-2])$"
+    PayrollVerificationRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_revision, reason_code, source_artifact_ids]
+      properties:
+        expected_revision:
+          type: integer
+          minimum: 1
+        reason_code:
+          const: MANUAL_DISBURSEMENT_VERIFICATION
+        source_artifact_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/PayrollResourceRef"
+    PayrollCommandResult:
+      type: object
+      additionalProperties: false
+      required: [contract_version, entity_ref, company_id, action, resource_ref, replayed, data]
+      properties:
+        contract_version:
+          const: ledgerbridge.payroll-command-result.v1
+        entity_ref:
+          type: string
+          format: uuid
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        action:
+          const: payroll.batch.verify-receipts
+        resource_ref:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        replayed:
+          type: boolean
+        data:
+          $ref: "#/components/schemas/PayrollCommandReceipt"
+    PayrollCommandReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - company_id
+        - resource_id
+        - action
+        - audit_event_id
+        - audit_hash
+        - occurred_at
+        - idempotency_key
+        - replayed
+        - audit_closure
+      properties:
+        schema_version:
+          const: payroll-ledgerbridge-command-receipt/v1
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        resource_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        action:
+          const: payroll.receipts.verify
+        audit_event_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        audit_hash:
+          $ref: "#/components/schemas/PayrollProjectionRevision"
+        occurred_at:
+          type: string
+          format: date-time
+        idempotency_key:
+          type: string
+          format: uuid
+        replayed:
+          type: boolean
+        audit_closure:
+          $ref: "#/components/schemas/PayrollCommandAuditClosure"
+    PayrollCommandAuditClosure:
+      type: object
+      additionalProperties: false
+      required:
+        - company_id
+        - resource_id
+        - action
+        - actor_subject
+        - actor_id
+        - audit_event_id
+        - audit_hash
+        - occurred_at
+      properties:
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        resource_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        action:
+          const: payroll.receipts.verify
+        actor_subject:
+          $ref: "#/components/schemas/PayrollStableIdentifier"
+        actor_id:
+          $ref: "#/components/schemas/PayrollStableIdentifier"
+        audit_event_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        audit_hash:
+          $ref: "#/components/schemas/PayrollProjectionRevision"
+        occurred_at:
+          type: string
+          format: date-time
     AuthStatus:
       type: object
       additionalProperties: false

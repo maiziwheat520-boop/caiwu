@@ -752,6 +752,15 @@ class AuthManager:
             return None
         return self.store.session_payload(session_token)
 
+    def payroll_session_subject(self, session_token: str | None) -> str | None:
+        if not session_token or self.store.session_method(session_token) in {None, "recovery-code"}:
+            return None
+        payload = self.store.session_payload(session_token, rotate_csrf=False)
+        if payload is None:
+            return None
+        principal = payload.get("principal")
+        return principal if isinstance(principal, str) and principal else None
+
     def _require_full_session(self, session_token: str | None) -> str:
         if not session_token:
             raise AuthError(401, "AUTHENTICATION_REQUIRED", "需要先登录才能添加通行密钥")
