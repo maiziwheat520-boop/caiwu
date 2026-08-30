@@ -1,0 +1,172 @@
+openapi: 3.1.0
+info:
+  title: LedgerBridge Core Internal Evidence Unlock Contract
+  version: ledgerbridge.evidence-unlock.v1
+  description: >-
+    Default-disabled workload contract for one reviewed password-protected evidence source.
+    The password is request-only and is never persisted, logged, queued, or echoed.
+servers:
+  - url: https://ledgerbridge-core.invalid
+    description: Non-routable contract placeholder
+security:
+  - workloadMtls: []
+paths:
+  /internal/v1/evidence/unlocks:
+    post:
+      operationId: unlockInternalEvidence
+      x-ledgerbridge-capability: evidence:unlock
+      x-ledgerbridge-reject-unknown-query: true
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-LedgerBridge-User-Assertion
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 4096
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EvidenceUnlockRequest"
+      responses:
+        "200":
+          description: Source processing succeeded; no import, review, or posting is implied
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvidenceUnlockResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/ContentTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+components:
+  securitySchemes:
+    workloadMtls:
+      type: mutualTLS
+      description: Workload identity and evidence:unlock capability come from reviewed SAN policy.
+  headers:
+    NoStore:
+      required: true
+      schema:
+        type: string
+        const: no-store
+  responses:
+    BadRequest:
+      $ref: "#/components/responses/Problem400"
+    Unauthorized:
+      $ref: "#/components/responses/Problem401"
+    Forbidden:
+      $ref: "#/components/responses/Problem403"
+    NotFound:
+      $ref: "#/components/responses/Problem404"
+    Conflict:
+      $ref: "#/components/responses/Problem409"
+    ContentTooLarge:
+      $ref: "#/components/responses/Problem413"
+    UnsupportedMediaType:
+      $ref: "#/components/responses/Problem415"
+    UnprocessableContent:
+      $ref: "#/components/responses/Problem422"
+    ServiceUnavailable:
+      $ref: "#/components/responses/Problem503"
+    Problem400:
+      description: Query, header, or content-length contract is invalid
+      headers: {Cache-Control: {$ref: "#/components/headers/NoStore"}}
+      content: {application/problem+json: {schema: {$ref: "#/components/schemas/Problem"}}}
+    Problem401:
+      description: Workload authentication or request-bound user assertion is invalid
+      headers: {Cache-Control: {$ref: "#/components/headers/NoStore"}}
+      content: {application/problem+json: {schema: {$ref: "#/components/schemas/Problem"}}}
+    Problem403:
+      description: Authenticated workload lacks evidence:unlock
+      headers: {Cache-Control: {$ref: "#/components/headers/NoStore"}}
+      content: {application/problem+json: {schema: {$ref: "#/components/schemas/Problem"}}}
+    Problem404:
+      description: Route is disabled or reviewed source is absent or outside scope
+      headers: {Cache-Control: {$ref: "#/components/headers/NoStore"}}
+      content: {application/problem+json: {schema: {$ref: "#/components/schemas/Problem"}}}
+    Problem409:
+      description: Operation id or assertion nonce conflicts with its first use
+      headers: {Cache-Control: {$ref: "#/components/headers/NoStore"}}
+      content: {application/problem+json: {schema: {$ref: "#/components/schemas/Problem"}}}
+    Problem413:
+      description: Request or reviewed archive exceeds its configured bound
+      headers: {Cache-Control: {$ref: "#/components/headers/NoStore"}}
+      content: {application/problem+json: {schema: {$ref: "#/components/schemas/Problem"}}}
+    Problem415:
+      description: Request content type is not application/json
+      headers: {Cache-Control: {$ref: "#/components/headers/NoStore"}}
+      content: {application/problem+json: {schema: {$ref: "#/components/schemas/Problem"}}}
+    Problem422:
+      description: Request shape is invalid or approved archive could not be unlocked
+      headers: {Cache-Control: {$ref: "#/components/headers/NoStore"}}
+      content: {application/problem+json: {schema: {$ref: "#/components/schemas/Problem"}}}
+    Problem503:
+      description: Database, socket, encrypted source, or unlock processor is unavailable
+      headers: {Cache-Control: {$ref: "#/components/headers/NoStore"}}
+      content: {application/problem+json: {schema: {$ref: "#/components/schemas/Problem"}}}
+  schemas:
+    EvidenceUnlockRequest:
+      type: object
+      additionalProperties: false
+      required: [contract_version, source_ref, password]
+      properties:
+        contract_version:
+          const: ledgerbridge.evidence-unlock.v1
+        source_ref:
+          type: string
+          format: uuid
+        password:
+          type: string
+          minLength: 1
+          maxLength: 1024
+    EvidenceUnlockResult:
+      type: object
+      additionalProperties: false
+      required: [contract_version, source_ref, unlock_status]
+      properties:
+        contract_version:
+          const: ledgerbridge.evidence-unlock-result.v1
+        source_ref:
+          type: string
+          format: uuid
+        unlock_status:
+          const: UNLOCKED
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        code:
+          type: string

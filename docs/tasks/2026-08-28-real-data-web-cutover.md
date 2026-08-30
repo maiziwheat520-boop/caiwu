@@ -59,6 +59,23 @@ as evidence-bound candidates that remain pending human review.
 - The original live gate turns green only when the deployed Web container reports
   `core-backed` and Core returns the imported pending candidates.
 
+## Controlled evidence unlock checkpoint (2026-08-30)
+
+- Core now has a default-disabled, request-bound `POST /internal/v1/evidence/unlocks` seam matching
+  the Web BFF contract. It requires the `evidence:unlock` workload capability, exact entity/unit
+  scope, a short-lived body-bound user assertion, and one-to-one operation/JTI replay identity.
+- Password processing is isolated in a no-network, no-database `evidence-unlocker` sidecar over a
+  private Unix domain socket. Core retains a read-only artifact mount; only the sidecar can write,
+  and it publishes encrypted Evidence Object material after bounded ZIP validation.
+- The public evidence projection distinguishes `NOT_REQUIRED`, `PASSWORD_REQUIRED`, and
+  `UNLOCKED`. `UNLOCKED` means successful source processing only; it does not imply import,
+  review, confirmation, or posting.
+- Production remains disabled (`closed` U1 gate and an explicit compose profile). No source,
+  password, credential, financial value, or production activation is stored in Git.
+- The persistent source/receipt/output facts and authoritative audit-horizon projection are
+  reserved for migration `20260830_0025`. This branch must not create it until the linear
+  `0022 -> 0023 -> 0024` chain is present.
+
 ## OCR and managed-account preprocessing checkpoint (2026-08-29)
 
 - The user expanded the authorized preprocessing scope to offline OCR and declared every

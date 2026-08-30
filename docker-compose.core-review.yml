@@ -5,7 +5,7 @@ services:
     command:
       - /bin/sh
       - -ec
-      - chown 0:0 /run/ledgerbridge-internal; chmod 0770 /run/ledgerbridge-internal; chown 10001:10001 /run/ledgerbridge-internal
+      - chown 10001:10001 /run/ledgerbridge-internal /run/ledgerbridge-unlocker; chmod 0770 /run/ledgerbridge-internal; chmod 0700 /run/ledgerbridge-unlocker
     restart: "no"
     read_only: true
     network_mode: none
@@ -17,6 +17,7 @@ services:
       - CHOWN
     volumes:
       - internal-read-socket:/run/ledgerbridge-internal
+      - evidence-unlock-socket:/run/ledgerbridge-unlocker
 
   internal-reader:
     image: ledgerbridge-app:${LEDGERBRIDGE_REVISION:?review image revision is required}
@@ -51,6 +52,12 @@ services:
       LEDGERBRIDGE_INTERNAL_COMMAND_ASSERTION_KEY: ${LEDGERBRIDGE_INTERNAL_COMMAND_ASSERTION_KEY:?assertion key is required}
       LEDGERBRIDGE_INTERNAL_COMMAND_ASSERTION_ISSUER: ${LEDGERBRIDGE_INTERNAL_COMMAND_ASSERTION_ISSUER:?assertion issuer is required}
       LEDGERBRIDGE_INTERNAL_COMMAND_ASSERTION_AUDIENCE: ${LEDGERBRIDGE_INTERNAL_COMMAND_ASSERTION_AUDIENCE:?assertion audience is required}
+      LEDGERBRIDGE_ENABLE_INTERNAL_EVIDENCE_UNLOCK: ${LEDGERBRIDGE_ENABLE_INTERNAL_EVIDENCE_UNLOCK:-false}
+      LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_BACKEND: database
+      LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_OPERATIONAL_GATE: ${LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_OPERATIONAL_GATE:-closed}
+      LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_TRANSPORT: unix-socket
+      LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_SOCKET_PATH: /run/ledgerbridge-unlocker/evidence-unlocker.sock
+      LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_TIMEOUT_SECONDS: ${LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_TIMEOUT_SECONDS:-30}
     depends_on:
       postgres:
         condition: service_healthy
@@ -71,10 +78,54 @@ services:
     volumes:
       - artifacts:/var/lib/ledgerbridge/artifacts:ro
       - internal-read-socket:/run/ledgerbridge-internal
+      - evidence-unlock-socket:/run/ledgerbridge-unlocker:ro
       - ${LEDGERBRIDGE_INTERNAL_READ_POLICY_HOST_FILE:?policy host file is required}:/run/ledgerbridge-policy/policy.json:ro
       - ${LEDGERBRIDGE_EVIDENCE_KEY_HOST_FILE:?evidence key host file is required}:/run/ledgerbridge-key/evidence-key.json:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect('/run/ledgerbridge-internal/core.sock'); e=bytes((13,10)); s.sendall(b'GET /health/ready HTTP/1.0'+e+b'Host: localhost'+e+e); data=s.recv(128); s.close(); raise SystemExit(0 if b' 200 ' in data else 1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  evidence-unlocker:
+    profiles: ["evidence-unlock"]
+    image: ledgerbridge-app:${LEDGERBRIDGE_REVISION:?review image revision is required}
+    command: ["python", "-m", "ledgerbridge.evidence_unlocker_server"]
+    user: "10001:10001"
+    environment:
+      LEDGERBRIDGE_ENV: production
+      LEDGERBRIDGE_ARTIFACT_ROOT: /var/lib/ledgerbridge/artifacts
+      LEDGERBRIDGE_ARTIFACT_MAX_BYTES: ${LEDGERBRIDGE_ARTIFACT_MAX_BYTES:-52428800}
+      LEDGERBRIDGE_ARTIFACT_TOTAL_MAX_BYTES: ${LEDGERBRIDGE_ARTIFACT_TOTAL_MAX_BYTES:-10737418240}
+      LEDGERBRIDGE_ARTIFACT_STAGING_MAX_BYTES: ${LEDGERBRIDGE_ARTIFACT_STAGING_MAX_BYTES:-536870912}
+      LEDGERBRIDGE_ARTIFACT_STAGING_TTL_SECONDS: ${LEDGERBRIDGE_ARTIFACT_STAGING_TTL_SECONDS:-3600}
+      LEDGERBRIDGE_INTERNAL_READ_EVIDENCE_KEY_FILE: /run/ledgerbridge-key/evidence-key.json
+      LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_SOCKET_PATH: /run/ledgerbridge-unlocker/evidence-unlocker.sock
+      LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_TIMEOUT_SECONDS: ${LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_TIMEOUT_SECONDS:-30}
+      LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_CONCURRENCY: ${LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_CONCURRENCY:-2}
+      LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_MAX_OUTPUT_BYTES: ${LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_MAX_OUTPUT_BYTES:-52428800}
+      LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_MAX_MEMBERS: ${LEDGERBRIDGE_INTERNAL_EVIDENCE_UNLOCK_MAX_MEMBERS:-64}
+    depends_on:
+      internal-socket-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    read_only: true
+    network_mode: none
+    tmpfs:
+      - /tmp:size=64m,mode=0700,uid=10001,gid=10001
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    mem_limit: 384m
+    volumes:
+      - artifacts:/var/lib/ledgerbridge/artifacts
+      - evidence-unlock-socket:/run/ledgerbridge-unlocker
+      - ${LEDGERBRIDGE_EVIDENCE_KEY_HOST_FILE:?evidence key host file is required}:/run/ledgerbridge-key/evidence-key.json:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,stat; p='/run/ledgerbridge-unlocker/evidence-unlocker.sock'; s=os.stat(p); raise SystemExit(0 if stat.S_ISSOCK(s.st_mode) and stat.S_IMODE(s.st_mode)==0o600 else 1)"]
       interval: 15s
       timeout: 3s
       retries: 5
@@ -116,3 +167,4 @@ networks:
 
 volumes:
   internal-read-socket:
+  evidence-unlock-socket:

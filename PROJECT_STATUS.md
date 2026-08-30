@@ -2,6 +2,23 @@
 
 Updated: 2026-08-30
 
+## Controlled evidence unlock checkpoint (2026-08-30)
+
+The real-data cutover branch now contains the default-disabled Core and sidecar boundaries needed
+for the Web password popup to request one controlled evidence unlock. The public projection has
+explicit `NOT_REQUIRED`, `PASSWORD_REQUIRED`, and `UNLOCKED` states; Web consumes that state and
+does not infer it. Core binds the request to reviewed scope, workload capability, a short-lived
+user assertion, operation id, and assertion nonce. The password is not persisted, logged, echoed,
+queued, or passed through process arguments.
+
+Archive parsing runs only in the dedicated `evidence-unlocker` process over a private Unix domain
+socket. The API artifact volume remains read-only; the no-network/no-database sidecar validates
+encrypted ZIP members and writes encrypted outputs. Production compose keeps both the HTTP route
+and sidecar profile disabled by default. Persistent source, receipt, output, audit, and candidate
+projection support remains reserved for migration `20260830_0025` after the centrally coordinated
+linear `0022 -> 0023 -> 0024` chain lands. No production source or enablement was added. See
+`docs/adr/0002-isolate-evidence-unlock-in-a-sidecar.md`.
+
 ## Payroll publication adapter checkpoint (2026-08-30)
 
 The real-data cutover branch now contains a default-disabled, read-only adapter for the

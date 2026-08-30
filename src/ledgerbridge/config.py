@@ -62,6 +62,12 @@ class Settings(BaseSettings):
         min_length=1,
         max_length=200,
     )
+    enable_internal_evidence_unlock: bool = False
+    internal_evidence_unlock_backend: Literal["synthetic", "database"] = "synthetic"
+    internal_evidence_unlock_operational_gate: Literal["closed", "u1-production-v1"] = "closed"
+    internal_evidence_unlock_transport: Literal["disabled", "unix-socket"] = "disabled"
+    internal_evidence_unlock_socket_path: Path | None = None
+    internal_evidence_unlock_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     enable_review_api: bool = False
     enable_real_ingest: bool = False
     enable_payroll_integration: bool = False
@@ -200,6 +206,48 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "candidate command API requires assertion key, issuer, and audience"
                 )
+        if self.enable_internal_evidence_unlock:
+            if not self.enable_internal_read_api:
+                raise ValueError("evidence unlock requires the internal read API")
+            if (
+                self.internal_command_assertion_key is None
+                or self.internal_command_assertion_issuer is None
+                or self.internal_command_assertion_audience is None
+            ):
+                raise ValueError("evidence unlock requires assertion key, issuer, and audience")
+            if self.internal_evidence_unlock_backend == "database" and (
+                self.internal_read_backend != "database"
+                or self.api_database_url is None
+                or self.internal_read_evidence_key_file is None
+            ):
+                raise ValueError(
+                    "database evidence unlock requires database reads, the API database role, "
+                    "and the encrypted evidence key file"
+                )
+            if self.env == "production":
+                if self.internal_evidence_unlock_operational_gate != "u1-production-v1":
+                    raise ValueError(
+                        "production evidence unlock remains unavailable until the U1 "
+                        "operational gate"
+                    )
+                if self.internal_evidence_unlock_backend != "database":
+                    raise ValueError(
+                        "production evidence unlock requires the database unlock backend"
+                    )
+                if (
+                    self.internal_evidence_unlock_socket_path is None
+                    or not self.internal_evidence_unlock_socket_path.is_absolute()
+                ):
+                    raise ValueError(
+                        "production evidence unlock requires the Unix-socket unlocker transport"
+                    )
+            if self.internal_evidence_unlock_backend == "database" and (
+                self.internal_evidence_unlock_transport != "unix-socket"
+                or self.internal_evidence_unlock_socket_path is None
+            ):
+                raise ValueError(
+                    "database evidence unlock requires the Unix-socket unlocker transport"
+                )
         if self.mail_provider == "microsoft_graph" and not self.mailbox_id:
             raise ValueError("mailbox_id is required when mail_provider=microsoft_graph")
         if self.enable_payroll_integration:
@@ -230,6 +278,11 @@ class Settings(BaseSettings):
             and not self.internal_read_evidence_key_file.is_absolute()
         ):
             raise ValueError("internal_read_evidence_key_file must be an absolute path")
+        if (
+            self.internal_evidence_unlock_socket_path is not None
+            and not self.internal_evidence_unlock_socket_path.is_absolute()
+        ):
+            raise ValueError("internal_evidence_unlock_socket_path must be an absolute path")
         if (
             self.env == "production"
             and self.runner_manifest_path is not None
@@ -317,3 +370,50 @@ def escape_alembic_ini_value(value: str) -> str:
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+class EvidenceUnlockerRuntimeSettings(BaseSettings):
+    """Filesystem-only settings for the dedicated no-database unlocker process."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="LEDGERBRIDGE_",
+        extra="ignore",
+    )
+
+    env: Literal["development", "test", "production"] = "development"
+    artifact_root: Path
+    artifact_max_bytes: int = Field(default=50 * 1024 * 1024, gt=0, le=2**63 - 1)
+    artifact_total_max_bytes: int = Field(
+        default=10 * 1024 * 1024 * 1024,
+        gt=0,
+        le=2**63 - 1,
+    )
+    artifact_staging_max_bytes: int = Field(
+        default=512 * 1024 * 1024,
+        gt=0,
+        le=2**63 - 1,
+    )
+    artifact_staging_ttl_seconds: int = Field(default=60 * 60, gt=0, le=2**31 - 1)
+    internal_read_evidence_key_file: Path
+    internal_evidence_unlock_socket_path: Path
+    internal_evidence_unlock_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+    internal_evidence_unlock_concurrency: int = Field(default=2, gt=0, le=16)
+    internal_evidence_unlock_max_output_bytes: int = Field(
+        default=50 * 1024 * 1024,
+        gt=0,
+        le=50 * 1024 * 1024,
+    )
+    internal_evidence_unlock_max_members: int = Field(default=64, gt=0, le=64)
+
+    @model_validator(mode="after")
+    def runtime_paths_and_limits_are_closed(self) -> "EvidenceUnlockerRuntimeSettings":
+        for field_name in (
+            "artifact_root",
+            "internal_read_evidence_key_file",
+            "internal_evidence_unlock_socket_path",
+        ):
+            if not getattr(self, field_name).is_absolute():
+                raise ValueError(f"{field_name} must be an absolute path")
+        if self.internal_evidence_unlock_max_output_bytes > self.artifact_max_bytes:
+            raise ValueError("unlocker output limit cannot exceed the artifact limit")
+        return self

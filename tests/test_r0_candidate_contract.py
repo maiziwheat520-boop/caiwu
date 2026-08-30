@@ -22,6 +22,9 @@ from ledgerbridge.candidate_contract import (
     CandidateRevisionConflict,
     CandidateStatus,
     CandidateTransitionRejected,
+    EvidenceKind,
+    EvidenceReference,
+    EvidenceUnlockStatus,
     apply_candidate_command,
     create_candidate_aggregate,
 )
@@ -115,6 +118,35 @@ def test_r0_fixture_is_synthetic_allowlisted_and_digest_consistent() -> None:
         assert hashlib.sha256(body).hexdigest() == item["sha256"]
     active = next(item for item in evidence if item["declared_media_type"] == "image/svg+xml")
     assert active["served_media_type"] == "application/octet-stream"
+
+
+def test_evidence_reference_projects_the_closed_unlock_state_contract() -> None:
+    ordinary = EvidenceReference(
+        evidence_ref=UUID("20000000-0000-4000-8000-000000000001"),
+        kind=EvidenceKind.ATTACHMENT,
+        media_type="application/pdf",
+        display_name="statement.pdf",
+        download_available=True,
+    )
+    assert ordinary.unlock_status == EvidenceUnlockStatus.NOT_REQUIRED
+    assert ordinary.source_ref is None
+
+    source_ref = UUID("21000000-0000-4000-8000-000000000001")
+    required = ordinary.model_copy(
+        update={
+            "unlock_status": EvidenceUnlockStatus.PASSWORD_REQUIRED,
+            "source_ref": source_ref,
+        }
+    )
+    assert EvidenceReference.model_validate(required).source_ref == source_ref
+
+    with pytest.raises(ValidationError, match="PASSWORD_REQUIRED evidence requires source_ref"):
+        EvidenceReference.model_validate(
+            ordinary.model_dump() | {"unlock_status": EvidenceUnlockStatus.PASSWORD_REQUIRED}
+        )
+
+    with pytest.raises(ValidationError, match="NOT_REQUIRED evidence cannot expose source_ref"):
+        EvidenceReference.model_validate(ordinary.model_dump() | {"source_ref": source_ref})
 
 
 def test_complete_fields_goes_to_pending_and_is_append_only_and_idempotent() -> None:

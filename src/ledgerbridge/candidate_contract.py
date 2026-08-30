@@ -77,6 +77,12 @@ class EvidenceKind(StrEnum):
     ATTACHMENT = "ATTACHMENT"
 
 
+class EvidenceUnlockStatus(StrEnum):
+    NOT_REQUIRED = "NOT_REQUIRED"
+    PASSWORD_REQUIRED = "PASSWORD_REQUIRED"  # nosec B105
+    UNLOCKED = "UNLOCKED"
+
+
 class IngestChannel(StrEnum):
     HERMES = "HERMES"
     OUTLOOK = "OUTLOOK"
@@ -101,6 +107,8 @@ class EvidenceReference(_FrozenModel):
     media_type: str = Field(min_length=1, max_length=200)
     display_name: str | None = Field(default=None, max_length=200)
     download_available: bool
+    unlock_status: EvidenceUnlockStatus = EvidenceUnlockStatus.NOT_REQUIRED
+    source_ref: UUID | None = None
 
     @model_validator(mode="after")
     def safe_display_name(self) -> EvidenceReference:
@@ -108,6 +116,10 @@ class EvidenceReference(_FrozenModel):
             char in self.display_name for char in ("/", "\\", "\r", "\n", "\x00")
         ):
             raise ValueError("display_name must be a sanitized basename")
+        if self.unlock_status == EvidenceUnlockStatus.PASSWORD_REQUIRED and self.source_ref is None:
+            raise ValueError("PASSWORD_REQUIRED evidence requires source_ref")
+        if self.unlock_status == EvidenceUnlockStatus.NOT_REQUIRED and self.source_ref is not None:
+            raise ValueError("NOT_REQUIRED evidence cannot expose source_ref")
         return self
 
 

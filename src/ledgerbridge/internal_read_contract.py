@@ -33,6 +33,7 @@ class Capability(StrEnum):
     CANDIDATE_CREATE = "candidate:create"
     CANDIDATE_DECIDE = "candidate:decide"
     CANDIDATE_SUPERSEDE = "candidate:supersede"
+    EVIDENCE_UNLOCK = "evidence:unlock"
     PAYROLL_PUBLICATION_READ = "payroll-publication:read"
 
 

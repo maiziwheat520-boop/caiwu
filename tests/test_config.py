@@ -3,7 +3,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from ledgerbridge.config import Settings, escape_alembic_ini_value, get_settings
+from ledgerbridge.config import (
+    EvidenceUnlockerRuntimeSettings,
+    Settings,
+    escape_alembic_ini_value,
+    get_settings,
+)
 
 
 def test_database_url_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -204,6 +209,101 @@ def test_candidate_command_api_is_complete_synthetic_and_nonproduction(
         internal_command_assertion_audience="ledgerbridge-core-test",
     )
     assert production.internal_candidate_command_backend == "database"
+
+
+def test_evidence_unlock_requires_closed_credentials_and_database_production_gate(
+    tmp_path: Path,
+) -> None:
+    def settings(values: dict[str, object], **overrides: object) -> Settings:
+        return Settings.model_validate(values | overrides)
+
+    base = {
+        "database_url": "sqlite+pysqlite:///:memory:",
+        "artifact_root": tmp_path.resolve(),
+        "enable_internal_evidence_unlock": True,
+    }
+    with pytest.raises(ValidationError, match="requires the internal read API"):
+        settings(base)
+
+    with pytest.raises(ValidationError, match="assertion key, issuer, and audience"):
+        settings(
+            base,
+            enable_internal_read_api=True,
+            internal_read_policy_generation=7,
+        )
+
+    enabled = settings(
+        base,
+        enable_internal_read_api=True,
+        internal_read_policy_generation=7,
+        internal_command_assertion_key="a" * 32,
+        internal_command_assertion_issuer="ledgerbridge-web-test",
+        internal_command_assertion_audience="ledgerbridge-core-test",
+    )
+    assert enabled.internal_evidence_unlock_backend == "synthetic"
+
+    with pytest.raises(ValidationError, match="Unix-socket unlocker transport"):
+        settings(
+            base,
+            enable_internal_read_api=True,
+            internal_read_backend="database",
+            api_database_url="postgresql+psycopg://ledgerbridge_api@db/app",
+            reader_database_url="postgresql+psycopg://ledgerbridge_reader@db/app",
+            internal_read_cursor_key="c" * 32,
+            internal_read_evidence_key_file=(tmp_path / "evidence-key.json").resolve(),
+            internal_read_policy_generation=7,
+            internal_evidence_unlock_backend="database",
+            internal_command_assertion_key="a" * 32,
+            internal_command_assertion_issuer="ledgerbridge-web-test",
+            internal_command_assertion_audience="ledgerbridge-core-test",
+        )
+
+    production_base = {
+        "env": "production",
+        "runtime_role": "api",
+        "api_database_url": "postgresql+psycopg://ledgerbridge_api@db/app",
+        "reader_database_url": "postgresql+psycopg://ledgerbridge_reader@db/app",
+        "artifact_root": tmp_path.resolve(),
+        "enable_internal_read_api": True,
+        "internal_read_backend": "database",
+        "internal_read_cursor_key": "c" * 32,
+        "enable_internal_read_persistent_audit": True,
+        "enable_internal_read_persistent_receipt": True,
+        "internal_read_operational_gate": "r1-production-v1",
+        "internal_read_transport": "unix-mtls-proxy",
+        "internal_read_mtls_policy_path": (tmp_path / "mtls-policy.json").resolve(),
+        "internal_read_evidence_key_file": (tmp_path / "evidence-key.json").resolve(),
+        "internal_read_policy_generation": 7,
+        "enable_internal_evidence_unlock": True,
+        "internal_evidence_unlock_backend": "database",
+        "internal_command_assertion_key": "a" * 32,
+        "internal_command_assertion_issuer": "ledgerbridge-web-test",
+        "internal_command_assertion_audience": "ledgerbridge-core-test",
+    }
+    with pytest.raises(ValidationError, match="U1 operational gate"):
+        settings(production_base)
+
+    with pytest.raises(ValidationError, match="Unix-socket unlocker transport"):
+        settings(
+            production_base,
+            internal_evidence_unlock_operational_gate="u1-production-v1",
+        )
+
+    production = settings(
+        production_base,
+        internal_evidence_unlock_operational_gate="u1-production-v1",
+        internal_evidence_unlock_transport="unix-socket",
+        internal_evidence_unlock_socket_path=(tmp_path / "unlocker.sock").resolve(),
+    )
+    assert production.internal_evidence_unlock_backend == "database"
+
+    runtime = EvidenceUnlockerRuntimeSettings(
+        env="production",
+        artifact_root=tmp_path.resolve(),
+        internal_read_evidence_key_file=(tmp_path / "evidence-key.json").resolve(),
+        internal_evidence_unlock_socket_path=(tmp_path / "unlocker.sock").resolve(),
+    )
+    assert runtime.internal_evidence_unlock_socket_path.is_absolute()
 
 
 def test_mail_provider_defaults_disabled_and_bounded(tmp_path: Path) -> None:
