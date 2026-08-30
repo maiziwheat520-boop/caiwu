@@ -359,6 +359,9 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
 .payroll-batch-grid dl > div { padding-top: 10px; border-top: 1px solid #e4e9f1; }
 .payroll-batch-grid dt { color: var(--muted); font-size: 10px; }
 .payroll-batch-grid dd { margin: 4px 0 0; color: #31445e; font-size: 12px; font-weight: 750; }
+.payroll-batch-lines { display: grid; gap: 7px; margin: 14px 0 0; padding: 12px 0 0; border-top: 1px solid #e4e9f1; list-style: none; }
+.payroll-batch-lines li { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #42536b; font-size: 11px; }
+.payroll-batch-lines li strong { color: #31445e; }
 .payroll-verification-record ul { grid-column: 1 / -1; display: grid; gap: 7px; margin: 2px 0 0; padding: 11px 0 0; border-top: 1px solid #e4e9f1; list-style: none; }
 .payroll-verification-record li { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .payroll-verification-record li strong { font-size: 11px; }

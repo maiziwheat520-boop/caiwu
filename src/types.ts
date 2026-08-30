@@ -267,23 +267,17 @@ export type PayrollReadResponse<T> = {
 
 export type PayrollStatusData = {
   schema_version: 'ledgerbridge.payroll-status.v1'
-  projection_revision: string | null
-  etag: string | null
-  provider: {
-    schema_version: string
-    status: string
-    demo_mode: false
-    payment_submission_supported: false
-  }
+  projection_revision: string
+  etag: string
   live_data_ready: boolean
-  live_projection_schema: string | null
+  live_projection_schema: 'payroll-ledgerbridge-live-projection/v1'
   payment_operations_exposed: false
   capabilities: {
     commands_enabled: boolean
     allowed_actions: string[]
   }
-  setup_summary?: {
-    provider_connected: boolean
+  setup_summary: {
+    provider_connected: true
     runtime_mode: 'live-provider'
     unassigned_material_count: number
     ready_material_count: number
@@ -297,33 +291,27 @@ export type PayrollDashboardData = {
   projection_revision: string
   etag: string
   generated_at: string
-  live_data_ready: true
-  dashboard: {
-    schema_version: 'payroll-live-dashboard/v1'
-    company_id: string
+  live_data_ready: boolean
+  setup_summary: PayrollStatusData['setup_summary']
+  dashboard?: {
     batch_count: number
     material_count: number
     materials_needing_review_count: number
     verification_attention_count: number
     unassigned_material_count: number
-    gross_pay_minor: number
     net_pay_minor: number
   }
 }
 
 export type PayrollMaterial = {
-  schema_version: 'payroll-live-material/v1'
   company_id: string
   material_id: string
-  sha256: string
-  size_bytes: number
-  period: string
-  material_type: string
+  period: string | null
+  material_type: string | null
   status: string
   review_revision: number
-  last_reviewed_at: string | null
-  adoption_eligible: boolean
-  payment_submission_supported: false
+  payable: false
+  submission_supported: false
 }
 
 export type PayrollMaterialListData = {
@@ -335,20 +323,28 @@ export type PayrollMaterialListData = {
 }
 
 export type PayrollBatch = {
-  schema_version: 'payroll-live-batch/v1'
   company_id: string
   batch_id: string
   pay_period: string
-  version: number
-  locked_version: number | null
+  revision: number
   status: string
-  employee_count: number
-  gross_pay_minor: number
+  payable: false
+  submission_supported: false
+  payment_submission_supported: false
+  lines: PayrollBatchLine[]
+  audit_closure?: {
+    audit_event_id: string
+    audit_hash: string
+  }
+}
+
+export type PayrollBatchLine = {
+  company_id: string
+  employee_id: string
+  employee_display: string
+  account_id: string
+  account_display: string
   net_pay_minor: number
-  active_exception_count: number
-  maker_actor_id: string | null
-  checker_actor_id: string | null
-  approver_actor_id: string | null
 }
 
 export type PayrollBatchListData = {
@@ -362,33 +358,22 @@ export type PayrollBatchListData = {
 export type PayrollEmployeeVerificationResult = {
   company_id: string
   employee_id: string
+  employee_display: string
   account_id: string
-  expected_amount_minor: number
-  match_status: string
-  exception_codes: string[]
+  account_display: string
+  status: string
 }
 
 export type PayrollVerificationResult = {
-  schema_version: 'payroll-receipt-verification/v1'
   verification_id: string
   company_id: string
   batch_id: string
-  pay_period: string
-  version: number
   source_artifact_ids: string[]
-  overall_status: string
-  unknown_receipt_count: number
+  status: string
   results: PayrollEmployeeVerificationResult[]
-  audit_receipt: {
-    schema_version: 'payroll-verification-audit-receipt/v1'
-    company_id: string
-    batch_id: string
-    verification_id: string
-    action: string
-    actor_id: string
-    occurred_at: string
-    event_hash: string
-  }
+  payable: false
+  submission_supported: false
+  payment_submission_supported: false
 }
 
 export type PayrollAvailableEvidence = {
@@ -416,5 +401,25 @@ export type PayrollCommandResult = {
   action: string
   resource_ref: string
   replayed: boolean
-  data: { projection_revision: string }
+  data: {
+    schema_version: 'payroll-ledgerbridge-command-receipt/v1'
+    company_id: string
+    resource_id: string
+    action: 'payroll.receipts.verify'
+    audit_event_id: string
+    audit_hash: string
+    occurred_at: string
+    idempotency_key: string
+    replayed: boolean
+    audit_closure: {
+      company_id: string
+      resource_id: string
+      action: 'payroll.receipts.verify'
+      actor_subject: string
+      actor_id: string
+      audit_event_id: string
+      audit_hash: string
+      occurred_at: string
+    }
+  }
 }

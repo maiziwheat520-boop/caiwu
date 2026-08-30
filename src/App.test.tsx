@@ -92,15 +92,17 @@ const livePayrollResponses: Record<string, unknown> = {
     schema_version: 'ledgerbridge.payroll-status.v1',
     projection_revision: 'a'.repeat(64),
     etag: `"${'a'.repeat(64)}"`,
-    provider: {
-      schema_version: '1.0',
-      status: 'ready',
-      demo_mode: false,
-      payment_submission_supported: false,
-    },
     live_data_ready: true,
     live_projection_schema: 'payroll-ledgerbridge-live-projection/v1',
     payment_operations_exposed: false,
+    setup_summary: {
+      provider_connected: true,
+      runtime_mode: 'live-provider',
+      unassigned_material_count: 3,
+      ready_material_count: 0,
+      company_mapped_material_count: 1,
+      blocking_reason_codes: [],
+    },
     capabilities: {
       commands_enabled: true,
       allowed_actions: ['VERIFY_RECEIPTS'],
@@ -112,15 +114,20 @@ const livePayrollResponses: Record<string, unknown> = {
     etag: `"${'a'.repeat(64)}"`,
     generated_at: '2026-08-30T08:00:00.000Z',
     live_data_ready: true,
+    setup_summary: {
+      provider_connected: true,
+      runtime_mode: 'live-provider',
+      unassigned_material_count: 3,
+      ready_material_count: 0,
+      company_mapped_material_count: 1,
+      blocking_reason_codes: [],
+    },
     dashboard: {
-      schema_version: 'payroll-live-dashboard/v1',
-      company_id: payrollCompanyId,
       batch_count: 1,
       material_count: 1,
       materials_needing_review_count: 1,
       verification_attention_count: 0,
       unassigned_material_count: 3,
-      gross_pay_minor: 550000,
       net_pay_minor: 524000,
     },
   }),
@@ -130,18 +137,14 @@ const livePayrollResponses: Record<string, unknown> = {
     etag: `"${'a'.repeat(64)}"`,
     generated_at: '2026-08-30T08:00:00.000Z',
     items: [{
-      schema_version: 'payroll-live-material/v1',
       company_id: payrollCompanyId,
       material_id: 'material_0123456789abcdef01234567',
-      sha256: 'b'.repeat(64),
-      size_bytes: 4096,
       period: '2026-08',
       material_type: 'PAYROLL_SHEET',
       status: 'NEEDS_REVIEW',
       review_revision: 0,
-      last_reviewed_at: null,
-      adoption_eligible: false,
-      payment_submission_supported: false,
+      payable: false,
+      submission_supported: false,
     }],
   }),
   '/api/v1/payroll/batches': payrollRead({
@@ -150,20 +153,26 @@ const livePayrollResponses: Record<string, unknown> = {
     etag: `"${'a'.repeat(64)}"`,
     generated_at: '2026-08-30T08:00:00.000Z',
     items: [{
-      schema_version: 'payroll-live-batch/v1',
       company_id: payrollCompanyId,
       batch_id: payrollBatchId,
       pay_period: '2026-08',
-      version: 4,
-      locked_version: null,
-      status: 'draft',
-      employee_count: 1,
-      gross_pay_minor: 550000,
-      net_pay_minor: 524000,
-      active_exception_count: 0,
-      maker_actor_id: null,
-      checker_actor_id: null,
-      approver_actor_id: null,
+      revision: 4,
+      status: 'DRAFT',
+      payable: false,
+      submission_supported: false,
+      payment_submission_supported: false,
+      lines: [{
+        company_id: payrollCompanyId,
+        employee_id: 'employee_live_001',
+        employee_display: '员••0001',
+        account_id: 'account_live_001',
+        account_display: '**** 0123',
+        net_pay_minor: 524000,
+      }],
+      audit_closure: {
+        audit_event_id: 'audit_0123456789abcdef01234567',
+        audit_hash: 'c'.repeat(64),
+      },
     }],
   }),
   '/api/v1/payroll/verification': payrollRead({
@@ -172,32 +181,28 @@ const livePayrollResponses: Record<string, unknown> = {
     etag: `"${'a'.repeat(64)}"`,
     generated_at: '2026-08-30T08:00:00.000Z',
     items: [{
-      schema_version: 'payroll-receipt-verification/v1',
       verification_id: 'verification_0123456789abcdef01234567',
       company_id: payrollCompanyId,
       batch_id: payrollBatchId,
-      pay_period: '2026-08',
-      version: 4,
       source_artifact_ids: [payrollArtifactId],
-      overall_status: 'matched',
-      unknown_receipt_count: 0,
-      results: [],
-      audit_receipt: {
-        schema_version: 'payroll-verification-audit-receipt/v1',
+      status: 'MATCHED',
+      results: [{
         company_id: payrollCompanyId,
-        batch_id: payrollBatchId,
-        verification_id: 'verification_0123456789abcdef01234567',
-        action: 'payroll.receipts_verified',
-        actor_id: 'actor_checker_001',
-        occurred_at: '2026-08-30T08:00:00.000Z',
-        event_hash: 'c'.repeat(64),
-      },
+        employee_id: 'employee_live_001',
+        employee_display: '员••0001',
+        account_id: 'account_live_001',
+        account_display: '**** 0123',
+        status: 'MATCHED',
+      }],
+      payable: false,
+      submission_supported: false,
+      payment_submission_supported: false,
     }],
     available_evidence: [{
       company_id: payrollCompanyId,
       artifact_id: payrollArtifactId,
       period: '2026-08',
-      evidence_type: 'BANK_RECEIPT',
+      evidence_type: 'MYBANK_STATEMENT',
       status: 'READY_FOR_MATCHING',
       display_label: 'MYBANK_STATEMENT · 2026-08',
     }],
@@ -209,14 +214,8 @@ const notReadyPayrollResponses: Record<string, unknown> = {
     schema_version: 'ledgerbridge.payroll-status.v1',
     projection_revision: 'a'.repeat(64),
     etag: `"${'a'.repeat(64)}"`,
-    provider: {
-      schema_version: '1.0',
-      status: 'ready',
-      demo_mode: false,
-      payment_submission_supported: false,
-    },
     live_data_ready: false,
-    live_projection_schema: null,
+    live_projection_schema: 'payroll-ledgerbridge-live-projection/v1',
     payment_operations_exposed: false,
     capabilities: {
       commands_enabled: false,
@@ -290,7 +289,27 @@ function installFetch(options: {
       action: 'payroll.batch.verify-receipts',
       resource_ref: payrollBatchId,
       replayed: false,
-      data: { projection_revision: 'b'.repeat(64) },
+      data: {
+        schema_version: 'payroll-ledgerbridge-command-receipt/v1',
+        company_id: payrollCompanyId,
+        resource_id: payrollBatchId,
+        action: 'payroll.receipts.verify',
+        audit_event_id: 'audit_0123456789abcdef01234567',
+        audit_hash: 'd'.repeat(64),
+        occurred_at: '2026-08-30T08:00:00.000Z',
+        idempotency_key: '11111111-1111-4111-8111-111111111111',
+        replayed: false,
+        audit_closure: {
+          company_id: payrollCompanyId,
+          resource_id: payrollBatchId,
+          action: 'payroll.receipts.verify',
+          actor_subject: 'checker_live',
+          actor_id: 'actor_checker_001',
+          audit_event_id: 'audit_0123456789abcdef01234567',
+          audit_hash: 'd'.repeat(64),
+          occurred_at: '2026-08-30T08:00:00.000Z',
+        },
+      },
     },
   } = options
   let shouldFailSession = failSessionOnce
@@ -1169,8 +1188,8 @@ describe('LedgerBridge Web API client', () => {
 
     expect(await screen.findByRole('heading', { name: '工资与发放验证' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: '工资与发放验证' })).toHaveLength(2)
-    expect(screen.getByText('只读工资发布契约已部署')).toBeInTheDocument()
     expect(await screen.findByText('工资服务已连通，但正式数据投影尚未就绪')).toBeInTheDocument()
+    expect(screen.getByText('只读工资发布契约已部署')).toBeInTheDocument()
     expect(screen.getByText('服务已接通，待归属材料 3 份')).toBeInTheDocument()
     expect(screen.getByText('工资材料仍有待归属项')).toBeInTheDocument()
     expect(screen.getByText('真实发薪和银行提交不可用')).toBeInTheDocument()
@@ -1198,7 +1217,9 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.getByText('验证结果 1 条')).toBeInTheDocument()
     expect(screen.getAllByText('2026-08').length).toBeGreaterThan(0)
     expect(screen.getByText('草稿')).toBeInTheDocument()
-    expect(screen.getByText('已匹配')).toBeInTheDocument()
+    expect(screen.getAllByText('已匹配').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/员••0001/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/\*\*\*\* 0123/).length).toBeGreaterThan(0)
 
     await waitFor(() => {
       const payrollCalls = fetchMock.mock.calls

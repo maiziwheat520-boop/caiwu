@@ -1337,17 +1337,17 @@ const payrollMaterialStatusLabel = (status: string) => ({
 }[status] ?? '状态待确认')
 
 const payrollBatchStatusLabel = (status: string) => ({
-  draft: '草稿',
-  in_review: '审核中',
-  approved: '已批准',
-  locked: '已锁定',
-}[status] ?? '状态待确认')
+  DRAFT: '草稿',
+  IN_REVIEW: '审核中',
+  APPROVED: '已批准',
+  LOCKED: '已锁定',
+}[status.toUpperCase()] ?? '状态待确认')
 
 const payrollVerificationStatusLabel = (status: string) => ({
-  matched: '已匹配',
-  partial: '部分匹配',
-  unmatched: '待核对',
-}[status] ?? '状态待确认')
+  MATCHED: '已匹配',
+  PARTIAL: '部分匹配',
+  UNMATCHED: '待核对',
+}[status.toUpperCase()] ?? '状态待确认')
 
 const payrollSetupBlockerLabel = (code: string) => ({
   UNASSIGNED_MATERIALS: '工资材料仍有待归属项',
@@ -1475,7 +1475,7 @@ function PayrollVerificationStatus() {
     try {
       await api.verifyPayrollReceipts({
         batchId: selectedBatch.batch_id,
-        expectedRevision: selectedBatch.version,
+        expectedRevision: selectedBatch.revision,
         sourceArtifactIds: selectedEvidence,
         csrfToken,
       })
@@ -1572,7 +1572,7 @@ function PayrollVerificationStatus() {
               <div className="payroll-record-list" aria-label="工资材料">
                 {materials.map((material) => (
                   <article key={material.material_id}>
-                    <div><strong>{material.period}</strong><span>{material.material_type === 'PAYROLL_SHEET' ? '工资表' : '受控工资材料'}</span></div>
+                    <div><strong>{material.period ?? '期间待确认'}</strong><span>{material.material_type === 'PAYROLL_SHEET' ? '工资表' : '受控工资材料'}</span></div>
                     <Badge color={material.status === 'NEEDS_REVIEW' ? 'amber' : 'green'}>{payrollMaterialStatusLabel(material.status)}</Badge>
                   </article>
                 ))}
@@ -1588,11 +1588,20 @@ function PayrollVerificationStatus() {
                   <article key={batch.batch_id}>
                     <div className="payroll-batch-title"><strong>{batch.pay_period}</strong><Badge color="gray">{payrollBatchStatusLabel(batch.status)}</Badge></div>
                     <dl>
-                      <div><dt>人数</dt><dd>{batch.employee_count}</dd></div>
-                      <div><dt>应发合计</dt><dd>{currency.format(minorToMajor(batch.gross_pay_minor))}</dd></div>
-                      <div><dt>实发合计</dt><dd>{currency.format(minorToMajor(batch.net_pay_minor))}</dd></div>
-                      <div><dt>异常</dt><dd>{batch.active_exception_count}</dd></div>
+                      <div><dt>人数</dt><dd>{batch.lines.length}</dd></div>
+                      <div><dt>实发合计</dt><dd>{currency.format(minorToMajor(batch.lines.reduce((total, line) => total + line.net_pay_minor, 0)))}</dd></div>
+                      <div><dt>审计闭环</dt><dd>{batch.audit_closure ? '已记录' : '待形成'}</dd></div>
                     </dl>
+                    {batch.lines.length > 0 ? (
+                      <ul className="payroll-batch-lines">
+                        {batch.lines.map((line) => (
+                          <li key={`${line.employee_id}-${line.account_id}`}>
+                            <span>{line.employee_display} · {line.account_display}</span>
+                            <strong>{currency.format(minorToMajor(line.net_pay_minor))}</strong>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
                   </article>
                 ))}
               </div>
@@ -1605,14 +1614,14 @@ function PayrollVerificationStatus() {
               <div className="payroll-record-list" aria-label="发放验证记录">
                 {verification.items.map((item) => (
                   <article key={item.verification_id} className="payroll-verification-record">
-                    <div><strong>{item.pay_period}</strong><span>批次 {maskPayrollRef(item.batch_id)}</span></div>
-                    <Badge color={item.overall_status === 'matched' ? 'green' : 'amber'}>{payrollVerificationStatusLabel(item.overall_status)}</Badge>
+                    <div><strong>{batches.find((batch) => batch.batch_id === item.batch_id)?.pay_period ?? '期间待确认'}</strong><span>批次 {maskPayrollRef(item.batch_id)}</span></div>
+                    <Badge color={item.status.toUpperCase() === 'MATCHED' ? 'green' : 'amber'}>{payrollVerificationStatusLabel(item.status)}</Badge>
                     {item.results.length > 0 ? (
                       <ul>
                         {item.results.map((result) => (
                           <li key={`${result.employee_id}-${result.account_id}`}>
-                            <span>员工 {maskPayrollRef(result.employee_id)} · 账户 {maskPayrollRef(result.account_id)}</span>
-                            <strong>{payrollVerificationStatusLabel(result.match_status)}</strong>
+                            <span>{result.employee_display} · {result.account_display}</span>
+                            <strong>{payrollVerificationStatusLabel(result.status)}</strong>
                           </li>
                         ))}
                       </ul>
