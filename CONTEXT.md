@@ -1,7 +1,7 @@
-# LedgerBridge Financial Review
+# Shared Financial Foundation
 
-LedgerBridge preserves financial evidence and turns it into reviewable accounting candidates
-without guessing missing facts or posting automatically.
+The Shared Financial Foundation preserves identity, account, evidence, money, and audit facts
+used by independently maintained Personal Finance, Hotel Reconciliation, and Payroll modules.
 
 ## Language
 
@@ -29,3 +29,15 @@ _Avoid_: Counterparty name match
 Fields extracted from one source bill image, together with field confidence and blockers. It
 is review input, not an approved accounting fact.
 _Avoid_: Posted bill, confirmed transaction
+
+**Evidence Object**:
+An immutable, source-bound record proving where a financial observation came from.
+_Avoid_: Attachment, mutable file
+
+**Accounting Owner**:
+The person or company whose books contain a Managed Account and its resulting facts.
+_Avoid_: Login user, counterparty
+
+**Money Amount**:
+A signed integer in the currency's smallest unit; for CNY the unit is one fen.
+_Avoid_: Float amount, display yuan

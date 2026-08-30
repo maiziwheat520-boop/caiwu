@@ -1,6 +1,30 @@
 # Project status
 
-Updated: 2026-08-28
+Updated: 2026-08-30
+
+## Payroll publication adapter checkpoint (2026-08-30)
+
+The real-data cutover branch now contains a default-disabled, read-only adapter for the
+`payroll-ledgerbridge-publication/v1` exchange object. It derives company scope from the
+existing authenticated `WorkloadPrincipal` and its single `EntityGrant`, maps that entity to
+the provider's stable `company_id`, and never accepts browser-supplied company scope. The
+adapter does not read the PayrollVerification database, copy its pages, import formal payroll
+data, connect to a bank, or expose any payment action. It rejects unknown major versions,
+cross-company identities, non-integer minor-unit money, invalid verification/material
+projections, broken approval audit chains, and any payable or submission-capable projection.
+
+Production configuration remains disabled. Runtime enablement still requires a separately
+deployed authenticated PayrollVerification endpoint reachable from VM103 and a trusted
+provider-side publication authorizer. The current Windows-only development endpoint is not a
+production network dependency. See `docs/tasks/2026-08-30-payroll-publication-adapter.md` and
+`docs/reviews/2026-08-30-payroll-integration-handoff-codex.md`.
+
+The accepted target architecture is a modular monolith: Personal Finance, Hotel Reconciliation,
+and Payroll remain independently maintained business modules on one PostgreSQL database. They
+share the Financial Foundation identity/account/evidence/audit contracts but own their private
+schemas and do not directly write one another's tables. The HTTP payroll adapter is a transitional
+implementation behind the stable v1 contract, not a commitment to a separate payroll database.
+See `CONTEXT-MAP.md` and `docs/adr/0001-modular-finance-contexts-shared-database.md`.
 
 ## May financial foundation checkpoint (2026-08-29)
 
