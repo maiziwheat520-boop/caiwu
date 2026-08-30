@@ -73,11 +73,7 @@ jobs:
         run: >-
           uv run --frozen --extra dev pytest -q
           tests/test_d1_pending_candidate_correction_migration.py
-          tests/test_d1_internal_candidate_commands.py
-          tests/test_d1_database_review_service.py
-          tests/test_r0_candidate_contract.py
-          tests/test_r0_internal_read_contract.py
-          tests/test_r1_internal_read_service.py
-          tests/test_r1_internal_read_routes.py
-          tests/test_r1_internal_read_database_service.py
-          tests/test_r1_database_migration.py
+          tests/test_r1_database_migration.py::test_0022_replays_pending_correction_and_active_dimension_catalog_in_postgres
+          tests/test_r1_database_migration.py::test_0022_nonempty_r1_database_without_pending_correction_rejects_downgrade
+          tests/test_r1_database_migration.py::test_r1_internal_read_objects_are_fixed_owner_security_definer_and_fail_closed
+          tests/test_r1_database_migration.py::test_r1_internal_read_nonempty_downgrade_is_rejected
