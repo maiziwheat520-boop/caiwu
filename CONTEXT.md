@@ -38,6 +38,26 @@ _Avoid_: Attachment, mutable file
 The person or company whose books contain a Managed Account and its resulting facts.
 _Avoid_: Login user, counterparty
 
+**Business Unit Assignment**:
+An optional, effective-dated default attribution of a Managed Account to one business unit.
+Its absence keeps the account visible at Accounting Owner scope rather than implying a store.
+_Avoid_: Account owner, permanent store binding
+
+**Fact Allocation**:
+An explicit business-unit allocation for one financial fact that takes precedence over the
+Managed Account's effective-dated default and may split the fact across business units.
+_Avoid_: Account ownership, inferred store
+
+**Business Unit Snapshot**:
+The immutable business-unit reference and label captured when an assignment or allocation is
+made, preserving the historical meaning even if the current directory later changes.
+_Avoid_: Live directory join, mutable label
+
+**Account Registry Projection**:
+A versioned, read-only owner-scoped view of Managed Accounts, aliases, effective assignments,
+and fact allocations.
+_Avoid_: Writable account table, inferred ownership
+
 **Money Amount**:
 A signed integer in the currency's smallest unit; for CNY the unit is one fen.
 _Avoid_: Float amount, display yuan

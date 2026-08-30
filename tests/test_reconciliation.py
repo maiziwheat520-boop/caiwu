@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from datetime import date
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
 from ledgerbridge.reconciliation import (
-    AccountOwnerKind,
     ConcurrentDedupIndex,
     DedupDecision,
     DedupIndex,
@@ -281,18 +280,16 @@ def test_phase5_rejects_conflicts_invalid_cardinality_and_bad_amounts() -> None:
 
 
 def test_statement_backed_accounts_require_the_other_side_before_internal_match() -> None:
-    owner = "person:test-owner"
+    owner = uuid4()
     boc = ManagedAccount(
         "bank:boc:2574",
         owner,
-        AccountOwnerKind.PERSONAL,
         ("boc-2574", "中国银行2574"),
         (uuid4(),),
     )
     abc = ManagedAccount(
         "bank:abc:7788",
         owner,
-        AccountOwnerKind.PERSONAL,
         ("abc-7788", "农业银行7788"),
         (uuid4(),),
     )
@@ -315,18 +312,28 @@ def test_statement_backed_accounts_require_the_other_side_before_internal_match(
     assert matched.matched_record_locator == "abc-row-9"
 
 
+def test_managed_transfer_registry_uses_entity_uuid_as_the_only_owner_identity() -> None:
+    account = ManagedAccount(
+        account_key="bank:synthetic:1234",
+        owner_entity_ref=uuid4(),
+        aliases=("synthetic-1234",),
+        statement_evidence_refs=(uuid4(),),
+    )
+
+    assert isinstance(account.owner_entity_ref, UUID)
+    assert not hasattr(account, "owner_kind")
+
+
 def test_company_accounts_are_managed_but_cross_company_transfer_is_related_party() -> None:
     company_a = ManagedAccount(
         "bank:a:1111",
-        "company:a",
-        AccountOwnerKind.COMPANY,
+        uuid4(),
         ("a-1111",),
         (uuid4(),),
     )
     company_b = ManagedAccount(
         "bank:b:2222",
-        "company:b",
-        AccountOwnerKind.COMPANY,
+        uuid4(),
         ("b-2222",),
         (uuid4(),),
     )
@@ -345,8 +352,7 @@ def test_account_without_statement_evidence_cannot_enter_managed_registry() -> N
     with pytest.raises(Phase5Error, match="statement evidence"):
         ManagedAccount(
             "bank:test:0000",
-            "person:test",
-            AccountOwnerKind.PERSONAL,
+            uuid4(),
             ("test-0000",),
             (),
         )

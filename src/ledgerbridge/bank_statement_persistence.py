@@ -23,11 +23,9 @@ from ledgerbridge.internal_read_contract import (
     require_capability,
 )
 from ledgerbridge.mybank_statement import MyBankStatement, MyBankTransaction
-from ledgerbridge.reconciliation import AccountOwnerKind
 from ledgerbridge.text import contains_unstorable_text
 
-_ACCOUNT_KIND: Final = re.compile(r"^[A-Z][A-Z0-9_]{0,31}$")
-_SAFE_REF: Final = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,199}$")
+_ACCOUNT_SUFFIX: Final = re.compile(r"^[0-9]{4,8}$")
 _DIGEST: Final = re.compile(r"^[0-9a-f]{64}$")
 _MAX_TEXT: Final = 300
 
@@ -41,25 +39,13 @@ class BankStatementPersistenceError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class BankStatementImportContext:
-    entity_ref: UUID
+    owner_entity_ref: UUID
     managed_account_ref: UUID
-    account_key: str
-    owner_ref: str
-    owner_kind: AccountOwnerKind
-    account_kind: str
     evidence_ref: UUID
     actor: str
     reason: str
 
     def __post_init__(self) -> None:
-        if _SAFE_REF.fullmatch(self.account_key) is None:
-            raise ValueError("account_key is invalid")
-        if _SAFE_REF.fullmatch(self.owner_ref) is None:
-            raise ValueError("owner_ref is invalid")
-        if not isinstance(self.owner_kind, AccountOwnerKind):
-            raise ValueError("owner_kind is invalid")
-        if _ACCOUNT_KIND.fullmatch(self.account_kind) is None:
-            raise ValueError("account_kind is invalid")
         _validate_text("actor", self.actor, 200)
         _validate_text("reason", self.reason, 1_000)
 
@@ -113,28 +99,36 @@ class BankStatementImportService:
         statement: MyBankStatement,
         *,
         context: BankStatementImportContext,
+        session: Session | None = None,
     ) -> BankStatementImportResult:
         request = _build_request(statement, context)
         try:
+            if session is not None:
+                return self._execute_import(session, request)
             with self._sessions() as session:
-                raw = session.execute(
-                    text("SELECT internal_import.import_bank_statement(CAST(:request AS jsonb))"),
-                    {
-                        "request": json.dumps(
-                            request,
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        )
-                    },
-                ).scalar_one()
-                result = _parse_result(raw)
+                result = self._execute_import(session, request)
                 session.commit()
                 return result
         except BankStatementPersistenceError:
             raise
         except SQLAlchemyError as exc:
             raise BankStatementPersistenceError("bank statement import failed") from exc
+
+    def _execute_import(
+        self, session: Session, request: dict[str, object]
+    ) -> BankStatementImportResult:
+        raw = session.execute(
+            text("SELECT internal_import.import_bank_statement(CAST(:request AS jsonb))"),
+            {
+                "request": json.dumps(
+                    request,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            },
+        ).scalar_one()
+        return _parse_result(raw)
 
 
 class BankStatementReadService:
@@ -255,11 +249,10 @@ def _build_request(
         raise BankStatementPersistenceError("bank statement has no transactions")
     if statement.currency != "CNY" or _DIGEST.fullmatch(statement.source_sha256) is None:
         raise BankStatementPersistenceError("bank statement identity is invalid")
-    expected_account_key = (
-        f"{statement.institution_code}:{context.owner_kind.value.lower()}:"
-        f"{statement.account_suffix}"
-    )
-    if statement.institution_code != "mybank" or context.account_key != expected_account_key:
+    if (
+        statement.institution_code != "mybank"
+        or _ACCOUNT_SUFFIX.fullmatch(statement.account_suffix) is None
+    ):
         raise BankStatementPersistenceError("managed account identity does not match statement")
     ordered_transactions = tuple(
         sorted(statement.transactions, key=lambda item: item.source_row_number)
@@ -283,7 +276,7 @@ def _build_request(
                 "occurred_at": item.occurred_at.isoformat(),
                 "amount_minor": item.amount_minor,
                 "balance_minor": item.balance_minor,
-                "counterparty_ref": _counterparty_ref(context.entity_ref, item),
+                "counterparty_ref": _counterparty_ref(context.owner_entity_ref, item),
                 "counterparty_name": item.counterparty_name,
                 "counterparty_account": item.counterparty_account,
                 "counterparty_institution": item.counterparty_institution,
@@ -294,14 +287,9 @@ def _build_request(
     return {
         "statement_ref": str(statement.statement_ref),
         "managed_account_ref": str(context.managed_account_ref),
-        "entity_ref": str(context.entity_ref),
-        "account_key": context.account_key,
+        "owner_entity_ref": str(context.owner_entity_ref),
         "institution_code": statement.institution_code,
         "account_suffix": statement.account_suffix,
-        "owner_ref": context.owner_ref,
-        "owner_kind": context.owner_kind.value,
-        "account_kind": context.account_kind,
-        "lifecycle_status": "ACTIVE",
         "evidence_ref": str(context.evidence_ref),
         "source_system": "mybank_xlsx_export",
         "source_sha256": statement.source_sha256,

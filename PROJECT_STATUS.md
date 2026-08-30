@@ -18,6 +18,7 @@ and sidecar profile disabled by default. Persistent source, receipt, output, aud
 projection support remains reserved for migration `20260830_0025` after the centrally coordinated
 linear `0022 -> 0023 -> 0024` chain lands. No production source or enablement was added. See
 `docs/adr/0002-isolate-evidence-unlock-in-a-sidecar.md`.
+
 ## Manual-review posting correction checkpoint (2026-08-30)
 
 The isolated branch `ai/chatgpt/manual-review-writeback-core` now contains the
@@ -48,6 +49,25 @@ single-Alembic-head, and diff checks pass. PostgreSQL integration and ACL tests
 are present but remain unexecuted locally because this host has no configured
 disposable PostgreSQL URL or local PostgreSQL runtime. No production Candidate,
 database, migration, deployment, or Web release was changed.
+
+## Accounting Owner registry checkpoint (2026-08-30)
+
+The isolated `ai/chatgpt/account-owner-registry` branch now provides the Shared Financial
+Foundation's explicit Entity-owned Managed Account registry. Migration `20260830_0023` keeps
+`20260830_0022` as its final predecessor and adds evidence-backed account admission, normalized
+aliases, effective-dated business-unit assignments, fact allocation revisions, immutable
+business-unit ref/label snapshots, audit-bound idempotent writes, and an audit-horizon-bound v1
+read projection. MyBank statement import now accepts only a pre-registered owner Entity UUID and
+Managed Account UUID, and its external-Session seam allows Evidence, registry admission, and
+statement import to share one caller-owned transaction. No owner, account, statement, private
+sample, credential, production data, merge, or deployment was created.
+
+Local verification passes 772 tests with 199 PostgreSQL/environment tests skipped, including
+the new migration replay tests that await the centrally owned 0022 migration and a PostgreSQL
+URL. Changed-file lint, format, typing, sensitive-path, and backup/restore checks pass. The
+repository-wide format/type gates still report pre-existing failures in unchanged hotel-payout,
+configuration, and D1 files. See `docs/tasks/2026-08-30-account-owner-registry.md`.
+
 ## Payroll publication adapter checkpoint (2026-08-30)
 
 The real-data cutover branch now contains a default-disabled, read-only adapter for the

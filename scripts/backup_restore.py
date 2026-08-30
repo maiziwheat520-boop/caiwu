@@ -694,6 +694,7 @@ SELECT json_build_object(
 )
 
 BANK_STATEMENT_SECURITY_REVISION = "20260830_0021"
+ACCOUNT_REGISTRY_SECURITY_REVISION = "20260830_0023"
 BANK_STATEMENT_TABLES = (
     "managed_account",
     "managed_account_lifecycle",
@@ -1214,6 +1215,318 @@ BANK_STATEMENT_CONSTRAINT_CONTRACT = {
         "'INACTIVE'::character varying, 'CLOSED'::character varying])::text[])))",
     ),
 }
+
+ACCOUNT_REGISTRY_MANAGED_ACCOUNT_TRIGGER_CONTRACT = {
+    "validate_managed_account_registry": (
+        "managed_account",
+        False,
+        7,
+        False,
+        False,
+        "account_registry_validate_managed_account",
+    ),
+}
+ACCOUNT_REGISTRY_MANAGED_ACCOUNT_CONSTRAINT_CONTRACT = {
+    "fk_managed_account_admission_evidence": (
+        "managed_account",
+        "f",
+        "FOREIGN KEY (entity_id, admission_evidence_ref) REFERENCES "
+        "evidence_object(entity_id, evidence_ref) ON DELETE RESTRICT",
+    ),
+    "managed_account_owner_ref_is_entity": (
+        "managed_account",
+        "c",
+        "CHECK (((owner_ref)::text = (entity_id)::text))",
+    ),
+    "managed_account_institution_code_format": (
+        "managed_account",
+        "c",
+        "CHECK (((institution_code)::text ~ '^[a-z0-9][a-z0-9_]{0,31}$'::text))",
+    ),
+    "uq_managed_account_ref_entity": (
+        "managed_account",
+        "u",
+        "UNIQUE (managed_account_ref, entity_id)",
+    ),
+}
+ACCOUNT_REGISTRY_TABLES = (
+    "account_registry_operation",
+    "managed_account_alias",
+    "account_business_unit_assignment",
+    "fact_business_unit_allocation_set",
+    "fact_business_unit_allocation_item",
+)
+ACCOUNT_REGISTRY_FUNCTION_SIGNATURES = {
+    ("public", "account_registry_normalize_alias"): "p_value text",
+    ("public", "account_registry_append_only"): "",
+    ("public", "account_registry_validate_managed_account"): "",
+    ("public", "account_registry_validate_fact"): "",
+    ("public", "account_registry_validate_business_unit_snapshot"): "",
+    ("public", "account_registry_reject_assignment_overlap"): "",
+    ("public", "account_registry_validate_allocation_revision"): "",
+    ("public", "account_registry_require_allocation_total"): "",
+    ("internal_import", "import_bank_statement_0021"): "p_request jsonb",
+    ("internal_command", "apply_account_registry_plan"): "p_request jsonb",
+    ("internal_read", "get_account_registry_projection"): (
+        "p_owner_entity_ref uuid, p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
+}
+ACCOUNT_REGISTRY_FUNCTION_RESULTS = {
+    ("public", "account_registry_normalize_alias"): "text",
+    ("public", "account_registry_append_only"): "trigger",
+    ("public", "account_registry_validate_managed_account"): "trigger",
+    ("public", "account_registry_validate_fact"): "trigger",
+    ("public", "account_registry_validate_business_unit_snapshot"): "trigger",
+    ("public", "account_registry_reject_assignment_overlap"): "trigger",
+    ("public", "account_registry_validate_allocation_revision"): "trigger",
+    ("public", "account_registry_require_allocation_total"): "trigger",
+    ("internal_import", "import_bank_statement_0021"): "jsonb",
+    ("internal_command", "apply_account_registry_plan"): "jsonb",
+    ("internal_read", "get_account_registry_projection"): "jsonb",
+}
+ACCOUNT_REGISTRY_SECURITY_DEFINER_FUNCTIONS = frozenset(
+    {
+        ("public", "account_registry_validate_managed_account"),
+        ("public", "account_registry_validate_fact"),
+        ("public", "account_registry_validate_business_unit_snapshot"),
+        ("public", "account_registry_reject_assignment_overlap"),
+        ("public", "account_registry_validate_allocation_revision"),
+        ("public", "account_registry_require_allocation_total"),
+        ("internal_import", "import_bank_statement_0021"),
+        ("internal_command", "apply_account_registry_plan"),
+        ("internal_read", "get_account_registry_projection"),
+    }
+)
+ACCOUNT_REGISTRY_FUNCTION_EXECUTORS = {
+    ("internal_command", "apply_account_registry_plan"): "ledgerbridge_api",
+    ("internal_read", "get_account_registry_projection"): "ledgerbridge_reader",
+}
+ACCOUNT_REGISTRY_TRIGGER_CONTRACT = {
+    "account_registry_operation_append_only": (
+        "account_registry_operation",
+        False,
+        False,
+        False,
+        "account_registry_append_only",
+    ),
+    "validate_account_registry_operation": (
+        "account_registry_operation",
+        False,
+        False,
+        False,
+        "account_registry_validate_fact",
+    ),
+    "managed_account_alias_append_only": (
+        "managed_account_alias",
+        False,
+        False,
+        False,
+        "account_registry_append_only",
+    ),
+    "validate_managed_account_alias_registry": (
+        "managed_account_alias",
+        False,
+        False,
+        False,
+        "account_registry_validate_fact",
+    ),
+    "account_business_unit_assignment_append_only": (
+        "account_business_unit_assignment",
+        False,
+        False,
+        False,
+        "account_registry_append_only",
+    ),
+    "reject_account_business_unit_overlap": (
+        "account_business_unit_assignment",
+        False,
+        False,
+        False,
+        "account_registry_reject_assignment_overlap",
+    ),
+    "validate_account_business_unit_registry": (
+        "account_business_unit_assignment",
+        False,
+        False,
+        False,
+        "account_registry_validate_fact",
+    ),
+    "validate_account_business_unit_snapshot": (
+        "account_business_unit_assignment",
+        False,
+        False,
+        False,
+        "account_registry_validate_business_unit_snapshot",
+    ),
+    "fact_business_unit_allocation_set_append_only": (
+        "fact_business_unit_allocation_set",
+        False,
+        False,
+        False,
+        "account_registry_append_only",
+    ),
+    "validate_fact_business_unit_allocation_registry": (
+        "fact_business_unit_allocation_set",
+        False,
+        False,
+        False,
+        "account_registry_validate_fact",
+    ),
+    "validate_fact_allocation_revision": (
+        "fact_business_unit_allocation_set",
+        False,
+        False,
+        False,
+        "account_registry_validate_allocation_revision",
+    ),
+    "require_fact_allocation_set_total": (
+        "fact_business_unit_allocation_set",
+        True,
+        True,
+        True,
+        "account_registry_require_allocation_total",
+    ),
+    "fact_business_unit_allocation_item_append_only": (
+        "fact_business_unit_allocation_item",
+        False,
+        False,
+        False,
+        "account_registry_append_only",
+    ),
+    "validate_fact_business_unit_snapshot": (
+        "fact_business_unit_allocation_item",
+        False,
+        False,
+        False,
+        "account_registry_validate_business_unit_snapshot",
+    ),
+    "require_fact_allocation_item_total": (
+        "fact_business_unit_allocation_item",
+        True,
+        True,
+        True,
+        "account_registry_require_allocation_total",
+    ),
+}
+
+_ACCOUNT_REGISTRY_TABLES_SQL = ", ".join(f"'{name}'" for name in ACCOUNT_REGISTRY_TABLES)
+_ACCOUNT_REGISTRY_ROLES_SQL = ", ".join(f"('{name}'::name)" for name in R1_CONTROLLED_ROLES)
+_ACCOUNT_REGISTRY_FUNCTIONS_SQL = ", ".join(
+    f"('{schema}', '{name}', '{args}')"
+    for (schema, name), args in ACCOUNT_REGISTRY_FUNCTION_SIGNATURES.items()
+)
+_ACCOUNT_REGISTRY_ROW_COUNTS_SQL = ", ".join(
+    f"'{table}', (SELECT count(*) FROM public.{table})"  # nosec B608 - fixed table allowlist.
+    for table in ACCOUNT_REGISTRY_TABLES
+)
+ACCOUNT_REGISTRY_SECURITY_SQL = (
+    ""  # nosec B608 - replacements use only fixed allowlists.
+    """
+WITH expected_roles(role_name) AS (VALUES __ACCOUNT_REGISTRY_ROLES_SQL__),
+present_roles(role_name) AS (
+ SELECT e.role_name FROM expected_roles e JOIN pg_roles r ON r.rolname=e.role_name
+), expected_functions(schema_name,function_name,identity_arguments) AS (
+ VALUES __ACCOUNT_REGISTRY_FUNCTIONS_SQL__
+), observed_tables AS (
+ SELECT c.relname table_name,pg_get_userbyid(c.relowner) owner,c.relkind kind
+ FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='public' AND c.relname IN (__ACCOUNT_REGISTRY_TABLES_SQL__)
+), observed_functions AS (
+ SELECT n.nspname schema_name,p.proname function_name,
+  pg_get_function_identity_arguments(p.oid) identity_arguments,
+  pg_get_function_result(p.oid) result,pg_get_userbyid(p.proowner) owner,
+  p.prosecdef security_definer,COALESCE(to_jsonb(p.proconfig),'[]'::jsonb) proconfig
+ FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+ JOIN expected_functions e ON e.schema_name=n.nspname AND e.function_name=p.proname
+  AND e.identity_arguments=pg_get_function_identity_arguments(p.oid)
+), observed_triggers AS (
+ SELECT c.relname table_name,t.tgname trigger_name,t.tgenabled enabled,
+  t.tgconstraint<>0 is_constraint,con.condeferrable is_deferrable,
+  con.condeferred is_initially_deferred,p.proname function_name
+ FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+ JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid
+ LEFT JOIN pg_constraint con ON con.oid=t.tgconstraint
+ WHERE n.nspname='public' AND c.relname IN (__ACCOUNT_REGISTRY_TABLES_SQL__)
+  AND NOT t.tgisinternal
+), observed_constraints AS (
+ SELECT c.relname table_name,con.conname constraint_name,con.contype constraint_type,
+  con.convalidated is_validated,con.condeferrable is_deferrable,
+  con.condeferred is_initially_deferred
+ FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid
+ JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='public' AND c.relname IN (__ACCOUNT_REGISTRY_TABLES_SQL__)
+), table_acls AS (
+ SELECT c.relname table_name,
+  CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a
+ WHERE n.nspname='public' AND c.relname IN (__ACCOUNT_REGISTRY_TABLES_SQL__)
+), function_acls AS (
+ SELECT n.nspname schema_name,p.proname function_name,
+  pg_get_function_identity_arguments(p.oid) identity_arguments,
+  CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+ JOIN expected_functions e ON e.schema_name=n.nspname AND e.function_name=p.proname
+  AND e.identity_arguments=pg_get_function_identity_arguments(p.oid)
+ CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
+), table_privileges AS (
+ SELECT r.role_name role,t.table_name,
+  has_table_privilege(r.role_name::text,format('%I.%I','public',t.table_name),'SELECT') can_select,
+  has_table_privilege(r.role_name::text,format('%I.%I','public',t.table_name),'INSERT') can_insert,
+  has_table_privilege(r.role_name::text,format('%I.%I','public',t.table_name),'UPDATE') can_update,
+  has_table_privilege(r.role_name::text,format('%I.%I','public',t.table_name),'DELETE') can_delete
+ FROM present_roles r CROSS JOIN observed_tables t
+), function_privileges AS (
+ SELECT r.role_name role,f.schema_name,f.function_name,f.identity_arguments,
+  has_function_privilege(r.role_name::text,
+   format('%I.%I(%s)',f.schema_name,f.function_name,f.identity_arguments),'EXECUTE') can_execute
+ FROM present_roles r CROSS JOIN observed_functions f
+)
+SELECT jsonb_build_object(
+ 'account_registry_row_counts',jsonb_build_object(__ACCOUNT_REGISTRY_ROW_COUNTS_SQL__),
+ 'account_registry_tables',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+  'table',table_name,'owner',owner,'kind',kind) ORDER BY table_name)
+  FROM observed_tables),'[]'::jsonb),
+ 'account_registry_functions',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+  'schema',schema_name,'name',function_name,'identity_arguments',identity_arguments,
+  'result',result,'owner',owner,'security_definer',security_definer,'proconfig',proconfig)
+  ORDER BY schema_name,function_name,identity_arguments) FROM observed_functions),'[]'::jsonb),
+ 'account_registry_triggers',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+  'table',table_name,'name',trigger_name,'enabled',enabled,'constraint',is_constraint,
+  'deferrable',COALESCE(is_deferrable,false),
+  'initially_deferred',COALESCE(is_initially_deferred,false),'function_name',function_name)
+  ORDER BY table_name,trigger_name) FROM observed_triggers),'[]'::jsonb),
+ 'account_registry_constraints',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+  'table',table_name,'name',constraint_name,'type',constraint_type,
+  'validated',is_validated,'deferrable',is_deferrable,
+  'initially_deferred',is_initially_deferred) ORDER BY table_name,constraint_name)
+  FROM observed_constraints),'[]'::jsonb),
+ 'account_registry_table_acls',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+  'table',table_name,'grantee',grantee,'privilege',privilege,'grantable',grantable)
+  ORDER BY table_name,grantee,privilege) FROM table_acls),'[]'::jsonb),
+ 'account_registry_function_acls',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+  'schema',schema_name,'name',function_name,'identity_arguments',identity_arguments,
+  'grantee',grantee,'privilege',privilege,'grantable',grantable)
+  ORDER BY schema_name,function_name,identity_arguments,grantee,privilege)
+  FROM function_acls),'[]'::jsonb),
+ 'account_registry_effective_table_privileges',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+  'role',role,'table',table_name,'select',can_select,'insert',can_insert,
+  'update',can_update,'delete',can_delete) ORDER BY role,table_name)
+  FROM table_privileges),'[]'::jsonb),
+ 'account_registry_effective_function_privileges',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+  'role',role,'schema',schema_name,'name',function_name,
+  'identity_arguments',identity_arguments,'execute',can_execute)
+  ORDER BY role,schema_name,function_name,identity_arguments)
+  FROM function_privileges),'[]'::jsonb)
+)::text;
+    """.replace("__ACCOUNT_REGISTRY_ROLES_SQL__", _ACCOUNT_REGISTRY_ROLES_SQL)
+    .replace("__ACCOUNT_REGISTRY_FUNCTIONS_SQL__", _ACCOUNT_REGISTRY_FUNCTIONS_SQL)
+    .replace("__ACCOUNT_REGISTRY_TABLES_SQL__", _ACCOUNT_REGISTRY_TABLES_SQL)
+    .replace("__ACCOUNT_REGISTRY_ROW_COUNTS_SQL__", _ACCOUNT_REGISTRY_ROW_COUNTS_SQL)
+    .strip()
+)
 
 _BANK_TABLES_SQL = ", ".join(f"'{name}'" for name in BANK_STATEMENT_TABLES)
 _BANK_ROLES_SQL = ", ".join(f"('{name}'::name)" for name in R1_CONTROLLED_ROLES)
@@ -2068,6 +2381,25 @@ def _database_metadata(
         if not isinstance(bank_security, dict) or set(bank_security) != required_bank_keys:
             raise BackupError("bank statement security query returned an incomplete object")
         metadata.update(cast(dict[str, Any], bank_security))
+    if revision >= ACCOUNT_REGISTRY_SECURITY_REVISION:
+        registry_security = query(ACCOUNT_REGISTRY_SECURITY_SQL)
+        required_registry_keys = {
+            "account_registry_row_counts",
+            "account_registry_tables",
+            "account_registry_functions",
+            "account_registry_triggers",
+            "account_registry_constraints",
+            "account_registry_table_acls",
+            "account_registry_function_acls",
+            "account_registry_effective_table_privileges",
+            "account_registry_effective_function_privileges",
+        }
+        if (
+            not isinstance(registry_security, dict)
+            or set(registry_security) != required_registry_keys
+        ):
+            raise BackupError("account registry security query returned an incomplete object")
+        metadata.update(cast(dict[str, Any], registry_security))
     if revision >= "20260821_0003":
         artifact_sql = (
             R1_ARTIFACT_MANIFEST_SQL if revision >= "20260824_0012" else ARTIFACT_MANIFEST_SQL
@@ -3513,7 +3845,8 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
         raise BackupError("restored bank statement row-count metadata is invalid")
 
     owner = metadata.get("database_owner")
-    if not isinstance(owner, str):
+    revision = metadata.get("alembic_version")
+    if not isinstance(owner, str) or not isinstance(revision, str):
         raise BackupError("restored bank statement database owner is invalid")
     tables = _list("bank_statement_tables")
     actual_tables = {item.get("table") for item in tables}
@@ -3572,9 +3905,14 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
         )
         for item in triggers
     }
+    expected_trigger_contract = dict(BANK_STATEMENT_TRIGGER_CONTRACT)
+    if revision >= ACCOUNT_REGISTRY_SECURITY_REVISION:
+        expected_trigger_contract.pop("validate_managed_account_audit")
+        expected_trigger_contract.pop("require_statement_backed_account")
+        expected_trigger_contract.update(ACCOUNT_REGISTRY_MANAGED_ACCOUNT_TRIGGER_CONTRACT)
     if (
         len(actual_trigger_contract) != len(triggers)
-        or actual_trigger_contract != BANK_STATEMENT_TRIGGER_CONTRACT
+        or actual_trigger_contract != expected_trigger_contract
     ):
         raise BackupError(
             "restored bank statement trigger contract differs from the required baseline"
@@ -3589,9 +3927,13 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
         item.get("name"): (item.get("table"), item.get("type"), item.get("definition"))
         for item in constraints
     }
+    expected_constraint_contract = dict(BANK_STATEMENT_CONSTRAINT_CONTRACT)
+    if revision >= ACCOUNT_REGISTRY_SECURITY_REVISION:
+        expected_constraint_contract.pop("managed_account_institution_code_check")
+        expected_constraint_contract.update(ACCOUNT_REGISTRY_MANAGED_ACCOUNT_CONSTRAINT_CONTRACT)
     if (
         len(actual_constraint_contract) != len(constraints)
-        or actual_constraint_contract != BANK_STATEMENT_CONSTRAINT_CONTRACT
+        or actual_constraint_contract != expected_constraint_contract
     ):
         raise BackupError("restored bank statement constraints differ from the required baseline")
     for item in constraints:
@@ -3744,6 +4086,164 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
             raise BackupError("restored bank statement schema privilege matrix is invalid")
 
 
+def _validate_account_registry_security(metadata: dict[str, Any]) -> None:
+    def _list(name: str) -> list[dict[str, Any]]:
+        value = metadata.get(name)
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise BackupError(f"restored account registry metadata is invalid: {name}")
+        return cast(list[dict[str, Any]], value)
+
+    def _grantable(value: Any) -> bool:
+        return value is True or value is False or value in {"YES", "NO"}
+
+    owner = metadata.get("database_owner")
+    if not isinstance(owner, str):
+        raise BackupError("restored account registry database owner is invalid")
+    row_counts = metadata.get("account_registry_row_counts")
+    if (
+        not isinstance(row_counts, dict)
+        or set(row_counts) != set(ACCOUNT_REGISTRY_TABLES)
+        or any(not isinstance(value, int) or value < 0 for value in row_counts.values())
+    ):
+        raise BackupError("restored account registry row-count metadata is invalid")
+
+    tables = _list("account_registry_tables")
+    actual_tables = {item.get("table") for item in tables}
+    if (
+        len(actual_tables) != len(tables)
+        or actual_tables != set(ACCOUNT_REGISTRY_TABLES)
+        or any(item.get("owner") != owner or item.get("kind") != "r" for item in tables)
+    ):
+        raise BackupError("restored account registry table boundary is invalid")
+
+    functions = _list("account_registry_functions")
+    expected_functions = {
+        (schema, name, args)
+        for (schema, name), args in ACCOUNT_REGISTRY_FUNCTION_SIGNATURES.items()
+    }
+    actual_functions = {
+        (item.get("schema"), item.get("name"), item.get("identity_arguments")) for item in functions
+    }
+    if len(actual_functions) != len(functions) or actual_functions != expected_functions:
+        raise BackupError("restored account registry functions differ from the required baseline")
+    for item in functions:
+        function_key = cast(tuple[str, str], (item.get("schema"), item.get("name")))
+        if (
+            item.get("owner") != owner
+            or item.get("security_definer")
+            is not (function_key in ACCOUNT_REGISTRY_SECURITY_DEFINER_FUNCTIONS)
+            or item.get("proconfig") != ["search_path=pg_catalog"]
+            or item.get("result") != ACCOUNT_REGISTRY_FUNCTION_RESULTS.get(function_key)
+        ):
+            raise BackupError("restored account registry function boundary is invalid")
+
+    triggers = _list("account_registry_triggers")
+    actual_trigger_contract = {
+        item.get("name"): (
+            item.get("table"),
+            item.get("constraint"),
+            item.get("deferrable"),
+            item.get("initially_deferred"),
+            item.get("function_name"),
+        )
+        for item in triggers
+    }
+    if (
+        len(actual_trigger_contract) != len(triggers)
+        or actual_trigger_contract != ACCOUNT_REGISTRY_TRIGGER_CONTRACT
+        or any(item.get("enabled") != "O" for item in triggers)
+    ):
+        raise BackupError("restored account registry trigger contract is invalid")
+
+    constraints = _list("account_registry_constraints")
+    required_primary_keys = {f"{table}_pkey" for table in ACCOUNT_REGISTRY_TABLES}
+    constraint_names = {item.get("name") for item in constraints}
+    if not required_primary_keys.issubset(constraint_names) or any(
+        item.get("table") not in ACCOUNT_REGISTRY_TABLES
+        or item.get("validated") is not True
+        or item.get("deferrable") is not False
+        or item.get("initially_deferred") is not False
+        for item in constraints
+    ):
+        raise BackupError("restored account registry constraint contract is invalid")
+
+    table_acls = _list("account_registry_table_acls")
+    table_acl_keys = {
+        (item.get("table"), item.get("grantee"), item.get("privilege")) for item in table_acls
+    }
+    if len(table_acl_keys) != len(table_acls) or any(
+        item.get("table") not in ACCOUNT_REGISTRY_TABLES
+        or item.get("grantee") != owner
+        or not _grantable(item.get("grantable"))
+        for item in table_acls
+    ):
+        raise BackupError("restored account registry table ACL contains an excess grant")
+
+    function_acls = _list("account_registry_function_acls")
+    function_acl_keys = {
+        (
+            item.get("schema"),
+            item.get("name"),
+            item.get("identity_arguments"),
+            item.get("grantee"),
+            item.get("privilege"),
+        )
+        for item in function_acls
+    }
+    if len(function_acl_keys) != len(function_acls):
+        raise BackupError("restored account registry function ACL contains a duplicate")
+    for item in function_acls:
+        key = cast(tuple[str, str], (item.get("schema"), item.get("name")))
+        executor = ACCOUNT_REGISTRY_FUNCTION_EXECUTORS.get(key)
+        allowed_grantees = {owner} if executor is None else {owner, executor}
+        if (
+            item.get("grantee") not in allowed_grantees
+            or item.get("privilege") != "EXECUTE"
+            or not _grantable(item.get("grantable"))
+            or (item.get("grantee") != owner and item.get("grantable") not in {False, "NO"})
+        ):
+            raise BackupError("restored account registry function ACL contains an excess grant")
+
+    roles = _list("r1_role_matrix")
+    active_roles = {item.get("role") for item in roles if item.get("role") in R1_CONTROLLED_ROLES}
+    table_privileges = _list("account_registry_effective_table_privileges")
+    expected_table_keys = {
+        (role, table) for role in active_roles for table in ACCOUNT_REGISTRY_TABLES
+    }
+    actual_table_keys = {(item.get("role"), item.get("table")) for item in table_privileges}
+    if len(actual_table_keys) != len(table_privileges) or actual_table_keys != expected_table_keys:
+        raise BackupError("restored account registry table privilege matrix is incomplete")
+    if any(
+        any(
+            item.get(privilege) is not False
+            for privilege in ("select", "insert", "update", "delete")
+        )
+        for item in table_privileges
+    ):
+        raise BackupError("restored account registry table has an unexpected privilege")
+
+    function_privileges = _list("account_registry_effective_function_privileges")
+    expected_function_keys = {
+        (role, schema, name, args)
+        for role in active_roles
+        for schema, name, args in expected_functions
+    }
+    actual_function_keys = {
+        (item.get("role"), item.get("schema"), item.get("name"), item.get("identity_arguments"))
+        for item in function_privileges
+    }
+    if (
+        len(actual_function_keys) != len(function_privileges)
+        or actual_function_keys != expected_function_keys
+    ):
+        raise BackupError("restored account registry function privilege matrix is incomplete")
+    for item in function_privileges:
+        key = cast(tuple[str, str], (item.get("schema"), item.get("name")))
+        executor = ACCOUNT_REGISTRY_FUNCTION_EXECUTORS.get(key)
+        if item.get("execute") is not (item.get("role") == executor):
+            raise BackupError("restored account registry function privilege matrix is invalid")
+
+
 def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
     if metadata.get("metadata_version") != 2:
         raise BackupError("restored database lacks v2 metadata observations")
@@ -3757,6 +4257,8 @@ def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
         _validate_counterparty_security(metadata)
     if revision >= BANK_STATEMENT_SECURITY_REVISION:
         _validate_bank_statement_security(metadata)
+    if revision >= ACCOUNT_REGISTRY_SECURITY_REVISION:
+        _validate_account_registry_security(metadata)
     if metadata.get("database_temp_denied") is not True:
         raise BackupError("restored database TEMP privilege invariant failed")
     functions = metadata.get("security_functions")
