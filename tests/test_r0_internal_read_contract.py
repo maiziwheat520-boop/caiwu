@@ -183,6 +183,7 @@ def test_route_capability_matrix_is_exact_and_non_transitive() -> None:
         "GET /internal/v1/evidence/{id}/content",
         "GET /internal/v1/reconciliations/{month}",
         "GET /internal/v1/ledger-summary",
+        "GET /internal/v1/company-reports",
     }
     assert READ_ROUTE_SCOPE_MODES == {
         "GET /internal/v1/capabilities": ScopeMode.SYSTEM,
@@ -192,6 +193,7 @@ def test_route_capability_matrix_is_exact_and_non_transitive() -> None:
         "GET /internal/v1/evidence/{id}/content": ScopeMode.OBJECT,
         "GET /internal/v1/reconciliations/{month}": ScopeMode.OBJECT,
         "GET /internal/v1/ledger-summary": ScopeMode.OBJECT,
+        "GET /internal/v1/company-reports": ScopeMode.COLLECTION,
     }
     candidate_only = _principal("candidate-only", frozenset({Capability.CANDIDATE_READ}))
     authorize_read(
@@ -210,6 +212,10 @@ def test_route_capability_matrix_is_exact_and_non_transitive() -> None:
             authorize_read(candidate_only, denied)
 
     authorize_collection_read(candidate_only, Capability.CANDIDATE_READ)
+    ledger_collection = _principal("ledger-collection", frozenset({Capability.LEDGER_READ}))
+    authorize_collection_read(ledger_collection, Capability.LEDGER_READ)
+    with pytest.raises(AuthorizationDenied):
+        authorize_collection_read(ledger_collection, Capability.EVIDENCE_READ)
     no_scope = _principal("no-scope", frozenset({Capability.CANDIDATE_READ})).model_copy(
         update={"grants": ()}
     )

@@ -499,6 +499,7 @@ class DatabaseInternalReadService:
                 "evidence",
                 "reconciliations",
                 "ledger-summary",
+                "company-reporting",
             ),
         )
 

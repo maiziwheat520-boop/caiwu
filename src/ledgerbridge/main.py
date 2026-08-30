@@ -27,6 +27,7 @@ from ledgerbridge.auth import (
     AuthenticatedPrincipal,
     authorize_principal,
 )
+from ledgerbridge.company_reporting_routes import router as company_reporting_router
 from ledgerbridge.config import Settings, get_settings
 from ledgerbridge.connectors import Connector
 from ledgerbridge.db import get_session, get_session_factory
@@ -81,6 +82,7 @@ app.add_middleware(
     verifier=lambda scope: verify_configured_mtls_principal(scope, get_settings()),
 )
 app.include_router(internal_read_router)
+app.include_router(company_reporting_router)
 app.include_router(internal_candidate_command_router)
 app.include_router(internal_evidence_unlock_router)
 app.include_router(internal_payroll_router)
