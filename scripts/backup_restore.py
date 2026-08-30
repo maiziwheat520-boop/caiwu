@@ -1678,6 +1678,220 @@ SELECT json_build_object(
     .strip()
 )
 
+EVIDENCE_UNLOCK_SECURITY_REVISION = "20260830_0025"
+EVIDENCE_UNLOCK_TABLES = (
+    "evidence_unlock_source",
+    "evidence_unlock_operation",
+    "evidence_unlock_receipt",
+    "evidence_unlock_output",
+)
+EVIDENCE_UNLOCK_TABLE_SCHEMAS = {
+    "evidence_unlock_source": "internal_import",
+    "evidence_unlock_operation": "internal_command",
+    "evidence_unlock_receipt": "internal_command",
+    "evidence_unlock_output": "internal_command",
+}
+EVIDENCE_UNLOCK_FUNCTION_SIGNATURES = {
+    "register_evidence_unlock_source": "p_request jsonb",
+    "evidence_unlock_reject_mutation": "",
+    "normalize_evidence_unlock_scope_bindings": "p_bindings jsonb",
+    "require_evidence_unlock_operation": "p_request jsonb, p_contract_version text",
+    "prepare_evidence_unlock": "p_request jsonb",
+    "complete_evidence_unlock": "p_request jsonb",
+    "reject_evidence_unlock": "p_request jsonb",
+    "project_evidence_unlocks": "p_evidence jsonb, p_audit_horizon_sequence bigint",
+    "list_candidates_base_as_of": R1_INTERNAL_READ_FUNCTION_SIGNATURES["list_candidates_as_of"],
+    "render_candidate_revision_base": "p_candidate_id uuid, p_revision integer",
+    "list_candidates_as_of": R1_INTERNAL_READ_FUNCTION_SIGNATURES["list_candidates_as_of"],
+    "render_candidate_revision": "p_candidate_id uuid, p_revision integer",
+}
+EVIDENCE_UNLOCK_FUNCTION_SCHEMAS = {
+    "register_evidence_unlock_source": "internal_import",
+    "evidence_unlock_reject_mutation": "internal_command",
+    "normalize_evidence_unlock_scope_bindings": "internal_command",
+    "require_evidence_unlock_operation": "internal_command",
+    "prepare_evidence_unlock": "internal_command",
+    "complete_evidence_unlock": "internal_command",
+    "reject_evidence_unlock": "internal_command",
+    "project_evidence_unlocks": "internal_read",
+    "list_candidates_base_as_of": "internal_read",
+    "render_candidate_revision_base": "internal_read",
+    "list_candidates_as_of": "internal_read",
+    "render_candidate_revision": "internal_read",
+}
+EVIDENCE_UNLOCK_FUNCTION_EXECUTORS = {
+    "register_evidence_unlock_source": "ledgerbridge_worker",
+    "prepare_evidence_unlock": "ledgerbridge_api",
+    "complete_evidence_unlock": "ledgerbridge_api",
+    "reject_evidence_unlock": "ledgerbridge_api",
+    "list_candidates_as_of": "ledgerbridge_reader",
+}
+_EVIDENCE_UNLOCK_LIST_CANDIDATES_RESULT = (
+    "TABLE(contract_version character varying, candidate_ref uuid, "
+    "short_id character varying, revision integer, status character varying, "
+    "entity_ref uuid, business_unit_ref character varying, "
+    "business_unit_label character varying, category_code character varying, "
+    "category_label character varying, amount_minor bigint, currency character varying, "
+    "accounting_month character varying, summary character varying, "
+    "confidence_basis_points smallint, source jsonb, evidence jsonb, blockers jsonb, "
+    "review_summary jsonb, created_at timestamp with time zone, "
+    "updated_at timestamp with time zone, supersedes_candidate_ref uuid, "
+    "superseded_by_candidate_ref uuid)"
+)
+EVIDENCE_UNLOCK_FUNCTION_RESULTS = {
+    "register_evidence_unlock_source": "TABLE(source_ref uuid, source_evidence_ref uuid)",
+    "evidence_unlock_reject_mutation": "trigger",
+    "normalize_evidence_unlock_scope_bindings": "jsonb",
+    "require_evidence_unlock_operation": "internal_command.evidence_unlock_operation",
+    "prepare_evidence_unlock": (
+        "TABLE(outcome text, source_ref uuid, source_evidence_ref uuid, entity_ref uuid, "
+        "business_unit_ref character varying, object_ref character varying, "
+        "plaintext_sha256 bytea, plaintext_size bigint, ciphertext_sha256 bytea, "
+        "ciphertext_size bigint, storage_key character varying, chunk_size integer, "
+        "stream_header bytea, wrapped_key_generation character varying, "
+        "wrapped_key_nonce bytea, wrapped_key_ciphertext bytea)"
+    ),
+    "complete_evidence_unlock": "TABLE(source_ref uuid, unlock_status text)",
+    "reject_evidence_unlock": "TABLE(source_ref uuid)",
+    "project_evidence_unlocks": "jsonb",
+    "list_candidates_base_as_of": _EVIDENCE_UNLOCK_LIST_CANDIDATES_RESULT,
+    "render_candidate_revision_base": "jsonb",
+    "list_candidates_as_of": _EVIDENCE_UNLOCK_LIST_CANDIDATES_RESULT,
+    "render_candidate_revision": "jsonb",
+}
+EVIDENCE_UNLOCK_SECURITY_DEFINER_FUNCTIONS = frozenset(
+    set(EVIDENCE_UNLOCK_FUNCTION_SIGNATURES) - {"normalize_evidence_unlock_scope_bindings"}
+)
+EVIDENCE_UNLOCK_TRIGGER_CONTRACT = {
+    "evidence_unlock_source_append_only": (
+        "internal_import",
+        "evidence_unlock_source",
+        "evidence_unlock_reject_mutation",
+    ),
+    "evidence_unlock_operation_append_only": (
+        "internal_command",
+        "evidence_unlock_operation",
+        "evidence_unlock_reject_mutation",
+    ),
+    "evidence_unlock_receipt_append_only": (
+        "internal_command",
+        "evidence_unlock_receipt",
+        "evidence_unlock_reject_mutation",
+    ),
+    "evidence_unlock_output_append_only": (
+        "internal_command",
+        "evidence_unlock_output",
+        "evidence_unlock_reject_mutation",
+    ),
+}
+
+_EVIDENCE_UNLOCK_ROLES_SQL = ", ".join(f"('{name}'::name)" for name in R1_CONTROLLED_ROLES)
+_EVIDENCE_UNLOCK_TABLES_SQL = ", ".join(
+    f"('{schema}', '{table}')" for table, schema in EVIDENCE_UNLOCK_TABLE_SCHEMAS.items()
+)
+_EVIDENCE_UNLOCK_FUNCTIONS_SQL = ", ".join(
+    f"('{EVIDENCE_UNLOCK_FUNCTION_SCHEMAS[name]}', '{name}', '{arguments}')"
+    for name, arguments in EVIDENCE_UNLOCK_FUNCTION_SIGNATURES.items()
+)
+_EVIDENCE_UNLOCK_ROW_COUNTS_SQL = ", ".join(
+    f"'{table}', (SELECT count(*) FROM {schema}.{table})"  # nosec B608 - fixed allowlist.
+    for table, schema in EVIDENCE_UNLOCK_TABLE_SCHEMAS.items()
+)
+EVIDENCE_UNLOCK_SECURITY_SQL = (
+    ""  # nosec B608 - replacements use only fixed allowlists.
+    """
+WITH expected_roles(role_name) AS (VALUES __EVIDENCE_UNLOCK_ROLES_SQL__),
+present_roles(role_name) AS (
+ SELECT e.role_name FROM expected_roles e JOIN pg_roles r ON r.rolname=e.role_name
+), expected_tables(schema_name,table_name) AS (
+ VALUES __EVIDENCE_UNLOCK_TABLES_SQL__
+), expected_functions(schema_name,function_name,identity_arguments) AS (
+ VALUES __EVIDENCE_UNLOCK_FUNCTIONS_SQL__
+), observed_tables AS (
+ SELECT n.nspname schema_name,c.relname table_name,pg_get_userbyid(c.relowner) owner,c.relkind kind
+ FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ JOIN expected_tables e ON e.schema_name=n.nspname AND e.table_name=c.relname
+), observed_functions AS (
+ SELECT p.oid function_oid,n.nspname schema_name,p.proname function_name,
+  pg_get_function_identity_arguments(p.oid) identity_arguments,
+  pg_get_function_result(p.oid) result,pg_get_userbyid(p.proowner) owner,
+  p.prosecdef security_definer,COALESCE(to_jsonb(p.proconfig),'[]'::jsonb) proconfig
+ FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+ JOIN expected_functions e ON e.schema_name=n.nspname AND e.function_name=p.proname
+  AND e.identity_arguments=pg_get_function_identity_arguments(p.oid)
+), observed_triggers AS (
+ SELECT n.nspname schema_name,c.relname table_name,t.tgname trigger_name,t.tgenabled enabled,
+  t.tgconstraint<>0 is_constraint,p.proname function_name
+ FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+ JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid
+ JOIN expected_tables e ON e.schema_name=n.nspname AND e.table_name=c.relname
+ WHERE NOT t.tgisinternal
+), table_acls AS (
+ SELECT n.nspname schema_name,c.relname table_name,
+  CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ JOIN expected_tables e ON e.schema_name=n.nspname AND e.table_name=c.relname
+ CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a
+), function_acls AS (
+ SELECT n.nspname schema_name,p.proname function_name,
+  pg_get_function_identity_arguments(p.oid) identity_arguments,
+  CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+ JOIN expected_functions e ON e.schema_name=n.nspname AND e.function_name=p.proname
+  AND e.identity_arguments=pg_get_function_identity_arguments(p.oid)
+ CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
+), table_privileges AS (
+ SELECT r.role_name role,t.schema_name,t.table_name,
+  has_table_privilege(r.role_name::text,format('%I.%I',t.schema_name,t.table_name),'SELECT') can_select,
+  has_table_privilege(r.role_name::text,format('%I.%I',t.schema_name,t.table_name),'INSERT') can_insert,
+  has_table_privilege(r.role_name::text,format('%I.%I',t.schema_name,t.table_name),'UPDATE') can_update,
+ has_table_privilege(r.role_name::text,format('%I.%I',t.schema_name,t.table_name),'DELETE') can_delete
+ FROM present_roles r CROSS JOIN observed_tables t
+), function_privileges AS (
+ SELECT r.role_name role,f.schema_name,f.function_name,f.identity_arguments,
+  has_function_privilege(r.role_name::text,f.function_oid,'EXECUTE') can_execute
+ FROM present_roles r CROSS JOIN observed_functions f
+)
+SELECT jsonb_build_object(
+ 'evidence_unlock_row_counts',jsonb_build_object(__EVIDENCE_UNLOCK_ROW_COUNTS_SQL__),
+ 'evidence_unlock_tables',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+  'schema',schema_name,'table',table_name,'owner',owner,'kind',kind)
+  ORDER BY schema_name,table_name) FROM observed_tables),'[]'::jsonb),
+ 'evidence_unlock_functions',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+  'schema',schema_name,'name',function_name,'identity_arguments',identity_arguments,
+  'result',result,'owner',owner,'security_definer',security_definer,'proconfig',proconfig)
+  ORDER BY schema_name,function_name,identity_arguments) FROM observed_functions),'[]'::jsonb),
+ 'evidence_unlock_triggers',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+  'schema',schema_name,'table',table_name,'name',trigger_name,'enabled',enabled,
+  'constraint',is_constraint,'function_name',function_name)
+  ORDER BY schema_name,table_name,trigger_name) FROM observed_triggers),'[]'::jsonb),
+ 'evidence_unlock_table_acls',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+  'schema',schema_name,'table',table_name,'grantee',grantee,'privilege',privilege,
+  'grantable',grantable) ORDER BY schema_name,table_name,grantee,privilege)
+  FROM table_acls),'[]'::jsonb),
+ 'evidence_unlock_function_acls',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+  'schema',schema_name,'name',function_name,'identity_arguments',identity_arguments,
+  'grantee',grantee,'privilege',privilege,'grantable',grantable)
+  ORDER BY schema_name,function_name,identity_arguments,grantee,privilege)
+  FROM function_acls),'[]'::jsonb),
+ 'evidence_unlock_effective_table_privileges',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+  'role',role,'schema',schema_name,'table',table_name,'select',can_select,'insert',can_insert,
+  'update',can_update,'delete',can_delete) ORDER BY role,schema_name,table_name)
+  FROM table_privileges),'[]'::jsonb),
+ 'evidence_unlock_effective_function_privileges',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+  'role',role,'schema',schema_name,'name',function_name,'identity_arguments',identity_arguments,
+  'execute',can_execute) ORDER BY role,schema_name,function_name,identity_arguments)
+  FROM function_privileges),'[]'::jsonb)
+)::text;
+    """.replace("__EVIDENCE_UNLOCK_ROLES_SQL__", _EVIDENCE_UNLOCK_ROLES_SQL)
+    .replace("__EVIDENCE_UNLOCK_TABLES_SQL__", _EVIDENCE_UNLOCK_TABLES_SQL)
+    .replace("__EVIDENCE_UNLOCK_FUNCTIONS_SQL__", _EVIDENCE_UNLOCK_FUNCTIONS_SQL)
+    .replace("__EVIDENCE_UNLOCK_ROW_COUNTS_SQL__", _EVIDENCE_UNLOCK_ROW_COUNTS_SQL)
+    .strip()
+)
+
 COMPANY_REPORTING_SECURITY_REVISION = "20260830_0024"
 COMPANY_REPORTING_SCHEMA = "company_reporting_read"
 COMPANY_REPORTING_FUNCTION_SIGNATURES = {
@@ -2643,6 +2857,24 @@ def _database_metadata(
         ):
             raise BackupError("company reporting security query returned an incomplete object")
         metadata.update(cast(dict[str, Any], company_reporting_security))
+    if revision >= EVIDENCE_UNLOCK_SECURITY_REVISION:
+        evidence_unlock_security = query(EVIDENCE_UNLOCK_SECURITY_SQL)
+        required_evidence_unlock_keys = {
+            "evidence_unlock_row_counts",
+            "evidence_unlock_tables",
+            "evidence_unlock_functions",
+            "evidence_unlock_triggers",
+            "evidence_unlock_table_acls",
+            "evidence_unlock_function_acls",
+            "evidence_unlock_effective_table_privileges",
+            "evidence_unlock_effective_function_privileges",
+        }
+        if (
+            not isinstance(evidence_unlock_security, dict)
+            or set(evidence_unlock_security) != required_evidence_unlock_keys
+        ):
+            raise BackupError("evidence unlock security query returned an incomplete object")
+        metadata.update(cast(dict[str, Any], evidence_unlock_security))
     if revision >= "20260821_0003":
         artifact_sql = (
             R1_ARTIFACT_MANIFEST_SQL if revision >= "20260824_0012" else ARTIFACT_MANIFEST_SQL
@@ -4487,6 +4719,155 @@ def _validate_account_registry_security(metadata: dict[str, Any]) -> None:
             raise BackupError("restored account registry function privilege matrix is invalid")
 
 
+def _validate_evidence_unlock_security(metadata: dict[str, Any]) -> None:
+    def _list(name: str) -> list[dict[str, Any]]:
+        value = metadata.get(name)
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise BackupError(f"restored evidence unlock metadata is invalid: {name}")
+        return cast(list[dict[str, Any]], value)
+
+    def _grantable(value: Any) -> bool:
+        return value is True or value is False or value in {"YES", "NO"}
+
+    owner = metadata.get("database_owner")
+    if not isinstance(owner, str):
+        raise BackupError("restored evidence unlock database owner is invalid")
+    row_counts = metadata.get("evidence_unlock_row_counts")
+    if (
+        not isinstance(row_counts, dict)
+        or set(row_counts) != set(EVIDENCE_UNLOCK_TABLES)
+        or any(not isinstance(value, int) or value < 0 for value in row_counts.values())
+    ):
+        raise BackupError("restored evidence unlock row-count metadata is invalid")
+
+    tables = _list("evidence_unlock_tables")
+    expected_tables = {(schema, table) for table, schema in EVIDENCE_UNLOCK_TABLE_SCHEMAS.items()}
+    actual_tables = {(item.get("schema"), item.get("table")) for item in tables}
+    if (
+        len(actual_tables) != len(tables)
+        or actual_tables != expected_tables
+        or any(item.get("owner") != owner or item.get("kind") != "r" for item in tables)
+    ):
+        raise BackupError("restored evidence unlock table boundary is invalid")
+
+    functions = _list("evidence_unlock_functions")
+    expected_functions = {
+        (EVIDENCE_UNLOCK_FUNCTION_SCHEMAS[name], name, arguments)
+        for name, arguments in EVIDENCE_UNLOCK_FUNCTION_SIGNATURES.items()
+    }
+    actual_functions = {
+        (item.get("schema"), item.get("name"), item.get("identity_arguments")) for item in functions
+    }
+    if len(actual_functions) != len(functions) or actual_functions != expected_functions:
+        raise BackupError("restored evidence unlock functions differ from the required baseline")
+    for item in functions:
+        name = cast(str, item.get("name"))
+        if (
+            item.get("owner") != owner
+            or item.get("security_definer")
+            is not (name in EVIDENCE_UNLOCK_SECURITY_DEFINER_FUNCTIONS)
+            or item.get("proconfig") != ["search_path=pg_catalog"]
+            or item.get("result") != EVIDENCE_UNLOCK_FUNCTION_RESULTS[name]
+        ):
+            raise BackupError("restored evidence unlock function boundary is invalid")
+
+    triggers = _list("evidence_unlock_triggers")
+    actual_triggers = {
+        item.get("name"): (
+            item.get("schema"),
+            item.get("table"),
+            item.get("function_name"),
+        )
+        for item in triggers
+    }
+    if (
+        len(actual_triggers) != len(triggers)
+        or actual_triggers != EVIDENCE_UNLOCK_TRIGGER_CONTRACT
+        or any(
+            item.get("enabled") != "O" or item.get("constraint") is not False for item in triggers
+        )
+    ):
+        raise BackupError("restored evidence unlock trigger contract is invalid")
+
+    table_acls = _list("evidence_unlock_table_acls")
+    table_acl_keys = {
+        (item.get("schema"), item.get("table"), item.get("grantee"), item.get("privilege"))
+        for item in table_acls
+    }
+    if len(table_acl_keys) != len(table_acls) or any(
+        (item.get("schema"), item.get("table")) not in expected_tables
+        or item.get("grantee") != owner
+        or not _grantable(item.get("grantable"))
+        for item in table_acls
+    ):
+        raise BackupError("restored evidence unlock table ACL contains an excess grant")
+
+    function_acls = _list("evidence_unlock_function_acls")
+    function_acl_keys = {
+        (
+            item.get("schema"),
+            item.get("name"),
+            item.get("identity_arguments"),
+            item.get("grantee"),
+            item.get("privilege"),
+        )
+        for item in function_acls
+    }
+    if len(function_acl_keys) != len(function_acls):
+        raise BackupError("restored evidence unlock function ACL contains a duplicate")
+    for item in function_acls:
+        name = cast(str, item.get("name"))
+        executor = EVIDENCE_UNLOCK_FUNCTION_EXECUTORS.get(name)
+        allowed_grantees = {owner} if executor is None else {owner, executor}
+        if (
+            item.get("grantee") not in allowed_grantees
+            or item.get("privilege") != "EXECUTE"
+            or not _grantable(item.get("grantable"))
+            or (item.get("grantee") != owner and item.get("grantable") not in {False, "NO"})
+        ):
+            raise BackupError("restored evidence unlock function ACL contains an excess grant")
+
+    roles = _list("r1_role_matrix")
+    active_roles = {item.get("role") for item in roles if item.get("role") in R1_CONTROLLED_ROLES}
+    table_privileges = _list("evidence_unlock_effective_table_privileges")
+    expected_table_keys = {
+        (role, schema, table) for role in active_roles for schema, table in expected_tables
+    }
+    actual_table_keys = {
+        (item.get("role"), item.get("schema"), item.get("table")) for item in table_privileges
+    }
+    if len(actual_table_keys) != len(table_privileges) or actual_table_keys != expected_table_keys:
+        raise BackupError("restored evidence unlock table privilege matrix is incomplete")
+    if any(
+        any(
+            item.get(privilege) is not False
+            for privilege in ("select", "insert", "update", "delete")
+        )
+        for item in table_privileges
+    ):
+        raise BackupError("restored evidence unlock table has an unexpected privilege")
+
+    function_privileges = _list("evidence_unlock_effective_function_privileges")
+    expected_function_keys = {
+        (role, schema, name, arguments)
+        for role in active_roles
+        for schema, name, arguments in expected_functions
+    }
+    actual_function_keys = {
+        (item.get("role"), item.get("schema"), item.get("name"), item.get("identity_arguments"))
+        for item in function_privileges
+    }
+    if (
+        len(actual_function_keys) != len(function_privileges)
+        or actual_function_keys != expected_function_keys
+    ):
+        raise BackupError("restored evidence unlock function privilege matrix is incomplete")
+    for item in function_privileges:
+        executor = EVIDENCE_UNLOCK_FUNCTION_EXECUTORS.get(cast(str, item.get("name")))
+        if item.get("execute") is not (item.get("role") == executor):
+            raise BackupError("restored evidence unlock function privilege matrix is invalid")
+
+
 def _validate_company_reporting_security(metadata: dict[str, Any]) -> None:
     def _list(name: str) -> list[dict[str, Any]]:
         value = metadata.get(name)
@@ -4714,6 +5095,8 @@ def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
         _validate_account_registry_security(metadata)
     if revision >= COMPANY_REPORTING_SECURITY_REVISION:
         _validate_company_reporting_security(metadata)
+    if revision >= EVIDENCE_UNLOCK_SECURITY_REVISION:
+        _validate_evidence_unlock_security(metadata)
     if metadata.get("database_temp_denied") is not True:
         raise BackupError("restored database TEMP privilege invariant failed")
     functions = metadata.get("security_functions")

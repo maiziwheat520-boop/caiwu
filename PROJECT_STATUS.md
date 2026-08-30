@@ -14,9 +14,11 @@ queued, or passed through process arguments.
 Archive parsing runs only in the dedicated `evidence-unlocker` process over a private Unix domain
 socket. The API artifact volume remains read-only; the no-network/no-database sidecar validates
 encrypted ZIP members and writes encrypted outputs. Production compose keeps both the HTTP route
-and sidecar profile disabled by default. Persistent source, receipt, output, audit, and candidate
-projection support remains reserved for migration `20260830_0025` after the centrally coordinated
-linear `0022 -> 0023 -> 0024` chain lands. No production source or enablement was added. See
+and sidecar profile disabled by default. Migration `20260830_0025` now follows the coordinated
+`0022 -> 0023 -> 0024` chain and installs append-only reviewed-source, operation, receipt, and
+output facts plus the authoritative audit-horizon candidate projection. Backup/restore validation
+pins their owners, signatures, triggers, ACLs, and effective privileges. No production source or
+enablement was added. See
 `docs/adr/0002-isolate-evidence-unlock-in-a-sidecar.md`.
 
 ## Manual-review posting correction checkpoint (2026-08-30)

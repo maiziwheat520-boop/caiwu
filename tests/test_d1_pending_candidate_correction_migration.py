@@ -117,6 +117,16 @@ def test_0022_command_and_event_sql_keep_terminal_states_closed() -> None:
     assert "p_action = 'CORRECT_AND_CONFIRM' AND v_previous.status = 'PENDING'" not in legacy_sql
     assert "bu.retired_at IS NULL" not in legacy_sql
     assert constraint_sql.count("'CORRECT_AND_CONFIRM'") == 2
+    assert "DROP CONSTRAINT IF EXISTS candidate_event_type_allowed" in constraint_sql
+    assert "DROP CONSTRAINT IF EXISTS candidate_event_action_allowed" in constraint_sql
+    assert (
+        "DROP CONSTRAINT IF EXISTS ck_candidate_event_candidate_event_type_allowed"
+        in constraint_sql
+    )
+    assert (
+        "DROP CONSTRAINT IF EXISTS ck_candidate_event_candidate_event_action_allowed"
+        in constraint_sql
+    )
 
 
 def test_0022_accounting_dimensions_are_scoped_active_and_reader_only() -> None:

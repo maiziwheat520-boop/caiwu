@@ -1563,3 +1563,18 @@ explicitly injected EncryptedArtifactStore and the allowlisted aggregate
 function; default route wiring remains fail-closed. Uncommitted parallel edits
 appearing after that run are outside its verification scope and require a new
 review/run before they are considered covered.
+
+## Controlled evidence unlock extension (2026-08-30)
+
+Migration `20260830_0025` extends the R1 boundary with four append-only relations:
+`internal_import.evidence_unlock_source` and the `internal_command` operation, receipt, and output
+relations. No runtime role has direct table privileges. `ledgerbridge_worker` can register one
+reviewed source, `ledgerbridge_api` can prepare/complete/reject a bound operation, and
+`ledgerbridge_reader` can execute only the wrapped candidate list projection. The projection
+derives `NOT_REQUIRED`, `PASSWORD_REQUIRED`, or `UNLOCKED` at the requested audit horizon and adds
+only encrypted outputs from the latest successful operation as attachments.
+
+The restore verifier treats table owners, exact function signatures and results, security-definer
+settings, fixed search paths, append-only triggers, ACLs, effective privileges, and row counts as
+part of the backup contract. An empty non-production downgrade restores the prior reader function
+names; production downgrade and downgrade after any unlock fact exists are rejected.

@@ -102,8 +102,10 @@ def _event_constraints_sql(*, allow_pending_corrections: bool) -> str:
     correction = ",'CORRECT_AND_CONFIRM'" if allow_pending_corrections else ""
     return f"""
         ALTER TABLE public.candidate_event
-            DROP CONSTRAINT candidate_event_type_allowed,
-            DROP CONSTRAINT candidate_event_action_allowed;
+            DROP CONSTRAINT IF EXISTS candidate_event_type_allowed,
+            DROP CONSTRAINT IF EXISTS candidate_event_action_allowed,
+            DROP CONSTRAINT IF EXISTS ck_candidate_event_candidate_event_type_allowed,
+            DROP CONSTRAINT IF EXISTS ck_candidate_event_candidate_event_action_allowed;
         ALTER TABLE public.candidate_event
             ADD CONSTRAINT candidate_event_type_allowed CHECK (
                 event_type IN (

@@ -3398,7 +3398,7 @@ def test_company_reporting_nonempty_downgrade_preserves_immutable_snapshots(
 
     with engine.connect() as connection:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "20260830_0024"
+            "20260830_0025"
         )
         snapshot_columns = set(
             connection.execute(
@@ -3415,6 +3415,169 @@ def test_company_reporting_nonempty_downgrade_preserves_immutable_snapshots(
             "business_unit_ref_snapshot",
             "business_unit_label_snapshot",
         }
+
+
+def test_evidence_unlock_round_trip_is_scoped_idempotent_and_projected(
+    isolated_r1_database: str,
+) -> None:
+    engine = create_engine(isolated_r1_database)
+    with engine.begin() as connection:
+        facts = _seed_read_facts(connection)
+        source_ref = uuid4()
+        source_request = {
+            "contract_version": "ledgerbridge.evidence-unlock-source.v1",
+            "source_ref": str(source_ref),
+            "source_evidence_ref": str(facts["evidence"]),
+            "entity_ref": str(facts["entity"]),
+            "business_unit_id": str(facts["unit"]),
+            "actor_ref": "human:evidence-unlock-test",
+            "reason": "reviewed evidence unlock integration fixture",
+        }
+        registered = connection.execute(
+            text(
+                "SELECT * FROM internal_import.register_evidence_unlock_source("
+                "CAST(:request AS jsonb))"
+            ),
+            {"request": json.dumps(source_request)},
+        ).one()
+        operation_id = uuid4()
+        assertion_jti = uuid4()
+        identity = {
+            "source_ref": str(source_ref),
+            "operation_id": str(operation_id),
+            "assertion_jti": str(assertion_jti),
+            "actor_ref": "human:evidence-unlock-test",
+            "authentication_generation": 1,
+            "workload_principal_ref": "workload:evidence-api",
+            "verified_san": "spiffe://ledgerbridge.test/evidence-api",
+            "policy_generation": "integration-v1",
+            "scope_bindings": [
+                {
+                    "entity_ref": str(facts["entity"]),
+                    "business_unit_id": str(facts["unit"]),
+                }
+            ],
+        }
+        command_request = {
+            "contract_version": "ledgerbridge.evidence-unlock-command.v1",
+            **identity,
+        }
+        prepared = connection.execute(
+            text(
+                "SELECT * FROM internal_command.prepare_evidence_unlock("
+                "CAST(:request AS jsonb))"
+            ),
+            {"request": json.dumps(command_request)},
+        ).one()
+        output_ref = uuid4()
+        output = {
+            "evidence_ref": str(output_ref),
+            "media_type": "application/pdf",
+            "display_name": "unlocked.pdf",
+            "object_ref": "aa" * 32,
+            "plaintext_sha256": "bb" * 32,
+            "plaintext_size": 10,
+            "ciphertext_sha256": "cc" * 32,
+            "ciphertext_size": 20,
+            "storage_key": "sha256/cc/cc/" + "cc" * 32,
+            "chunk_size": 65536,
+            "stream_header": "dd" * 24,
+            "wrapped_key_generation": "integration-generation",
+            "wrapped_key_nonce": "ee" * 24,
+            "wrapped_key_ciphertext": "ff" * 48,
+        }
+        completion_request = {
+            "contract_version": "ledgerbridge.evidence-unlock-completion.v1",
+            **identity,
+            "outputs": [output],
+        }
+        completed = connection.execute(
+            text(
+                "SELECT * FROM internal_command.complete_evidence_unlock("
+                "CAST(:request AS jsonb))"
+            ),
+            {"request": json.dumps(completion_request)},
+        ).one()
+        replay = connection.execute(
+            text(
+                "SELECT outcome FROM internal_command.prepare_evidence_unlock("
+                "CAST(:request AS jsonb))"
+            ),
+            {"request": json.dumps(command_request)},
+        ).scalar_one()
+        horizon = connection.execute(
+            text("SELECT sequence, hash FROM public.audit_event ORDER BY sequence DESC LIMIT 1")
+        ).one()
+        evidence = connection.execute(
+            text(
+                "SELECT evidence FROM internal_read.list_candidates_as_of("
+                "CAST(:entity AS uuid),CAST(:unit AS uuid),NULL,:sequence,:hash,NULL,NULL,100)"
+            ),
+            {
+                "entity": facts["entity"],
+                "unit": facts["unit"],
+                "sequence": horizon.sequence,
+                "hash": horizon.hash,
+            },
+        ).scalar_one()
+
+        assert registered == (source_ref, facts["evidence"])
+        assert prepared.outcome == "READY"
+        assert completed == (source_ref, "UNLOCKED")
+        assert replay == "REPLAY_UNLOCKED"
+        assert [(item["unlock_status"], item["kind"]) for item in evidence] == [
+            ("UNLOCKED", "ATTACHMENT"),
+            ("UNLOCKED", "ATTACHMENT"),
+        ]
+        assert evidence[1]["evidence_ref"] == str(output_ref)
+
+    conflicting_identity = {
+        **command_request,
+        "operation_id": str(uuid4()),
+    }
+    _assert_db_rejection(
+        engine,
+        [
+            (
+                "SELECT * FROM internal_command.prepare_evidence_unlock("
+                "CAST(:request AS jsonb))",
+                {"request": json.dumps(conflicting_identity)},
+            )
+        ],
+        sqlstate="LB005",
+        message="evidence unlock assertion was reused",
+    )
+    out_of_scope = {
+        **command_request,
+        "operation_id": str(uuid4()),
+        "assertion_jti": str(uuid4()),
+        "scope_bindings": [
+            {
+                "entity_ref": str(facts["other_entity"]),
+                "business_unit_id": str(facts["unit"]),
+            }
+        ],
+    }
+    _assert_db_rejection(
+        engine,
+        [
+            (
+                "SELECT * FROM internal_command.prepare_evidence_unlock("
+                "CAST(:request AS jsonb))",
+                {"request": json.dumps(out_of_scope)},
+            )
+        ],
+        sqlstate="LB004",
+        message="reviewed evidence source was not found in granted scope",
+    )
+    with engine.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT count(*) FROM internal_command.evidence_unlock_operation "
+                "WHERE operation_id = CAST(:operation_id AS uuid)"
+            ),
+            {"operation_id": out_of_scope["operation_id"]},
+        ).scalar_one() == 0
     engine.dispose()
 
 

@@ -72,9 +72,13 @@ as evidence-bound candidates that remain pending human review.
   review, confirmation, or posting.
 - Production remains disabled (`closed` U1 gate and an explicit compose profile). No source,
   password, credential, financial value, or production activation is stored in Git.
-- The persistent source/receipt/output facts and authoritative audit-horizon projection are
-  reserved for migration `20260830_0025`. This branch must not create it until the linear
-  `0022 -> 0023 -> 0024` chain is present.
+- Migration `20260830_0025` now follows the linear `0022 -> 0023 -> 0024` chain. It installs
+  append-only reviewed-source, operation, receipt, and encrypted-output facts and makes the
+  audit-horizon candidate projection authoritative. Runtime roles receive no direct fact-table
+  grants; only the worker registration, API command, and reader projection entry points execute.
+- The backup/restore gate observes and verifies the 0025 row counts, owners, function signatures,
+  append-only triggers, ACLs, and effective privileges. Empty rollback is supported outside
+  production; production rollback and any rollback after facts exist fail closed.
 
 ## OCR and managed-account preprocessing checkpoint (2026-08-29)
 

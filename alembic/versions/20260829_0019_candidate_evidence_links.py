@@ -306,10 +306,12 @@ def downgrade() -> None:
         "DROP FUNCTION IF EXISTS internal_read.list_candidate_evidence_satisfactions("
         "uuid,uuid,uuid[],bigint,bytea)"
     )
+    # Dropping the tables removes their triggers before the trigger functions.
+    # PostgreSQL otherwise rejects this downgrade even when both tables are empty.
+    op.drop_table("hotel_payout_cutover_receipt", schema="internal_import")
+    op.drop_table("candidate_evidence_link")
     op.execute(
         "DROP FUNCTION IF EXISTS internal_import.hotel_payout_cutover_receipt_append_only()"
     )
     op.execute("DROP FUNCTION IF EXISTS public.r1_validate_candidate_evidence_link()")
     op.execute("DROP FUNCTION IF EXISTS public.r1_candidate_evidence_link_append_only()")
-    op.drop_table("hotel_payout_cutover_receipt", schema="internal_import")
-    op.drop_table("candidate_evidence_link")
