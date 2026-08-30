@@ -1678,6 +1678,229 @@ SELECT json_build_object(
     .strip()
 )
 
+COMPANY_REPORTING_SECURITY_REVISION = "20260830_0024"
+COMPANY_REPORTING_SCHEMA = "company_reporting_read"
+COMPANY_REPORTING_FUNCTION_SIGNATURES = {
+    "unavailable_balance_v1": "",
+    "candidate_report_v1_as_of": (
+        "p_entity_ref uuid, p_business_unit_ids uuid[], p_include_unassigned boolean, "
+        "p_from_month date, p_to_month date, p_audit_sequence bigint"
+    ),
+    "statement_report_v1_as_of": (
+        "p_entity_ref uuid, p_business_unit_ids uuid[], p_include_unassigned boolean, "
+        "p_from_month date, p_to_month date, p_audit_sequence bigint"
+    ),
+    "posted_report_v1_as_of": (
+        "p_entity_ref uuid, p_business_unit_ids uuid[], p_from_month date, "
+        "p_to_month date, p_audit_sequence bigint"
+    ),
+    "get_company_report_v1_as_of": (
+        "p_entity_ref uuid, p_business_unit_ids uuid[], p_include_unassigned boolean, "
+        "p_basis character varying, p_from_month date, p_to_month date, "
+        "p_audit_sequence bigint, p_audit_hash bytea"
+    ),
+}
+COMPANY_REPORTING_FUNCTION_RESULTS = {
+    "unavailable_balance_v1": "jsonb",
+    "candidate_report_v1_as_of": "jsonb",
+    "statement_report_v1_as_of": "jsonb",
+    "posted_report_v1_as_of": "jsonb",
+    "get_company_report_v1_as_of": "TABLE(report jsonb)",
+}
+COMPANY_REPORTING_SECURITY_DEFINER_FUNCTIONS = frozenset(
+    {
+        "candidate_report_v1_as_of",
+        "statement_report_v1_as_of",
+        "posted_report_v1_as_of",
+        "get_company_report_v1_as_of",
+    }
+)
+COMPANY_REPORTING_REQUIRED_TABLES = (
+    "account",
+    "account_business_unit_assignment",
+    "audit_event",
+    "bank_statement",
+    "bank_statement_observation",
+    "bank_statement_review",
+    "bank_statement_transaction",
+    "business_unit",
+    "candidate",
+    "candidate_event",
+    "candidate_revision",
+    "candidate_source",
+    "entity",
+    "fact_business_unit_allocation_item",
+    "fact_business_unit_allocation_set",
+    "journal_entry",
+    "journal_entry_attribution",
+    "managed_account",
+    "posting",
+)
+COMPANY_REPORTING_REQUIRED_COLUMNS = {
+    ("journal_entry_attribution", "business_unit_ref_snapshot"): "character varying(100)",
+    ("journal_entry_attribution", "business_unit_label_snapshot"): "character varying(200)",
+}
+COMPANY_REPORTING_REQUIRED_FUNCTIONS = {
+    ("public", "r1_assert_posted_total_integrity", ""): "boolean",
+}
+COMPANY_REPORTING_TRIGGER_CONTRACT = {
+    "r1_capture_journal_attribution_snapshot": (
+        "journal_entry_attribution",
+        False,
+        7,
+        False,
+        False,
+        "r1_capture_journal_attribution_snapshot",
+    ),
+    "r1_posted_attribution_business_unit_snapshot": (
+        "journal_entry_attribution",
+        True,
+        5,
+        True,
+        True,
+        "r1_require_posted_business_unit_snapshot",
+    ),
+    "r1_posted_entry_business_unit_snapshot": (
+        "journal_entry",
+        True,
+        21,
+        True,
+        True,
+        "r1_require_posted_business_unit_snapshot",
+    ),
+}
+
+_COMPANY_REPORTING_FUNCTIONS_SQL = ", ".join(
+    f"('{name}', '{arguments}')"
+    for name, arguments in COMPANY_REPORTING_FUNCTION_SIGNATURES.items()
+)
+_COMPANY_REPORTING_TABLES_SQL = ", ".join(f"'{name}'" for name in COMPANY_REPORTING_REQUIRED_TABLES)
+_COMPANY_REPORTING_COLUMNS_SQL = ", ".join(
+    f"('{table}', '{column}')" for table, column in COMPANY_REPORTING_REQUIRED_COLUMNS
+)
+_COMPANY_REPORTING_TRIGGERS_SQL = ", ".join(
+    f"'{name}'" for name in COMPANY_REPORTING_TRIGGER_CONTRACT
+)
+_COMPANY_REPORTING_ROLES_SQL = ", ".join(f"('{name}'::name)" for name in R1_CONTROLLED_ROLES)
+COMPANY_REPORTING_SECURITY_SQL = (
+    ""  # nosec B608 - replacements use only fixed allowlists.
+    """
+WITH expected_roles(role_name) AS (VALUES __R1_ROLE_SQL__),
+present_roles(role_name) AS (
+ SELECT e.role_name FROM expected_roles e JOIN pg_roles r ON r.rolname=e.role_name
+), expected_functions(function_name,identity_arguments) AS (
+ VALUES __COMPANY_REPORTING_FUNCTIONS_SQL__
+), expected_columns(table_name,column_name) AS (
+ VALUES __COMPANY_REPORTING_COLUMNS_SQL__
+), observed_schema AS (
+ SELECT n.nspname schema_name,pg_get_userbyid(n.nspowner) owner,n.oid,n.nspacl acl
+ FROM pg_namespace n WHERE n.nspname='company_reporting_read'
+), observed_functions AS (
+ SELECT n.nspname schema_name,p.proname function_name,
+  pg_get_function_identity_arguments(p.oid) identity_arguments,
+  pg_get_function_result(p.oid) result,pg_get_userbyid(p.proowner) owner,
+  p.prosecdef security_definer,COALESCE(to_json(p.proconfig),'[]'::json) proconfig,
+  p.oid,p.proacl acl
+ FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+ WHERE n.nspname='company_reporting_read'
+  AND EXISTS (SELECT 1 FROM expected_functions e WHERE e.function_name=p.proname)
+), observed_required_functions AS (
+ SELECT n.nspname schema_name,p.proname function_name,
+  pg_get_function_identity_arguments(p.oid) identity_arguments,
+  pg_get_function_result(p.oid) result,pg_get_userbyid(p.proowner) owner,
+  p.prosecdef security_definer,COALESCE(to_json(p.proconfig),'[]'::json) proconfig
+ FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+ WHERE n.nspname='public' AND p.proname='r1_assert_posted_total_integrity'
+), observed_tables AS (
+ SELECT n.nspname schema_name,c.relname table_name,
+  pg_get_userbyid(c.relowner) owner,c.relkind kind
+ FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='public' AND c.relname IN (__COMPANY_REPORTING_TABLES_SQL__)
+), observed_columns AS (
+ SELECT n.nspname schema_name,c.relname table_name,a.attname column_name,
+  format_type(a.atttypid,a.atttypmod) data_type
+ FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
+ JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='public' AND a.attnum>0 AND NOT a.attisdropped
+  AND EXISTS (SELECT 1 FROM expected_columns e
+   WHERE e.table_name=c.relname AND e.column_name=a.attname)
+), observed_triggers AS (
+ SELECT c.relname table_name,t.tgname trigger_name,t.tgenabled enabled,
+  t.tgconstraint<>0 is_constraint,t.tgtype trigger_type,
+  t.tgdeferrable is_deferrable,t.tginitdeferred is_initially_deferred,
+  fnn.nspname function_schema,fn.proname function_name
+ FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+ JOIN pg_namespace n ON n.oid=c.relnamespace
+ JOIN pg_proc fn ON fn.oid=t.tgfoid JOIN pg_namespace fnn ON fnn.oid=fn.pronamespace
+ WHERE n.nspname='public' AND NOT t.tgisinternal
+  AND t.tgname IN (__COMPANY_REPORTING_TRIGGERS_SQL__)
+), schema_acls AS (
+ SELECT s.schema_name,
+  CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM observed_schema s CROSS JOIN LATERAL aclexplode(COALESCE(s.acl,'{}'::aclitem[])) a
+), function_acls AS (
+ SELECT f.schema_name,f.function_name,f.identity_arguments,
+  CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM observed_functions f
+ CROSS JOIN LATERAL aclexplode(COALESCE(f.acl,'{}'::aclitem[])) a
+), schema_privileges AS (
+ SELECT r.role_name role,s.schema_name,
+  has_schema_privilege(r.role_name,s.oid,'USAGE') can_use,
+  has_schema_privilege(r.role_name,s.oid,'CREATE') can_create
+ FROM present_roles r CROSS JOIN observed_schema s
+), function_privileges AS (
+ SELECT r.role_name role,f.schema_name,f.function_name,f.identity_arguments,
+  has_function_privilege(r.role_name,f.oid,'EXECUTE') can_execute
+ FROM present_roles r CROSS JOIN observed_functions f
+)
+SELECT json_build_object(
+ 'company_reporting_schema',(SELECT json_build_object(
+  'schema',schema_name,'owner',owner) FROM observed_schema),
+ 'company_reporting_functions',COALESCE((SELECT json_agg(json_build_object(
+  'schema',schema_name,'name',function_name,'identity_arguments',identity_arguments,
+  'result',result,'owner',owner,'security_definer',security_definer,'proconfig',proconfig)
+  ORDER BY function_name,identity_arguments) FROM observed_functions),'[]'::json),
+ 'company_reporting_required_tables',COALESCE((SELECT json_agg(json_build_object(
+  'schema',schema_name,'table',table_name,'owner',owner,'kind',kind) ORDER BY table_name)
+  FROM observed_tables),'[]'::json),
+ 'company_reporting_required_columns',COALESCE((SELECT json_agg(json_build_object(
+  'schema',schema_name,'table',table_name,'column',column_name,'type',data_type)
+  ORDER BY table_name,column_name) FROM observed_columns),'[]'::json),
+ 'company_reporting_required_functions',COALESCE((SELECT json_agg(json_build_object(
+  'schema',schema_name,'name',function_name,'identity_arguments',identity_arguments,
+  'result',result,'owner',owner,'security_definer',security_definer,'proconfig',proconfig)
+  ORDER BY schema_name,function_name,identity_arguments)
+  FROM observed_required_functions),'[]'::json),
+ 'company_reporting_triggers',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'name',trigger_name,'enabled',enabled,'constraint',is_constraint,
+  'trigger_type',trigger_type,'deferrable',is_deferrable,
+  'initially_deferred',is_initially_deferred,'function_schema',function_schema,
+  'function_name',function_name) ORDER BY trigger_name) FROM observed_triggers),'[]'::json),
+ 'company_reporting_schema_acls',COALESCE((SELECT json_agg(json_build_object(
+  'schema',schema_name,'grantee',grantee,'privilege',privilege,'grantable',grantable)
+  ORDER BY grantee,privilege) FROM schema_acls),'[]'::json),
+ 'company_reporting_function_acls',COALESCE((SELECT json_agg(json_build_object(
+  'schema',schema_name,'name',function_name,'identity_arguments',identity_arguments,
+  'grantee',grantee,'privilege',privilege,'grantable',grantable)
+  ORDER BY function_name,identity_arguments,grantee,privilege) FROM function_acls),'[]'::json),
+ 'company_reporting_effective_schema_privileges',COALESCE((SELECT json_agg(
+  json_build_object('role',role,'schema',schema_name,'usage',can_use,'create',can_create)
+  ORDER BY role,schema_name) FROM schema_privileges),'[]'::json),
+ 'company_reporting_effective_function_privileges',COALESCE((SELECT json_agg(
+  json_build_object('role',role,'schema',schema_name,'name',function_name,
+  'identity_arguments',identity_arguments,'execute',can_execute)
+  ORDER BY role,function_name,identity_arguments) FROM function_privileges),'[]'::json)
+)::text;
+    """.replace("__R1_ROLE_SQL__", _COMPANY_REPORTING_ROLES_SQL)
+    .replace("__COMPANY_REPORTING_FUNCTIONS_SQL__", _COMPANY_REPORTING_FUNCTIONS_SQL)
+    .replace("__COMPANY_REPORTING_TABLES_SQL__", _COMPANY_REPORTING_TABLES_SQL)
+    .replace("__COMPANY_REPORTING_COLUMNS_SQL__", _COMPANY_REPORTING_COLUMNS_SQL)
+    .replace("__COMPANY_REPORTING_TRIGGERS_SQL__", _COMPANY_REPORTING_TRIGGERS_SQL)
+    .strip()
+)
+
 _R1_PUBLIC_TABLE_SQL = ", ".join(f"'{name}'" for name in R1_PUBLIC_TABLES)
 _R1_VIEW_SQL = ", ".join(f"'{name}'" for name in R1_INTERNAL_READ_VIEWS)
 _R1_FUNCTION_SQL = ", ".join(
@@ -2400,6 +2623,26 @@ def _database_metadata(
         ):
             raise BackupError("account registry security query returned an incomplete object")
         metadata.update(cast(dict[str, Any], registry_security))
+    if revision >= COMPANY_REPORTING_SECURITY_REVISION:
+        company_reporting_security = query(COMPANY_REPORTING_SECURITY_SQL)
+        required_company_reporting_keys = {
+            "company_reporting_schema",
+            "company_reporting_functions",
+            "company_reporting_required_tables",
+            "company_reporting_required_columns",
+            "company_reporting_required_functions",
+            "company_reporting_triggers",
+            "company_reporting_schema_acls",
+            "company_reporting_function_acls",
+            "company_reporting_effective_schema_privileges",
+            "company_reporting_effective_function_privileges",
+        }
+        if (
+            not isinstance(company_reporting_security, dict)
+            or set(company_reporting_security) != required_company_reporting_keys
+        ):
+            raise BackupError("company reporting security query returned an incomplete object")
+        metadata.update(cast(dict[str, Any], company_reporting_security))
     if revision >= "20260821_0003":
         artifact_sql = (
             R1_ARTIFACT_MANIFEST_SQL if revision >= "20260824_0012" else ARTIFACT_MANIFEST_SQL
@@ -4244,6 +4487,216 @@ def _validate_account_registry_security(metadata: dict[str, Any]) -> None:
             raise BackupError("restored account registry function privilege matrix is invalid")
 
 
+def _validate_company_reporting_security(metadata: dict[str, Any]) -> None:
+    def _list(name: str) -> list[dict[str, Any]]:
+        value = metadata.get(name)
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise BackupError(f"restored company reporting metadata is invalid: {name}")
+        return cast(list[dict[str, Any]], value)
+
+    def _grantable(value: Any) -> bool:
+        return (
+            value is True or value is False or (isinstance(value, str) and value in {"YES", "NO"})
+        )
+
+    owner = metadata.get("database_owner")
+    if not isinstance(owner, str):
+        raise BackupError("restored company reporting database owner is invalid")
+    schema = metadata.get("company_reporting_schema")
+    if schema != {"schema": COMPANY_REPORTING_SCHEMA, "owner": owner}:
+        raise BackupError("restored company reporting schema differs from the required baseline")
+
+    functions = _list("company_reporting_functions")
+    expected_function_keys = {
+        (COMPANY_REPORTING_SCHEMA, name, arguments)
+        for name, arguments in COMPANY_REPORTING_FUNCTION_SIGNATURES.items()
+    }
+    actual_function_keys = {
+        (item.get("schema"), item.get("name"), item.get("identity_arguments")) for item in functions
+    }
+    if (
+        len(actual_function_keys) != len(functions)
+        or actual_function_keys != expected_function_keys
+    ):
+        raise BackupError("restored company reporting functions differ from the required baseline")
+    for item in functions:
+        name = item.get("name")
+        if not isinstance(name, str):
+            raise BackupError("restored company reporting function metadata is invalid")
+        if (
+            item.get("owner") != owner
+            or item.get("result") != COMPANY_REPORTING_FUNCTION_RESULTS[name]
+            or item.get("security_definer")
+            is not (name in COMPANY_REPORTING_SECURITY_DEFINER_FUNCTIONS)
+            or item.get("proconfig") != ["search_path=pg_catalog"]
+        ):
+            raise BackupError("restored company reporting function security boundary is invalid")
+
+    tables = _list("company_reporting_required_tables")
+    expected_table_keys = {("public", table) for table in COMPANY_REPORTING_REQUIRED_TABLES}
+    actual_table_keys = {(item.get("schema"), item.get("table")) for item in tables}
+    if len(actual_table_keys) != len(tables) or actual_table_keys != expected_table_keys:
+        raise BackupError("restored company reporting required tables are incomplete")
+    if any(item.get("owner") != owner or item.get("kind") != "r" for item in tables):
+        raise BackupError("restored company reporting required table boundary is invalid")
+
+    columns = _list("company_reporting_required_columns")
+    expected_columns = {
+        ("public", table, column, data_type)
+        for (table, column), data_type in COMPANY_REPORTING_REQUIRED_COLUMNS.items()
+    }
+    actual_columns = {
+        (item.get("schema"), item.get("table"), item.get("column"), item.get("type"))
+        for item in columns
+    }
+    if len(actual_columns) != len(columns) or actual_columns != expected_columns:
+        raise BackupError("restored company reporting immutable snapshot columns are incomplete")
+
+    required_functions = _list("company_reporting_required_functions")
+    expected_required_function_keys = set(COMPANY_REPORTING_REQUIRED_FUNCTIONS)
+    actual_required_function_keys = {
+        (item.get("schema"), item.get("name"), item.get("identity_arguments"))
+        for item in required_functions
+    }
+    if (
+        len(actual_required_function_keys) != len(required_functions)
+        or actual_required_function_keys != expected_required_function_keys
+    ):
+        raise BackupError("restored company reporting required functions are incomplete")
+    for item in required_functions:
+        function_key = cast(
+            tuple[str, str, str],
+            (
+                item.get("schema"),
+                item.get("name"),
+                item.get("identity_arguments"),
+            ),
+        )
+        if (
+            item.get("owner") != owner
+            or item.get("result") != COMPANY_REPORTING_REQUIRED_FUNCTIONS[function_key]
+            or item.get("security_definer") is not True
+            or item.get("proconfig") != ["search_path=pg_catalog"]
+        ):
+            raise BackupError("restored company reporting required function boundary is invalid")
+
+    triggers = _list("company_reporting_triggers")
+    actual_trigger_contract = {
+        item.get("name"): (
+            item.get("table"),
+            item.get("constraint"),
+            item.get("trigger_type"),
+            item.get("deferrable"),
+            item.get("initially_deferred"),
+            item.get("function_name"),
+        )
+        for item in triggers
+    }
+    if (
+        len(actual_trigger_contract) != len(triggers)
+        or actual_trigger_contract != COMPANY_REPORTING_TRIGGER_CONTRACT
+    ):
+        raise BackupError("restored company reporting trigger contract differs from the baseline")
+    if any(
+        item.get("enabled") != "O" or item.get("function_schema") != "public" for item in triggers
+    ):
+        raise BackupError("restored company reporting trigger boundary is invalid")
+
+    schema_acls = _list("company_reporting_schema_acls")
+    schema_acl_keys: set[tuple[Any, ...]] = set()
+    for item in schema_acls:
+        schema_acl_key = (item.get("schema"), item.get("grantee"), item.get("privilege"))
+        if schema_acl_key in schema_acl_keys:
+            raise BackupError("restored company reporting schema ACL has a duplicate entry")
+        schema_acl_keys.add(schema_acl_key)
+        allowed = {
+            owner: {"USAGE", "CREATE"},
+            "ledgerbridge_reader": {"USAGE"},
+        }.get(cast(str, item.get("grantee")))
+        if (
+            item.get("schema") != COMPANY_REPORTING_SCHEMA
+            or allowed is None
+            or item.get("privilege") not in allowed
+            or not _grantable(item.get("grantable"))
+            or (item.get("grantee") != owner and item.get("grantable") not in {False, "NO"})
+        ):
+            raise BackupError("restored company reporting schema ACL contains an excess grant")
+    if (COMPANY_REPORTING_SCHEMA, "ledgerbridge_reader", "USAGE") not in schema_acl_keys:
+        raise BackupError("restored company reporting reader schema ACL is missing")
+
+    function_acls = _list("company_reporting_function_acls")
+    function_acl_keys: set[tuple[Any, ...]] = set()
+    reader_function_key = (
+        COMPANY_REPORTING_SCHEMA,
+        "get_company_report_v1_as_of",
+        COMPANY_REPORTING_FUNCTION_SIGNATURES["get_company_report_v1_as_of"],
+        "ledgerbridge_reader",
+        "EXECUTE",
+    )
+    for item in function_acls:
+        object_key = (item.get("schema"), item.get("name"), item.get("identity_arguments"))
+        function_acl_key = (*object_key, item.get("grantee"), item.get("privilege"))
+        if function_acl_key in function_acl_keys:
+            raise BackupError("restored company reporting function ACL has a duplicate entry")
+        function_acl_keys.add(function_acl_key)
+        allowed_grantees = {owner}
+        if item.get("name") == "get_company_report_v1_as_of":
+            allowed_grantees.add("ledgerbridge_reader")
+        if (
+            object_key not in expected_function_keys
+            or item.get("grantee") not in allowed_grantees
+            or item.get("privilege") != "EXECUTE"
+            or not _grantable(item.get("grantable"))
+            or (item.get("grantee") != owner and item.get("grantable") not in {False, "NO"})
+        ):
+            raise BackupError("restored company reporting function ACL contains an excess grant")
+    if reader_function_key not in function_acl_keys:
+        raise BackupError("restored company reporting reader function ACL is missing")
+
+    roles = _list("r1_role_matrix")
+    active_roles = {item.get("role") for item in roles if item.get("role") in R1_CONTROLLED_ROLES}
+    schema_privileges = _list("company_reporting_effective_schema_privileges")
+    expected_schema_keys = {(role, COMPANY_REPORTING_SCHEMA) for role in active_roles}
+    actual_schema_keys = {(item.get("role"), item.get("schema")) for item in schema_privileges}
+    if (
+        len(actual_schema_keys) != len(schema_privileges)
+        or actual_schema_keys != expected_schema_keys
+    ):
+        raise BackupError("restored company reporting schema privilege matrix is incomplete")
+    for item in schema_privileges:
+        if (
+            item.get("usage") is not (item.get("role") == "ledgerbridge_reader")
+            or item.get("create") is not False
+        ):
+            raise BackupError("restored company reporting schema privilege matrix is invalid")
+
+    function_privileges = _list("company_reporting_effective_function_privileges")
+    expected_privilege_keys = {
+        (role, *function_key) for role in active_roles for function_key in expected_function_keys
+    }
+    actual_privilege_keys = {
+        (
+            item.get("role"),
+            item.get("schema"),
+            item.get("name"),
+            item.get("identity_arguments"),
+        )
+        for item in function_privileges
+    }
+    if (
+        len(actual_privilege_keys) != len(function_privileges)
+        or actual_privilege_keys != expected_privilege_keys
+    ):
+        raise BackupError("restored company reporting function privilege matrix is incomplete")
+    for item in function_privileges:
+        expected_execute = (
+            item.get("role") == "ledgerbridge_reader"
+            and item.get("name") == "get_company_report_v1_as_of"
+        )
+        if item.get("execute") is not expected_execute:
+            raise BackupError("restored company reporting function privilege matrix is invalid")
+
+
 def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
     if metadata.get("metadata_version") != 2:
         raise BackupError("restored database lacks v2 metadata observations")
@@ -4259,6 +4712,8 @@ def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
         _validate_bank_statement_security(metadata)
     if revision >= ACCOUNT_REGISTRY_SECURITY_REVISION:
         _validate_account_registry_security(metadata)
+    if revision >= COMPANY_REPORTING_SECURITY_REVISION:
+        _validate_company_reporting_security(metadata)
     if metadata.get("database_temp_denied") is not True:
         raise BackupError("restored database TEMP privilege invariant failed")
     functions = metadata.get("security_functions")

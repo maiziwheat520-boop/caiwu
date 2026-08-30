@@ -3382,6 +3382,42 @@ def test_r1_internal_read_nonempty_downgrade_is_rejected(
         command.downgrade(config, "20260824_0014")
 
 
+def test_company_reporting_nonempty_downgrade_preserves_immutable_snapshots(
+    isolated_r1_database: str,
+) -> None:
+    engine = create_engine(isolated_r1_database)
+    with engine.begin() as connection:
+        _seed_nonempty_downgrade_marker(connection)
+
+    config = _upgrade_config(isolated_r1_database)
+    with pytest.raises(SQLAlchemyError) as raised:
+        command.downgrade(config, "20260830_0023")
+    assert "nonempty R1 fact database prevents destructive company-reporting downgrade" in str(
+        getattr(raised.value, "orig", raised.value)
+    )
+
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+            "20260830_0024"
+        )
+        snapshot_columns = set(
+            connection.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' "
+                    "AND table_name = 'journal_entry_attribution' "
+                    "AND column_name IN "
+                    "('business_unit_ref_snapshot', 'business_unit_label_snapshot')"
+                )
+            ).scalars()
+        )
+        assert snapshot_columns == {
+            "business_unit_ref_snapshot",
+            "business_unit_label_snapshot",
+        }
+    engine.dispose()
+
+
 def test_r1_reader_horizon_as_of_scope_resolver_and_audit_wrapper_fail_closed() -> None:
     # The restricted owner cannot SET ROLE to an unrelated LOGIN role.  Grant
     # this membership only for the isolated read-surface session.

@@ -10,6 +10,14 @@ from typing import cast
 import pytest
 
 from scripts.backup_restore import (
+    ACCOUNT_REGISTRY_FUNCTION_EXECUTORS,
+    ACCOUNT_REGISTRY_FUNCTION_RESULTS,
+    ACCOUNT_REGISTRY_FUNCTION_SIGNATURES,
+    ACCOUNT_REGISTRY_MANAGED_ACCOUNT_CONSTRAINT_CONTRACT,
+    ACCOUNT_REGISTRY_MANAGED_ACCOUNT_TRIGGER_CONTRACT,
+    ACCOUNT_REGISTRY_SECURITY_DEFINER_FUNCTIONS,
+    ACCOUNT_REGISTRY_TABLES,
+    ACCOUNT_REGISTRY_TRIGGER_CONTRACT,
     BACKUP_FORMAT_V1,
     BACKUP_FORMAT_V2,
     BACKUP_FORMAT_V3,
@@ -20,6 +28,14 @@ from scripts.backup_restore import (
     BANK_STATEMENT_SECURITY_SQL,
     BANK_STATEMENT_TABLES,
     BANK_STATEMENT_TRIGGER_CONTRACT,
+    COMPANY_REPORTING_FUNCTION_RESULTS,
+    COMPANY_REPORTING_FUNCTION_SIGNATURES,
+    COMPANY_REPORTING_REQUIRED_COLUMNS,
+    COMPANY_REPORTING_REQUIRED_TABLES,
+    COMPANY_REPORTING_SCHEMA,
+    COMPANY_REPORTING_SECURITY_DEFINER_FUNCTIONS,
+    COMPANY_REPORTING_SECURITY_SQL,
+    COMPANY_REPORTING_TRIGGER_CONTRACT,
     COUNTERPARTY_CONSTRAINT_CONTRACT,
     COUNTERPARTY_FUNCTION_RESULTS,
     COUNTERPARTY_FUNCTION_SIGNATURES,
@@ -651,6 +667,271 @@ def _bank_statement_database_metadata() -> dict[str, object]:
     return metadata
 
 
+def _account_registry_database_metadata() -> dict[str, object]:
+    metadata = _bank_statement_database_metadata()
+    metadata["alembic_version"] = "20260830_0023"
+    bank_triggers = dict(BANK_STATEMENT_TRIGGER_CONTRACT)
+    bank_triggers.pop("validate_managed_account_audit")
+    bank_triggers.pop("require_statement_backed_account")
+    bank_triggers.update(ACCOUNT_REGISTRY_MANAGED_ACCOUNT_TRIGGER_CONTRACT)
+    metadata["bank_statement_triggers"] = [
+        {
+            "table": table,
+            "name": name,
+            "enabled": "O",
+            "constraint": constraint,
+            "trigger_type": trigger_type,
+            "deferrable": deferrable,
+            "initially_deferred": initially_deferred,
+            "function_schema": "public",
+            "function_name": function_name,
+        }
+        for name, (
+            table,
+            constraint,
+            trigger_type,
+            deferrable,
+            initially_deferred,
+            function_name,
+        ) in sorted(bank_triggers.items())
+    ]
+    bank_constraints = dict(BANK_STATEMENT_CONSTRAINT_CONTRACT)
+    bank_constraints.pop("managed_account_institution_code_check")
+    bank_constraints.update(ACCOUNT_REGISTRY_MANAGED_ACCOUNT_CONSTRAINT_CONTRACT)
+    metadata["bank_statement_constraints"] = [
+        {
+            "table": table,
+            "name": name,
+            "type": constraint_type,
+            "validated": True,
+            "deferrable": False,
+            "initially_deferred": False,
+            "definition": definition,
+        }
+        for name, (table, constraint_type, definition) in sorted(bank_constraints.items())
+    ]
+    metadata["account_registry_row_counts"] = {table: 0 for table in ACCOUNT_REGISTRY_TABLES}
+    metadata["account_registry_tables"] = [
+        {"table": table, "owner": "ledgerbridge_owner", "kind": "r"}
+        for table in ACCOUNT_REGISTRY_TABLES
+    ]
+    metadata["account_registry_functions"] = [
+        {
+            "schema": schema,
+            "name": name,
+            "identity_arguments": arguments,
+            "result": ACCOUNT_REGISTRY_FUNCTION_RESULTS[(schema, name)],
+            "owner": "ledgerbridge_owner",
+            "security_definer": (schema, name) in ACCOUNT_REGISTRY_SECURITY_DEFINER_FUNCTIONS,
+            "proconfig": ["search_path=pg_catalog"],
+        }
+        for (schema, name), arguments in ACCOUNT_REGISTRY_FUNCTION_SIGNATURES.items()
+    ]
+    metadata["account_registry_triggers"] = [
+        {
+            "table": table,
+            "name": name,
+            "enabled": "O",
+            "constraint": constraint,
+            "deferrable": deferrable,
+            "initially_deferred": initially_deferred,
+            "function_name": function_name,
+        }
+        for name, (
+            table,
+            constraint,
+            deferrable,
+            initially_deferred,
+            function_name,
+        ) in ACCOUNT_REGISTRY_TRIGGER_CONTRACT.items()
+    ]
+    metadata["account_registry_constraints"] = [
+        {
+            "table": table,
+            "name": f"{table}_pkey",
+            "type": "p",
+            "validated": True,
+            "deferrable": False,
+            "initially_deferred": False,
+        }
+        for table in ACCOUNT_REGISTRY_TABLES
+    ]
+    metadata["account_registry_table_acls"] = [
+        {
+            "table": table,
+            "grantee": "ledgerbridge_owner",
+            "privilege": privilege,
+            "grantable": False,
+        }
+        for table in ACCOUNT_REGISTRY_TABLES
+        for privilege in (
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "TRUNCATE",
+            "REFERENCES",
+            "TRIGGER",
+        )
+    ]
+    metadata["account_registry_function_acls"] = [
+        {
+            "schema": schema,
+            "name": name,
+            "identity_arguments": arguments,
+            "grantee": grantee,
+            "privilege": "EXECUTE",
+            "grantable": False,
+        }
+        for (schema, name), arguments in ACCOUNT_REGISTRY_FUNCTION_SIGNATURES.items()
+        for grantee in (
+            ("ledgerbridge_owner", ACCOUNT_REGISTRY_FUNCTION_EXECUTORS[(schema, name)])
+            if (schema, name) in ACCOUNT_REGISTRY_FUNCTION_EXECUTORS
+            else ("ledgerbridge_owner",)
+        )
+    ]
+    metadata["account_registry_effective_table_privileges"] = [
+        {
+            "role": role,
+            "table": table,
+            "select": False,
+            "insert": False,
+            "update": False,
+            "delete": False,
+        }
+        for role in R1_ROLES
+        for table in ACCOUNT_REGISTRY_TABLES
+    ]
+    metadata["account_registry_effective_function_privileges"] = [
+        {
+            "role": role,
+            "schema": schema,
+            "name": name,
+            "identity_arguments": arguments,
+            "execute": role == ACCOUNT_REGISTRY_FUNCTION_EXECUTORS.get((schema, name)),
+        }
+        for role in R1_ROLES
+        for (schema, name), arguments in ACCOUNT_REGISTRY_FUNCTION_SIGNATURES.items()
+    ]
+    return metadata
+
+
+def _company_reporting_database_metadata() -> dict[str, object]:
+    metadata = _account_registry_database_metadata()
+    metadata["alembic_version"] = "20260830_0024"
+    metadata["company_reporting_schema"] = {
+        "schema": COMPANY_REPORTING_SCHEMA,
+        "owner": "ledgerbridge_owner",
+    }
+    metadata["company_reporting_functions"] = [
+        {
+            "schema": COMPANY_REPORTING_SCHEMA,
+            "name": name,
+            "identity_arguments": arguments,
+            "result": COMPANY_REPORTING_FUNCTION_RESULTS[name],
+            "owner": "ledgerbridge_owner",
+            "security_definer": name in COMPANY_REPORTING_SECURITY_DEFINER_FUNCTIONS,
+            "proconfig": ["search_path=pg_catalog"],
+        }
+        for name, arguments in COMPANY_REPORTING_FUNCTION_SIGNATURES.items()
+    ]
+    metadata["company_reporting_required_tables"] = [
+        {"schema": "public", "table": table, "owner": "ledgerbridge_owner", "kind": "r"}
+        for table in COMPANY_REPORTING_REQUIRED_TABLES
+    ]
+    metadata["company_reporting_required_columns"] = [
+        {
+            "schema": "public",
+            "table": table,
+            "column": column,
+            "type": data_type,
+        }
+        for (table, column), data_type in COMPANY_REPORTING_REQUIRED_COLUMNS.items()
+    ]
+    metadata["company_reporting_required_functions"] = [
+        {
+            "schema": "public",
+            "name": "r1_assert_posted_total_integrity",
+            "identity_arguments": "",
+            "result": "boolean",
+            "owner": "ledgerbridge_owner",
+            "security_definer": True,
+            "proconfig": ["search_path=pg_catalog"],
+        }
+    ]
+    metadata["company_reporting_triggers"] = [
+        {
+            "table": table,
+            "name": name,
+            "enabled": "O",
+            "constraint": is_constraint,
+            "trigger_type": trigger_type,
+            "deferrable": deferrable,
+            "initially_deferred": initially_deferred,
+            "function_schema": "public",
+            "function_name": function_name,
+        }
+        for name, (
+            table,
+            is_constraint,
+            trigger_type,
+            deferrable,
+            initially_deferred,
+            function_name,
+        ) in COMPANY_REPORTING_TRIGGER_CONTRACT.items()
+    ]
+    metadata["company_reporting_schema_acls"] = [
+        {
+            "schema": COMPANY_REPORTING_SCHEMA,
+            "grantee": grantee,
+            "privilege": privilege,
+            "grantable": False,
+        }
+        for grantee, privileges in {
+            "ledgerbridge_owner": ("USAGE", "CREATE"),
+            "ledgerbridge_reader": ("USAGE",),
+        }.items()
+        for privilege in privileges
+    ]
+    metadata["company_reporting_function_acls"] = [
+        {
+            "schema": COMPANY_REPORTING_SCHEMA,
+            "name": name,
+            "identity_arguments": arguments,
+            "grantee": grantee,
+            "privilege": "EXECUTE",
+            "grantable": False,
+        }
+        for name, arguments in COMPANY_REPORTING_FUNCTION_SIGNATURES.items()
+        for grantee in (
+            ("ledgerbridge_owner", "ledgerbridge_reader")
+            if name == "get_company_report_v1_as_of"
+            else ("ledgerbridge_owner",)
+        )
+    ]
+    metadata["company_reporting_effective_schema_privileges"] = [
+        {
+            "role": role,
+            "schema": COMPANY_REPORTING_SCHEMA,
+            "usage": role == "ledgerbridge_reader",
+            "create": False,
+        }
+        for role in R1_ROLES
+    ]
+    metadata["company_reporting_effective_function_privileges"] = [
+        {
+            "role": role,
+            "schema": COMPANY_REPORTING_SCHEMA,
+            "name": name,
+            "identity_arguments": arguments,
+            "execute": role == "ledgerbridge_reader" and name == "get_company_report_v1_as_of",
+        }
+        for role in R1_ROLES
+        for name, arguments in COMPANY_REPORTING_FUNCTION_SIGNATURES.items()
+    ]
+    return metadata
+
+
 def test_counterparty_restore_metadata_covers_0020_contract() -> None:
     expected = _counterparty_database_metadata()
     _validate_restored_database(expected, expected.copy())
@@ -816,6 +1097,148 @@ def test_bank_statement_restore_metadata_covers_0021_contract() -> None:
     assert "observed_constraints AS" in BANK_STATEMENT_SECURITY_SQL
     assert "'bank_statement_constraints'" in BANK_STATEMENT_SECURITY_SQL
     assert len(BANK_STATEMENT_CONSTRAINT_CONTRACT) == 62
+
+
+def test_company_reporting_restore_metadata_covers_0024_contract() -> None:
+    expected = _company_reporting_database_metadata()
+
+    _validate_restored_database(expected, expected.copy())
+
+    for table in COMPANY_REPORTING_REQUIRED_TABLES:
+        assert f"'{table}'" in COMPANY_REPORTING_SECURITY_SQL
+    for name, arguments in COMPANY_REPORTING_FUNCTION_SIGNATURES.items():
+        assert f"('{name}', '{arguments}')" in COMPANY_REPORTING_SECURITY_SQL
+    assert "company_reporting_effective_function_privileges" in COMPANY_REPORTING_SECURITY_SQL
+
+
+def test_company_reporting_restore_rejects_missing_posted_integrity_dependency() -> None:
+    actual = _company_reporting_database_metadata()
+    actual["company_reporting_required_functions"] = []
+
+    with pytest.raises(BackupError, match="company reporting"):
+        _validate_restored_database(actual, actual.copy())
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "schema_missing",
+        "schema_owner",
+        "function_missing",
+        "function_result",
+        "function_security_definer",
+        "function_search_path",
+        "function_extra_config",
+        "required_table_missing",
+        "required_column_missing",
+        "required_function_security",
+        "trigger_missing",
+        "trigger_disabled",
+        "raw_schema_acl_excess",
+        "raw_schema_acl_reader_missing",
+        "raw_function_acl_excess",
+        "raw_function_acl_reader_missing",
+        "schema_usage",
+        "schema_create",
+        "function_reader_execute",
+        "function_other_execute",
+    ],
+)
+def test_company_reporting_restore_metadata_rejects_drift(mutation: str) -> None:
+    expected = _company_reporting_database_metadata()
+    actual = {**expected}
+    if mutation == "schema_missing":
+        actual["company_reporting_schema"] = None
+    elif mutation == "schema_owner":
+        actual["company_reporting_schema"] = {
+            "schema": COMPANY_REPORTING_SCHEMA,
+            "owner": "stale_owner",
+        }
+    elif mutation.startswith("function_") and mutation not in {
+        "function_reader_execute",
+        "function_other_execute",
+    }:
+        rows = cast(list[dict[str, object]], expected["company_reporting_functions"])
+        if mutation == "function_missing":
+            actual["company_reporting_functions"] = rows[1:]
+        else:
+            field, value = {
+                "function_result": ("result", "void"),
+                "function_security_definer": (
+                    "security_definer",
+                    not cast(bool, rows[0]["security_definer"]),
+                ),
+                "function_search_path": ("proconfig", ["search_path=pg_temp"]),
+                "function_extra_config": (
+                    "proconfig",
+                    ["search_path=pg_catalog", "row_security=off"],
+                ),
+            }[mutation]
+            actual["company_reporting_functions"] = [{**rows[0], field: value}, *rows[1:]]
+    elif mutation == "required_table_missing":
+        rows = cast(list[dict[str, object]], expected["company_reporting_required_tables"])
+        actual["company_reporting_required_tables"] = rows[1:]
+    elif mutation == "required_column_missing":
+        rows = cast(list[dict[str, object]], expected["company_reporting_required_columns"])
+        actual["company_reporting_required_columns"] = rows[1:]
+    elif mutation == "required_function_security":
+        rows = cast(list[dict[str, object]], expected["company_reporting_required_functions"])
+        actual["company_reporting_required_functions"] = [{**rows[0], "security_definer": False}]
+    elif mutation.startswith("trigger_"):
+        rows = cast(list[dict[str, object]], expected["company_reporting_triggers"])
+        actual["company_reporting_triggers"] = (
+            rows[1:] if mutation == "trigger_missing" else [{**rows[0], "enabled": "D"}, *rows[1:]]
+        )
+    elif mutation.startswith("raw_schema_acl_"):
+        rows = cast(list[dict[str, object]], expected["company_reporting_schema_acls"])
+        actual["company_reporting_schema_acls"] = (
+            [*rows, {**rows[0], "grantee": "ledgerbridge_api"}]
+            if mutation == "raw_schema_acl_excess"
+            else [row for row in rows if row["grantee"] != "ledgerbridge_reader"]
+        )
+    elif mutation.startswith("raw_function_acl_"):
+        rows = cast(list[dict[str, object]], expected["company_reporting_function_acls"])
+        actual["company_reporting_function_acls"] = (
+            [*rows, {**rows[0], "grantee": "ledgerbridge_api"}]
+            if mutation == "raw_function_acl_excess"
+            else [row for row in rows if row["grantee"] != "ledgerbridge_reader"]
+        )
+    elif mutation.startswith("schema_"):
+        rows = cast(
+            list[dict[str, object]],
+            expected["company_reporting_effective_schema_privileges"],
+        )
+        target = next(i for i, row in enumerate(rows) if row["role"] == "ledgerbridge_reader")
+        field, value = ("usage", False) if mutation == "schema_usage" else ("create", True)
+        actual["company_reporting_effective_schema_privileges"] = [
+            {**row, field: value} if i == target else row for i, row in enumerate(rows)
+        ]
+    else:
+        rows = cast(
+            list[dict[str, object]],
+            expected["company_reporting_effective_function_privileges"],
+        )
+        target = next(
+            i
+            for i, row in enumerate(rows)
+            if (
+                mutation == "function_reader_execute"
+                and row["role"] == "ledgerbridge_reader"
+                and row["execute"] is True
+            )
+            or (
+                mutation == "function_other_execute"
+                and row["role"] == "ledgerbridge_api"
+                and row["name"] == "get_company_report_v1_as_of"
+            )
+        )
+        actual["company_reporting_effective_function_privileges"] = [
+            {**row, "execute": not cast(bool, row["execute"])} if i == target else row
+            for i, row in enumerate(rows)
+        ]
+
+    with pytest.raises(BackupError, match="company reporting"):
+        _validate_restored_database(actual, actual.copy())
 
 
 @pytest.mark.parametrize(

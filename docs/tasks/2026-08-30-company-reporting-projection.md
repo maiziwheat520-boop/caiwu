@@ -72,6 +72,18 @@ querying PostgreSQL or inventing company ownership.
 - The PostgreSQL reader sees only the versioned `company_reporting_read` function. It receives no
   base-table grant, and Web never connects to PostgreSQL.
 
+## Production upgrade gate
+
+- Immediately before integrating or applying revisions `0023 -> 0024`, run the read-only check
+  `SELECT count(*) FROM public.managed_account;` against the production database. The result must
+  be exactly `0`; any non-zero result pauses the upgrade for explicit owner/assignment review. No
+  account owner, business unit, allocation, or snapshot may be inferred or backfilled by this
+  deployment.
+- The 2026-08-30 production sample returned `managed_account count = 0`. That sample records the
+  current evidence; it does not replace the mandatory pre-upgrade recheck.
+- Revision `0024` may be downgraded only in an empty isolated database. Any populated R1 fact
+  database fails closed before the immutable journal-attribution snapshot columns are removed.
+
 ## Acceptance tests
 
 - Cross-company and cross-business-unit isolation, including response revalidation.
@@ -98,10 +110,12 @@ querying PostgreSQL or inventing company ownership.
   146 pending candidates, and no managed accounts, statement observations, or posted journal
   entries. This supports an immediately useful candidate-source layer and explicit empty
   statement/posted layers without manufacturing formal totals.
-- Local Core validation: 72 focused company-reporting/route/contract tests passed; the complete
-  Windows suite passed 823 tests with 198 environment-gated skips and one pre-existing Starlette
-  deprecation warning. Focused Ruff and mypy, both OpenAPI YAML parses, Web lint/type/build, 77
-  Web backend tests (one skip), and 36 Web component tests passed.
+- Local Core validation after the `0024` recovery hardening: 205 focused company-reporting,
+  backup/restore, and migration tests passed with 42 PostgreSQL-gated skips; the complete Windows
+  suite passed 846 tests with 199 environment-gated skips and one pre-existing Starlette
+  deprecation warning. Focused Ruff, formatting, and strict mypy passed. The earlier OpenAPI YAML
+  parses, Web lint/type/build, 77 Web backend tests (one skip), and 36 Web component tests remain
+  unchanged and passed.
 - No production migration, mutation, posting, deployment, or credential change was performed.
 
 ## Review findings
