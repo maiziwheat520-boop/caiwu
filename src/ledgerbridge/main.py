@@ -40,6 +40,7 @@ from ledgerbridge.imports import EvidenceImporter, EvidenceIngestionError, Inges
 from ledgerbridge.internal_candidate_command_routes import (
     router as internal_candidate_command_router,
 )
+from ledgerbridge.internal_payroll_routes import router as internal_payroll_router
 from ledgerbridge.internal_read_auth import VerifiedInternalReadPrincipalMiddleware
 from ledgerbridge.internal_read_routes import (
     InternalReadNoStoreMiddleware,
@@ -78,6 +79,7 @@ app.add_middleware(
 )
 app.include_router(internal_read_router)
 app.include_router(internal_candidate_command_router)
+app.include_router(internal_payroll_router)
 
 
 class UploadReadTimeoutError(TimeoutError):

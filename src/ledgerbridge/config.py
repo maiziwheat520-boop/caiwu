@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -63,6 +64,10 @@ class Settings(BaseSettings):
     )
     enable_review_api: bool = False
     enable_real_ingest: bool = False
+    enable_payroll_integration: bool = False
+    payroll_base_url: str | None = Field(default=None, min_length=1, max_length=2048)
+    payroll_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    payroll_company_mapping: dict[str, UUID] = Field(default_factory=dict)
     internal_read_policy_generation: int | None = Field(default=None, ge=1)
     dispatch_lease_seconds: int = Field(default=120, gt=0, le=3600)
     dispatch_max_attempts: int = Field(default=5, gt=0, le=16)
@@ -197,6 +202,15 @@ class Settings(BaseSettings):
                 )
         if self.mail_provider == "microsoft_graph" and not self.mailbox_id:
             raise ValueError("mailbox_id is required when mail_provider=microsoft_graph")
+        if self.enable_payroll_integration:
+            if not self.enable_internal_read_api:
+                raise ValueError("payroll integration requires the internal read API")
+            if self.payroll_base_url is None:
+                raise ValueError("payroll_base_url is required when payroll integration is enabled")
+            if not self.payroll_company_mapping:
+                raise ValueError(
+                    "payroll_company_mapping is required when payroll integration is enabled"
+                )
 
         if (self.runner_manifest_path is None) != (self.runner_verification_keys_path is None):
             raise ValueError(
