@@ -1,0 +1,233 @@
+openapi: 3.1.0
+info:
+  title: LedgerBridge Company Report Internal Contract
+  version: ledgerbridge.company-report.v1
+  description: >-
+    Read-only, workload-mTLS contract. Every response selects exactly one fact
+    basis; candidate, statement, and posted values are never merged.
+servers:
+  - url: https://ledgerbridge-core.invalid
+security:
+  - workloadMtls: []
+paths:
+  /internal/v1/company-reports:
+    get:
+      operationId: getInternalCompanyReports
+      x-ledgerbridge-capability: ledger:read
+      x-ledgerbridge-scope: collection
+      x-ledgerbridge-reject-unknown-query: true
+      parameters:
+        - name: basis
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/Basis"
+        - name: from_month
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/MonthKey"
+        - name: to_month
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/MonthKey"
+        - name: company_ref
+          in: query
+          required: false
+          description: Must already be inside the verified workload principal's grants.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: One bounded, audit-horizon-consistent fact layer.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompanyReportPage"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
+components:
+  securitySchemes:
+    workloadMtls:
+      type: mutualTLS
+  responses:
+    Problem:
+      description: Closed, no-store problem response.
+      content:
+        application/problem+json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [type, title, status, code]
+            properties:
+              type: {type: string}
+              title: {type: string}
+              status: {type: integer}
+              code: {type: string}
+  schemas:
+    Basis:
+      type: string
+      enum: [CONFIRMED_CANDIDATE, ACCOUNT_STATEMENT, POSTED_LEDGER]
+    MonthKey:
+      type: string
+      pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$'
+    SafeInteger:
+      type: integer
+      minimum: -9007199254740991
+      maximum: 9007199254740991
+    Count:
+      type: integer
+      minimum: 0
+      maximum: 9007199254740991
+    BreakdownStatus:
+      type: string
+      enum:
+        - AVAILABLE
+        - EMPTY
+        - UNAVAILABLE_ATTRIBUTION_PENDING
+        - UNAVAILABLE_MISSING_SNAPSHOT
+    BalanceUnavailable:
+      type: object
+      additionalProperties: false
+      required: [balance_basis, opening_balance_minor, closing_balance_minor, gap]
+      properties:
+        balance_basis: {type: string, const: UNAVAILABLE}
+        opening_balance_minor: {type: "null"}
+        closing_balance_minor: {type: "null"}
+        gap: {type: string, const: AUTHORITATIVE_BALANCE_UNAVAILABLE}
+    CandidateMetrics:
+      type: object
+      additionalProperties: false
+      required:
+        - basis
+        - confirmed_positive_minor
+        - confirmed_negative_minor
+        - confirmed_net_minor
+        - confirmed_count
+        - source_count
+      properties:
+        basis: {type: string, const: CONFIRMED_CANDIDATE}
+        confirmed_positive_minor: {type: integer, minimum: 0, maximum: 9007199254740991}
+        confirmed_negative_minor: {type: integer, minimum: -9007199254740991, maximum: 0}
+        confirmed_net_minor: {$ref: "#/components/schemas/SafeInteger"}
+        confirmed_count: {$ref: "#/components/schemas/Count"}
+        source_count: {$ref: "#/components/schemas/Count"}
+    StatementMetrics:
+      type: object
+      additionalProperties: false
+      required:
+        - basis
+        - cash_inflow_minor
+        - cash_outflow_minor
+        - net_cash_flow_minor
+        - confirmed_transaction_count
+        - statement_count
+      properties:
+        basis: {type: string, const: ACCOUNT_STATEMENT}
+        cash_inflow_minor: {type: integer, minimum: 0, maximum: 9007199254740991}
+        cash_outflow_minor: {type: integer, minimum: 0, maximum: 9007199254740991}
+        net_cash_flow_minor: {$ref: "#/components/schemas/SafeInteger"}
+        confirmed_transaction_count: {$ref: "#/components/schemas/Count"}
+        statement_count: {$ref: "#/components/schemas/Count"}
+    PostedMetrics:
+      type: object
+      additionalProperties: false
+      required: [basis, revenue_minor, expense_minor, profit_minor, posted_entry_count, source_count]
+      properties:
+        basis: {type: string, const: POSTED_LEDGER}
+        revenue_minor: {type: integer, minimum: 0, maximum: 9007199254740991}
+        expense_minor: {type: integer, minimum: 0, maximum: 9007199254740991}
+        profit_minor: {$ref: "#/components/schemas/SafeInteger"}
+        posted_entry_count: {$ref: "#/components/schemas/Count"}
+        source_count: {$ref: "#/components/schemas/Count"}
+    Metrics:
+      oneOf:
+        - $ref: "#/components/schemas/CandidateMetrics"
+        - $ref: "#/components/schemas/StatementMetrics"
+        - $ref: "#/components/schemas/PostedMetrics"
+      discriminator:
+        propertyName: basis
+    CommonAggregate:
+      type: object
+      required:
+        - metrics
+        - pending_review_count
+        - attribution_pending_count
+        - missing_material_count
+        - taxonomy_version
+        - balance
+      properties:
+        metrics: {$ref: "#/components/schemas/Metrics"}
+        pending_review_count: {$ref: "#/components/schemas/Count"}
+        attribution_pending_count: {$ref: "#/components/schemas/Count"}
+        missing_material_count:
+          oneOf: [{$ref: "#/components/schemas/Count"}, {type: "null"}]
+        taxonomy_version: {type: [string, "null"], maxLength: 100}
+        balance: {$ref: "#/components/schemas/BalanceUnavailable"}
+    BusinessUnit:
+      allOf:
+        - $ref: "#/components/schemas/CommonAggregate"
+        - type: object
+          required: [business_unit_ref, business_unit_label]
+          properties:
+            business_unit_ref: {type: string, minLength: 1, maxLength: 100}
+            business_unit_label: {type: string, minLength: 1, maxLength: 200}
+    ReportMonth:
+      allOf:
+        - $ref: "#/components/schemas/CommonAggregate"
+        - type: object
+          required: [month, business_unit_breakdown_status, business_units]
+          properties:
+            month: {$ref: "#/components/schemas/MonthKey"}
+            business_unit_breakdown_status: {$ref: "#/components/schemas/BreakdownStatus"}
+            business_units:
+              type: [array, "null"]
+              maxItems: 50
+              items: {$ref: "#/components/schemas/BusinessUnit"}
+    CompanyReport:
+      allOf:
+        - $ref: "#/components/schemas/CommonAggregate"
+        - type: object
+          required:
+            - company_ref
+            - company_name
+            - currency
+            - business_unit_breakdown_status
+            - months
+          properties:
+            company_ref: {type: string, format: uuid}
+            company_name: {type: string, minLength: 1, maxLength: 200}
+            currency: {type: string, const: CNY}
+            business_unit_breakdown_status: {$ref: "#/components/schemas/BreakdownStatus"}
+            months:
+              type: array
+              maxItems: 24
+              items: {$ref: "#/components/schemas/ReportMonth"}
+    CompanyReportPage:
+      type: object
+      additionalProperties: false
+      required: [contract_version, basis, from_month, to_month, items]
+      properties:
+        contract_version: {type: string, const: ledgerbridge.company-report.v1}
+        basis: {$ref: "#/components/schemas/Basis"}
+        from_month: {$ref: "#/components/schemas/MonthKey"}
+        to_month: {$ref: "#/components/schemas/MonthKey"}
+        items:
+          type: array
+          maxItems: 50
+          items: {$ref: "#/components/schemas/CompanyReport"}

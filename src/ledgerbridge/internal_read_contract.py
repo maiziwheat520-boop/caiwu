@@ -60,6 +60,7 @@ READ_ROUTE_CAPABILITIES: Mapping[str, Capability] = {
     "GET /internal/v1/evidence/{id}/content": Capability.EVIDENCE_READ,
     "GET /internal/v1/reconciliations/{month}": Capability.RECONCILIATION_READ,
     "GET /internal/v1/ledger-summary": Capability.LEDGER_READ,
+    "GET /internal/v1/company-reports": Capability.LEDGER_READ,
 }
 
 READ_ROUTE_SCOPE_MODES: Mapping[str, ScopeMode] = {
@@ -69,6 +70,7 @@ READ_ROUTE_SCOPE_MODES: Mapping[str, ScopeMode] = {
     "GET /internal/v1/evidence/{id}/content": ScopeMode.OBJECT,
     "GET /internal/v1/reconciliations/{month}": ScopeMode.OBJECT,
     "GET /internal/v1/ledger-summary": ScopeMode.OBJECT,
+    "GET /internal/v1/company-reports": ScopeMode.COLLECTION,
 }
 
 CANDIDATE_ACTION_CAPABILITIES: Mapping[CandidateAction, Capability] = {
@@ -99,7 +101,14 @@ class CapabilitiesResponse(_FrozenModel):
     )
     data_mode: Literal["synthetic", "database"] = "synthetic"
     enabled_modules: tuple[
-        Literal["candidates", "evidence", "reconciliations", "ledger-summary"], ...
+        Literal[
+            "candidates",
+            "evidence",
+            "reconciliations",
+            "ledger-summary",
+            "company-reporting",
+        ],
+        ...,
     ]
 
 
@@ -340,7 +349,7 @@ def authorize_collection_read(
 ) -> None:
     """Authorize a collection whose query must union only the principal's grants."""
 
-    if capability != Capability.CANDIDATE_READ:
+    if capability not in {Capability.CANDIDATE_READ, Capability.LEDGER_READ}:
         raise AuthorizationDenied("capability has no collection read contract")
     require_capability(principal, capability)
     if not principal.grants:

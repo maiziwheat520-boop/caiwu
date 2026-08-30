@@ -445,7 +445,13 @@ class DatabaseInternalReadService:
         authorize_read(principal, Capability.SYSTEM_READ)
         return CapabilitiesResponse(
             data_mode="database",
-            enabled_modules=("candidates", "evidence", "reconciliations", "ledger-summary"),
+            enabled_modules=(
+                "candidates",
+                "evidence",
+                "reconciliations",
+                "ledger-summary",
+                "company-reporting",
+            ),
         )
 
     def list_candidates(

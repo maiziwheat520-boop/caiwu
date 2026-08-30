@@ -2,6 +2,31 @@
 
 Updated: 2026-08-30
 
+## Company reporting projection checkpoint (2026-08-30)
+
+Branch `ai/chatgpt/company-reporting-core` now contains a default-disabled, read-only
+`ledgerbridge.company-report.v1` projection and `/internal/v1/company-reports` adapter. Each
+response selects one of three non-interchangeable fact bases: confirmed candidate, confirmed
+account statement, or posted ledger. Only posted ledger exposes formal revenue, expense, and
+profit. Browser-supplied scope is not trusted; Core derives a bounded company and business-unit
+allowlist from the verified workload principal and reads all companies at one immutable audit
+horizon.
+
+Revision `20260830_0024` owns the separate `company_reporting_read` function surface and grants
+the reader only its exact entrypoint. It also marks a small shared-write hardening boundary:
+future journal-entry attribution captures the business-unit ref/label at write time. Existing
+history is not guessed; missing snapshots close only the affected business-unit breakdown while
+company-level posted totals remain available. Authoritative opening/closing balances and the
+material taxonomy remain explicit gaps. Production sampling was read-only, and no deployment,
+production migration, candidate mutation, posting, or credential change was performed. See
+`docs/tasks/2026-08-30-company-reporting-projection.md` and
+`docs/contracts/company-report-v1.openapi.yaml`.
+
+Local implementation validation passed 72 focused tests and the 823-test Core Windows suite;
+198 platform/database integration cases were skipped by their existing environment gates. The
+remaining merge gate is to integrate the separately owned `0022` and `0023` migrations before
+`0024`, then replay the chain against a disposable PostgreSQL database.
+
 ## Payroll publication adapter checkpoint (2026-08-30)
 
 The real-data cutover branch now contains a default-disabled, read-only adapter for the
