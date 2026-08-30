@@ -36,6 +36,7 @@ from ledgerbridge.models import EntityType
 from ledgerbridge.mybank_statement import MyBankStatement, MyBankTransaction
 from ledgerbridge.mybank_statement_cutover import (
     MyBankCutoverSafetyProof,
+    MyBankEvidenceDescriptor,
     MyBankStatementCutoverError,
     MyBankStatementCutoverGates,
     MyBankStatementCutoverPlan,
@@ -298,10 +299,10 @@ class _Parser:
 
 class _EvidenceWriter:
     def __init__(self, events: list[str] | None = None) -> None:
-        self.calls: list[tuple[Path, object]] = []
+        self.calls: list[tuple[Path, MyBankEvidenceDescriptor]] = []
         self._events = events
 
-    def __call__(self, source_path: Path, evidence: object) -> None:
+    def __call__(self, source_path: Path, evidence: MyBankEvidenceDescriptor) -> None:
         if self._events is not None:
             self._events.append("evidence")
         self.calls.append((source_path, evidence))
@@ -639,7 +640,20 @@ def test_cutover_rejects_missing_safety_gate_before_side_effects(
     runner, parser, evidence_writer, registrar, importer, counts_reader = _successful_runner(
         statement
     )
-    gates = replace(_gates(), **{field: value})
+    gates = _gates()
+    if field == "schema_revision":
+        assert isinstance(value, str)
+        gates = replace(gates, schema_revision=value)
+    else:
+        assert isinstance(value, bool)
+        if field == "backup_verified":
+            gates = replace(gates, backup_verified=value)
+        elif field == "isolated_restore_verified":
+            gates = replace(gates, isolated_restore_verified=value)
+        elif field == "rollback_ready":
+            gates = replace(gates, rollback_ready=value)
+        else:
+            raise AssertionError("unknown synthetic safety gate")
 
     with pytest.raises(MyBankStatementCutoverError, match=message):
         runner.run(_plan(source, digest, source.stat().st_size), gates=gates)
