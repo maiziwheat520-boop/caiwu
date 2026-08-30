@@ -703,6 +703,25 @@ BANK_STATEMENT_TABLES = (
     "bank_statement_observation",
     "bank_statement_review",
 )
+R1_CUTOVER_INVENTORY_TABLES = tuple(
+    sorted(set(R1_PUBLIC_TABLES) | set(COUNTERPARTY_PROTECTED_TABLES) | set(BANK_STATEMENT_TABLES))
+)
+_R1_CUTOVER_ROW_COUNTS_SQL = ", ".join(
+    f"'{table}', (SELECT count(*) FROM public.{table})" for table in R1_CUTOVER_INVENTORY_TABLES
+)
+R1_CUTOVER_INVENTORY_SQL = (
+    ""  # nosec B608 - table names come only from fixed repository allowlists.
+    "SELECT json_build_object("
+    "'schema_revision', (SELECT version_num FROM public.alembic_version), "
+    "'candidate_total', (SELECT count(*) FROM public.candidate), "
+    "'latest_pending_candidates', (SELECT count(*) FROM public.candidate c "
+    "JOIN LATERAL (SELECT status FROM public.candidate_revision cr "
+    "WHERE cr.candidate_id=c.id ORDER BY cr.revision DESC LIMIT 1) latest ON true "
+    "WHERE latest.status='PENDING'), "
+    "'audit_events', (SELECT count(*) FROM public.audit_event), "
+    f"'row_counts', json_build_object({_R1_CUTOVER_ROW_COUNTS_SQL})"
+    ")::text;"
+)
 BANK_STATEMENT_FUNCTION_SIGNATURES = {
     ("public", "r1_bank_statement_append_only"): "",
     ("public", "r1_bank_statement_transaction_digest"): (
@@ -2486,6 +2505,123 @@ class BackupError(RuntimeError):
     """Raised when backup or restore safety validation fails."""
 
 
+@dataclass(frozen=True, slots=True)
+class CutoverInventory:
+    """Count-only inventory used inside an isolated restore session."""
+
+    schema_revision: str
+    candidate_total: int
+    latest_pending_candidates: int
+    audit_events: int
+    row_counts: tuple[tuple[str, int], ...]
+
+    def __post_init__(self) -> None:
+        if self.schema_revision != BANK_STATEMENT_SECURITY_REVISION:
+            raise BackupError("cutover inventory schema revision is invalid")
+        scalar_counts = (
+            self.candidate_total,
+            self.latest_pending_candidates,
+            self.audit_events,
+        )
+        if any(type(value) is not int or value < 0 for value in scalar_counts):
+            raise BackupError("cutover inventory scalar count is invalid")
+        if (
+            tuple(sorted(self.row_counts)) != self.row_counts
+            or len({name for name, _ in self.row_counts}) != len(self.row_counts)
+            or {name for name, _ in self.row_counts} != set(R1_CUTOVER_INVENTORY_TABLES)
+            or any(type(value) is not int or value < 0 for _, value in self.row_counts)
+        ):
+            raise BackupError("cutover inventory row counts are invalid")
+
+    @classmethod
+    def from_payload(cls, payload: object) -> CutoverInventory:
+        if not isinstance(payload, dict) or set(payload) != {
+            "schema_revision",
+            "candidate_total",
+            "latest_pending_candidates",
+            "audit_events",
+            "row_counts",
+        }:
+            raise BackupError("cutover inventory payload is invalid")
+        row_counts = payload.get("row_counts")
+        if not isinstance(row_counts, dict):
+            raise BackupError("cutover inventory payload is invalid")
+        values = tuple(sorted((str(name), value) for name, value in row_counts.items()))
+        return cls(
+            schema_revision=cast(str, payload.get("schema_revision")),
+            candidate_total=cast(int, payload.get("candidate_total")),
+            latest_pending_candidates=cast(int, payload.get("latest_pending_candidates")),
+            audit_events=cast(int, payload.get("audit_events")),
+            row_counts=cast(tuple[tuple[str, int], ...], values),
+        )
+
+    def count(self, table: str) -> int:
+        return dict(self.row_counts)[table]
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "schema_revision": self.schema_revision,
+            "candidate_total": self.candidate_total,
+            "latest_pending_candidates": self.latest_pending_candidates,
+            "audit_events": self.audit_events,
+            "row_counts": dict(self.row_counts),
+        }
+
+
+def validate_mybank_cutover_inventory_sequence(
+    *,
+    before: CutoverInventory,
+    after: CutoverInventory,
+    replay: CutoverInventory,
+    conflict: CutoverInventory,
+    transaction_count: int,
+) -> dict[str, int]:
+    """Prove the fixed whole-statement delta and two zero-delta follow-ups."""
+
+    if type(transaction_count) is not int or transaction_count <= 0:
+        raise BackupError("cutover transaction count is invalid")
+    if any(
+        item.candidate_total != before.candidate_total
+        or item.latest_pending_candidates != before.latest_pending_candidates
+        for item in (after, replay, conflict)
+    ):
+        raise BackupError("cutover candidate inventory changed")
+    expected_deltas = {
+        "evidence_object": 1,
+        "encrypted_object_identity": 1,
+        "encrypted_blob_version": 1,
+        "managed_account": 1,
+        "managed_account_lifecycle": 1,
+        "bank_statement": 1,
+        "bank_statement_transaction": transaction_count,
+        "bank_statement_observation": transaction_count,
+        "bank_statement_review": 1,
+    }
+    before_counts = dict(before.row_counts)
+    after_counts = dict(after.row_counts)
+    for table in R1_CUTOVER_INVENTORY_TABLES:
+        observed = after_counts[table] - before_counts[table]
+        expected = expected_deltas.get(table, 0)
+        if observed != expected:
+            label = "required" if table in expected_deltas else "unrelated"
+            raise BackupError(f"cutover {label} table inventory changed: {table}")
+    expected_audit_delta = 6 + 2 * transaction_count
+    if after.audit_events - before.audit_events != expected_audit_delta:
+        raise BackupError("cutover audit inventory changed unexpectedly")
+    if replay != after:
+        raise BackupError("cutover replay changed inventory")
+    if conflict != after:
+        raise BackupError("cutover conflict probe changed inventory")
+    return {
+        "candidate_total": after.candidate_total,
+        "latest_pending_candidates": after.latest_pending_candidates,
+        "audit_event_delta": expected_audit_delta,
+        "transaction_count": transaction_count,
+        "replay_delta": 0,
+        "conflict_delta": 0,
+    }
+
+
 class Runner:
     """Subprocess adapter that never puts secret values in command arguments."""
 
@@ -2837,6 +2973,8 @@ def _database_metadata(
         ):
             raise BackupError("account registry security query returned an incomplete object")
         metadata.update(cast(dict[str, Any], registry_security))
+        cutover_inventory = CutoverInventory.from_payload(query(R1_CUTOVER_INVENTORY_SQL))
+        metadata["cutover_inventory"] = cutover_inventory.as_payload()
     if revision >= COMPANY_REPORTING_SECURITY_REVISION:
         company_reporting_security = query(COMPANY_REPORTING_SECURITY_SQL)
         required_company_reporting_keys = {
@@ -3650,6 +3788,11 @@ def _validate_restored_database(expected: dict[str, Any], actual: dict[str, Any]
     if is_v2:
         comparison_expected = dict(expected)
         comparison_actual = dict(actual)
+        if "cutover_inventory" not in comparison_expected:
+            # Historical 0021 backups predate the count-only cutover inventory.
+            # Keep them restorable without treating the unpaired new observation
+            # as source evidence.
+            comparison_actual.pop("cutover_inventory", None)
         database_owner = expected.get("database_owner")
         if isinstance(database_owner, str):
             owner_grantees = {database_owner, "pg_database_owner"}
