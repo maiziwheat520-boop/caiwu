@@ -25,6 +25,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.execute(_event_constraints_sql(allow_pending_corrections=True))
     op.execute(_candidate_closure_sql(allow_pending_corrections=True))
+    op.execute(_revision_dimensions_sql(allow_pending_corrections=True))
     op.execute(_command_functions_sql(allow_pending_corrections=True))
     op.execute(_accounting_dimensions_sql(install=True))
 
@@ -94,6 +95,7 @@ def downgrade() -> None:
     )
     op.execute(_accounting_dimensions_sql(install=False))
     op.execute(_command_functions_sql(allow_pending_corrections=False))
+    op.execute(_revision_dimensions_sql(allow_pending_corrections=False))
     op.execute(_candidate_closure_sql(allow_pending_corrections=False))
     op.execute(_event_constraints_sql(allow_pending_corrections=False))
 
@@ -241,6 +243,55 @@ def _candidate_closure_sql(*, allow_pending_corrections: bool) -> str:
                 RAISE EXCEPTION 'candidate closure validator is not installed';
             END IF;
             {"".join(statements)}
+            EXECUTE v_definition;
+        END
+        $patch$;
+    """
+
+
+def _revision_dimensions_sql(*, allow_pending_corrections: bool) -> str:
+    old_evidence_scope = """OR ce.evidence_business_unit_id IS DISTINCT FROM eo.business_unit_id
+                        OR (NEW.business_unit_id IS NOT NULL
+                            AND eo.business_unit_id IS DISTINCT FROM NEW.business_unit_id))"""
+    new_evidence_scope = """OR ce.evidence_business_unit_id IS DISTINCT FROM eo.business_unit_id
+                        OR (NEW.business_unit_id IS NOT NULL
+                            AND eo.business_unit_id IS DISTINCT FROM NEW.business_unit_id
+                            AND NOT EXISTS (
+                                SELECT 1
+                                  FROM public.candidate_event AS correction
+                                  JOIN public.candidate_revision AS prior
+                                    ON prior.candidate_id = correction.candidate_id
+                                   AND prior.revision = correction.from_revision
+                                 WHERE correction.candidate_id = NEW.candidate_id
+                                   AND correction.to_revision = NEW.revision
+                                   AND correction.action = 'CORRECT_AND_CONFIRM'
+                                   AND correction.from_status = 'PENDING'
+                                   AND correction.to_status = 'CONFIRMED'
+                                   AND eo.business_unit_id IS NOT DISTINCT FROM prior.business_unit_id
+                            )))"""
+    source, target = (
+        (old_evidence_scope, new_evidence_scope)
+        if allow_pending_corrections
+        else (new_evidence_scope, old_evidence_scope)
+    )
+    return f"""
+        DO $patch$
+        DECLARE v_definition text;
+        BEGIN
+            SELECT pg_get_functiondef(
+                to_regprocedure('public.r1_validate_revision_dimensions()')
+            ) INTO v_definition;
+            IF v_definition IS NULL THEN
+                RAISE EXCEPTION 'candidate revision dimension validator is not installed';
+            END IF;
+            IF position($source${source}$source$ IN v_definition) = 0 THEN
+                RAISE EXCEPTION 'candidate revision dimension patch source is not installed';
+            END IF;
+            v_definition := replace(
+                v_definition,
+                $source${source}$source$,
+                $target${target}$target$
+            );
             EXECUTE v_definition;
         END
         $patch$;
