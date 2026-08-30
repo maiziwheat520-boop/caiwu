@@ -24,8 +24,16 @@ from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 from uuid import UUID
 
+from ledgerbridge.internal_payroll_assertion import (
+    PROVIDER_USER_ASSERTION_HEADER,
+    PROVIDER_WORKLOAD_ASSERTION_HEADER,
+)
+
 PUBLICATION_SCHEMA = "payroll-ledgerbridge-publication/v1"
 STATUS_SCHEMA = "1.0"
+LIVE_PROJECTION_SCHEMA = "payroll-ledgerbridge-live-projection/v1"
+LIVE_PROJECTION_CONTRACT_VERSION = "1.0.0"
+LIVE_PROJECTION_PATH = "/api/v1/ledgerbridge-projections/current"
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_SAFE_INTEGER = (2**53) - 1
 _PUBLICATION_ID = re.compile(r"^publication_[a-f0-9]{24}$")
@@ -215,6 +223,129 @@ _SENSITIVE_VALUE_SKIP_FIELDS = frozenset(
         "publicationid",
     }
 )
+_LIVE_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "contract_version",
+        "schema_version",
+        "company_id",
+        "projection_revision",
+        "etag",
+        "generated_at",
+        "live_data_ready",
+        "payable",
+        "payment_submission_supported",
+        "submission_supported",
+        "server_capabilities",
+        "unassigned_material_count",
+        "materials",
+        "batches",
+        "available_evidence",
+        "verifications",
+        "resources",
+    }
+)
+_LIVE_CAPABILITY_FIELDS = frozenset(
+    {
+        "projection_read",
+        "material_review_command",
+        "batch_command",
+        "verification_command",
+        "payment_submission",
+    }
+)
+_LIVE_MATERIAL_FIELDS = frozenset(
+    {
+        "company_id",
+        "material_id",
+        "period",
+        "material_type",
+        "status",
+        "review_revision",
+        "payable",
+        "submission_supported",
+    }
+)
+_LIVE_BATCH_FIELDS = frozenset(
+    {
+        "company_id",
+        "batch_id",
+        "pay_period",
+        "revision",
+        "status",
+        "payable",
+        "submission_supported",
+        "payment_submission_supported",
+        "lines",
+        "audit_closure",
+    }
+)
+_LIVE_BATCH_REQUIRED_FIELDS = _LIVE_BATCH_FIELDS - {"audit_closure"}
+_LIVE_LINE_FIELDS = frozenset(
+    {
+        "company_id",
+        "employee_id",
+        "employee_display",
+        "account_id",
+        "account_display",
+        "net_pay_minor",
+    }
+)
+_LIVE_VERIFICATION_FIELDS = frozenset(
+    {
+        "company_id",
+        "verification_id",
+        "batch_id",
+        "status",
+        "source_artifact_ids",
+        "results",
+        "payable",
+        "submission_supported",
+        "payment_submission_supported",
+    }
+)
+_LIVE_VERIFICATION_RESULT_FIELDS = frozenset(
+    {
+        "company_id",
+        "employee_id",
+        "employee_display",
+        "account_id",
+        "account_display",
+        "status",
+    }
+)
+_LIVE_RESOURCE_FIELDS = frozenset(
+    {
+        "company_id",
+        "employee_id",
+        "employee_display",
+        "account_id",
+        "account_display",
+    }
+)
+_LIVE_AUDIT_CLOSURE_FIELDS = frozenset({"audit_event_id", "audit_hash"})
+_LIVE_EVIDENCE_FIELDS = frozenset(
+    {
+        "company_id",
+        "artifact_id",
+        "period",
+        "evidence_type",
+        "status",
+        "display_label",
+    }
+)
+_LIVE_EVIDENCE_TYPES = frozenset(
+    {
+        "MYBANK_STATEMENT",
+        "BOC_RECEIPT",
+        "WECHAT_RECEIPT",
+        "CASH_SIGNOFF",
+        "BANK_RECEIPT",
+    }
+)
+# Kept only for the unreachable legacy-validator reference below; the live
+# adapter calls the exact provider contract validator defined above it.
+_LIVE_DASHBOARD_FIELDS: frozenset[str] = frozenset()
+_LIVE_VERIFICATION_AUDIT_FIELDS: frozenset[str] = frozenset()
 
 
 class PayrollIntegrationError(RuntimeError):
@@ -235,6 +366,29 @@ class PayrollHttpTransport(Protocol):
         *,
         timeout_seconds: float,
         max_bytes: int,
+    ) -> Mapping[str, object]: ...
+
+
+class PayrollLiveHttpTransport(Protocol):
+    """Retrieve protected provider JSON with server-generated headers only."""
+
+    def get_json(
+        self,
+        url: str,
+        *,
+        timeout_seconds: float,
+        max_bytes: int,
+        headers: Mapping[str, str],
+    ) -> Mapping[str, object]: ...
+
+    def post_json(
+        self,
+        url: str,
+        *,
+        timeout_seconds: float,
+        max_bytes: int,
+        headers: Mapping[str, str],
+        body: bytes,
     ) -> Mapping[str, object]: ...
 
 
@@ -265,6 +419,18 @@ class PayrollPublication:
     def payload_copy(self) -> dict[str, object]:
         """Return JSON-ready data without changing any source identifier."""
 
+        return cast(dict[str, object], _deep_thaw(self.payload))
+
+
+@dataclass(frozen=True, slots=True)
+class PayrollLiveRead:
+    """One company-scoped, immutable live-payroll read result."""
+
+    entity_ref: UUID
+    company_id: str
+    payload: Mapping[str, object]
+
+    def payload_copy(self) -> dict[str, object]:
         return cast(dict[str, object], _deep_thaw(self.payload))
 
 
@@ -325,6 +491,414 @@ class PayrollCompanyMap:
         return entity_ref
 
 
+class HttpPayrollLiveSource:
+    """Protected live projection adapter; old dashboard data is never consumed."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        timeout_seconds: float,
+        company_mapping: Mapping[str, UUID],
+        enabled: bool = False,
+        transport: PayrollLiveHttpTransport,
+    ) -> None:
+        if type(enabled) is not bool:
+            raise ValueError("enabled must be a boolean")
+        self._enabled = enabled
+        self._base_url = _require_base_url(base_url)
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not 0 < timeout_seconds <= 60
+        ):
+            raise ValueError("timeout_seconds must be greater than 0 and at most 60")
+        self._timeout_seconds = float(timeout_seconds)
+        self._companies = PayrollCompanyMap(company_mapping)
+        self._transport = transport
+
+    def read_status(
+        self,
+        *,
+        entity_ref: UUID,
+        provider_headers: Mapping[str, str],
+        projection_headers: Mapping[str, str] | None = None,
+        allowed_actions: tuple[str, ...] = (),
+    ) -> PayrollLiveRead:
+        self._require_enabled()
+        company_id = self._companies.company_for_entity(entity_ref)
+        if any(action != "VERIFY_RECEIPTS" for action in allowed_actions) or len(
+            set(allowed_actions)
+        ) != len(allowed_actions):
+            raise PayrollIntegrationError(
+                "PAYROLL_COMMAND_NOT_ALLOWED",
+                "payroll command capability is invalid",
+            )
+        projection = self._request(
+            LIVE_PROJECTION_PATH,
+            provider_headers=projection_headers or provider_headers,
+        )
+        _validate_live_projection(projection, expected_company_id=company_id)
+        capabilities = cast(Mapping[str, object], projection["server_capabilities"])
+        commands_enabled = bool(
+            projection["live_data_ready"] is True
+            and capabilities["verification_command"] is True
+            and allowed_actions
+        )
+        payload: dict[str, object] = {
+            "schema_version": "ledgerbridge.payroll-status.v1",
+            "live_data_ready": projection["live_data_ready"],
+            "live_projection_schema": projection["schema_version"],
+            "projection_revision": projection["projection_revision"],
+            "etag": projection["etag"],
+            "setup_summary": _setup_summary(projection),
+            "capabilities": {
+                "commands_enabled": commands_enabled,
+                "allowed_actions": list(allowed_actions) if commands_enabled else [],
+            },
+            "payment_operations_exposed": False,
+        }
+        return PayrollLiveRead(
+            entity_ref=entity_ref,
+            company_id=company_id,
+            payload=cast(Mapping[str, object], _deep_freeze(payload)),
+        )
+
+    def read_dashboard(
+        self,
+        *,
+        entity_ref: UUID,
+        provider_headers: Mapping[str, str],
+    ) -> PayrollLiveRead:
+        company_id, projection = self._read_projection(
+            entity_ref=entity_ref,
+            provider_headers=provider_headers,
+            require_ready=False,
+        )
+        batches = cast(list[Mapping[str, object]], projection["batches"])
+        materials = cast(list[Mapping[str, object]], projection["materials"])
+        verifications = cast(list[Mapping[str, object]], projection["verifications"])
+        net_pay_minor = sum(
+            cast(int, line["net_pay_minor"])
+            for batch in batches
+            for line in cast(list[Mapping[str, object]], batch["lines"])
+        )
+        setup_summary = _setup_summary(projection)
+        payload: dict[str, object] = {
+            "schema_version": "ledgerbridge.payroll-dashboard.v1",
+            "projection_revision": projection["projection_revision"],
+            "etag": projection["etag"],
+            "generated_at": projection["generated_at"],
+            "live_data_ready": projection["live_data_ready"],
+            "setup_summary": setup_summary,
+        }
+        if projection["live_data_ready"] is True:
+            payload["dashboard"] = {
+                "batch_count": len(batches),
+                "material_count": len(materials),
+                "materials_needing_review_count": sum(
+                    item["status"] != "REVIEWED" for item in materials
+                ),
+                "verification_attention_count": sum(
+                    item["status"] != "MATCHED" for item in verifications
+                ),
+                "unassigned_material_count": projection["unassigned_material_count"],
+                "net_pay_minor": net_pay_minor,
+            }
+        return PayrollLiveRead(
+            entity_ref=entity_ref,
+            company_id=company_id,
+            payload=cast(Mapping[str, object], _deep_freeze(payload)),
+        )
+
+    def list_materials(
+        self,
+        *,
+        entity_ref: UUID,
+        provider_headers: Mapping[str, str],
+    ) -> PayrollLiveRead:
+        company_id, projection = self._read_projection(
+            entity_ref=entity_ref,
+            provider_headers=provider_headers,
+        )
+        payload: dict[str, object] = {
+            "schema_version": "ledgerbridge.payroll-material-list.v1",
+            "projection_revision": projection["projection_revision"],
+            "etag": projection["etag"],
+            "generated_at": projection["generated_at"],
+            "items": projection["materials"],
+        }
+        return PayrollLiveRead(
+            entity_ref=entity_ref,
+            company_id=company_id,
+            payload=cast(Mapping[str, object], _deep_freeze(payload)),
+        )
+
+    def read_material(
+        self,
+        *,
+        entity_ref: UUID,
+        material_id: str,
+        provider_headers: Mapping[str, str],
+    ) -> PayrollLiveRead:
+        _require_stable_identifier(material_id, "material_id")
+        company_id, projection = self._read_projection(
+            entity_ref=entity_ref,
+            provider_headers=provider_headers,
+        )
+        materials = cast(list[Mapping[str, object]], projection["materials"])
+        material = next(
+            (item for item in materials if item.get("material_id") == material_id),
+            None,
+        )
+        if material is None:
+            raise PayrollIntegrationError(
+                "PAYROLL_MATERIAL_NOT_FOUND",
+                "payroll material is unavailable in the authenticated company projection",
+            )
+        payload: dict[str, object] = {
+            "schema_version": "ledgerbridge.payroll-material-detail.v1",
+            "projection_revision": projection["projection_revision"],
+            "etag": projection["etag"],
+            "generated_at": projection["generated_at"],
+            "material": material,
+        }
+        return PayrollLiveRead(
+            entity_ref=entity_ref,
+            company_id=company_id,
+            payload=cast(Mapping[str, object], _deep_freeze(payload)),
+        )
+
+    def list_batches(
+        self,
+        *,
+        entity_ref: UUID,
+        provider_headers: Mapping[str, str],
+    ) -> PayrollLiveRead:
+        company_id, projection = self._read_projection(
+            entity_ref=entity_ref,
+            provider_headers=provider_headers,
+        )
+        payload: dict[str, object] = {
+            "schema_version": "ledgerbridge.payroll-batch-list.v1",
+            "projection_revision": projection["projection_revision"],
+            "etag": projection["etag"],
+            "generated_at": projection["generated_at"],
+            "items": projection["batches"],
+        }
+        return PayrollLiveRead(
+            entity_ref=entity_ref,
+            company_id=company_id,
+            payload=cast(Mapping[str, object], _deep_freeze(payload)),
+        )
+
+    def list_verification_results(
+        self,
+        *,
+        entity_ref: UUID,
+        provider_headers: Mapping[str, str],
+    ) -> PayrollLiveRead:
+        company_id, projection = self._read_projection(
+            entity_ref=entity_ref,
+            provider_headers=provider_headers,
+        )
+        payload: dict[str, object] = {
+            "schema_version": "ledgerbridge.payroll-verification-list.v1",
+            "projection_revision": projection["projection_revision"],
+            "etag": projection["etag"],
+            "generated_at": projection["generated_at"],
+            "items": projection["verifications"],
+            "available_evidence": projection["available_evidence"],
+        }
+        return PayrollLiveRead(
+            entity_ref=entity_ref,
+            company_id=company_id,
+            payload=cast(Mapping[str, object], _deep_freeze(payload)),
+        )
+
+    def verify_receipts(
+        self,
+        *,
+        entity_ref: UUID,
+        batch_id: str,
+        provider_body: bytes,
+        provider_headers: Mapping[str, str],
+        idempotency_key: str,
+    ) -> PayrollLiveRead:
+        self._require_enabled()
+        company_id = self._companies.company_for_entity(entity_ref)
+        _require_stable_identifier(batch_id, "batch_id")
+        path = f"/api/v1/batches/{quote(batch_id, safe='')}/verify-receipts"
+        receipt = self._request_post(
+            path,
+            provider_headers=provider_headers,
+            body=provider_body,
+        )
+        _validate_command_receipt(
+            receipt,
+            company_id=company_id,
+            resource_id=batch_id,
+            action="payroll.receipts.verify",
+            idempotency_key=idempotency_key,
+        )
+        return PayrollLiveRead(
+            entity_ref=entity_ref,
+            company_id=company_id,
+            payload=cast(Mapping[str, object], _deep_freeze(receipt)),
+        )
+
+    def _read_projection(
+        self,
+        *,
+        entity_ref: UUID,
+        provider_headers: Mapping[str, str],
+        require_ready: bool = True,
+    ) -> tuple[str, Mapping[str, object]]:
+        self._require_enabled()
+        company_id = self._companies.company_for_entity(entity_ref)
+        projection = self._request(
+            LIVE_PROJECTION_PATH,
+            provider_headers=provider_headers,
+        )
+        _validate_live_projection(projection, expected_company_id=company_id)
+        if require_ready and projection["live_data_ready"] is not True:
+            raise PayrollIntegrationError(
+                "PAYROLL_LIVE_DATA_UNAVAILABLE",
+                "payroll provider has not made a live projection available",
+            )
+        return company_id, projection
+
+    def _require_enabled(self) -> None:
+        if not self._enabled:
+            raise PayrollIntegrationError(
+                "PAYROLL_INTEGRATION_DISABLED",
+                "payroll live integration is disabled",
+            )
+
+    def _request(
+        self,
+        path: str,
+        *,
+        provider_headers: Mapping[str, str],
+    ) -> Mapping[str, object]:
+        if (
+            not isinstance(provider_headers, Mapping)
+            or frozenset(provider_headers)
+            != frozenset(
+                {
+                    PROVIDER_WORKLOAD_ASSERTION_HEADER,
+                    PROVIDER_USER_ASSERTION_HEADER,
+                }
+            )
+            or provider_headers.get(PROVIDER_WORKLOAD_ASSERTION_HEADER) in {None, ""}
+            or provider_headers.get(PROVIDER_USER_ASSERTION_HEADER) in {None, ""}
+        ):
+            raise PayrollIntegrationError(
+                "PAYROLL_PROVIDER_AUTH_UNAVAILABLE",
+                "payroll provider assertion is unavailable",
+            )
+        try:
+            value = self._transport.get_json(
+                f"{self._base_url}{path}",
+                timeout_seconds=self._timeout_seconds,
+                max_bytes=MAX_RESPONSE_BYTES,
+                headers=MappingProxyType(dict(provider_headers)),
+            )
+        except PayrollIntegrationError:
+            raise
+        except TimeoutError as exc:
+            raise PayrollIntegrationError(
+                "PAYROLL_PROVIDER_TIMEOUT",
+                "payroll provider request timed out",
+            ) from exc
+        except Exception as exc:
+            raise PayrollIntegrationError(
+                "PAYROLL_PROVIDER_UNAVAILABLE",
+                "payroll provider is unavailable",
+            ) from exc
+        if not isinstance(value, Mapping):
+            raise PayrollIntegrationError(
+                "PAYROLL_PROVIDER_RESPONSE",
+                "payroll provider response is invalid",
+            )
+        return value
+
+    def _request_post(
+        self,
+        path: str,
+        *,
+        provider_headers: Mapping[str, str],
+        body: bytes,
+    ) -> Mapping[str, object]:
+        self._validate_provider_headers(provider_headers)
+        try:
+            value = self._transport.post_json(
+                f"{self._base_url}{path}",
+                timeout_seconds=self._timeout_seconds,
+                max_bytes=MAX_RESPONSE_BYTES,
+                headers=MappingProxyType(dict(provider_headers)),
+                body=body,
+            )
+        except PayrollIntegrationError:
+            raise
+        except TimeoutError as exc:
+            raise PayrollIntegrationError(
+                "PAYROLL_PROVIDER_TIMEOUT",
+                "payroll provider request timed out",
+            ) from exc
+        except Exception as exc:
+            raise PayrollIntegrationError(
+                "PAYROLL_PROVIDER_UNAVAILABLE",
+                "payroll provider is unavailable",
+            ) from exc
+        if not isinstance(value, Mapping):
+            raise PayrollIntegrationError(
+                "PAYROLL_PROVIDER_RESPONSE",
+                "payroll provider response is invalid",
+            )
+        return value
+
+    @staticmethod
+    def _validate_provider_headers(provider_headers: Mapping[str, str]) -> None:
+        if (
+            not isinstance(provider_headers, Mapping)
+            or frozenset(provider_headers)
+            != frozenset(
+                {
+                    PROVIDER_WORKLOAD_ASSERTION_HEADER,
+                    PROVIDER_USER_ASSERTION_HEADER,
+                }
+            )
+            or provider_headers.get(PROVIDER_WORKLOAD_ASSERTION_HEADER) in {None, ""}
+            or provider_headers.get(PROVIDER_USER_ASSERTION_HEADER) in {None, ""}
+        ):
+            raise PayrollIntegrationError(
+                "PAYROLL_PROVIDER_AUTH_UNAVAILABLE",
+                "payroll provider assertion is unavailable",
+            )
+
+
+def _setup_summary(projection: Mapping[str, object]) -> dict[str, object]:
+    materials = cast(list[Mapping[str, object]], projection["materials"])
+    blocking_reason_codes: list[str] = []
+    if cast(int, projection["unassigned_material_count"]) > 0:
+        blocking_reason_codes.append("UNASSIGNED_MATERIALS")
+    if any(item["status"] != "REVIEWED" for item in materials):
+        blocking_reason_codes.append("MATERIAL_REVIEW_REQUIRED")
+    if not cast(list[object], projection["batches"]):
+        blocking_reason_codes.append("PAYROLL_BATCH_REQUIRED")
+    if projection["live_data_ready"] is not True:
+        blocking_reason_codes.append("LIVE_DATA_NOT_READY")
+    return {
+        "provider_connected": True,
+        "runtime_mode": "live-provider",
+        "unassigned_material_count": projection["unassigned_material_count"],
+        "ready_material_count": sum(item["status"] == "REVIEWED" for item in materials),
+        "company_mapped_material_count": len(materials),
+        "blocking_reason_codes": blocking_reason_codes,
+    }
+
+
 class UrllibPayrollHttpTransport:
     """Small blocking JSON transport; authentication remains deployment-owned."""
 
@@ -337,7 +911,8 @@ class UrllibPayrollHttpTransport:
     ) -> Mapping[str, object]:
         request = Request(url, headers={"Accept": "application/json"})
         try:
-            with urlopen(request, timeout=timeout_seconds) as response:
+            # The source constructor normalizes this to a credential-free HTTP(S) origin.
+            with urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
                 status = getattr(response, "status", None)
                 if status != 200:
                     raise PayrollIntegrationError(
@@ -357,6 +932,107 @@ class UrllibPayrollHttpTransport:
                 "PAYROLL_PROVIDER_REJECTED",
                 "payroll provider rejected the read-only request",
             ) from exc
+        except (URLError, OSError) as exc:
+            raise PayrollIntegrationError(
+                "PAYROLL_PROVIDER_UNAVAILABLE",
+                "payroll provider is unavailable",
+            ) from exc
+        if len(content) > max_bytes:
+            raise PayrollIntegrationError(
+                "PAYROLL_PROVIDER_RESPONSE",
+                "payroll provider response exceeds the bounded limit",
+            )
+        try:
+            value = json.loads(content.decode("utf-8"), object_pairs_hook=_unique_object)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise PayrollIntegrationError(
+                "PAYROLL_PROVIDER_RESPONSE",
+                "payroll provider response is invalid",
+            ) from exc
+        if not isinstance(value, Mapping):
+            raise PayrollIntegrationError(
+                "PAYROLL_PROVIDER_RESPONSE",
+                "payroll provider response is invalid",
+            )
+        return value
+
+
+class UrllibPayrollLiveHttpTransport:
+    """Bounded protected transport dedicated to the live provider contract."""
+
+    def get_json(
+        self,
+        url: str,
+        *,
+        timeout_seconds: float,
+        max_bytes: int,
+        headers: Mapping[str, str],
+    ) -> Mapping[str, object]:
+        return self._json_request(
+            url,
+            method="GET",
+            timeout_seconds=timeout_seconds,
+            max_bytes=max_bytes,
+            headers=headers,
+            body=None,
+        )
+
+    def post_json(
+        self,
+        url: str,
+        *,
+        timeout_seconds: float,
+        max_bytes: int,
+        headers: Mapping[str, str],
+        body: bytes,
+    ) -> Mapping[str, object]:
+        return self._json_request(
+            url,
+            method="POST",
+            timeout_seconds=timeout_seconds,
+            max_bytes=max_bytes,
+            headers=headers,
+            body=body,
+        )
+
+    def _json_request(
+        self,
+        url: str,
+        *,
+        method: str,
+        timeout_seconds: float,
+        max_bytes: int,
+        headers: Mapping[str, str],
+        body: bytes | None,
+    ) -> Mapping[str, object]:
+        request_headers = {"Accept": "application/json", **dict(headers)}
+        if body is not None:
+            request_headers["Content-Type"] = "application/json"
+        request = Request(
+            url,
+            data=body,
+            headers=request_headers,
+            method=method,
+        )
+        try:
+            # The source constructor normalizes this to a credential-free HTTP(S) origin.
+            with urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
+                if getattr(response, "status", None) != 200:
+                    raise PayrollIntegrationError(
+                        "PAYROLL_PROVIDER_REJECTED",
+                        "payroll provider rejected the protected request",
+                    )
+                content = response.read(max_bytes + 1)
+        except PayrollIntegrationError:
+            raise
+        except TimeoutError as exc:
+            raise PayrollIntegrationError(
+                "PAYROLL_PROVIDER_TIMEOUT",
+                "payroll provider request timed out",
+            ) from exc
+        except HTTPError as exc:
+            code = "PAYROLL_VERSION_CONFLICT" if exc.code == 409 else "PAYROLL_PROVIDER_REJECTED"
+            raise PayrollIntegrationError(code, "payroll provider rejected the request") from exc
         except (URLError, OSError) as exc:
             raise PayrollIntegrationError(
                 "PAYROLL_PROVIDER_UNAVAILABLE",
@@ -567,6 +1243,619 @@ def _validate_status(value: Mapping[str, object]) -> None:
             "PAYROLL_STATUS_UNSAFE",
             "payroll provider status is not safe for read-only demo integration",
         )
+
+
+def _validate_live_status(value: Mapping[str, object]) -> None:
+    if (
+        value.get("schema_version") != STATUS_SCHEMA
+        or value.get("status") != "ready"
+        or type(value.get("demo_mode")) is not bool
+        or value.get("payment_submission_supported") is not False
+        or value.get("payment_execution_supported", False) is not False
+        or value.get("payable", False) is not False
+    ):
+        raise PayrollIntegrationError(
+            "PAYROLL_STATUS_UNSAFE",
+            "payroll provider status is not safe for non-payable integration",
+        )
+
+
+_COMMAND_RECEIPT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "company_id",
+        "resource_id",
+        "action",
+        "audit_event_id",
+        "audit_hash",
+        "occurred_at",
+        "idempotency_key",
+        "replayed",
+        "audit_closure",
+    }
+)
+_COMMAND_AUDIT_FIELDS = frozenset(
+    {
+        "company_id",
+        "resource_id",
+        "action",
+        "actor_subject",
+        "actor_id",
+        "audit_event_id",
+        "audit_hash",
+        "occurred_at",
+    }
+)
+
+
+def _validate_command_receipt(
+    value: Mapping[str, object],
+    *,
+    company_id: str,
+    resource_id: str,
+    action: str,
+    idempotency_key: str,
+) -> None:
+    _require_exact_keys(value, _COMMAND_RECEIPT_FIELDS, "command receipt")
+    if (
+        value.get("schema_version") != "payroll-ledgerbridge-command-receipt/v1"
+        or value.get("company_id") != company_id
+        or value.get("resource_id") != resource_id
+        or value.get("action") != action
+        or value.get("idempotency_key") != idempotency_key
+        or type(value.get("replayed")) is not bool
+    ):
+        raise PayrollIntegrationError(
+            "PAYROLL_COMMAND_RECEIPT_INVALID",
+            "payroll command receipt does not close the authenticated operation",
+        )
+    audit_event_id = _require_stable_identifier(
+        value.get("audit_event_id"),
+        "audit_event_id",
+    )
+    audit_hash = _require_sha256(value.get("audit_hash"), "audit_hash")
+    occurred_at = _require_live_timestamp(value.get("occurred_at"), "occurred_at")
+    closure = _require_object(value.get("audit_closure"), "audit_closure")
+    _require_exact_keys(closure, _COMMAND_AUDIT_FIELDS, "audit_closure")
+    if (
+        closure.get("company_id") != company_id
+        or closure.get("resource_id") != resource_id
+        or closure.get("action") != action
+        or closure.get("audit_event_id") != audit_event_id
+        or closure.get("audit_hash") != audit_hash
+        or closure.get("occurred_at") != occurred_at
+    ):
+        raise PayrollIntegrationError(
+            "PAYROLL_AUDIT_PROOF_INVALID",
+            "payroll command audit closure is incomplete",
+        )
+    _require_stable_identifier(closure.get("actor_subject"), "actor_subject")
+    _require_stable_identifier(closure.get("actor_id"), "actor_id")
+
+
+def _validate_live_projection(
+    value: Mapping[str, object],
+    *,
+    expected_company_id: str,
+) -> None:
+    """Validate the provider's frozen, company-scoped integration projection."""
+
+    _require_exact_keys(value, _LIVE_TOP_LEVEL_FIELDS, "live projection")
+    if (
+        value.get("contract_version") != LIVE_PROJECTION_CONTRACT_VERSION
+        or value.get("schema_version") != LIVE_PROJECTION_SCHEMA
+    ):
+        raise PayrollIntegrationError(
+            "PAYROLL_SCHEMA_UNSUPPORTED",
+            "payroll live projection contract is unsupported",
+        )
+    company_id = _require_stable_identifier(value.get("company_id"), "company_id")
+    if company_id != expected_company_id or company_id == "UNASSIGNED":
+        raise PayrollIntegrationError(
+            "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+            "payroll live projection company does not match the authenticated entity grant",
+        )
+    revision = _require_sha256(value.get("projection_revision"), "projection_revision")
+    if value.get("etag") != f'"{revision}"':
+        _invalid_response("payroll projection etag does not match its revision")
+    _require_live_timestamp(value.get("generated_at"), "generated_at")
+    if type(value.get("live_data_ready")) is not bool:
+        _invalid_response("payroll live readiness is invalid")
+    for field in ("payable", "submission_supported", "payment_submission_supported"):
+        if value.get(field) is not False:
+            raise PayrollIntegrationError(
+                "PAYROLL_PAYMENT_MODE_NOT_ALLOWED",
+                "payroll live projection exposed a payment or submission capability",
+            )
+    capabilities = _require_object(value.get("server_capabilities"), "server_capabilities")
+    _require_exact_keys(capabilities, _LIVE_CAPABILITY_FIELDS, "server_capabilities")
+    for field in _LIVE_CAPABILITY_FIELDS:
+        if type(capabilities.get(field)) is not bool:
+            _invalid_response("payroll provider capability is invalid")
+    if capabilities["payment_submission"] is not False:
+        raise PayrollIntegrationError(
+            "PAYROLL_PAYMENT_MODE_NOT_ALLOWED",
+            "payroll provider exposed payment submission",
+        )
+    _require_non_negative_integer(
+        value.get("unassigned_material_count"),
+        "unassigned_material_count",
+    )
+
+    materials = _require_list(value.get("materials"), "materials")
+    for index, raw in enumerate(materials):
+        item = _company_item(raw, company_id, _LIVE_MATERIAL_FIELDS, f"materials[{index}]")
+        _require_stable_identifier(item.get("material_id"), "material_id")
+        if item.get("material_type") is not None:
+            _require_controlled_token(item.get("material_type"), "material.material_type")
+        if item.get("period") is not None:
+            _require_period(item.get("period"), "material.period")
+        _require_controlled_token(item.get("status"), "material.status")
+        _require_non_negative_integer(item.get("review_revision"), "material.review_revision")
+        _require_disabled_flags(item, ("payable", "submission_supported"))
+
+    batches = _require_list(value.get("batches"), "batches")
+    for index, raw in enumerate(batches):
+        item = _require_object(raw, f"batches[{index}]")
+        if frozenset(item) not in {_LIVE_BATCH_REQUIRED_FIELDS, _LIVE_BATCH_FIELDS}:
+            _invalid_response("payroll batch contains missing or unknown fields")
+        _require_company(item, company_id)
+        _require_stable_identifier(item.get("batch_id"), "batch_id")
+        _require_period(item.get("pay_period"), "batch.pay_period")
+        _require_positive_integer(item.get("revision"), "batch.revision")
+        _require_controlled_token(item.get("status"), "batch.status")
+        _require_disabled_flags(
+            item,
+            ("payable", "submission_supported", "payment_submission_supported"),
+        )
+        for line_index, line_raw in enumerate(_require_list(item.get("lines"), "batch.lines")):
+            line = _company_item(
+                line_raw,
+                company_id,
+                _LIVE_LINE_FIELDS,
+                f"batches[{index}].lines[{line_index}]",
+            )
+            for field in ("employee_id", "account_id"):
+                _require_stable_identifier(line.get(field), field)
+            _require_safe_display(line.get("employee_display"), "employee_display")
+            _require_safe_display(line.get("account_display"), "account_display")
+            _require_minor_integer(line.get("net_pay_minor"), "net_pay_minor")
+        if "audit_closure" in item:
+            closure = _require_object(item["audit_closure"], "batch.audit_closure")
+            _require_exact_keys(closure, _LIVE_AUDIT_CLOSURE_FIELDS, "batch.audit_closure")
+            _require_stable_identifier(closure.get("audit_event_id"), "audit_event_id")
+            _require_sha256(closure.get("audit_hash"), "audit_hash")
+
+    verifications = _require_list(value.get("verifications"), "verifications")
+    for index, raw in enumerate(verifications):
+        item = _company_item(
+            raw,
+            company_id,
+            _LIVE_VERIFICATION_FIELDS,
+            f"verifications[{index}]",
+        )
+        for field in ("verification_id", "batch_id"):
+            _require_stable_identifier(item.get(field), field)
+        _require_controlled_token(item.get("status"), "verification.status")
+        _require_disabled_flags(
+            item,
+            ("payable", "submission_supported", "payment_submission_supported"),
+        )
+        for artifact_id in _require_list(item.get("source_artifact_ids"), "source_artifact_ids"):
+            _require_non_demo_identifier(artifact_id, "source_artifact_id")
+        for result_index, result_raw in enumerate(
+            _require_list(item.get("results"), "verification.results")
+        ):
+            result = _company_item(
+                result_raw,
+                company_id,
+                _LIVE_VERIFICATION_RESULT_FIELDS,
+                f"verifications[{index}].results[{result_index}]",
+            )
+            for field in ("employee_id", "account_id"):
+                _require_stable_identifier(result.get(field), field)
+            _require_safe_display(result.get("employee_display"), "employee_display")
+            _require_safe_display(result.get("account_display"), "account_display")
+            _require_controlled_token(result.get("status"), "verification.result.status")
+
+    for index, raw in enumerate(_require_list(value.get("resources"), "resources")):
+        item = _company_item(raw, company_id, _LIVE_RESOURCE_FIELDS, f"resources[{index}]")
+        for field in ("employee_id", "account_id"):
+            _require_stable_identifier(item.get(field), field)
+        _require_safe_display(item.get("employee_display"), "employee_display")
+        _require_safe_display(item.get("account_display"), "account_display")
+
+    for index, raw in enumerate(
+        _require_list(value.get("available_evidence"), "available_evidence")
+    ):
+        item = _company_item(
+            raw,
+            company_id,
+            _LIVE_EVIDENCE_FIELDS,
+            f"available_evidence[{index}]",
+        )
+        artifact_id = _require_non_demo_identifier(item.get("artifact_id"), "artifact_id")
+        if artifact_id.startswith("receipt_demo_"):
+            _invalid_response("demo verification evidence is not allowed")
+        period = _require_period(item.get("period"), "evidence.period")
+        evidence_type = item.get("evidence_type")
+        if evidence_type not in _LIVE_EVIDENCE_TYPES or item.get("status") != "READY_FOR_MATCHING":
+            _invalid_response("payroll available evidence is invalid")
+        if item.get("display_label") != f"{evidence_type} · {period}":
+            _invalid_response("payroll available evidence label is not provider-controlled")
+    _validate_publication_tree(value, expected_company_id=company_id)
+
+
+def _company_item(
+    raw: object,
+    company_id: str,
+    fields: frozenset[str],
+    label: str,
+) -> Mapping[str, object]:
+    item = _require_object(raw, label)
+    _require_exact_keys(item, fields, label)
+    _require_company(item, company_id)
+    return item
+
+
+def _require_company(value: Mapping[str, object], company_id: str) -> None:
+    if value.get("company_id") != company_id:
+        raise PayrollIntegrationError(
+            "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+            "payroll projection object crosses company scope",
+        )
+
+
+def _require_disabled_flags(value: Mapping[str, object], fields: tuple[str, ...]) -> None:
+    if any(value.get(field) is not False for field in fields):
+        raise PayrollIntegrationError(
+            "PAYROLL_PAYMENT_MODE_NOT_ALLOWED",
+            "payroll projection object exposed payment or submission capability",
+        )
+
+
+def _require_non_demo_identifier(value: object, field: str) -> str:
+    identifier = _require_stable_identifier(value, field)
+    if identifier.startswith(("artifact_demo_", "receipt_demo_")):
+        raise PayrollIntegrationError(
+            "PAYROLL_DEMO_DATA_NOT_ALLOWED",
+            "demo payroll evidence is not allowed",
+        )
+    return identifier
+
+
+def _require_safe_display(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > 100:
+        _invalid_response(f"payroll {field} is invalid")
+    if _LOCAL_PATH.search(value) or _ACCOUNT_LIKE_NUMBER.search(value):
+        _invalid_response(f"payroll {field} is unsafe")
+    return value
+
+
+def _validate_live_projection_legacy(
+    value: Mapping[str, object],
+    *,
+    expected_company_id: str,
+) -> None:
+    _require_exact_keys(value, _LIVE_TOP_LEVEL_FIELDS, "live projection")
+    if value.get("schema_version") != LIVE_PROJECTION_SCHEMA:
+        raise PayrollIntegrationError(
+            "PAYROLL_SCHEMA_UNSUPPORTED",
+            "payroll live projection schema is unsupported",
+        )
+    company_id = _require_stable_identifier(value.get("company_id"), "company_id")
+    if company_id != expected_company_id or company_id == "UNASSIGNED":
+        raise PayrollIntegrationError(
+            "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+            "payroll live projection company does not match the authenticated entity grant",
+        )
+    _require_positive_integer(value.get("projection_revision"), "projection_revision")
+    _require_sha256(value.get("etag"), "etag")
+    _require_live_timestamp(value.get("generated_at"), "generated_at")
+    if value.get("live_data_ready") is not True:
+        raise PayrollIntegrationError(
+            "PAYROLL_LIVE_DATA_UNAVAILABLE",
+            "payroll provider has not made a live projection available",
+        )
+    for field in ("payable", "payment_submission_supported", "payment_execution_supported"):
+        if value.get(field) is not False:
+            raise PayrollIntegrationError(
+                "PAYROLL_PAYMENT_MODE_NOT_ALLOWED",
+                "payroll live projection exposed a payment or submission capability",
+            )
+
+    dashboard = _require_object(value.get("dashboard"), "dashboard")
+    _require_exact_keys(dashboard, _LIVE_DASHBOARD_FIELDS, "dashboard")
+    if (
+        dashboard.get("schema_version") != "payroll-live-dashboard/v1"
+        or dashboard.get("company_id") != company_id
+    ):
+        raise PayrollIntegrationError(
+            "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+            "payroll dashboard does not match the authenticated company",
+        )
+    for field in (
+        "batch_count",
+        "material_count",
+        "materials_needing_review_count",
+        "verification_attention_count",
+        "unassigned_material_count",
+    ):
+        _require_non_negative_integer(dashboard.get(field), f"dashboard.{field}")
+    for field in ("gross_pay_minor", "net_pay_minor"):
+        _require_minor_integer(dashboard.get(field), f"dashboard.{field}")
+
+    materials = _require_list(value.get("materials"), "materials")
+    for index, item in enumerate(materials):
+        material = _require_object(item, f"materials[{index}]")
+        _require_exact_keys(material, _LIVE_MATERIAL_FIELDS, f"materials[{index}]")
+        if (
+            material.get("schema_version") != "payroll-live-material/v1"
+            or material.get("company_id") != company_id
+        ):
+            raise PayrollIntegrationError(
+                "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+                "payroll material does not match the authenticated company",
+            )
+        _require_stable_identifier(material.get("material_id"), "material_id")
+        _require_sha256(material.get("sha256"), "material.sha256")
+        _require_non_negative_integer(material.get("size_bytes"), "material.size_bytes")
+        _require_period(material.get("period"), "material.period")
+        _require_controlled_token(material.get("material_type"), "material.material_type")
+        _require_controlled_token(material.get("status"), "material.status")
+        _require_non_negative_integer(material.get("review_revision"), "material.review_revision")
+        last_reviewed_at = material.get("last_reviewed_at")
+        if last_reviewed_at is not None:
+            _require_live_timestamp(last_reviewed_at, "material.last_reviewed_at")
+        if (
+            material.get("adoption_eligible") is not False
+            or material.get("payment_submission_supported") is not False
+        ):
+            raise PayrollIntegrationError(
+                "PAYROLL_PAYMENT_MODE_NOT_ALLOWED",
+                "payroll material exposed adoption or payment capability",
+            )
+
+    batches = _require_list(value.get("batches"), "batches")
+    for index, item in enumerate(batches):
+        batch = _require_object(item, f"batches[{index}]")
+        _require_exact_keys(batch, _LIVE_BATCH_FIELDS, f"batches[{index}]")
+        if (
+            batch.get("schema_version") != "payroll-live-batch/v1"
+            or batch.get("company_id") != company_id
+        ):
+            raise PayrollIntegrationError(
+                "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+                "payroll batch does not match the authenticated company",
+            )
+        _require_stable_identifier(batch.get("batch_id"), "batch_id")
+        _require_period(batch.get("pay_period"), "batch.pay_period")
+        version = _require_positive_integer(batch.get("version"), "batch.version")
+        locked_version = batch.get("locked_version")
+        if locked_version is not None and (
+            _require_positive_integer(locked_version, "batch.locked_version") > version
+        ):
+            _invalid_response("payroll locked batch version exceeds the current version")
+        if batch.get("status") not in {
+            "draft",
+            "submitted_for_review",
+            "reviewed",
+            "approved",
+        }:
+            _invalid_response("payroll batch status is invalid")
+        _require_non_negative_integer(batch.get("employee_count"), "batch.employee_count")
+        _require_minor_integer(batch.get("gross_pay_minor"), "batch.gross_pay_minor")
+        _require_minor_integer(batch.get("net_pay_minor"), "batch.net_pay_minor")
+        _require_non_negative_integer(
+            batch.get("active_exception_count"),
+            "batch.active_exception_count",
+        )
+        actors = []
+        for field in ("maker_actor_id", "checker_actor_id", "approver_actor_id"):
+            actor = batch.get(field)
+            if actor is not None:
+                actors.append(_require_stable_identifier(actor, field))
+        if len(actors) != len(set(actors)):
+            raise PayrollIntegrationError(
+                "PAYROLL_DUTY_SEPARATION_INVALID",
+                "payroll batch assigns more than one workflow duty to the same actor",
+            )
+
+    available_evidence = _require_list(value.get("available_evidence"), "available_evidence")
+    available_artifact_ids: set[str] = set()
+    for index, item in enumerate(available_evidence):
+        evidence = _require_object(item, f"available_evidence[{index}]")
+        _require_exact_keys(evidence, _LIVE_EVIDENCE_FIELDS, f"available_evidence[{index}]")
+        if evidence.get("company_id") != company_id:
+            raise PayrollIntegrationError(
+                "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+                "payroll verification evidence crosses company scope",
+            )
+        artifact_id = _require_stable_identifier(evidence.get("artifact_id"), "artifact_id")
+        if artifact_id.startswith("artifact_demo_") or artifact_id in available_artifact_ids:
+            _invalid_response("payroll verification evidence identifier is invalid")
+        available_artifact_ids.add(artifact_id)
+        _require_period(evidence.get("period"), "evidence.period")
+        if evidence.get("evidence_type") not in _LIVE_EVIDENCE_TYPES:
+            _invalid_response("payroll verification evidence type is unsupported")
+        if evidence.get("status") != "READY_FOR_MATCHING":
+            _invalid_response("payroll verification evidence is not ready for matching")
+        _require_safe_display_label(evidence.get("display_label"))
+
+    verifications = _require_list(value.get("verification_results"), "verification_results")
+    batch_by_id = {
+        cast(str, cast(Mapping[str, object], item)["batch_id"]): cast(Mapping[str, object], item)
+        for item in batches
+    }
+    attention_verification_count = 0
+    for index, item in enumerate(verifications):
+        verification = _require_object(item, f"verification_results[{index}]")
+        _require_exact_keys(
+            verification,
+            _LIVE_VERIFICATION_FIELDS,
+            f"verification_results[{index}]",
+        )
+        if (
+            verification.get("schema_version") != "payroll-receipt-verification/v1"
+            or verification.get("company_id") != company_id
+        ):
+            raise PayrollIntegrationError(
+                "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+                "payroll verification does not match the authenticated company",
+            )
+        verification_id = _require_stable_identifier(
+            verification.get("verification_id"),
+            "verification_id",
+        )
+        batch_id = _require_stable_identifier(verification.get("batch_id"), "batch_id")
+        batch = batch_by_id.get(batch_id)  # type: ignore[assignment]
+        if (
+            batch is None
+            or verification.get("pay_period") != batch.get("pay_period")
+            or verification.get("version") != batch.get("version")
+        ):
+            raise PayrollIntegrationError(
+                "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+                "payroll verification does not match a projected batch version",
+            )
+        source_artifact_ids = _require_list(
+            verification.get("source_artifact_ids"),
+            "verification.source_artifact_ids",
+        )
+        if not source_artifact_ids:
+            _invalid_response("payroll verification has no source evidence")
+        normalized_artifact_ids = [
+            _require_stable_identifier(item, "source_artifact_id") for item in source_artifact_ids
+        ]
+        if (
+            len(normalized_artifact_ids) != len(set(normalized_artifact_ids))
+            or any(item.startswith("artifact_demo_") for item in normalized_artifact_ids)
+            or any(item not in available_artifact_ids for item in normalized_artifact_ids)
+        ):
+            _invalid_response("payroll verification source evidence is invalid")
+        overall_status = verification.get("overall_status")
+        if overall_status not in {"matched", "attention_required"}:
+            _invalid_response("payroll verification status is invalid")
+        unknown_count = _require_non_negative_integer(
+            verification.get("unknown_receipt_count"),
+            "verification.unknown_receipt_count",
+        )
+        results = _require_list(verification.get("results"), "verification.results")
+        if not results:
+            _invalid_response("payroll verification has no employee results")
+        seen_employees: set[str] = set()
+        attention_result_count = 0
+        for result_index, result_item in enumerate(results):
+            result = _require_object(
+                result_item,
+                f"verification.results[{result_index}]",
+            )
+            _require_exact_keys(
+                result,
+                _LIVE_VERIFICATION_RESULT_FIELDS,
+                f"verification.results[{result_index}]",
+            )
+            if result.get("company_id") != company_id:
+                raise PayrollIntegrationError(
+                    "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+                    "payroll verification result crosses company scope",
+                )
+            employee_id = _require_stable_identifier(
+                result.get("employee_id"),
+                "employee_id",
+            )
+            if employee_id in seen_employees:
+                _invalid_response("payroll verification repeats an employee")
+            seen_employees.add(employee_id)
+            _require_stable_identifier(result.get("account_id"), "account_id", account=True)
+            _require_minor_integer(
+                result.get("expected_amount_minor"),
+                "verification.expected_amount_minor",
+            )
+            match_status = result.get("match_status")
+            exception_codes = _require_list(
+                result.get("exception_codes"),
+                "verification.exception_codes",
+            )
+            for code in exception_codes:
+                _require_controlled_token(code, "verification.exception_code")
+            if match_status == "matched":
+                if exception_codes:
+                    _invalid_response("matched payroll verification contains exceptions")
+            elif match_status == "attention_required":
+                attention_result_count += 1
+                if not exception_codes:
+                    _invalid_response("attention payroll verification has no exception code")
+            else:
+                _invalid_response("payroll verification result status is invalid")
+        expected_overall = (
+            "attention_required" if attention_result_count or unknown_count else "matched"
+        )
+        if overall_status != expected_overall:
+            _invalid_response("payroll verification aggregate status is inconsistent")
+        if overall_status == "attention_required":
+            attention_verification_count += 1
+
+        audit = _require_object(verification.get("audit_receipt"), "verification.audit_receipt")
+        _require_exact_keys(audit, _LIVE_VERIFICATION_AUDIT_FIELDS, "verification.audit_receipt")
+        if (
+            audit.get("schema_version") != "payroll-verification-audit-receipt/v1"
+            or audit.get("company_id") != company_id
+            or audit.get("batch_id") != batch_id
+            or audit.get("verification_id") != verification_id
+            or audit.get("action") != "payroll.receipts_verified"
+        ):
+            raise PayrollIntegrationError(
+                "PAYROLL_AUDIT_PROOF_INVALID",
+                "payroll verification audit receipt does not close the projected result",
+            )
+        _require_stable_identifier(audit.get("actor_id"), "audit.actor_id")
+        _require_live_timestamp(audit.get("occurred_at"), "audit.occurred_at")
+        _require_sha256(audit.get("event_hash"), "audit.event_hash", audit=True)
+
+    if dashboard.get("verification_attention_count") != attention_verification_count:
+        _invalid_response("payroll dashboard verification count is inconsistent")
+
+
+def _require_exact_keys(
+    value: Mapping[str, object],
+    expected: frozenset[str],
+    field: str,
+) -> None:
+    if frozenset(value) != expected:
+        _invalid_response(f"payroll {field} fields do not match the v1 allowlist")
+
+
+def _require_period(value: object, field: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9]{4}-(?:0[1-9]|1[0-2])", value) is None:
+        _invalid_response(f"payroll {field} is invalid")
+    return value
+
+
+def _require_live_timestamp(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        _invalid_response(f"payroll {field} is not a UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        _invalid_response(f"payroll {field} is invalid")
+    if parsed.utcoffset() is None:
+        _invalid_response(f"payroll {field} is not a UTC timestamp")
+    return value
+
+
+def _require_safe_display_label(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or value != value.strip()
+        or not 1 <= len(value) <= 80
+        or "/" in value
+        or "\\" in value
+        or re.search(r"\.(?:csv|xlsx?|pdf|png|jpe?g|zip)$", value, re.I) is not None
+    ):
+        _invalid_response("payroll evidence display label is not server-controlled text")
+    _validate_publishable_string(value, parent_key="display_label")
+    return value
 
 
 def _validate_publication(

@@ -34,6 +34,8 @@ class Capability(StrEnum):
     CANDIDATE_DECIDE = "candidate:decide"
     CANDIDATE_SUPERSEDE = "candidate:supersede"
     PAYROLL_PUBLICATION_READ = "payroll-publication:read"
+    PAYROLL_LIVE_READ = "payroll-live:read"
+    PAYROLL_COMMAND = "payroll:command"
 
 
 class ScopeMode(StrEnum):

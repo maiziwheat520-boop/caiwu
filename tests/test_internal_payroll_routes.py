@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from httpx import Response
+from pydantic import SecretStr
 
 from ledgerbridge.config import Settings, get_settings
 from ledgerbridge.internal_payroll_routes import (
@@ -61,6 +62,9 @@ def _settings(*, enabled: bool = True) -> Settings:
         enable_payroll_integration=enabled,
         payroll_base_url=("http://127.0.0.1:4318" if enabled else None),
         payroll_company_mapping=({"company_demo_hotel": ENTITY} if enabled else {}),
+        payroll_bff_user_assertion_key=(SecretStr("b" * 32) if enabled else None),
+        payroll_bff_user_assertion_issuer=("web-test" if enabled else None),
+        payroll_bff_user_assertion_audience=("core-test" if enabled else None),
     )
 
 
@@ -109,10 +113,16 @@ def _assert_problem(response: Response, status_code: int, code: str) -> None:
     assert response.json()["code"] == code
 
 
-def test_payroll_router_has_one_read_only_route() -> None:
+def test_payroll_router_exposes_only_frozen_reads_and_receipt_verification() -> None:
     routes = [route for route in router.routes if isinstance(route, APIRoute)]
     assert [(route.path, route.methods) for route in routes] == [
-        ("/internal/v1/payroll-publications/{publication_id}", {"GET"})
+        ("/internal/v1/payroll/status", {"GET"}),
+        ("/internal/v1/payroll/dashboard", {"GET"}),
+        ("/internal/v1/payroll/materials", {"GET"}),
+        ("/internal/v1/payroll/batches", {"GET"}),
+        ("/internal/v1/payroll/verification", {"GET"}),
+        ("/internal/v1/payroll/batches/{batch_id}/verify-receipts", {"POST"}),
+        ("/internal/v1/payroll-publications/{publication_id}", {"GET"}),
     ]
 
 
