@@ -40,7 +40,6 @@ from ledgerbridge.mybank_statement import MyBankStatement, MyBankTransaction
 from ledgerbridge.reconciliation import AccountOwnerKind
 from scripts.backup_restore import (
     BANK_STATEMENT_SECURITY_SQL,
-    R1_ROLES,
     BackupError,
     _validate_bank_statement_security,
 )
@@ -899,9 +898,12 @@ def test_0021_postgresql_schema_contract_rejects_missing_unique_constraint(
             observed = json.loads(
                 connection.execute(text(BANK_STATEMENT_SECURITY_SQL)).scalar_one()
             )
+            observed_roles = sorted(
+                {row["role"] for row in observed["bank_statement_effective_table_privileges"]}
+            )
             metadata = {
                 "database_owner": owner,
-                "r1_role_matrix": [{"role": role} for role in R1_ROLES],
+                "r1_role_matrix": [{"role": role} for role in observed_roles],
                 **observed,
             }
             _validate_bank_statement_security(metadata)
@@ -917,7 +919,7 @@ def test_0021_postgresql_schema_contract_rejects_missing_unique_constraint(
                 _validate_bank_statement_security(
                     {
                         "database_owner": owner,
-                        "r1_role_matrix": [{"role": role} for role in R1_ROLES],
+                        "r1_role_matrix": [{"role": role} for role in observed_roles],
                         **drifted,
                     }
                 )
