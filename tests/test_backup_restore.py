@@ -1272,6 +1272,39 @@ def test_restore_accepts_omitted_redundant_table_owner_acls() -> None:
     _validate_restored_database(expected, actual)
 
 
+def test_restore_rejects_partial_owner_table_acl_during_roundtrip_comparison() -> None:
+    expected = _bank_statement_database_metadata()
+    owner_acls = cast(list[dict[str, object]], expected["bank_statement_table_acls"])
+    actual = {
+        **expected,
+        "bank_statement_table_acls": [
+            item
+            for item in owner_acls
+            if not (item.get("table") == "bank_statement" and item.get("privilege") == "SELECT")
+        ],
+    }
+
+    with pytest.raises(BackupError, match="metadata differs"):
+        _validate_restored_database(expected, actual)
+
+
+def test_restore_rejects_changed_owner_table_acl_grantability() -> None:
+    expected = _bank_statement_database_metadata()
+    owner_acls = cast(list[dict[str, object]], expected["bank_statement_table_acls"])
+    actual = {
+        **expected,
+        "bank_statement_table_acls": [
+            {**item, "grantable": True}
+            if item.get("table") == "bank_statement" and item.get("privilege") == "SELECT"
+            else item
+            for item in owner_acls
+        ],
+    }
+
+    with pytest.raises(BackupError, match="metadata differs"):
+        _validate_restored_database(expected, actual)
+
+
 def test_restore_rejects_non_owner_table_acl_during_roundtrip_comparison() -> None:
     expected = _bank_statement_database_metadata()
     actual = {

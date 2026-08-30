@@ -3868,11 +3868,26 @@ def _canonical_constraint_contract(
     }
 
 
+_DEFAULT_TABLE_OWNER_PRIVILEGES = frozenset(
+    {"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"}
+)
 _TABLE_ACL_OWNER_FIELDS = {
-    "counterparty_table_acls": "counterparty_tables",
-    "bank_statement_table_acls": "bank_statement_tables",
-    "account_registry_table_acls": "account_registry_tables",
-    "evidence_unlock_table_acls": "evidence_unlock_tables",
+    "counterparty_table_acls": (
+        "counterparty_tables",
+        "counterparty_effective_table_privileges",
+    ),
+    "bank_statement_table_acls": (
+        "bank_statement_tables",
+        "bank_statement_effective_table_privileges",
+    ),
+    "account_registry_table_acls": (
+        "account_registry_tables",
+        "account_registry_effective_table_privileges",
+    ),
+    "evidence_unlock_table_acls": (
+        "evidence_unlock_tables",
+        "evidence_unlock_effective_table_privileges",
+    ),
 }
 
 
@@ -3891,11 +3906,33 @@ def _without_redundant_table_owner_acls(acls: Any, tables: Any) -> Any:
         if not isinstance(table, str) or not isinstance(owner, str) or identity in owners:
             return acls
         owners[identity] = owner
+    owner_rows: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
+    for item in acls:
+        if not isinstance(item, dict):
+            continue
+        identity = (item.get("schema"), item.get("table"))
+        if item.get("grantee") == owners.get(identity):
+            owner_rows.setdefault(identity, []).append(item)
+    complete_default_groups: set[tuple[Any, Any]] = set()
+    for identity, rows in owner_rows.items():
+        expected_keys = {"table", "grantee", "privilege", "grantable"}
+        if identity[0] is not None:
+            expected_keys.add("schema")
+        if (
+            len(rows) == len(_DEFAULT_TABLE_OWNER_PRIVILEGES)
+            and all(set(item) == expected_keys for item in rows)
+            and all(
+                item.get("grantable") is False or item.get("grantable") == "NO" for item in rows
+            )
+            and {item.get("privilege") for item in rows} == _DEFAULT_TABLE_OWNER_PRIVILEGES
+        ):
+            complete_default_groups.add(identity)
     return [
         item
         for item in acls
         if not (
             isinstance(item, dict)
+            and (item.get("schema"), item.get("table")) in complete_default_groups
             and item.get("grantee") == owners.get((item.get("schema"), item.get("table")))
         )
     ]
@@ -3916,13 +3953,24 @@ def _validate_restored_database(expected: dict[str, Any], actual: dict[str, Any]
             if field.endswith("_constraints"):
                 comparison_expected[field] = _canonical_constraint_rows(comparison_expected[field])
                 comparison_actual[field] = _canonical_constraint_rows(comparison_actual[field])
-        for acl_field, table_field in _TABLE_ACL_OWNER_FIELDS.items():
-            if acl_field in comparison_expected and acl_field in comparison_actual:
+        for acl_field, (table_field, effective_field) in _TABLE_ACL_OWNER_FIELDS.items():
+            expected_tables = expected.get(table_field)
+            actual_tables = actual.get(table_field)
+            expected_effective = expected.get(effective_field)
+            actual_effective = actual.get(effective_field)
+            if (
+                acl_field in comparison_expected
+                and acl_field in comparison_actual
+                and isinstance(expected_tables, list)
+                and expected_tables == actual_tables
+                and isinstance(expected_effective, list)
+                and expected_effective == actual_effective
+            ):
                 comparison_expected[acl_field] = _without_redundant_table_owner_acls(
-                    comparison_expected[acl_field], expected.get(table_field)
+                    comparison_expected[acl_field], expected_tables
                 )
                 comparison_actual[acl_field] = _without_redundant_table_owner_acls(
-                    comparison_actual[acl_field], actual.get(table_field)
+                    comparison_actual[acl_field], actual_tables
                 )
         database_owner = expected.get("database_owner")
         if isinstance(database_owner, str):
