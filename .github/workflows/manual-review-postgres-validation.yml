@@ -1,0 +1,83 @@
+name: manual-review-postgres-validation
+
+on:
+  push:
+    branches:
+      - ai/chatgpt/manual-review-writeback-core-ci
+
+permissions:
+  contents: read
+
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
+        env:
+          POSTGRES_DB: ledgerbridge_test
+          POSTGRES_USER: ledgerbridge_admin
+          POSTGRES_PASSWORD: test-only-admin-password
+          POSTGRES_INITDB_ARGS: --data-checksums
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ledgerbridge_admin -d ledgerbridge_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      LEDGERBRIDGE_ENV: test
+      LEDGERBRIDGE_DATABASE_URL: postgresql+psycopg://ledgerbridge_app:test-only-runtime-password@localhost:5432/ledgerbridge_test
+      LEDGERBRIDGE_MIGRATION_DATABASE_URL: postgresql+psycopg://ledgerbridge_owner:test-only-owner-password@localhost:5432/ledgerbridge_test
+      LEDGERBRIDGE_TEST_ADMIN_DATABASE_URL: postgresql+psycopg://ledgerbridge_admin:test-only-admin-password@localhost:5432/postgres
+      LEDGERBRIDGE_API_DATABASE_URL: postgresql+psycopg://ledgerbridge_api:test-only-api-password@localhost:5432/ledgerbridge_test
+      LEDGERBRIDGE_WORKER_DATABASE_URL: postgresql+psycopg://ledgerbridge_worker:test-only-worker-password@localhost:5432/ledgerbridge_test
+      LEDGERBRIDGE_ARTIFACT_ROOT: /tmp/ledgerbridge-artifacts
+      PGPASSWORD: test-only-admin-password
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      - uses: actions/setup-python@751276eafca55f10f252026015f43c488f2322ba
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --require-hashes --only-binary=:all: -r docker/uv-requirements.txt
+      - run: uv sync --frozen --extra dev
+      - name: Bootstrap least-privileged runtime roles
+        run: >-
+          psql -h localhost -U ledgerbridge_admin -d postgres
+          -v ON_ERROR_STOP=1
+          -c "CREATE ROLE ledgerbridge_owner LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-owner-password'; CREATE ROLE ledgerbridge_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-runtime-password'; CREATE ROLE ledgerbridge_api LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-api-password'; CREATE ROLE ledgerbridge_worker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-worker-password'; CREATE ROLE ledgerbridge_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'test-only-reader-password'"
+      - name: Transfer schema ownership to migration role
+        run: >-
+          psql -h localhost -U ledgerbridge_admin -d ledgerbridge_test
+          -v ON_ERROR_STOP=1
+          -c "GRANT USAGE, CREATE ON SCHEMA public TO ledgerbridge_owner, pg_database_owner; ALTER SCHEMA public OWNER TO ledgerbridge_owner"
+      - name: Prepare disposable database template
+        run: >-
+          psql -h localhost -U ledgerbridge_admin -d template1
+          -v ON_ERROR_STOP=1
+          -c "GRANT USAGE, CREATE ON SCHEMA public TO ledgerbridge_owner, pg_database_owner; ALTER SCHEMA public OWNER TO ledgerbridge_owner"
+      - run: >-
+          psql -h localhost -U ledgerbridge_admin -d postgres
+          -v ON_ERROR_STOP=1
+          -c "ALTER DATABASE ledgerbridge_test OWNER TO ledgerbridge_owner"
+      - run: mkdir -p "$LEDGERBRIDGE_ARTIFACT_ROOT"
+      - name: Rehearse empty PostgreSQL 0022 upgrade and downgrade
+        run: >-
+          uv run --frozen --extra dev alembic upgrade head &&
+          uv run --frozen --extra dev alembic downgrade 20260830_0021 &&
+          uv run --frozen --extra dev alembic upgrade head
+        env:
+          LEDGERBRIDGE_DATABASE_URL: ${{ env.LEDGERBRIDGE_MIGRATION_DATABASE_URL }}
+      - name: Run manual-review and PostgreSQL migration tests
+        run: >-
+          uv run --frozen --extra dev pytest -q
+          tests/test_d1_pending_candidate_correction_migration.py
+          tests/test_d1_internal_candidate_commands.py
+          tests/test_d1_database_review_service.py
+          tests/test_r0_candidate_contract.py
+          tests/test_r0_internal_read_contract.py
+          tests/test_r1_internal_read_service.py
+          tests/test_r1_internal_read_routes.py
+          tests/test_r1_internal_read_database_service.py
+          tests/test_r1_database_migration.py
