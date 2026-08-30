@@ -182,10 +182,39 @@ def _candidate_closure_sql(*, allow_pending_corrections: bool) -> str:
     new_change = "IF v_event.event_type IN ('COMPLETE_FIELDS','CORRECT_AND_CONFIRM')\n                       AND v_normalized_changes < 1 THEN"
     old_children = "IF v_event.event_type IN ('COMPLETE_FIELDS','CONFIRM','IGNORE','SUPERSEDE')"
     new_children = "IF v_event.event_type IN ('COMPLETE_FIELDS','CORRECT_AND_CONFIRM','CONFIRM','IGNORE','SUPERSEDE')"
+    old_evidence_scope = """WHERE ce.candidate_id = p_candidate_id
+                      AND e.business_unit_id IS DISTINCT FROM v_revision.business_unit_id
+               ) THEN
+                RAISE EXCEPTION 'assigned candidate evidence must share the current business unit'"""
+    new_evidence_scope = """WHERE ce.candidate_id = p_candidate_id
+                      AND e.business_unit_id IS DISTINCT FROM v_revision.business_unit_id
+                      AND NOT EXISTS (
+                          SELECT 1
+                            FROM public.candidate_event AS correction
+                            JOIN public.candidate_revision AS prior
+                              ON prior.candidate_id = correction.candidate_id
+                             AND prior.revision = correction.from_revision
+                           WHERE correction.candidate_id = p_candidate_id
+                             AND correction.to_revision = v_revision.revision
+                             AND correction.action = 'CORRECT_AND_CONFIRM'
+                             AND e.business_unit_id IS NOT DISTINCT FROM prior.business_unit_id
+                      )
+               ) THEN
+                RAISE EXCEPTION 'assigned candidate evidence must share the current business unit'"""
     replacements = (
-        ((old_edge, new_edge), (old_change, new_change), (old_children, new_children))
+        (
+            (old_edge, new_edge),
+            (old_change, new_change),
+            (old_children, new_children),
+            (old_evidence_scope, new_evidence_scope),
+        )
         if allow_pending_corrections
-        else ((new_edge, old_edge), (new_change, old_change), (new_children, old_children))
+        else (
+            (new_edge, old_edge),
+            (new_change, old_change),
+            (new_children, old_children),
+            (new_evidence_scope, old_evidence_scope),
+        )
     )
     statements = []
     for index, (source, target) in enumerate(replacements, start=1):

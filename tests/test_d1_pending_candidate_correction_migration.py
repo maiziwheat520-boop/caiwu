@@ -91,6 +91,20 @@ def test_0022_replaces_live_closure_validator_in_both_directions() -> None:
             "IF v_event.event_type IN "
             "('COMPLETE_FIELDS','CORRECT_AND_CONFIRM','CONFIRM','IGNORE','SUPERSEDE')",
         ),
+        (
+            "WHERE ce.candidate_id = p_candidate_id\n"
+            "                      AND e.business_unit_id IS DISTINCT FROM "
+            "v_revision.business_unit_id\n"
+            "               ) THEN\n"
+            "                RAISE EXCEPTION 'assigned candidate evidence must share the "
+            "current business unit'",
+            "WHERE ce.candidate_id = p_candidate_id\n"
+            "                      AND e.business_unit_id IS DISTINCT FROM "
+            "v_revision.business_unit_id\n"
+            "                      AND NOT EXISTS (\n"
+            "                          SELECT 1\n"
+            "                            FROM public.candidate_event AS correction",
+        ),
     ):
         assert installed_closure.count(old) == 1
         assert old in upgrade_sql and new in upgrade_sql
