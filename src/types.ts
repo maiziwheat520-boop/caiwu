@@ -257,3 +257,164 @@ export type Notice = {
   tone: 'success' | 'info' | 'error'
   message: string
 }
+
+export type PayrollReadResponse<T> = {
+  contract_version: 'ledgerbridge.payroll-read.v1'
+  entity_ref: string
+  company_id: string
+  data: T
+}
+
+export type PayrollStatusData = {
+  schema_version: 'ledgerbridge.payroll-status.v1'
+  projection_revision: number
+  etag: string
+  provider: {
+    schema_version: string
+    status: string
+    demo_mode: false
+    payment_submission_supported: false
+  }
+  live_data_ready: boolean
+  live_projection_schema: string | null
+  payment_operations_exposed: false
+  capabilities: {
+    commands_enabled: boolean
+    allowed_actions: string[]
+  }
+  setup_summary?: {
+    provider_connected: boolean
+    runtime_mode: 'live-provider'
+    unassigned_material_count: number
+    ready_material_count: number
+    company_mapped_material_count: number
+    blocking_reason_codes: string[]
+  }
+}
+
+export type PayrollDashboardData = {
+  schema_version: 'ledgerbridge.payroll-dashboard.v1'
+  projection_revision: number
+  etag: string
+  generated_at: string
+  live_data_ready: true
+  dashboard: {
+    schema_version: 'payroll-live-dashboard/v1'
+    company_id: string
+    batch_count: number
+    material_count: number
+    materials_needing_review_count: number
+    verification_attention_count: number
+    unassigned_material_count: number
+    gross_pay_minor: number
+    net_pay_minor: number
+  }
+}
+
+export type PayrollMaterial = {
+  schema_version: 'payroll-live-material/v1'
+  company_id: string
+  material_id: string
+  sha256: string
+  size_bytes: number
+  period: string
+  material_type: string
+  status: string
+  review_revision: number
+  last_reviewed_at: string | null
+  adoption_eligible: boolean
+  payment_submission_supported: false
+}
+
+export type PayrollMaterialListData = {
+  schema_version: 'ledgerbridge.payroll-material-list.v1'
+  projection_revision: number
+  etag: string
+  generated_at: string
+  items: PayrollMaterial[]
+}
+
+export type PayrollBatch = {
+  schema_version: 'payroll-live-batch/v1'
+  company_id: string
+  batch_id: string
+  pay_period: string
+  version: number
+  locked_version: number | null
+  status: string
+  employee_count: number
+  gross_pay_minor: number
+  net_pay_minor: number
+  active_exception_count: number
+  maker_actor_id: string | null
+  checker_actor_id: string | null
+  approver_actor_id: string | null
+}
+
+export type PayrollBatchListData = {
+  schema_version: 'ledgerbridge.payroll-batch-list.v1'
+  projection_revision: number
+  etag: string
+  generated_at: string
+  items: PayrollBatch[]
+}
+
+export type PayrollEmployeeVerificationResult = {
+  company_id: string
+  employee_id: string
+  account_id: string
+  expected_amount_minor: number
+  match_status: string
+  exception_codes: string[]
+}
+
+export type PayrollVerificationResult = {
+  schema_version: 'payroll-receipt-verification/v1'
+  verification_id: string
+  company_id: string
+  batch_id: string
+  pay_period: string
+  version: number
+  source_artifact_ids: string[]
+  overall_status: string
+  unknown_receipt_count: number
+  results: PayrollEmployeeVerificationResult[]
+  audit_receipt: {
+    schema_version: 'payroll-verification-audit-receipt/v1'
+    company_id: string
+    batch_id: string
+    verification_id: string
+    action: string
+    actor_id: string
+    occurred_at: string
+    event_hash: string
+  }
+}
+
+export type PayrollAvailableEvidence = {
+  company_id: string
+  artifact_id: string
+  period: string
+  evidence_type: string
+  status: 'READY_FOR_MATCHING'
+  display_label: string
+}
+
+export type PayrollVerificationListData = {
+  schema_version: 'ledgerbridge.payroll-verification-list.v1'
+  projection_revision: number
+  etag: string
+  generated_at: string
+  items: PayrollVerificationResult[]
+  available_evidence: PayrollAvailableEvidence[]
+}
+
+export type PayrollCommandResult = {
+  contract_version: 'ledgerbridge.payroll-command-result.v1'
+  entity_ref: string
+  company_id: string
+  action: string
+  resource_ref: string
+  replayed: boolean
+  data: { projection_revision: number }
+}

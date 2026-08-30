@@ -73,6 +73,166 @@ const reviewEvents: ReviewEvent[] = [{
   created_at: '2026-08-21T11:35:00+08:00',
 }]
 
+const payrollEntityRef = '30000000-0000-4000-8000-000000000001'
+const payrollCompanyId = 'company_hotel_001'
+const payrollBatchId = 'batch_0123456789abcdef01234567'
+const payrollArtifactId = 'artifact_0123456789abcdef01234567'
+
+function payrollRead(data: unknown) {
+  return {
+    contract_version: 'ledgerbridge.payroll-read.v1',
+    entity_ref: payrollEntityRef,
+    company_id: payrollCompanyId,
+    data,
+  }
+}
+
+const livePayrollResponses: Record<string, unknown> = {
+  '/api/v1/payroll/status': payrollRead({
+    schema_version: 'ledgerbridge.payroll-status.v1',
+    projection_revision: 7,
+    etag: 'a'.repeat(64),
+    provider: {
+      schema_version: '1.0',
+      status: 'ready',
+      demo_mode: false,
+      payment_submission_supported: false,
+    },
+    live_data_ready: true,
+    live_projection_schema: 'payroll-ledgerbridge-live-projection/v1',
+    payment_operations_exposed: false,
+    capabilities: {
+      commands_enabled: true,
+      allowed_actions: ['VERIFY_RECEIPTS'],
+    },
+  }),
+  '/api/v1/payroll/dashboard': payrollRead({
+    schema_version: 'ledgerbridge.payroll-dashboard.v1',
+    projection_revision: 7,
+    etag: 'a'.repeat(64),
+    generated_at: '2026-08-30T08:00:00.000Z',
+    live_data_ready: true,
+    dashboard: {
+      schema_version: 'payroll-live-dashboard/v1',
+      company_id: payrollCompanyId,
+      batch_count: 1,
+      material_count: 1,
+      materials_needing_review_count: 1,
+      verification_attention_count: 0,
+      unassigned_material_count: 3,
+      gross_pay_minor: 550000,
+      net_pay_minor: 524000,
+    },
+  }),
+  '/api/v1/payroll/materials': payrollRead({
+    schema_version: 'ledgerbridge.payroll-material-list.v1',
+    projection_revision: 7,
+    etag: 'a'.repeat(64),
+    generated_at: '2026-08-30T08:00:00.000Z',
+    items: [{
+      schema_version: 'payroll-live-material/v1',
+      company_id: payrollCompanyId,
+      material_id: 'material_0123456789abcdef01234567',
+      sha256: 'b'.repeat(64),
+      size_bytes: 4096,
+      period: '2026-08',
+      material_type: 'PAYROLL_SHEET',
+      status: 'NEEDS_REVIEW',
+      review_revision: 0,
+      last_reviewed_at: null,
+      adoption_eligible: false,
+      payment_submission_supported: false,
+    }],
+  }),
+  '/api/v1/payroll/batches': payrollRead({
+    schema_version: 'ledgerbridge.payroll-batch-list.v1',
+    projection_revision: 7,
+    etag: 'a'.repeat(64),
+    generated_at: '2026-08-30T08:00:00.000Z',
+    items: [{
+      schema_version: 'payroll-live-batch/v1',
+      company_id: payrollCompanyId,
+      batch_id: payrollBatchId,
+      pay_period: '2026-08',
+      version: 4,
+      locked_version: null,
+      status: 'draft',
+      employee_count: 1,
+      gross_pay_minor: 550000,
+      net_pay_minor: 524000,
+      active_exception_count: 0,
+      maker_actor_id: null,
+      checker_actor_id: null,
+      approver_actor_id: null,
+    }],
+  }),
+  '/api/v1/payroll/verification': payrollRead({
+    schema_version: 'ledgerbridge.payroll-verification-list.v1',
+    projection_revision: 7,
+    etag: 'a'.repeat(64),
+    generated_at: '2026-08-30T08:00:00.000Z',
+    items: [{
+      schema_version: 'payroll-receipt-verification/v1',
+      verification_id: 'verification_0123456789abcdef01234567',
+      company_id: payrollCompanyId,
+      batch_id: payrollBatchId,
+      pay_period: '2026-08',
+      version: 4,
+      source_artifact_ids: [payrollArtifactId],
+      overall_status: 'matched',
+      unknown_receipt_count: 0,
+      results: [],
+      audit_receipt: {
+        schema_version: 'payroll-verification-audit-receipt/v1',
+        company_id: payrollCompanyId,
+        batch_id: payrollBatchId,
+        verification_id: 'verification_0123456789abcdef01234567',
+        action: 'payroll.receipts_verified',
+        actor_id: 'actor_checker_001',
+        occurred_at: '2026-08-30T08:00:00.000Z',
+        event_hash: 'c'.repeat(64),
+      },
+    }],
+    available_evidence: [{
+      company_id: payrollCompanyId,
+      artifact_id: payrollArtifactId,
+      period: '2026-08',
+      evidence_type: 'BANK_RECEIPT',
+      status: 'READY_FOR_MATCHING',
+      display_label: '2026-08 已受控回单证据',
+    }],
+  }),
+}
+
+const notReadyPayrollResponses: Record<string, unknown> = {
+  '/api/v1/payroll/status': payrollRead({
+    schema_version: 'ledgerbridge.payroll-status.v1',
+    projection_revision: 0,
+    etag: '0'.repeat(64),
+    provider: {
+      schema_version: '1.0',
+      status: 'ready',
+      demo_mode: false,
+      payment_submission_supported: false,
+    },
+    live_data_ready: false,
+    live_projection_schema: null,
+    payment_operations_exposed: false,
+    capabilities: {
+      commands_enabled: false,
+      allowed_actions: [],
+    },
+    setup_summary: {
+      provider_connected: true,
+      runtime_mode: 'live-provider',
+      unassigned_material_count: 3,
+      ready_material_count: 1,
+      company_mapped_material_count: 0,
+      blocking_reason_codes: ['COMPANY_MAPPING_REQUIRED'],
+    },
+  }),
+}
+
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -95,6 +255,8 @@ function installFetch(options: {
   unlockFailure?: boolean
   unlockGate?: Promise<void>
   failCandidateRefreshAfterUnlock?: boolean
+  payrollResponses?: Record<string, unknown>
+  payrollVerifyResult?: unknown
 } = {}) {
   const {
     items = candidates,
@@ -115,6 +277,16 @@ function installFetch(options: {
     unlockFailure = false,
     unlockGate,
     failCandidateRefreshAfterUnlock = false,
+    payrollResponses = {},
+    payrollVerifyResult = {
+      contract_version: 'ledgerbridge.payroll-command-result.v1',
+      entity_ref: payrollEntityRef,
+      company_id: payrollCompanyId,
+      action: 'payroll.batch.verify-receipts',
+      resource_ref: payrollBatchId,
+      replayed: false,
+      data: { projection_revision: 8 },
+    },
   } = options
   let shouldFailSession = failSessionOnce
   let decisionSaved = false
@@ -159,6 +331,10 @@ function installFetch(options: {
       }
       return response({ ...session, runtime_mode: runtimeMode })
     }
+    if (url === `/api/v1/payroll/batches/${payrollBatchId}/verify-receipts` && init?.method === 'POST') {
+      return response(payrollVerifyResult)
+    }
+    if (url in payrollResponses) return response(payrollResponses[url])
     if (url === '/api/v1/candidates' || url.startsWith('/api/v1/candidates?')) {
       if (failCandidateRefreshAfterUnlock && unlockedSources.size > 0) {
         return response({ title: '候选刷新暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
@@ -978,20 +1154,162 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.getByText('按公司主体汇总将在后续接入')).toBeInTheDocument()
   })
 
-  it('keeps the payroll integration status reachable from its route and both navigation surfaces', async () => {
+  it('keeps the payroll integration status reachable and explains when the live projection is not ready', async () => {
     window.history.replaceState({}, '', '/payroll')
-    installFetch({ runtimeMode: 'core-backed' })
+    const fetchMock = installFetch({
+      runtimeMode: 'core-backed',
+      payrollResponses: notReadyPayrollResponses,
+    })
     renderApp()
 
     expect(await screen.findByRole('heading', { name: '工资与发放验证' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: '工资与发放验证' })).toHaveLength(2)
-    expect(screen.getByRole('heading', { name: '当前可做' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '暂不可做' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '接通条件' })).toBeInTheDocument()
     expect(screen.getByText('只读工资发布契约已部署')).toBeInTheDocument()
-    expect(screen.getByText('正式工资服务尚未连接')).toBeInTheDocument()
+    expect(await screen.findByText('工资服务已连通，但正式数据投影尚未就绪')).toBeInTheDocument()
+    expect(screen.getByText('服务已接通，待归属材料 3 份')).toBeInTheDocument()
     expect(screen.getByText('真实发薪和银行提交不可用')).toBeInTheDocument()
     expect(screen.queryByText(/127\.0\.0\.1/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /付款|发薪|银行提交/ })).not.toBeInTheDocument()
+    expect(fetchMock.mock.calls.map(([input]) => String(input)).filter((url) => url.startsWith('/api/v1/payroll/')))
+      .toEqual(['/api/v1/payroll/status'])
+  })
+
+  it('reads the live payroll projection only through the same-origin BFF and renders its real summaries', async () => {
+    window.history.replaceState({}, '', '/payroll')
+    const fetchMock = installFetch({
+      runtimeMode: 'core-backed',
+      payrollResponses: livePayrollResponses,
+    })
+    renderApp()
+
+    expect(await screen.findByRole('heading', { name: '真实材料汇总' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '公司内工资批次' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '发放验证结果' })).toBeInTheDocument()
+    expect(screen.getByText('材料 1 份')).toBeInTheDocument()
+    expect(screen.getByText('待人工审核 1 份')).toBeInTheDocument()
+    expect(screen.getByText('待归属 3 份')).toBeInTheDocument()
+    expect(screen.getByText('批次 1 个')).toBeInTheDocument()
+    expect(screen.getByText('验证结果 1 条')).toBeInTheDocument()
+    expect(screen.getAllByText('2026-08').length).toBeGreaterThan(0)
+    expect(screen.getByText('草稿')).toBeInTheDocument()
+    expect(screen.getByText('已匹配')).toBeInTheDocument()
+
+    await waitFor(() => {
+      const payrollCalls = fetchMock.mock.calls
+        .map(([input]) => String(input))
+        .filter((url) => url.startsWith('/api/v1/payroll/'))
+      expect(payrollCalls).toEqual([
+        '/api/v1/payroll/status',
+        '/api/v1/payroll/dashboard',
+        '/api/v1/payroll/materials',
+        '/api/v1/payroll/batches',
+        '/api/v1/payroll/verification',
+      ])
+      expect(fetchMock.mock.calls.some(([input]) => /^https?:\/\//.test(String(input)))).toBe(false)
+    })
+  })
+
+  it('submits receipt verification with only selected READY_FOR_MATCHING evidence and controlled command fields', async () => {
+    window.history.replaceState({}, '', '/payroll')
+    const fetchMock = installFetch({
+      runtimeMode: 'core-backed',
+      payrollResponses: livePayrollResponses,
+    })
+    renderApp()
+
+    const evidenceOption = await screen.findByRole('checkbox', { name: '2026-08 已受控回单证据' })
+    expect(evidenceOption).not.toBeChecked()
+    fireEvent.click(evidenceOption)
+    fireEvent.click(screen.getByRole('button', { name: '提交发放验证' }))
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.filter(([input, init]) =>
+        String(input) === `/api/v1/payroll/batches/${payrollBatchId}/verify-receipts`
+        && init?.method === 'POST')).toHaveLength(1)
+    })
+    const [, init] = fetchMock.mock.calls.find(([input, request]) =>
+      String(input) === `/api/v1/payroll/batches/${payrollBatchId}/verify-receipts`
+      && request?.method === 'POST')!
+    expect(init?.credentials).toBe('same-origin')
+    expect(init?.headers).toMatchObject({
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': session.csrf_token,
+    })
+    expect((init?.headers as Record<string, string>)['Idempotency-Key']).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+    expect(JSON.parse(String(init?.body))).toEqual({
+      expected_revision: 4,
+      reason_code: 'MANUAL_DISBURSEMENT_VERIFICATION',
+      source_artifact_ids: [payrollArtifactId],
+    })
+  })
+
+  it('keeps receipt verification fail-closed when the server does not grant the action', async () => {
+    window.history.replaceState({}, '', '/payroll')
+    const liveStatus = livePayrollResponses['/api/v1/payroll/status'] as { data: Record<string, unknown> }
+    const fetchMock = installFetch({
+      runtimeMode: 'core-backed',
+      payrollResponses: {
+        ...livePayrollResponses,
+        '/api/v1/payroll/status': payrollRead({
+          ...liveStatus.data,
+          capabilities: { commands_enabled: true, allowed_actions: [] },
+        }),
+      },
+    })
+    renderApp()
+
+    expect(await screen.findByText('2026-08 已受控回单证据')).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '提交发放验证' })).not.toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([input, init]) =>
+      String(input).endsWith('/verify-receipts') && init?.method === 'POST')).toBe(false)
+  })
+
+  it('retries a mixed payroll snapshot once and refuses to render it when it stays inconsistent', async () => {
+    window.history.replaceState({}, '', '/payroll')
+    const liveMaterials = livePayrollResponses['/api/v1/payroll/materials'] as { data: Record<string, unknown> }
+    const fetchMock = installFetch({
+      runtimeMode: 'core-backed',
+      payrollResponses: {
+        ...livePayrollResponses,
+        '/api/v1/payroll/materials': payrollRead({
+          ...liveMaterials.data,
+          projection_revision: 8,
+          etag: 'b'.repeat(64),
+        }),
+      },
+    })
+    renderApp()
+
+    expect(await screen.findByText('数据正在刷新，请稍后重试')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '真实材料汇总' })).not.toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/payroll/materials')).toHaveLength(2)
+  })
+
+  it('requires imported receipt evidence and never invents a verification success or payment action', async () => {
+    window.history.replaceState({}, '', '/payroll')
+    const verificationWithoutEvidence = payrollRead({
+      schema_version: 'ledgerbridge.payroll-verification-list.v1',
+      projection_revision: 7,
+      etag: 'a'.repeat(64),
+      generated_at: '2026-08-30T08:00:00.000Z',
+      items: [],
+      available_evidence: [],
+    })
+    installFetch({
+      runtimeMode: 'core-backed',
+      payrollResponses: {
+        ...livePayrollResponses,
+        '/api/v1/payroll/verification': verificationWithoutEvidence,
+      },
+    })
+    renderApp()
+
+    expect(await screen.findByText('请先导入发放回单/流水')).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '提交发放验证' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/验证成功/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /付款|发薪|银行提交/ })).not.toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent(/demo|payable|payment_submission/i)
   })
 })

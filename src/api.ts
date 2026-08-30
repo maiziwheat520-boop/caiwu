@@ -11,6 +11,13 @@ import type {
   EvidenceUnlockResult,
   EvidencePreview,
   PasskeyAdditionResult,
+  PayrollBatchListData,
+  PayrollCommandResult,
+  PayrollDashboardData,
+  PayrollMaterialListData,
+  PayrollReadResponse,
+  PayrollStatusData,
+  PayrollVerificationListData,
   Problem,
   Reconciliation,
   ReviewEvent,
@@ -335,6 +342,43 @@ export const api = {
     const response = await requestJson<{ items: ConnectionStatus[] }>('/api/v1/connections')
     return response.items
   },
+
+  getPayrollStatus: () =>
+    requestJson<PayrollReadResponse<PayrollStatusData>>('/api/v1/payroll/status'),
+
+  getPayrollDashboard: () =>
+    requestJson<PayrollReadResponse<PayrollDashboardData>>('/api/v1/payroll/dashboard'),
+
+  listPayrollMaterials: () =>
+    requestJson<PayrollReadResponse<PayrollMaterialListData>>('/api/v1/payroll/materials'),
+
+  listPayrollBatches: () =>
+    requestJson<PayrollReadResponse<PayrollBatchListData>>('/api/v1/payroll/batches'),
+
+  listPayrollVerification: () =>
+    requestJson<PayrollReadResponse<PayrollVerificationListData>>('/api/v1/payroll/verification'),
+
+  verifyPayrollReceipts: ({ batchId, expectedRevision, sourceArtifactIds, csrfToken }: {
+    batchId: string
+    expectedRevision: number
+    sourceArtifactIds: string[]
+    csrfToken: string
+  }) => requestJson<PayrollCommandResult>(
+    `/api/v1/payroll/batches/${encodeURIComponent(batchId)}/verify-receipts`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': createOperationId(),
+        'X-CSRF-Token': csrfToken,
+      },
+      body: JSON.stringify({
+        expected_revision: expectedRevision,
+        reason_code: 'MANUAL_DISBURSEMENT_VERIFICATION',
+        source_artifact_ids: sourceArtifactIds,
+      }),
+    },
+  ),
 }
 
 export const minorToMajor = (amountMinor: number) => amountMinor / 100
