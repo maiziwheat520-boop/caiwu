@@ -111,6 +111,36 @@ def test_0022_replaces_live_closure_validator_in_both_directions() -> None:
         assert new in downgrade_sql and old in downgrade_sql
 
 
+def test_0022_replaces_live_revision_dimension_validator_in_both_directions() -> None:
+    namespace = _migration_namespace()
+    render = namespace["_revision_dimensions_sql"]
+    upgrade_sql = render(allow_pending_corrections=True)
+    downgrade_sql = render(allow_pending_corrections=False)
+    installed_validator = CLOSURE_MIGRATION.read_text(encoding="utf-8")
+
+    old = (
+        "OR ce.evidence_business_unit_id IS DISTINCT FROM eo.business_unit_id\n"
+        "                        OR (NEW.business_unit_id IS NOT NULL\n"
+        "                            AND eo.business_unit_id IS DISTINCT FROM "
+        "NEW.business_unit_id))"
+    )
+    new = (
+        "OR ce.evidence_business_unit_id IS DISTINCT FROM eo.business_unit_id\n"
+        "                        OR (NEW.business_unit_id IS NOT NULL\n"
+        "                            AND eo.business_unit_id IS DISTINCT FROM "
+        "NEW.business_unit_id\n"
+        "                            AND NOT EXISTS (\n"
+        "                                SELECT 1\n"
+        "                                  FROM public.candidate_event AS correction"
+    )
+    assert installed_validator.count(old) == 1
+    assert "public.r1_validate_revision_dimensions()" in upgrade_sql
+    assert "pg_get_functiondef" in upgrade_sql
+    assert "EXECUTE v_definition" in upgrade_sql
+    assert old in upgrade_sql and new in upgrade_sql
+    assert new in downgrade_sql and old in downgrade_sql
+
+
 def test_0022_command_and_event_sql_keep_terminal_states_closed() -> None:
     namespace = _migration_namespace()
     command_sql = namespace["_command_functions_sql"](allow_pending_corrections=True)
