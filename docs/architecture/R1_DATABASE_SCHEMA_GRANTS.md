@@ -411,7 +411,8 @@ fact source.
 - `UNIQUE (candidate_id, to_revision) DEFERRABLE INITIALLY DEFERRED`
 - `command_fingerprint bytea not null check (octet_length(command_fingerprint) = 32)`
 - `event_type varchar(40) not null` with fixed CHECK
-  (`CREATE`, `COMPLETE_FIELDS`, `RESOLVE_CONFLICT`, `CONFIRM`, `IGNORE`, `SUPERSEDE`)
+  (`CREATE`, `COMPLETE_FIELDS`, `RESOLVE_CONFLICT`, `CORRECT_AND_CONFIRM`,
+  `CONFIRM`, `IGNORE`, `SUPERSEDE`)
 - `action varchar(32) null` with the frozen Candidate action CHECK
 - `from_revision integer null`
 - `to_revision integer not null`
@@ -468,7 +469,8 @@ matrix:
 
 - statuses are exactly `INCOMPLETE`, `CONFLICTED`, `PENDING`, `CONFIRMED`,
   `IGNORED`, or `SUPERSEDED`; actions are exactly `COMPLETE_FIELDS`,
-  `RESOLVE_CONFLICT`, `CONFIRM`, `IGNORE`, or `SUPERSEDE`;
+  `RESOLVE_CONFLICT`, `CORRECT_AND_CONFIRM`, `CONFIRM`, `IGNORE`, or
+  `SUPERSEDE`;
 - blocker codes are exactly `MISSING_BUSINESS_UNIT`, `MISSING_CATEGORY`,
   `MISSING_AMOUNT`, `MISSING_ACCOUNTING_MONTH`, `AMBIGUOUS_EXTRACTION`,
   `PARSE_FAILED`, `DEPENDENCY_UNAVAILABLE`, `EVIDENCE_INCOMPLETE`,
@@ -493,14 +495,17 @@ matrix:
   are timezone-aware;
 - legal edges are `INCOMPLETE -> PENDING` (COMPLETE_FIELDS),
   `CONFLICTED -> PENDING` (RESOLVE_CONFLICT), `PENDING -> CONFIRMED`
-  (CONFIRM), `INCOMPLETE|CONFLICTED|PENDING -> IGNORED` (IGNORE), and
-  `CONFIRMED -> SUPERSEDED` (SUPERSEDE);
+  (CONFIRM or CORRECT_AND_CONFIRM), `INCOMPLETE|CONFLICTED|PENDING -> IGNORED`
+  (IGNORE), and `CONFIRMED -> SUPERSEDED` (SUPERSEDE);
 - every event changes status exactly once, has unique field changes, and its
   old/new values equal the preceding/result revision; CONFIRM/IGNORE cannot
   alter normalized fields, COMPLETE_FIELDS only fills NULL values and requires
-  at least one normalized field change, RESOLVE_CONFLICT requires non-empty
-  unique conflict resolutions and clears blockers, and SUPERSEDE requires a
-  normalized change on the derived revision but cannot rewrite its source;
+  at least one normalized field change, CORRECT_AND_CONFIRM atomically changes
+  at least one normalized field while moving a complete PENDING candidate to
+  CONFIRMED, RESOLVE_CONFLICT requires non-empty unique conflict resolutions,
+  applies any allowlisted correction patch, and clears blockers, and SUPERSEDE
+  requires a normalized change on the derived revision but cannot rewrite its
+  source;
 - normalized fields are
   `(business_unit_ref, business_unit_label, category_code, category_label,
   amount_minor, accounting_month)`; immutable projection fields include
@@ -1293,6 +1298,7 @@ not independently authenticate the HTTP SAN. This trust boundary is explicit.
 | `internal_read` schema | ALL | USAGE | none | none |
 | Internal read views | ALL | SELECT | none | none |
 | `internal_read.current_audit_horizon()` | ALL | EXECUTE | none | none |
+| `internal_read.get_accounting_dimensions(...)` | ALL | EXECUTE | none | none |
 | `internal_read.list_candidates_as_of(...)` | ALL | EXECUTE | none | none |
 | `internal_read.get_reconciliation_as_of(...)` | ALL | EXECUTE | none | none |
 | `internal_read.resolve_active_evidence_blob(evidence_ref)` | ALL | EXECUTE | none | none |
@@ -1312,6 +1318,41 @@ have exactly the fixed owner/search path and reader `EXECUTE` grant.
 Future I1/D1 migrations may grant narrowly shaped command functions to worker or
 API after their own design, tests, security review, and authorization. They must
 not grant direct broad DML merely because the tables exist.
+
+### Migration `20260830_0022`: active dimensions and pending corrections
+
+The D1 production writeback extension is the forward migration
+`20260830_0022_pending_candidate_corrections`, directly after `20260830_0021`.
+It adds the single append-only `PENDING -> CONFIRMED` CORRECT_AND_CONFIRM edge
+and patches the live closure validator so the status, field-change children,
+prior/result revisions, immutable source/evidence, and audit binding remain one
+atomic fact. Terminal states still have no outgoing correction edge.
+
+Every CORRECT_AND_CONFIRM resolves the final business-unit UUID/ref and
+category UUID/code against the Candidate entity and requires both dimension
+rows to be active, even when the request changes only amount or month and would
+otherwise copy a retired identity from the prior revision. Historical
+revisions continue to retain their immutable dimension snapshots. Unknown,
+cross-entity, retired, stale-revision, and duplicate-active-label cases fail
+closed. Synthetic RESOLVE_CONFLICT applies the same legal correction patch as
+the database command before the following CONFIRM step.
+
+The same migration adds the entity-scoped
+`internal_read.get_accounting_dimensions(uuid, uuid[], varchar[])` catalog. It
+returns only active authorized stable refs/codes with readable labels and
+rejects duplicate active labels so the UI never has to reverse-map a label.
+The function is fixed-owner `SECURITY DEFINER` with
+`search_path=pg_catalog`. EXECUTE is revoked from PUBLIC,
+`ledgerbridge_api`, `ledgerbridge_worker`, and conditionally present
+`ledgerbridge_app`/`ledgerbridge_backup`, then granted only to
+`ledgerbridge_reader`; none receives direct public-table SELECT.
+
+Downgrade first reports the precise presence of a PENDING correction event. If
+none exists, a second authoritative guard still rejects any nonempty audit
+chain or R1 fact database, including the 0017 controlled-import receipt, 0019 evidence-link and
+hotel-cutover facts, 0020 counterparty facts, and all 0021 managed-account and
+bank-statement facts. Thus only an empty isolated database may round-trip 0022
+to 0021; the migration is never a production rollback mechanism.
 
 ## Query and index plan
 

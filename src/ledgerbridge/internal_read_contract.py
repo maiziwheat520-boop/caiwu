@@ -56,6 +56,7 @@ READ_CAPABILITIES = frozenset(
 
 READ_ROUTE_CAPABILITIES: Mapping[str, Capability] = {
     "GET /internal/v1/capabilities": Capability.SYSTEM_READ,
+    "GET /internal/v1/accounting-dimensions": Capability.CANDIDATE_DECIDE,
     "GET /internal/v1/candidates": Capability.CANDIDATE_READ,
     "GET /internal/v1/candidates/{id}": Capability.CANDIDATE_READ,
     "GET /internal/v1/evidence/{id}/content": Capability.EVIDENCE_READ,
@@ -65,6 +66,7 @@ READ_ROUTE_CAPABILITIES: Mapping[str, Capability] = {
 
 READ_ROUTE_SCOPE_MODES: Mapping[str, ScopeMode] = {
     "GET /internal/v1/capabilities": ScopeMode.SYSTEM,
+    "GET /internal/v1/accounting-dimensions": ScopeMode.OBJECT,
     "GET /internal/v1/candidates": ScopeMode.COLLECTION,
     "GET /internal/v1/candidates/{id}": ScopeMode.OBJECT,
     "GET /internal/v1/evidence/{id}/content": ScopeMode.OBJECT,
@@ -75,6 +77,7 @@ READ_ROUTE_SCOPE_MODES: Mapping[str, ScopeMode] = {
 CANDIDATE_ACTION_CAPABILITIES: Mapping[CandidateAction, Capability] = {
     CandidateAction.COMPLETE_FIELDS: Capability.CANDIDATE_DECIDE,
     CandidateAction.RESOLVE_CONFLICT: Capability.CANDIDATE_DECIDE,
+    CandidateAction.CORRECT_AND_CONFIRM: Capability.CANDIDATE_DECIDE,
     CandidateAction.CONFIRM: Capability.CANDIDATE_DECIDE,
     CandidateAction.IGNORE: Capability.CANDIDATE_DECIDE,
     CandidateAction.SUPERSEDE: Capability.CANDIDATE_SUPERSEDE,
@@ -100,13 +103,55 @@ class CapabilitiesResponse(_FrozenModel):
     )
     data_mode: Literal["synthetic", "database"] = "synthetic"
     enabled_modules: tuple[
-        Literal["candidates", "evidence", "reconciliations", "ledger-summary"], ...
+        Literal[
+            "accounting-dimensions",
+            "candidates",
+            "evidence",
+            "reconciliations",
+            "ledger-summary",
+        ],
+        ...,
     ]
 
 
 class CandidatePage(_FrozenModel):
     items: tuple[CandidateProjection, ...] = Field(max_length=100)
     next_cursor: str | None = Field(default=None, min_length=1, max_length=512)
+
+
+class BusinessUnitDimension(_FrozenModel):
+    ref: str = Field(min_length=1, max_length=100)
+    label: str = Field(min_length=1, max_length=200)
+
+
+class ReportingCategoryDimension(_FrozenModel):
+    code: str = Field(min_length=1, max_length=100)
+    label: str = Field(min_length=1, max_length=200)
+
+
+class AccountingDimensions(_FrozenModel):
+    contract_version: Literal["ledgerbridge.accounting-dimensions.v1"] = (
+        "ledgerbridge.accounting-dimensions.v1"
+    )
+    entity_ref: UUID
+    business_units: tuple[BusinessUnitDimension, ...] = Field(max_length=1_000)
+    categories: tuple[ReportingCategoryDimension, ...] = Field(max_length=1_000)
+
+    @model_validator(mode="after")
+    def dimensions_are_unique_and_stably_sorted(self) -> AccountingDimensions:
+        business_unit_refs = [item.ref for item in self.business_units]
+        category_codes = [item.code for item in self.categories]
+        business_unit_labels = [item.label for item in self.business_units]
+        category_labels = [item.label for item in self.categories]
+        if business_unit_refs != sorted(set(business_unit_refs)):
+            raise ValueError("business unit dimensions must be unique and sorted")
+        if category_codes != sorted(set(category_codes)):
+            raise ValueError("reporting category dimensions must be unique and sorted")
+        if len(business_unit_labels) != len(set(business_unit_labels)):
+            raise ValueError("active business unit labels must be unique within an entity")
+        if len(category_labels) != len(set(category_labels)):
+            raise ValueError("active reporting category labels must be unique within an entity")
+        return self
 
 
 class ReconciliationProposal(_FrozenModel):

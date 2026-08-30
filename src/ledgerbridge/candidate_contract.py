@@ -39,6 +39,7 @@ class CandidateStatus(StrEnum):
 class CandidateAction(StrEnum):
     COMPLETE_FIELDS = "COMPLETE_FIELDS"
     RESOLVE_CONFLICT = "RESOLVE_CONFLICT"
+    CORRECT_AND_CONFIRM = "CORRECT_AND_CONFIRM"
     CONFIRM = "CONFIRM"
     IGNORE = "IGNORE"
     SUPERSEDE = "SUPERSEDE"
@@ -206,8 +207,12 @@ class CandidateProjection(_FrozenModel):
                 CandidateAction.RESOLVE_CONFLICT,
             }:
                 raise ValueError("derived PENDING state requires completion or conflict resolution")
+        if self.status == CandidateStatus.CONFIRMED and last_action not in {
+            CandidateAction.CONFIRM,
+            CandidateAction.CORRECT_AND_CONFIRM,
+        }:
+            raise ValueError("terminal candidate status must match its last action")
         terminal_actions = {
-            CandidateStatus.CONFIRMED: CandidateAction.CONFIRM,
             CandidateStatus.IGNORED: CandidateAction.IGNORE,
             CandidateStatus.SUPERSEDED: CandidateAction.SUPERSEDE,
         }
@@ -320,7 +325,11 @@ class CandidateCommand(_FrozenModel):
     def command_shape(self) -> CandidateCommand:
         if self.decided_at.tzinfo is None:
             raise ValueError("decided_at must be timezone-aware")
-        if self.action in {CandidateAction.COMPLETE_FIELDS, CandidateAction.SUPERSEDE}:
+        if self.action in {
+            CandidateAction.COMPLETE_FIELDS,
+            CandidateAction.CORRECT_AND_CONFIRM,
+            CandidateAction.SUPERSEDE,
+        }:
             if self.patch is None:
                 raise ValueError(f"{self.action} requires a patch")
         elif self.action != CandidateAction.RESOLVE_CONFLICT and self.patch is not None:
@@ -395,6 +404,9 @@ class CandidateEvent(_FrozenModel):
             CandidateAction.RESOLVE_CONFLICT: {
                 (CandidateStatus.CONFLICTED, CandidateStatus.PENDING)
             },
+            CandidateAction.CORRECT_AND_CONFIRM: {
+                (CandidateStatus.PENDING, CandidateStatus.CONFIRMED)
+            },
             CandidateAction.CONFIRM: {(CandidateStatus.PENDING, CandidateStatus.CONFIRMED)},
             CandidateAction.IGNORE: {
                 (CandidateStatus.INCOMPLETE, CandidateStatus.IGNORED),
@@ -433,6 +445,7 @@ class CandidateEvent(_FrozenModel):
             self.action
             in {
                 CandidateAction.COMPLETE_FIELDS,
+                CandidateAction.CORRECT_AND_CONFIRM,
                 CandidateAction.SUPERSEDE,
             }
             and not normalized_changes
@@ -768,6 +781,21 @@ def apply_candidate_command(
             raise CandidateTransitionRejected("resolved candidate must remain complete")
         updated_values["blockers"] = ()
         target_status = CandidateStatus.PENDING
+    elif command.action == CandidateAction.CORRECT_AND_CONFIRM:
+        _require_status(current, CandidateStatus.PENDING)
+        if command.patch is None:  # defensive guard after model validation
+            raise CandidateTransitionRejected("CORRECT_AND_CONFIRM requires a patch")
+        for field, value in _patch_values(command.patch).items():
+            if value is None:
+                raise CandidateTransitionRejected("CORRECT_AND_CONFIRM cannot remove required data")
+            if getattr(current, field) != value:
+                updated_values[field] = value
+                changed.add(field)
+        if not changed:
+            raise CandidateTransitionRejected("CORRECT_AND_CONFIRM must change a normalized field")
+        if _missing_fields_from_values(updated_values):
+            raise CandidateTransitionRejected("corrected candidate must remain complete")
+        target_status = CandidateStatus.CONFIRMED
     elif command.action == CandidateAction.CONFIRM:
         _require_status(current, CandidateStatus.PENDING)
         target_status = CandidateStatus.CONFIRMED

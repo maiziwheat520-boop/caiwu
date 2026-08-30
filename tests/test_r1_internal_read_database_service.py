@@ -25,6 +25,7 @@ from ledgerbridge.internal_read_contract import (
 )
 from ledgerbridge.internal_read_cursor import ReadCursorSigner
 from ledgerbridge.internal_read_service import (
+    AccountingDimensionsInvalid,
     DatabaseInternalReadService,
     InternalReadBackendUnavailable,
     SyntheticInternalReadService,
@@ -48,6 +49,12 @@ class _Result:
         return iter(self._rows)
 
 
+class _SqlStateError(SQLAlchemyError):
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__(sqlstate)
+        self.orig = type("Orig", (), {"sqlstate": sqlstate})()
+
+
 class _Session:
     def __init__(
         self,
@@ -59,6 +66,8 @@ class _Session:
         evidence_row: dict[str, Any] | None = None,
         satisfaction_rows: list[dict[str, Any]] | None = None,
         counterparty_rows: list[dict[str, Any]] | None = None,
+        accounting_dimensions: dict[str, Any] | None = None,
+        failure: SQLAlchemyError | None = None,
         fail: bool = False,
     ) -> None:
         self.candidate_row = candidate_row
@@ -68,6 +77,8 @@ class _Session:
         self.evidence_row = evidence_row
         self.satisfaction_rows = satisfaction_rows or []
         self.counterparty_rows = counterparty_rows or []
+        self.accounting_dimensions = accounting_dimensions
+        self.failure = failure
         self.fail = fail
         self.statements: list[str] = []
 
@@ -80,10 +91,18 @@ class _Session:
     def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Result:
         sql = str(statement)
         self.statements.append(sql)
+        if self.failure is not None:
+            raise self.failure
         if self.fail:
             raise SQLAlchemyError("synthetic database failure")
         if "current_audit_horizon" in sql:
             return _Result([{"sequence": 7, "hash": b"h" * 32}])
+        if "get_accounting_dimensions" in sql:
+            return _Result(
+                []
+                if self.accounting_dimensions is None
+                else [{"dimensions": self.accounting_dimensions}]
+            )
         if "list_candidates_as_of" in sql:
             return _Result(self.candidate_rows)
         if "list_candidate_evidence_satisfactions" in sql:
@@ -117,6 +136,7 @@ def _principal() -> WorkloadPrincipal:
         capabilities=frozenset(
             {
                 Capability.CANDIDATE_READ,
+                Capability.CANDIDATE_DECIDE,
                 Capability.SYSTEM_READ,
                 Capability.EVIDENCE_READ,
                 Capability.RECONCILIATION_READ,
@@ -185,6 +205,86 @@ def test_database_candidate_reader_uses_horizon_and_scoped_function() -> None:
     assert any("current_audit_horizon" in statement for statement in session.statements)
     assert any("list_candidates_as_of" in statement for statement in session.statements)
     assert all("public." not in statement for statement in session.statements)
+
+
+def test_database_accounting_dimensions_use_exact_grant_bindings() -> None:
+    candidate = SyntheticInternalReadService()._fixture.candidates[1]
+    session = _Session(
+        candidate.model_dump(),
+        accounting_dimensions={
+            "contract_version": "ledgerbridge.accounting-dimensions.v1",
+            "entity_ref": str(ENTITY),
+            "business_units": [{"ref": "unit-demo-a", "label": "Demo unit A"}],
+            "categories": [{"code": "SUPPLIES", "label": "Synthetic supplies"}],
+        },
+    )
+
+    dimensions = _service(session).get_accounting_dimensions(_principal(), entity_ref=ENTITY)
+
+    assert [(item.ref, item.label) for item in dimensions.business_units] == [
+        ("unit-demo-a", "Demo unit A")
+    ]
+    assert [(item.code, item.label) for item in dimensions.categories] == [
+        ("SUPPLIES", "Synthetic supplies")
+    ]
+    assert any("internal_read.get_accounting_dimensions" in sql for sql in session.statements)
+    assert all("public." not in sql for sql in session.statements)
+
+
+def test_database_accounting_dimensions_allow_retired_grant_bindings_to_be_omitted() -> None:
+    candidate = SyntheticInternalReadService()._fixture.candidates[1]
+    retired_id = UUID("11000000-0000-4000-8000-000000000002")
+    principal = _principal().model_copy(
+        update={
+            "grants": (
+                EntityGrant(
+                    entity_ref=ENTITY,
+                    business_unit_refs=frozenset({"unit-demo-a", "unit-retired"}),
+                    business_unit_ids=frozenset({BUSINESS_UNIT, retired_id}),
+                    business_unit_bindings=(
+                        ("unit-demo-a", BUSINESS_UNIT),
+                        ("unit-retired", retired_id),
+                    ),
+                ),
+            )
+        }
+    )
+    session = _Session(
+        candidate.model_dump(),
+        accounting_dimensions={
+            "contract_version": "ledgerbridge.accounting-dimensions.v1",
+            "entity_ref": str(ENTITY),
+            "business_units": [{"ref": "unit-demo-a", "label": "Demo unit A"}],
+            "categories": [{"code": "SUPPLIES", "label": "Synthetic supplies"}],
+        },
+    )
+
+    dimensions = _service(session).get_accounting_dimensions(principal, entity_ref=ENTITY)
+
+    assert [item.ref for item in dimensions.business_units] == ["unit-demo-a"]
+
+
+def test_database_accounting_dimensions_reject_unbound_returned_ref() -> None:
+    candidate = SyntheticInternalReadService()._fixture.candidates[1]
+    session = _Session(
+        candidate.model_dump(),
+        accounting_dimensions={
+            "contract_version": "ledgerbridge.accounting-dimensions.v1",
+            "entity_ref": str(ENTITY),
+            "business_units": [{"ref": "unit-other", "label": "Other unit"}],
+            "categories": [],
+        },
+    )
+
+    with pytest.raises(InternalReadBackendUnavailable, match="scope binding"):
+        _service(session).get_accounting_dimensions(_principal(), entity_ref=ENTITY)
+
+
+def test_database_accounting_dimensions_surface_duplicate_active_labels_for_governance() -> None:
+    session = _Session({}, failure=_SqlStateError("LB005"))
+
+    with pytest.raises(AccountingDimensionsInvalid, match="registry governance"):
+        _service(session).get_accounting_dimensions(_principal(), entity_ref=ENTITY)
 
 
 def test_database_candidate_reader_applies_audited_risk_satisfaction() -> None:

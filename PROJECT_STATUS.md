@@ -18,7 +18,36 @@ and sidecar profile disabled by default. Persistent source, receipt, output, aud
 projection support remains reserved for migration `20260830_0025` after the centrally coordinated
 linear `0022 -> 0023 -> 0024` chain lands. No production source or enablement was added. See
 `docs/adr/0002-isolate-evidence-unlock-in-a-sidecar.md`.
+## Manual-review posting correction checkpoint (2026-08-30)
 
+The isolated branch `ai/chatgpt/manual-review-writeback-core` now contains the
+forward-only `20260830_0022` Core slice. PENDING candidates can atomically append
+one CORRECT_AND_CONFIRM event that changes an allowlisted business unit,
+category, integer minor-unit amount, or accounting month and ends CONFIRMED.
+The command preserves prior/result revisions, source and evidence snapshots,
+field-change children, optimistic revision checks, idempotency, and the audit
+binding. Terminal states remain read-only.
+
+The new accounting-dimensions reader catalog returns only active authorized
+stable refs/codes. Duplicate active labels, unknown/cross-entity targets, and
+retired targets fail closed. CORRECT_AND_CONFIRM also revalidates the final
+derived business unit and category when only amount or month changes, so an old
+Candidate cannot copy a retired dimension into a new revision. Synthetic
+RESOLVE_CONFLICT now applies its legal correction patch like the database
+backend. The SECURITY DEFINER catalog function has reader-only EXECUTE after
+explicit PUBLIC/API/worker and optional app/backup revocation.
+
+The 0022 downgrade retains the precise new-event diagnostic and then refuses
+every nonempty R1 fact database, including durable 0017–0021 import receipts,
+evidence links, hotel cutover, counterparty, managed-account, and bank-statement
+facts; only an empty isolated database may round-trip.
+The full local suite passes **778 tests** with **200 skips** and one existing
+Starlette warning; the focused Core slice passes **141 tests** with **43
+PostgreSQL skips**. Ruff format/check, changed-file mypy, sensitive-path,
+single-Alembic-head, and diff checks pass. PostgreSQL integration and ACL tests
+are present but remain unexecuted locally because this host has no configured
+disposable PostgreSQL URL or local PostgreSQL runtime. No production Candidate,
+database, migration, deployment, or Web release was changed.
 ## Payroll publication adapter checkpoint (2026-08-30)
 
 The real-data cutover branch now contains a default-disabled, read-only adapter for the

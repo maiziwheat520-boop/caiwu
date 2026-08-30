@@ -30,6 +30,7 @@ from ledgerbridge.internal_read_routes import (
     get_synthetic_internal_read_service,
     router,
 )
+from ledgerbridge.internal_read_service import AccountingDimensionsInvalid
 
 ENTITY_A = UUID("10000000-0000-4000-8000-000000000001")
 ENTITY_B = UUID("10000000-0000-4000-8000-000000000002")
@@ -132,6 +133,7 @@ def _assert_problem(response: HttpxResponse, status_code: int, code: str) -> Non
 def test_router_topology_matches_the_frozen_contract() -> None:
     assert {route.path for route in router.routes if isinstance(route, APIRoute)} == {
         "/internal/v1/capabilities",
+        "/internal/v1/accounting-dimensions",
         "/internal/v1/candidates",
         "/internal/v1/candidates/{id}",
         "/internal/v1/evidence/{id}/content",
@@ -210,6 +212,8 @@ def test_parameter_validation_precedes_service_construction() -> None:
     "path",
     [
         "/internal/v1/capabilities?unexpected=1",
+        "/internal/v1/accounting-dimensions",
+        "/internal/v1/accounting-dimensions?entity_ref=not-a-uuid",
         "/internal/v1/candidates?month=2026-08&month=2026-09",
         "/internal/v1/candidates?month=2026-13",
         "/internal/v1/candidates?status=confirmed",
@@ -227,7 +231,12 @@ def test_parameter_validation_precedes_service_construction() -> None:
 def test_closed_parameter_contract_rejects_unknown_duplicate_or_invalid_values(
     path: str,
 ) -> None:
-    response = _client().get(path)
+    principal = (
+        _principal(frozenset({*READ_CAPABILITIES, Capability.CANDIDATE_DECIDE}))
+        if path.startswith("/internal/v1/accounting-dimensions")
+        else None
+    )
+    response = _client(principal=principal).get(path)
 
     _assert_problem(response, 400, "INVALID_QUERY")
 
@@ -241,6 +250,56 @@ def test_parameter_error_precedes_empty_scope_not_found() -> None:
 
     _assert_problem(client.get("/internal/v1/candidates?unknown=1"), 400, "INVALID_QUERY")
     _assert_problem(client.get("/internal/v1/candidates"), 404, "RESOURCE_NOT_FOUND")
+
+
+def test_accounting_dimensions_require_decide_and_hide_cross_company_catalogs() -> None:
+    decide = frozenset({*READ_CAPABILITIES, Capability.CANDIDATE_DECIDE})
+    principal = _principal(decide, entity_b=False)
+    client = _client(principal=principal)
+
+    response = client.get(f"/internal/v1/accounting-dimensions?entity_ref={ENTITY_A}")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "contract_version": "ledgerbridge.accounting-dimensions.v1",
+        "entity_ref": str(ENTITY_A),
+        "business_units": [{"ref": "unit-demo-a", "label": "Demo unit A"}],
+        "categories": [
+            {"code": "SUPPLIES", "label": "Synthetic supplies"},
+            {"code": "TRAVEL", "label": "Reviewed travel"},
+        ],
+    }
+    read_only = _client(principal=_principal(READ_CAPABILITIES, entity_b=False))
+    _assert_problem(
+        read_only.get(f"/internal/v1/accounting-dimensions?entity_ref={ENTITY_A}"),
+        403,
+        "CAPABILITY_REQUIRED",
+    )
+    cross_company = _principal(decide).model_copy(
+        update={"grants": (_principal(decide).grants[1],)}
+    )
+    _assert_problem(
+        _client(principal=cross_company).get(
+            f"/internal/v1/accounting-dimensions?entity_ref={ENTITY_A}"
+        ),
+        404,
+        "RESOURCE_NOT_FOUND",
+    )
+
+
+def test_accounting_dimensions_duplicate_active_labels_request_registry_governance() -> None:
+    decide = frozenset({*READ_CAPABILITIES, Capability.CANDIDATE_DECIDE})
+
+    def unavailable(*args: object, **kwargs: object) -> object:
+        raise AccountingDimensionsInvalid("active labels require registry governance")
+
+    service = SimpleNamespace(get_accounting_dimensions=unavailable)
+    response = _client(
+        principal=_principal(decide, entity_b=False),
+        service_factory=lambda: service,
+    ).get(f"/internal/v1/accounting-dimensions?entity_ref={ENTITY_A}")
+
+    _assert_problem(response, 503, "ACCOUNTING_DIMENSIONS_INVALID")
 
 
 def test_missing_and_out_of_scope_candidate_are_identical_404() -> None:

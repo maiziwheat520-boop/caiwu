@@ -42,6 +42,7 @@ from ledgerbridge.internal_read_audit import (
 )
 from ledgerbridge.internal_read_auth import get_internal_read_principal
 from ledgerbridge.internal_read_contract import (
+    AccountingDimensions,
     AuthenticationDenied,
     AuthorizationDenied,
     CandidatePage,
@@ -57,6 +58,7 @@ from ledgerbridge.internal_read_contract import (
 )
 from ledgerbridge.internal_read_cursor import CursorInvalid, ReadCursorSigner
 from ledgerbridge.internal_read_service import (
+    AccountingDimensionsInvalid,
     DatabaseInternalReadService,
     InternalReadBackendUnavailable,
     SyntheticInternalReadService,
@@ -132,6 +134,11 @@ class InternalReadRoute(APIRoute):
                 return _problem_response(
                     status.HTTP_503_SERVICE_UNAVAILABLE,
                     "SYNTHETIC_RESOURCE_UNAVAILABLE",
+                )
+            except AccountingDimensionsInvalid:
+                return _problem_response(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "ACCOUNTING_DIMENSIONS_INVALID",
                 )
             except InternalReadBackendUnavailable:
                 return _problem_response(
@@ -229,6 +236,11 @@ class _CandidateListParams:
 
 
 @dataclass(frozen=True, slots=True)
+class _AccountingDimensionsParams:
+    entity_ref: UUID
+
+
+@dataclass(frozen=True, slots=True)
 class _ReconciliationParams:
     month: str
     entity_ref: UUID
@@ -261,6 +273,15 @@ def _parse_candidate_list_params(request: Request) -> _CandidateListParams:
         business_unit=_optional_business_unit(query, "business_unit"),
         cursor=cursor,
     )
+
+
+def _parse_accounting_dimensions_params(request: Request) -> _AccountingDimensionsParams:
+    query = _closed_query(
+        request,
+        allowed=frozenset({"entity_ref"}),
+        required=frozenset({"entity_ref"}),
+    )
+    return _AccountingDimensionsParams(entity_ref=_parse_uuid(query["entity_ref"]))
 
 
 def _parse_closed_resource_uuid(id: str, request: Request) -> UUID:
@@ -312,6 +333,11 @@ def require_candidate_read(principal: VerifiedPrincipal) -> WorkloadPrincipal:
     return principal
 
 
+def require_candidate_decide(principal: VerifiedPrincipal) -> WorkloadPrincipal:
+    require_capability(principal, Capability.CANDIDATE_DECIDE)
+    return principal
+
+
 def require_evidence_read(principal: VerifiedPrincipal) -> WorkloadPrincipal:
     require_capability(principal, Capability.EVIDENCE_READ)
     return principal
@@ -336,6 +362,10 @@ router = APIRouter(
 
 SystemPrincipal = Annotated[WorkloadPrincipal, Depends(require_system_read)]
 CandidatePrincipal = Annotated[WorkloadPrincipal, Depends(require_candidate_read)]
+AccountingDimensionsPrincipal = Annotated[
+    WorkloadPrincipal,
+    Depends(require_candidate_decide),
+]
 EvidencePrincipal = Annotated[WorkloadPrincipal, Depends(require_evidence_read)]
 ReconciliationPrincipal = Annotated[
     WorkloadPrincipal,
@@ -344,6 +374,10 @@ ReconciliationPrincipal = Annotated[
 LedgerPrincipal = Annotated[WorkloadPrincipal, Depends(require_ledger_read)]
 NoQuery = Annotated[None, Depends(_validate_no_query)]
 CandidateListParams = Annotated[_CandidateListParams, Depends(_parse_candidate_list_params)]
+AccountingDimensionsParams = Annotated[
+    _AccountingDimensionsParams,
+    Depends(_parse_accounting_dimensions_params),
+]
 ResourceRef = Annotated[UUID, Depends(_parse_closed_resource_uuid)]
 ReconciliationParams = Annotated[_ReconciliationParams, Depends(_parse_reconciliation_params)]
 LedgerParams = Annotated[_LedgerParams, Depends(_parse_ledger_params)]
@@ -364,6 +398,15 @@ def get_capabilities(
     service: Service,
 ) -> CapabilitiesResponse:
     return service.capabilities(principal)
+
+
+@router.get("/accounting-dimensions", response_model=AccountingDimensions)
+def get_accounting_dimensions(
+    principal: AccountingDimensionsPrincipal,
+    params: AccountingDimensionsParams,
+    service: Service,
+) -> AccountingDimensions:
+    return service.get_accounting_dimensions(principal, entity_ref=params.entity_ref)
 
 
 @router.get("/candidates", response_model=CandidatePage)

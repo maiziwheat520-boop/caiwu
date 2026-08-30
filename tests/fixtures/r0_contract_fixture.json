@@ -8,7 +8,7 @@
   "entities": [
     {
       "entity_ref": "10000000-0000-4000-8000-000000000001",
-      "business_unit_refs": ["unit-demo-a"]
+      "business_unit_refs": ["unit-demo-a", "unit-reviewed"]
     },
     {
       "entity_ref": "10000000-0000-4000-8000-000000000002",
@@ -289,8 +289,32 @@
       "candidate_contract_version": "ledgerbridge.candidate.v1",
       "state_graph_version": "ledgerbridge.candidate-state.v1",
       "data_mode": "synthetic",
-      "enabled_modules": ["candidates", "evidence", "reconciliations", "ledger-summary"]
+      "enabled_modules": ["accounting-dimensions", "candidates", "evidence", "reconciliations", "ledger-summary"]
     },
+    "accounting_dimensions": [
+      {
+        "contract_version": "ledgerbridge.accounting-dimensions.v1",
+        "entity_ref": "10000000-0000-4000-8000-000000000001",
+        "business_units": [
+          {"ref": "unit-demo-a", "label": "Demo unit A"},
+          {"ref": "unit-reviewed", "label": "Reviewed unit"}
+        ],
+        "categories": [
+          {"code": "SUPPLIES", "label": "Synthetic supplies"},
+          {"code": "TRAVEL", "label": "Reviewed travel"}
+        ]
+      },
+      {
+        "contract_version": "ledgerbridge.accounting-dimensions.v1",
+        "entity_ref": "10000000-0000-4000-8000-000000000002",
+        "business_units": [
+          {"ref": "unit-demo-b", "label": "Demo unit B"}
+        ],
+        "categories": [
+          {"code": "SETTLEMENT", "label": "Synthetic settlement"}
+        ]
+      }
+    ],
     "candidate_page": {
       "candidate_indexes": [0, 1, 2, 3, 4, 5],
       "next_cursor": null

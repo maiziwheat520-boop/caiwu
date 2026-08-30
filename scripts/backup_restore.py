@@ -311,6 +311,7 @@ R1_INTERNAL_READ_VIEWS = (
 )
 R1_INTERNAL_READ_FUNCTIONS = (
     "current_audit_horizon",
+    "get_accounting_dimensions",
     "list_candidates_as_of",
     "get_reconciliation_as_of",
     "resolve_active_evidence_blob",
@@ -323,6 +324,9 @@ R1_INTERNAL_READ_FUNCTIONS = (
 # rather than the migration's varchar(N) declarations.
 R1_INTERNAL_READ_FUNCTION_SIGNATURES = {
     "current_audit_horizon": "",
+    "get_accounting_dimensions": (
+        "p_entity_id uuid, p_business_unit_ids uuid[], p_business_unit_refs character varying[]"
+    ),
     "list_candidates_as_of": (
         "p_entity_id uuid, p_business_unit_id uuid, p_status character varying, "
         "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea, "

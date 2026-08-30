@@ -104,3 +104,34 @@ as evidence-bound candidates that remain pending human review.
 - The real May rehearsal normalized 208 rows and registered 13 accounts. Five accounts still need
   independent statements. No automatic posting, candidate confirmation, or production Web
   replacement occurred at this checkpoint.
+
+## Manual-review writeback handoff (2026-08-30)
+
+- Core branch `ai/chatgpt/manual-review-writeback-core` owns migration
+  `20260830_0022` with `down_revision=20260830_0021`; later 0023/0024 migrations
+  are deliberately outside this slice.
+- The browser/BFF contract uses stable `business_unit_ref` and `category_code`.
+  Core resolves them through the entity-authorized active accounting-dimensions
+  catalog and appends one audited CORRECT_AND_CONFIRM event for a PENDING
+  candidate. It never reverse-maps display labels or accepts a browser-supplied
+  entity/UUID identity.
+- Every final business unit and category is revalidated active and same-entity,
+  including amount/month-only corrections whose prior Candidate snapshot refers
+  to a retired dimension. Historical snapshots remain readable but cannot be a
+  new write target. Duplicate active labels make the whole catalog unavailable
+  until the registry is governed.
+- The catalog SECURITY DEFINER function grants EXECUTE only to
+  `ledgerbridge_reader`; PUBLIC, API, worker, compatibility app, and backup roles
+  have no execute path. The 0022 downgrade is limited to an empty isolated R1
+  database—including all durable 0017–0021 import, evidence-link, hotel,
+  counterparty, managed-account, and bank-statement facts—and is not a
+  production rollback.
+- Non-PostgreSQL red/green tests cover the stopped writeback, retired-current
+  dimension, synthetic conflict correction parity, downgrade ordering, and ACL
+  declarations. The full local suite is 778 passed / 200 skipped / one existing
+  warning; the focused Core slice is 141 passed / 43 PostgreSQL skips. Ruff,
+  mypy, sensitive-path, single-head, and diff checks pass. PostgreSQL tests cover
+  the real command/event chain and role ACLs, but this local host lacks a
+  disposable PostgreSQL runtime, so that gate must run in the PostgreSQL 15
+  CI/service before merge. No production data was modified and no deployment is
+  authorized by this handoff.
