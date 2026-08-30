@@ -96,6 +96,15 @@ class SyntheticBffTests(unittest.TestCase):
         status, reconciliation, _ = self.request("/api/v1/reconciliations/2026-08")
         self.assertEqual(status, 200)
         self.assertFalse(reconciliation["ready"])
+        status, problem, _ = self.request("/api/v1/original-reconciliations/2026-08")
+        self.assertEqual(status, 503)
+        self.assertEqual(problem["code"], "ORIGINAL_RECONCILIATION_UNAVAILABLE")
+        status, problem, _ = self.request(
+            "/api/v1/original-reconciliations/2026-08",
+            authenticated=False,
+        )
+        self.assertEqual(status, 401)
+        self.assertEqual(problem["code"], "AUTHENTICATION_REQUIRED")
         status, connections, _ = self.request("/api/v1/connections")
         self.assertEqual(status, 200)
         self.assertEqual(len(connections["items"]), 4)

@@ -53,6 +53,7 @@ import type {
   EvidencePreview,
   EvidenceReference,
   Notice,
+  OriginalReconciliation as OriginalReconciliationData,
   Page,
   Reconciliation as ReconciliationData,
   ReviewEvent,
@@ -65,7 +66,8 @@ const navigation: Array<{ id: Page; label: string; icon: typeof House }> = [
   { id: 'overview', label: '概览', icon: House },
   { id: 'personal-finance', label: '完整个人财务对账', icon: Bank },
   { id: 'review', label: '待审核', icon: ListChecks },
-  { id: 'reconciliation', label: '原口径对账表', icon: Table },
+  { id: 'reconciliation', label: '月度对账', icon: Table },
+  { id: 'original-reconciliation', label: '原口径对账表', icon: FileText },
   { id: 'company-reports', label: '各公司报表', icon: Database },
   { id: 'payroll', label: '工资与发放验证', icon: FileXls },
   { id: 'files', label: '文件与连接', icon: FolderOpen },
@@ -76,6 +78,7 @@ const pagePaths: Record<Page, string> = {
   'personal-finance': '/personal-finance',
   review: '/review',
   reconciliation: '/reconciliation',
+  'original-reconciliation': '/original-reconciliation',
   'company-reports': '/company-reports',
   payroll: '/payroll',
   files: '/files',
@@ -215,6 +218,10 @@ function App() {
   const [session, setSession] = useState<Session | null>(null)
   const [reconciliation, setReconciliation] = useState<ReconciliationData | null>(null)
   const [selectedMonth, setSelectedMonth] = useState(CURRENT_MONTH)
+  const [originalMonth, setOriginalMonth] = useState(CURRENT_MONTH)
+  const [originalReconciliation, setOriginalReconciliation] = useState<OriginalReconciliationData | null>(null)
+  const [originalReconciliationLoading, setOriginalReconciliationLoading] = useState(false)
+  const [originalReconciliationError, setOriginalReconciliationError] = useState<string | null>(null)
   const [connections, setConnections] = useState<ConnectionStatus[]>([])
   const [reviewEvents, setReviewEvents] = useState<ReviewEvent[]>([])
   const [auditCandidates, setAuditCandidates] = useState<Candidate[]>([])
@@ -223,6 +230,8 @@ function App() {
   const [reviewEventsError, setReviewEventsError] = useState<string | null>(null)
   const candidateCursorRef = useRef<string | null>(null)
   const candidateDetailRequestRef = useRef(0)
+  const originalReconciliationRequestRef = useRef(0)
+  const originalScopeRef = useRef<OriginalReconciliationData['scope'] | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [decisionBusyId, setDecisionBusyId] = useState<string | null>(null)
@@ -320,6 +329,29 @@ function App() {
     }
   }, [])
 
+  const loadOriginalReconciliation = useCallback(async () => {
+    const requestId = ++originalReconciliationRequestRef.current
+    setOriginalReconciliationLoading(true)
+    setOriginalReconciliationError(null)
+    try {
+      const scope = originalScopeRef.current
+      const projection = await api.getOriginalReconciliation({
+        accountingMonth: originalMonth,
+        entityRef: scope?.entity_ref,
+        businessUnitRef: scope?.business_unit_ref,
+      })
+      if (requestId !== originalReconciliationRequestRef.current) return
+      originalScopeRef.current = projection.scope
+      setOriginalReconciliation(projection)
+    } catch (error) {
+      if (requestId !== originalReconciliationRequestRef.current) return
+      setOriginalReconciliation(null)
+      setOriginalReconciliationError(error instanceof Error ? error.message : '无法读取原口径对账投影')
+    } finally {
+      if (requestId === originalReconciliationRequestRef.current) setOriginalReconciliationLoading(false)
+    }
+  }, [originalMonth])
+
   useEffect(() => {
     if (!authStatus?.authenticated || authStatus.recovery_setup_required) return
     const loadTimer = window.setTimeout(() => void loadData(), 0)
@@ -332,7 +364,17 @@ function App() {
     return () => window.clearTimeout(loadTimer)
   }, [authStatus?.authenticated, authStatus?.recovery_setup_required, loadReviewEvents, loading, page])
 
+  useEffect(() => {
+    if (!authStatus?.authenticated || authStatus.recovery_setup_required || page !== 'original-reconciliation') return
+    const loadTimer = window.setTimeout(() => void loadOriginalReconciliation(), 0)
+    return () => window.clearTimeout(loadTimer)
+  }, [authStatus?.authenticated, authStatus?.recovery_setup_required, loadOriginalReconciliation, page])
+
   const changeMonth = (month: string) => setSelectedMonth(month)
+  const changeOriginalMonth = (month: string) => {
+    setOriginalReconciliation(null)
+    setOriginalMonth(month)
+  }
 
   const pendingCandidates = candidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
   const confirmedCandidates = candidates.filter((candidate) => candidate.status === 'CONFIRMED')
@@ -479,6 +521,10 @@ function App() {
       setSession(null)
       setCandidates([])
       setReconciliation(null)
+      setOriginalReconciliation(null)
+      setOriginalReconciliationError(null)
+      originalScopeRef.current = null
+      originalReconciliationRequestRef.current += 1
       setConnections([])
       setReviewEvents([])
       setAuditCandidates([])
@@ -547,6 +593,18 @@ function App() {
     }
     if (page === 'reconciliation') {
       return <Reconciliation data={reconciliation} confirmed={confirmedCandidates} selectedMonth={selectedMonth} onMonthChange={changeMonth} onGenerate={generateDraft} generating={draftBusy} onNavigate={navigate} />
+    }
+    if (page === 'original-reconciliation') {
+      return (
+        <OriginalReconciliation
+          data={originalReconciliation}
+          error={originalReconciliationError}
+          loading={originalReconciliationLoading}
+          selectedMonth={originalMonth}
+          onMonthChange={changeOriginalMonth}
+          onRetry={() => void loadOriginalReconciliation()}
+        />
+      )
     }
     if (page === 'company-reports') {
       return <CompanyReports />
@@ -1303,6 +1361,156 @@ function CompanyReports() {
         <Database size={34} weight="light" />
         <div><h2>按公司主体汇总将在后续接入</h2><p>当前不生成推测数据；待 Core 提供稳定的公司主体字段后再展示资产、收支与对账状态。</p></div>
       </section>
+    </>
+  )
+}
+
+function OriginalReconciliation({ data, error, loading, selectedMonth, onMonthChange, onRetry }: {
+  data: OriginalReconciliationData | null
+  error: string | null
+  loading: boolean
+  selectedMonth: string
+  onMonthChange: (month: string) => void
+  onRetry: () => void
+}) {
+  const monthLabel = accountingMonthLabel(selectedMonth)
+  const formatBalance = (amountMinor: number | null) => amountMinor === null
+    ? '待补账户映射'
+    : currency.format(minorToMajor(amountMinor))
+  const formatPosted = (amountMinor: number | null) => amountMinor === null
+    ? '待接正式账簿'
+    : currency.format(minorToMajor(amountMinor))
+  const gapLabel = (gapCode: OriginalReconciliationData['rows'][number]['cells'][number]['gap_code']) => {
+    switch (gapCode) {
+      case 'MISSING_BALANCE_MAPPING': return '待补余额映射'
+      case 'MISSING_ECONOMIC_EFFECT': return '待补经济影响'
+      case 'POSTED_LEDGER_UNAVAILABLE': return '待接正式账簿'
+      default: return '待补原表栏位映射'
+    }
+  }
+  const empty = Boolean(
+    data
+    && data.totals.mapped_cell_count === 0
+    && data.unmapped_confirmed_count === 0
+    && data.confirmed_pending_posting_count === 0,
+  )
+  return (
+    <>
+      <PageHeader
+        eyebrow="历史口径"
+        title="原口径对账表"
+        description="按用户原有工作表的固定 A–M 列序只读展示；只消费 Core 已确认或正式入账事实。"
+        action={(
+          <div className="original-reconciliation-filters">
+            <input
+              aria-label="选择原口径对账月份"
+              className="original-month-input"
+              max="9999-12"
+              min="2000-01"
+              type="month"
+              value={selectedMonth}
+              onChange={(event) => {
+                if (event.target.value) onMonthChange(event.target.value)
+              }}
+            />
+            <span className="scope-chip" title={data?.scope.entity_ref ?? undefined}>
+              {data ? `Core 授权范围 · ${data.scope.business_unit_ref}` : '正在确认公司 / 门店范围'}
+            </span>
+          </div>
+        )}
+      />
+
+      {loading && !data ? <LoadingState title="正在读取原口径对账表" description={`正在读取 ${monthLabel} 的只读投影。`} /> : null}
+      {error && !data ? <ErrorState message={error} onRetry={onRetry} /> : null}
+
+      {data ? (
+        <>
+          <section className="metric-grid original-reconciliation-metrics" aria-label="原口径合计">
+            <Metric label="正式入账收入" value={formatPosted(data.totals.posted_income_minor)} detail="只统计 POSTED_LEDGER 账簿分类" icon={<CloudArrowUp size={20} />} />
+            <Metric label="正式入账支出" value={formatPosted(data.totals.posted_expense_minor)} detail="Core 账簿分类，退款可能形成负数" icon={<Bank size={20} />} />
+            <Metric primary label="正式入账利润" value={formatPosted(data.totals.posted_profit_minor)} detail={data.posted_ledger_complete ? '由 Core 的正式账簿分类计算' : '正式账簿尚未完整接入'} icon={<ArrowsClockwise size={20} />} />
+            <Metric label="期初余额" value={formatBalance(data.totals.opening_balance_minor)} detail="缺少账户映射时不推算" icon={<Database size={20} />} />
+            <Metric label="期末余额" value={formatBalance(data.totals.closing_balance_minor)} detail="缺少账户映射时不推算" icon={<Database size={20} />} />
+          </section>
+
+          <section className="original-reconciliation-status" aria-label="原口径材料状态">
+            <div><Warning size={18} /><strong>{data.pending_review_count} 条待审核未计入</strong><span>与合计隔离</span></div>
+            <div><ClockCounterClockwise size={18} /><strong>{data.confirmed_pending_posting_count} 条已确认待入账</strong><span>不进入 POSTED 合计</span></div>
+            <div><Paperclip size={18} /><strong>{data.missing_material_count} 份待补材料</strong><span>不猜测缺失金额</span></div>
+            <div><Info size={18} /><strong>{data.unmapped_confirmed_count} 条已确认但未映射</strong><span>以缺口标记展示</span></div>
+            <div>
+              <ClockCounterClockwise size={18} />
+              <strong>{data.projection_gaps.includes('MISSING_TIME_GRANULARITY') ? '月内时间粒度待补' : '月内时间粒度已确认'}</strong>
+              <span>{data.projection_gaps.includes('MISSING_BUSINESS_UNIT_ATTRIBUTION') ? '营业单元拆分仍有缺口' : '不解析摘要猜周次'}</span>
+            </div>
+          </section>
+
+          {empty ? (
+            <div className="empty-state compact-empty original-reconciliation-empty">
+              <Table size={32} />
+              <h2>本月没有可映射的原口径数据</h2>
+              <p>固定列序仍保留；待 Core 提供已确认或正式入账事实后显示金额。</p>
+            </div>
+          ) : null}
+
+          <section className="panel table-panel original-reconciliation-panel">
+            <div className="panel-heading">
+              <div><h2>{monthLabel}固定列投影</h2><p>F、G 为原表留白列；空值保持空白，缺映射单独标记。</p></div>
+              <div className="original-projection-state">
+                <Badge color={data.is_complete ? 'green' : 'amber'}>{data.is_complete ? '完整' : '不完整 / 有缺口'}</Badge>
+                <span title={`${data.taxonomy_version} · ${data.layout_version} · ${data.mapping_version}`}>分类、布局与映射版本可追溯</span>
+                <Badge color="blue">只读</Badge>
+              </div>
+            </div>
+            <div className="desktop-table-wrap original-reconciliation-table-wrap">
+              <table aria-label="原口径固定列对账表" className="original-reconciliation-table">
+                <thead><tr>{data.columns.map((column) => <th data-role={column.role} key={column.column}>{column.column}</th>)}</tr></thead>
+                <tbody>
+                  {data.rows.map((row) => (
+                    <tr key={row.row_number}>
+                      {row.cells.map((cell) => (
+                        <td
+                          className={`original-cell ${cell.kind.toLowerCase()}`}
+                          data-coordinate={cell.coordinate}
+                          data-kind={cell.kind}
+                          key={cell.coordinate}
+                        >
+                          {cell.kind === 'AMOUNT' && cell.amount_minor !== null
+                            ? currency.format(minorToMajor(cell.amount_minor))
+                            : cell.kind === 'GAP'
+                              ? <span title={cell.gap_code ?? '缺少映射'}>{gapLabel(cell.gap_code)}</span>
+                              : cell.label}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="mobile-grid-note"><Info size={16} />完整原口径网格请在平板或电脑查看。</p>
+          </section>
+
+          <section className="panel original-source-panel">
+            <div className="panel-heading"><div><h2>数据来源</h2><p>按事实层级和脱敏来源系统分别列示</p></div></div>
+            <div className="original-source-list">
+              {data.sources.map((source) => (
+                <article key={`${source.source_kind}:${source.source_system}`}>
+                  <div>
+                    <Badge color={source.source_kind === 'POSTED_LEDGER' ? 'green' : source.source_kind === 'ACCOUNT_STATEMENT' ? 'gray' : 'blue'}>
+                      {source.source_kind === 'POSTED_LEDGER' ? '正式入账' : source.source_kind === 'ACCOUNT_STATEMENT' ? '账户材料' : '已确认候选'}
+                    </Badge>
+                    <strong>{source.source_label ?? source.source_system}</strong>
+                    {source.source_label ? <small>{source.source_system}</small> : null}
+                  </div>
+                  <span>{source.mapped_fact_count} / {source.fact_count} 条已映射</span>
+                  <strong>{currency.format(minorToMajor(source.amount_minor))}</strong>
+                </article>
+              ))}
+              {data.sources.length === 0 ? <p className="muted-copy">本月没有已确认或正式入账来源。</p> : null}
+            </div>
+          </section>
+        </>
+      ) : null}
     </>
   )
 }

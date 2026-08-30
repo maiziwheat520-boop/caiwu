@@ -108,6 +108,116 @@ def core_event() -> dict[str, object]:
     }
 
 
+def core_original_reconciliation() -> dict[str, object]:
+    columns = [
+        {
+            "column": chr(ord("A") + offset),
+            "ordinal": offset + 1,
+            "role": "SPACER" if offset in {5, 6} else "MAIN" if offset <= 4 else "DETAIL",
+        }
+        for offset in range(13)
+    ]
+    rows: list[dict[str, object]] = []
+    for row_number in range(1, 41):
+        cells: list[dict[str, object]] = []
+        for column in (item["column"] for item in columns):
+            cell: dict[str, object] = {
+                "coordinate": f"{column}{row_number}",
+                "column": column,
+                "row_number": row_number,
+                "kind": "BLANK",
+                "label": None,
+                "amount_minor": None,
+                "currency": None,
+                "gap_code": None,
+                "source_fact_refs": [],
+            }
+            if row_number == 1 and column == "A":
+                cell.update({"kind": "LABEL", "label": "示例科目"})
+            elif row_number == 2 and column == "H":
+                cell.update({
+                    "kind": "AMOUNT",
+                    "amount_minor": 12345,
+                    "currency": "CNY",
+                    "source_fact_refs": ["fact-confirmed-1"],
+                })
+            elif row_number == 2 and column == "I":
+                cell.update({
+                    "kind": "AMOUNT",
+                    "amount_minor": -2345,
+                    "currency": "CNY",
+                    "source_fact_refs": ["fact-posted-1"],
+                })
+            elif row_number == 2 and column == "J":
+                cell.update({
+                    "kind": "GAP",
+                    "label": None,
+                    "gap_code": "MISSING_ECONOMIC_EFFECT",
+                })
+            elif row_number == 2 and column == "K":
+                cell.update({
+                    "kind": "AMOUNT",
+                    "amount_minor": 10000,
+                    "currency": "CNY",
+                })
+            cells.append(cell)
+        rows.append({"row_number": row_number, "cells": cells})
+    return {
+        "contract_version": "ledgerbridge.original-reconciliation.v1",
+        "taxonomy_version": "ledgerbridge.financial-foundation-blocker-taxonomy.v1",
+        "layout_version": "ledgerbridge.original-reconciliation-layout.v1",
+        "mapping_version": "ledgerbridge.original-reconciliation-mapping.v1",
+        "is_complete": False,
+        "posted_ledger_complete": True,
+        "projection_gaps": ["MISSING_TIME_GRANULARITY"],
+        "month": "2026-08",
+        "scope": {"entity_ref": ENTITY_ID, "business_unit_ref": "unit-demo-a"},
+        "columns": columns,
+        "rows": rows,
+        "totals": {
+            "posted_income_minor": 12345,
+            "posted_expense_minor": 2345,
+            "posted_profit_minor": 10000,
+            "opening_balance_minor": None,
+            "closing_balance_minor": None,
+            "mapped_cell_count": 2,
+            "confirmed_candidate_amount_minor": 12345,
+            "posted_amount_minor": -2345,
+            "currency": "CNY",
+        },
+        "pending_review_count": 3,
+        "confirmed_pending_posting_count": 2,
+        "missing_material_count": 1,
+        "unmapped_confirmed_count": 1,
+        "sources": [
+            {
+                "source_kind": "CONFIRMED_CANDIDATE",
+                "source_system": "synthetic_confirmed",
+                "source_label": "已确认候选（脱敏）",
+                "fact_count": 2,
+                "mapped_fact_count": 1,
+                "amount_minor": 12345,
+            },
+            {
+                "source_kind": "POSTED_LEDGER",
+                "source_system": "synthetic_posted",
+                "source_label": "正式账簿（脱敏）",
+                "fact_count": 1,
+                "mapped_fact_count": 1,
+                "amount_minor": -2345,
+            },
+            {
+                "source_kind": "ACCOUNT_STATEMENT",
+                "source_system": "synthetic_statement",
+                "source_label": None,
+                "fact_count": 1,
+                "mapped_fact_count": 0,
+                "amount_minor": 0,
+            },
+        ],
+    }
+
+
 class FakeCoreClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, bytes | None, dict[str, str]]] = []
@@ -137,6 +247,8 @@ class FakeCoreClient:
             return self.candidate_payload
         if path.startswith("/internal/v1/candidates?"):
             return {"items": [self.candidate_payload], "next_cursor": self.candidate_next_cursor}
+        if path.startswith("/internal/v1/original-reconciliations/"):
+            return core_original_reconciliation()
         raise AssertionError(f"unexpected Core path: {path}")
 
     def evidence(self, path: str) -> dict[str, object]:
@@ -241,6 +353,198 @@ def build_state(
 
 
 class CoreBackedAdapterTests(unittest.TestCase):
+    def test_original_reconciliation_forwards_only_configured_scope_and_preserves_signed_minor_amounts(self) -> None:
+        client = FakeCoreClient()
+
+        projection = build_state(client).original_reconciliation(
+            "2026-08",
+            entity_ref=ENTITY_ID,
+            business_unit_ref="unit-demo-a",
+        )
+
+        self.assertEqual(projection["totals"]["posted_income_minor"], 12345)  # type: ignore[index]
+        self.assertEqual(projection["totals"]["posted_expense_minor"], 2345)  # type: ignore[index]
+        self.assertEqual(projection["totals"]["mapped_cell_count"], 2)  # type: ignore[index]
+        self.assertEqual(projection["projection_gaps"], ["MISSING_TIME_GRANULARITY"])
+        derived_cell = projection["rows"][1]["cells"][10]  # type: ignore[index]
+        self.assertEqual(derived_cell["kind"], "AMOUNT")
+        self.assertEqual(derived_cell["source_fact_refs"], [])
+        gap_cell = projection["rows"][1]["cells"][9]  # type: ignore[index]
+        self.assertEqual(gap_cell["gap_code"], "MISSING_ECONOMIC_EFFECT")
+        self.assertIsNone(gap_cell["label"])
+        self.assertEqual(gap_cell["source_fact_refs"], [])
+        self.assertEqual(projection["sources"][2]["source_kind"], "ACCOUNT_STATEMENT")  # type: ignore[index]
+        method, path, _, _ = client.calls[-1]
+        self.assertEqual(method, "GET")
+        self.assertIn(f"entity_ref={ENTITY_ID}", path)
+        self.assertIn("business_unit=unit-demo-a", path)
+
+    def test_original_reconciliation_rejects_invalid_posted_totals_and_false_complete_claims(self) -> None:
+        for mutation in (
+            "posted_profit",
+            "complete_with_gaps",
+            "taxonomy",
+            "missing_layout",
+            "missing_mapping",
+            "unsupported_gap",
+            "gap_label",
+            "unsupported_source",
+            "incomplete_posted_with_totals",
+            "invalid_column_role",
+            "zero_fact_source",
+            "unsupported_projection_gap",
+            "extra_contract_field",
+            "confirmed_count_mismatch",
+            "unmapped_too_high",
+            "complete_with_unmapped_posted",
+        ):
+            with self.subTest(mutation=mutation):
+                client = FakeCoreClient()
+
+                def invalid_projection(
+                    method: str,
+                    path: str,
+                    *,
+                    body: bytes | None = None,
+                    headers: dict[str, str] | None = None,
+                ) -> dict[str, object]:
+                    if path.startswith("/internal/v1/original-reconciliations/"):
+                        payload = core_original_reconciliation()
+                        if mutation == "posted_profit":
+                            payload["totals"]["posted_profit_minor"] = 99999  # type: ignore[index]
+                        elif mutation == "complete_with_gaps":
+                            payload["is_complete"] = True
+                        elif mutation == "taxonomy":
+                            payload["taxonomy_version"] = "untrusted-taxonomy.v1"
+                        elif mutation == "missing_layout":
+                            payload.pop("layout_version")
+                        elif mutation == "missing_mapping":
+                            payload.pop("mapping_version")
+                        elif mutation == "unsupported_gap":
+                            payload["rows"][1]["cells"][9]["gap_code"] = "UNKNOWN_GAP"  # type: ignore[index]
+                        elif mutation == "gap_label":
+                            payload["rows"][1]["cells"][9]["label"] = "GAP 不得携带标签"  # type: ignore[index]
+                        elif mutation == "unsupported_source":
+                            payload["sources"][0]["source_kind"] = "POSTED"  # type: ignore[index]
+                        elif mutation == "invalid_column_role":
+                            payload["columns"][1]["role"] = "DETAIL"  # type: ignore[index]
+                        elif mutation == "zero_fact_source":
+                            payload["sources"][0]["fact_count"] = 0  # type: ignore[index]
+                        elif mutation == "unsupported_projection_gap":
+                            payload["projection_gaps"] = ["FUTURE_UNKNOWN_GAP"]
+                        elif mutation == "extra_contract_field":
+                            payload["unexpected"] = "must fail closed"
+                        elif mutation == "confirmed_count_mismatch":
+                            payload["confirmed_pending_posting_count"] = 1
+                        elif mutation == "unmapped_too_high":
+                            payload["unmapped_confirmed_count"] = 3
+                        elif mutation == "complete_with_unmapped_posted":
+                            payload["is_complete"] = True
+                            payload["projection_gaps"] = []
+                            payload["pending_review_count"] = 0
+                            payload["confirmed_pending_posting_count"] = 0
+                            payload["missing_material_count"] = 0
+                            payload["unmapped_confirmed_count"] = 0
+                            payload["totals"]["opening_balance_minor"] = 0  # type: ignore[index]
+                            payload["totals"]["closing_balance_minor"] = 0  # type: ignore[index]
+                            payload["sources"] = [payload["sources"][1]]  # type: ignore[index]
+                            payload["sources"][0]["mapped_fact_count"] = 0  # type: ignore[index]
+                            gap = payload["rows"][1]["cells"][9]  # type: ignore[index]
+                            gap.update(
+                                {
+                                    "kind": "BLANK",
+                                    "gap_code": None,
+                                    "source_fact_refs": [],
+                                }
+                            )
+                        else:
+                            payload["posted_ledger_complete"] = False
+                        return payload
+                    return FakeCoreClient.json(client, method, path, body=body, headers=headers)
+
+                client.json = invalid_projection  # type: ignore[method-assign]
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(client).original_reconciliation(
+                        "2026-08",
+                        entity_ref=None,
+                        business_unit_ref=None,
+                    )
+                self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_original_reconciliation_allows_unavailable_posted_ledger_without_zero_fallback(self) -> None:
+        client = FakeCoreClient()
+
+        def unavailable_posted_ledger(
+            method: str,
+            path: str,
+            *,
+            body: bytes | None = None,
+            headers: dict[str, str] | None = None,
+        ) -> dict[str, object]:
+            if path.startswith("/internal/v1/original-reconciliations/"):
+                payload = core_original_reconciliation()
+                payload["posted_ledger_complete"] = False
+                for field in (
+                    "posted_income_minor",
+                    "posted_expense_minor",
+                    "posted_profit_minor",
+                    "posted_amount_minor",
+                ):
+                    payload["totals"][field] = None  # type: ignore[index]
+                payload["rows"][1]["cells"][9].update(  # type: ignore[index]
+                    {"gap_code": "POSTED_LEDGER_UNAVAILABLE", "label": None}
+                )
+                return payload
+            return FakeCoreClient.json(client, method, path, body=body, headers=headers)
+
+        client.json = unavailable_posted_ledger  # type: ignore[method-assign]
+        projection = build_state(client).original_reconciliation(
+            "2026-08",
+            entity_ref=None,
+            business_unit_ref=None,
+        )
+
+        self.assertFalse(projection["posted_ledger_complete"])
+        self.assertIsNone(projection["totals"]["posted_income_minor"])  # type: ignore[index]
+        self.assertEqual(
+            projection["rows"][1]["cells"][9]["gap_code"],  # type: ignore[index]
+            "POSTED_LEDGER_UNAVAILABLE",
+        )
+
+    def test_original_reconciliation_preserves_zero_for_an_available_empty_posted_ledger(self) -> None:
+        client = FakeCoreClient()
+
+        def empty_posted_ledger(
+            method: str,
+            path: str,
+            *,
+            body: bytes | None = None,
+            headers: dict[str, str] | None = None,
+        ) -> dict[str, object]:
+            if path.startswith("/internal/v1/original-reconciliations/"):
+                payload = core_original_reconciliation()
+                payload["posted_ledger_complete"] = True
+                for field in (
+                    "posted_income_minor",
+                    "posted_expense_minor",
+                    "posted_profit_minor",
+                    "posted_amount_minor",
+                ):
+                    payload["totals"][field] = 0  # type: ignore[index]
+                return payload
+            return FakeCoreClient.json(client, method, path, body=body, headers=headers)
+
+        client.json = empty_posted_ledger  # type: ignore[method-assign]
+        projection = build_state(client).original_reconciliation(
+            "2026-08",
+            entity_ref=None,
+            business_unit_ref=None,
+        )
+
+        self.assertTrue(projection["posted_ledger_complete"])
+        self.assertEqual(projection["totals"]["posted_income_minor"], 0)  # type: ignore[index]
+        self.assertEqual(projection["totals"]["posted_amount_minor"], 0)  # type: ignore[index]
+
     def test_maps_only_valid_structured_evidence_unlock_state(self) -> None:
         source_ref = "21000000-0000-4000-8000-000000000001"
         client = FakeCoreClient()
@@ -433,6 +737,51 @@ class CoreBackedAdapterTests(unittest.TestCase):
                     result = json.load(response)
                 self.assertEqual(result["candidate"]["status"], "CONFIRMED")
                 self.assertEqual(response.headers["X-LedgerBridge-Mode"], "core-backed")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_core_backed_bff_serves_original_reconciliation_and_rejects_cross_scope(self) -> None:
+        client = FakeCoreClient()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "index.html").write_text("<main>review</main>", encoding="utf-8")
+            server = create_server(
+                "127.0.0.1",
+                0,
+                temp_dir,
+                state=build_state(client),
+                auth_manager=FakeAuthManager(),  # type: ignore[arg-type]
+                mode="core-backed",
+                trusted_proxy_cidrs="127.0.0.1/32",
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_port}"
+                cookie = f"{COOKIE_NAME}=session-token"
+                path = (
+                    f"/api/v1/original-reconciliations/2026-08?"
+                    f"entity_ref={ENTITY_ID}&business_unit=unit-demo-a"
+                )
+                request = urllib.request.Request(f"{base_url}{path}", headers={"Cookie": cookie})
+                with urllib.request.urlopen(request, timeout=2) as response:
+                    projection = json.load(response)
+                    self.assertEqual(response.headers["Cache-Control"], "no-store")
+                self.assertEqual(projection["contract_version"], "ledgerbridge.original-reconciliation.v1")
+                self.assertEqual(projection["columns"][0]["column"], "A")
+                self.assertEqual(projection["columns"][-1]["column"], "M")
+
+                other_entity = "10000000-0000-4000-8000-000000000099"
+                request = urllib.request.Request(
+                    f"{base_url}/api/v1/original-reconciliations/2026-08?entity_ref={other_entity}&business_unit=unit-demo-a",
+                    headers={"Cookie": cookie},
+                )
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(request, timeout=2)
+                self.assertEqual(caught.exception.code, 403)
+                self.assertEqual(caught.exception.headers["Cache-Control"], "no-store")
+                self.assertEqual(json.load(caught.exception)["code"], "SCOPE_NOT_AUTHORIZED")
             finally:
                 server.shutdown()
                 server.server_close()

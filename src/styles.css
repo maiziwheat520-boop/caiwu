@@ -311,6 +311,7 @@ tbody tr:hover td { background: #fafcff; }
 th[data-column="receiptsMinor"], td[data-column="receiptsMinor"] { border-left: 2px solid #ced8e6; }
 tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; background: #f4f7fb; font-weight: 750; }
 .mobile-reconciliation-list { display: none; }
+.mobile-grid-note { display: none; }
 .provenance-panel { padding-bottom: 22px; }
 .provenance-steps { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 25px 20px 8px; color: #5f7188; }
 .provenance-steps > div { display: grid; grid-template-columns: 28px auto; column-gap: 9px; align-items: center; }
@@ -378,6 +379,40 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
 .files-panel { overflow: hidden; }
 .compact-empty { min-height: 210px; border: 0; border-radius: 0; }
 
+.original-reconciliation-filters { display: grid; justify-items: end; gap: 8px; }
+.original-month-input { min-height: 32px; padding: 0 10px; border: 1px solid #cfd8e6; border-radius: 7px; color: #324760; background: white; font: inherit; font-size: 12px; }
+.scope-chip { max-width: 320px; overflow: hidden; padding: 6px 9px; border: 1px solid #d6e0ee; border-radius: 8px; color: #536985; background: #f7f9fc; font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.original-reconciliation-metrics { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.original-reconciliation-metrics .metric { min-height: 135px; }
+.original-reconciliation-status { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 20px; }
+.original-reconciliation-status > div { display: grid; grid-template-columns: 24px minmax(0, 1fr); column-gap: 8px; align-items: center; min-height: 70px; padding: 13px 15px; border: 1px solid #e4d4ae; border-radius: 11px; color: #94630f; background: #fffaed; }
+.original-reconciliation-status svg { grid-row: 1 / 3; }
+.original-reconciliation-status strong { color: #4f4026; font-size: 12px; }
+.original-reconciliation-status span { color: #786848; font-size: 10px; }
+.original-reconciliation-empty { margin-bottom: 20px; border: 1px dashed #d2dbe7; border-radius: 13px; }
+.original-reconciliation-panel { overflow: hidden; }
+.original-projection-state { display: flex; align-items: center; gap: 8px; }
+.original-projection-state > span { color: var(--muted); font-size: 9px; }
+.original-reconciliation-table-wrap { max-height: 66dvh; }
+.original-reconciliation-table { width: max-content; min-width: 100%; table-layout: fixed; }
+.original-reconciliation-table th, .original-reconciliation-table td { min-width: 92px; height: 38px; padding: 9px 11px; }
+.original-reconciliation-table th:first-child, .original-reconciliation-table td:first-child { min-width: 180px; }
+.original-reconciliation-table th[data-role="SPACER"], .original-reconciliation-table td:nth-child(6), .original-reconciliation-table td:nth-child(7) { min-width: 48px; background: #f6f8fb; }
+.original-reconciliation-table tbody tr:hover td:nth-child(6), .original-reconciliation-table tbody tr:hover td:nth-child(7) { background: #f3f6fa; }
+.original-cell.label { color: #2d3c53; font-weight: 700; text-align: left; }
+.original-cell.amount { color: #283b56; font-weight: 650; }
+.original-cell.gap { color: #9a6509; background: #fff9e8; font-size: 10px; font-weight: 700; text-align: center; }
+.original-cell.blank { color: transparent; }
+.original-source-panel { overflow: hidden; margin-bottom: 20px; }
+.original-source-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; padding: 16px 18px 18px; }
+.original-source-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto; row-gap: 9px; align-items: center; padding: 14px; border: 1px solid #e0e6ef; border-radius: 11px; background: #fbfcfe; }
+.original-source-list article > div { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.original-source-list article > div strong { overflow: hidden; color: #31445f; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.original-source-list article > div small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.original-source-list article > span { color: var(--muted); font-size: 10px; }
+.original-source-list article > strong { grid-row: 1 / 3; grid-column: 2; color: #253851; font-size: 13px; font-variant-numeric: tabular-nums; }
+.muted-copy { margin: 0; color: var(--muted); font-size: 11px; }
+
 @media (max-width: 1160px) {
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .candidate-card { grid-template-columns: 115px minmax(0, 1fr) 128px; }
@@ -387,6 +422,8 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .payroll-status-card { min-height: auto; }
   .connection-card { min-height: auto; }
   .connection-card > p { min-height: auto; }
+  .original-reconciliation-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .original-reconciliation-status { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 800px) {
@@ -458,6 +495,7 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .blocking-banner button { width: 100%; margin-left: 0; }
   .reconciliation-metrics { display: none; }
   .desktop-table-wrap { display: none; }
+  .original-reconciliation-status { grid-template-columns: 1fr; }
   .mobile-reconciliation-list { display: grid; gap: 10px; padding: 14px; }
   .mobile-reconciliation-list article { padding: 14px; border: 1px solid #e1e6ee; border-radius: 10px; }
   .mobile-reconciliation-list article > div { display: flex; align-items: center; justify-content: space-between; }
@@ -476,6 +514,9 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .page-header { display: block; }
   .page-action { margin-top: 15px; }
   .page-action button { width: 100%; }
+  .original-reconciliation-filters { justify-items: stretch; }
+  .scope-chip { max-width: 100%; }
+  .original-reconciliation-metrics { grid-template-columns: 1fr; }
   .metric-grid { grid-template-columns: 1fr; }
   .metric { min-height: 116px; }
   .panel-heading { padding: 17px; }

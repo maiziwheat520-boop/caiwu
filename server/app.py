@@ -48,6 +48,7 @@ MONTH_PATTERN = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
 CANDIDATE_PATH = re.compile(r"^/api/v1/candidates/([0-9a-f-]{36})$")
 DECISION_PATH = re.compile(r"^/api/v1/candidates/([0-9a-f-]{36})/decisions$")
 RECONCILIATION_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)$")
+ORIGINAL_RECONCILIATION_PATH = re.compile(r"^/api/v1/original-reconciliations/([^/]+)$")
 DRAFT_CREATE_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)/drafts$")
 DRAFT_PATH = re.compile(r"^/api/v1/workbook-drafts/([0-9a-f-]{36})$")
 EVIDENCE_PATH = re.compile(r"^/api/v1/evidence/([0-9a-f-]{36})/content$")
@@ -679,6 +680,35 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 self._send_json(400, _problem(400, "INVALID_ACCOUNTING_MONTH", "归属月份格式无效"))
             else:
                 self._send_json(200, state.reconciliation(month))
+            return
+        match = ORIGINAL_RECONCILIATION_PATH.fullmatch(path)
+        if match:
+            month = match.group(1)
+            params = parse_qs(query, keep_blank_values=True)
+            if not MONTH_PATTERN.fullmatch(month):
+                self._send_json(400, _problem(400, "INVALID_ACCOUNTING_MONTH", "归属月份格式无效"))
+                return
+            if set(params) - {"entity_ref", "business_unit"} or any(len(values) != 1 for values in params.values()):
+                self._send_json(400, _problem(400, "INVALID_ORIGINAL_RECONCILIATION_SCOPE", "原口径对账范围参数无效"))
+                return
+            entity_ref = params.get("entity_ref", [None])[0]
+            business_unit_ref = params.get("business_unit", [None])[0]
+            if entity_ref == "" or business_unit_ref == "":
+                self._send_json(400, _problem(400, "INVALID_ORIGINAL_RECONCILIATION_SCOPE", "原口径对账范围参数无效"))
+                return
+            read_projection = getattr(state, "original_reconciliation", None)
+            if read_projection is None:
+                self._send_json(503, _problem(503, "ORIGINAL_RECONCILIATION_UNAVAILABLE", "原口径对账投影尚未连接"))
+                return
+            self._send_json(
+                200,
+                read_projection(
+                    month,
+                    entity_ref=entity_ref,
+                    business_unit_ref=business_unit_ref,
+                ),
+                headers={"Cache-Control": "no-store"},
+            )
             return
         match = DRAFT_PATH.fullmatch(path)
         if match:
