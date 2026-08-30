@@ -63,11 +63,11 @@ const CURRENT_MONTH = '2026-08'
 
 const navigation: Array<{ id: Page; label: string; icon: typeof House }> = [
   { id: 'overview', label: '概览', icon: House },
+  { id: 'payroll', label: '工资与发放验证', icon: FileXls },
   { id: 'personal-finance', label: '完整个人财务对账', icon: Bank },
   { id: 'review', label: '待审核', icon: ListChecks },
   { id: 'reconciliation', label: '原口径对账表', icon: Table },
   { id: 'company-reports', label: '各公司报表', icon: Database },
-  { id: 'payroll', label: '工资与发放验证', icon: FileXls },
   { id: 'files', label: '文件与连接', icon: FolderOpen },
 ]
 
