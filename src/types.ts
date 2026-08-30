@@ -267,8 +267,8 @@ export type PayrollReadResponse<T> = {
 
 export type PayrollStatusData = {
   schema_version: 'ledgerbridge.payroll-status.v1'
-  projection_revision: number
-  etag: string
+  projection_revision: string | null
+  etag: string | null
   provider: {
     schema_version: string
     status: string
@@ -294,7 +294,7 @@ export type PayrollStatusData = {
 
 export type PayrollDashboardData = {
   schema_version: 'ledgerbridge.payroll-dashboard.v1'
-  projection_revision: number
+  projection_revision: string
   etag: string
   generated_at: string
   live_data_ready: true
@@ -328,7 +328,7 @@ export type PayrollMaterial = {
 
 export type PayrollMaterialListData = {
   schema_version: 'ledgerbridge.payroll-material-list.v1'
-  projection_revision: number
+  projection_revision: string
   etag: string
   generated_at: string
   items: PayrollMaterial[]
@@ -353,7 +353,7 @@ export type PayrollBatch = {
 
 export type PayrollBatchListData = {
   schema_version: 'ledgerbridge.payroll-batch-list.v1'
-  projection_revision: number
+  projection_revision: string
   etag: string
   generated_at: string
   items: PayrollBatch[]
@@ -402,7 +402,7 @@ export type PayrollAvailableEvidence = {
 
 export type PayrollVerificationListData = {
   schema_version: 'ledgerbridge.payroll-verification-list.v1'
-  projection_revision: number
+  projection_revision: string
   etag: string
   generated_at: string
   items: PayrollVerificationResult[]
@@ -416,5 +416,5 @@ export type PayrollCommandResult = {
   action: string
   resource_ref: string
   replayed: boolean
-  data: { projection_revision: number }
+  data: { projection_revision: string }
 }

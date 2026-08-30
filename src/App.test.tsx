@@ -90,8 +90,8 @@ function payrollRead(data: unknown) {
 const livePayrollResponses: Record<string, unknown> = {
   '/api/v1/payroll/status': payrollRead({
     schema_version: 'ledgerbridge.payroll-status.v1',
-    projection_revision: 7,
-    etag: 'a'.repeat(64),
+    projection_revision: 'a'.repeat(64),
+    etag: `"${'a'.repeat(64)}"`,
     provider: {
       schema_version: '1.0',
       status: 'ready',
@@ -108,8 +108,8 @@ const livePayrollResponses: Record<string, unknown> = {
   }),
   '/api/v1/payroll/dashboard': payrollRead({
     schema_version: 'ledgerbridge.payroll-dashboard.v1',
-    projection_revision: 7,
-    etag: 'a'.repeat(64),
+    projection_revision: 'a'.repeat(64),
+    etag: `"${'a'.repeat(64)}"`,
     generated_at: '2026-08-30T08:00:00.000Z',
     live_data_ready: true,
     dashboard: {
@@ -126,8 +126,8 @@ const livePayrollResponses: Record<string, unknown> = {
   }),
   '/api/v1/payroll/materials': payrollRead({
     schema_version: 'ledgerbridge.payroll-material-list.v1',
-    projection_revision: 7,
-    etag: 'a'.repeat(64),
+    projection_revision: 'a'.repeat(64),
+    etag: `"${'a'.repeat(64)}"`,
     generated_at: '2026-08-30T08:00:00.000Z',
     items: [{
       schema_version: 'payroll-live-material/v1',
@@ -146,8 +146,8 @@ const livePayrollResponses: Record<string, unknown> = {
   }),
   '/api/v1/payroll/batches': payrollRead({
     schema_version: 'ledgerbridge.payroll-batch-list.v1',
-    projection_revision: 7,
-    etag: 'a'.repeat(64),
+    projection_revision: 'a'.repeat(64),
+    etag: `"${'a'.repeat(64)}"`,
     generated_at: '2026-08-30T08:00:00.000Z',
     items: [{
       schema_version: 'payroll-live-batch/v1',
@@ -168,8 +168,8 @@ const livePayrollResponses: Record<string, unknown> = {
   }),
   '/api/v1/payroll/verification': payrollRead({
     schema_version: 'ledgerbridge.payroll-verification-list.v1',
-    projection_revision: 7,
-    etag: 'a'.repeat(64),
+    projection_revision: 'a'.repeat(64),
+    etag: `"${'a'.repeat(64)}"`,
     generated_at: '2026-08-30T08:00:00.000Z',
     items: [{
       schema_version: 'payroll-receipt-verification/v1',
@@ -199,7 +199,7 @@ const livePayrollResponses: Record<string, unknown> = {
       period: '2026-08',
       evidence_type: 'BANK_RECEIPT',
       status: 'READY_FOR_MATCHING',
-      display_label: '2026-08 已受控回单证据',
+      display_label: 'MYBANK_STATEMENT · 2026-08',
     }],
   }),
 }
@@ -207,8 +207,8 @@ const livePayrollResponses: Record<string, unknown> = {
 const notReadyPayrollResponses: Record<string, unknown> = {
   '/api/v1/payroll/status': payrollRead({
     schema_version: 'ledgerbridge.payroll-status.v1',
-    projection_revision: 0,
-    etag: '0'.repeat(64),
+    projection_revision: 'a'.repeat(64),
+    etag: `"${'a'.repeat(64)}"`,
     provider: {
       schema_version: '1.0',
       status: 'ready',
@@ -226,9 +226,14 @@ const notReadyPayrollResponses: Record<string, unknown> = {
       provider_connected: true,
       runtime_mode: 'live-provider',
       unassigned_material_count: 3,
-      ready_material_count: 1,
-      company_mapped_material_count: 0,
-      blocking_reason_codes: ['COMPANY_MAPPING_REQUIRED'],
+      ready_material_count: 0,
+      company_mapped_material_count: 1,
+      blocking_reason_codes: [
+        'UNASSIGNED_MATERIALS',
+        'MATERIAL_REVIEW_REQUIRED',
+        'PAYROLL_BATCH_REQUIRED',
+        'LIVE_DATA_NOT_READY',
+      ],
     },
   }),
 }
@@ -285,7 +290,7 @@ function installFetch(options: {
       action: 'payroll.batch.verify-receipts',
       resource_ref: payrollBatchId,
       replayed: false,
-      data: { projection_revision: 8 },
+      data: { projection_revision: 'b'.repeat(64) },
     },
   } = options
   let shouldFailSession = failSessionOnce
@@ -1167,6 +1172,7 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.getByText('只读工资发布契约已部署')).toBeInTheDocument()
     expect(await screen.findByText('工资服务已连通，但正式数据投影尚未就绪')).toBeInTheDocument()
     expect(screen.getByText('服务已接通，待归属材料 3 份')).toBeInTheDocument()
+    expect(screen.getByText('工资材料仍有待归属项')).toBeInTheDocument()
     expect(screen.getByText('真实发薪和银行提交不可用')).toBeInTheDocument()
     expect(screen.queryByText(/127\.0\.0\.1/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /付款|发薪|银行提交/ })).not.toBeInTheDocument()
@@ -1217,7 +1223,7 @@ describe('LedgerBridge Web API client', () => {
     })
     renderApp()
 
-    const evidenceOption = await screen.findByRole('checkbox', { name: '2026-08 已受控回单证据' })
+    const evidenceOption = await screen.findByRole('checkbox', { name: 'MYBANK_STATEMENT · 2026-08' })
     expect(evidenceOption).not.toBeChecked()
     fireEvent.click(evidenceOption)
     fireEvent.click(screen.getByRole('button', { name: '提交发放验证' }))
@@ -1258,7 +1264,7 @@ describe('LedgerBridge Web API client', () => {
     })
     renderApp()
 
-    expect(await screen.findByText('2026-08 已受控回单证据')).toBeInTheDocument()
+    expect(await screen.findByText('MYBANK_STATEMENT · 2026-08')).toBeInTheDocument()
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '提交发放验证' })).not.toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([input, init]) =>
@@ -1274,8 +1280,8 @@ describe('LedgerBridge Web API client', () => {
         ...livePayrollResponses,
         '/api/v1/payroll/materials': payrollRead({
           ...liveMaterials.data,
-          projection_revision: 8,
-          etag: 'b'.repeat(64),
+          projection_revision: 'b'.repeat(64),
+          etag: `"${'b'.repeat(64)}"`,
         }),
       },
     })
@@ -1290,8 +1296,8 @@ describe('LedgerBridge Web API client', () => {
     window.history.replaceState({}, '', '/payroll')
     const verificationWithoutEvidence = payrollRead({
       schema_version: 'ledgerbridge.payroll-verification-list.v1',
-      projection_revision: 7,
-      etag: 'a'.repeat(64),
+      projection_revision: 'a'.repeat(64),
+      etag: `"${'a'.repeat(64)}"`,
       generated_at: '2026-08-30T08:00:00.000Z',
       items: [],
       available_evidence: [],

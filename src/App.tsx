@@ -1349,6 +1349,13 @@ const payrollVerificationStatusLabel = (status: string) => ({
   unmatched: '待核对',
 }[status] ?? '状态待确认')
 
+const payrollSetupBlockerLabel = (code: string) => ({
+  UNASSIGNED_MATERIALS: '工资材料仍有待归属项',
+  MATERIAL_REVIEW_REQUIRED: '已归属材料仍需人工复核',
+  PAYROLL_BATCH_REQUIRED: '尚未生成可核对的工资批次',
+  LIVE_DATA_NOT_READY: '正式工资投影仍在准备中',
+}[code] ?? '正式数据准备条件尚未满足')
+
 const maskPayrollRef = (value: string) => value.length <= 10
   ? value
   : `${value.slice(0, 4)}••••${value.slice(-4)}`
@@ -1524,6 +1531,11 @@ function PayrollVerificationStatus() {
               <div>
                 <h2>服务已接通，待归属材料 {status.data.setup_summary.unassigned_material_count} 份</h2>
                 <p>已识别可处理材料 {status.data.setup_summary.ready_material_count} 份，公司已映射 {status.data.setup_summary.company_mapped_material_count} 份；完成公司归属后生成正式工资投影。</p>
+                {status.data.setup_summary.blocking_reason_codes.length > 0 ? (
+                  <ul>
+                    {status.data.setup_summary.blocking_reason_codes.map((code) => <li key={code}>{payrollSetupBlockerLabel(code)}</li>)}
+                  </ul>
+                ) : null}
               </div>
             </section>
           ) : null}
