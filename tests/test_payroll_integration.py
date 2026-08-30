@@ -433,6 +433,16 @@ def test_source_requires_json_safe_integer_minor_values(value: object) -> None:
     _assert_error("PAYROLL_PROVIDER_RESPONSE", lambda: _pull(source, publication))
 
 
+def test_source_requires_integer_cents_in_safe_optional_fields() -> None:
+    publication = _publication()
+    material = cast(list[dict[str, object]], publication["material_summaries"])[0]
+    material["legacy_amount_cents"] = "100"
+    _refresh_publication_integrity(publication)
+    source, _ = _source(publication)
+
+    _assert_error("PAYROLL_PROVIDER_RESPONSE", lambda: _pull(source, publication))
+
+
 def test_source_preserves_signed_integer_minor_optional_fields() -> None:
     publication = _publication()
     material = cast(list[dict[str, object]], publication["material_summaries"])[0]
@@ -446,6 +456,27 @@ def test_source_preserves_signed_integer_minor_optional_fields() -> None:
     frozen_material = cast(tuple[dict[str, object], ...], result.payload["material_summaries"])[0]
     assert frozen_material["adjustment_minor"] == -125
     assert result.payload["optional_contract_metadata"] == {"revision": 1}
+
+
+def test_source_rejects_open_exception_even_when_resolved_flag_is_true() -> None:
+    publication = _publication()
+    batch = cast(dict[str, object], publication["payroll_batch"])
+    batch["exceptions"] = [
+        {
+            "exception_id": "exception_demo_001",
+            "code": "SYNTHETIC_EXCEPTION",
+            "status": "OPEN",
+            "resolved": True,
+        }
+    ]
+    events = cast(list[dict[str, object]], publication["audit_events"])
+    approval_data = cast(dict[str, object], events[2]["data"])
+    approval_data["locked_batch_sha256"] = hashlib.sha256(_stable_json(batch).encode()).hexdigest()
+    publication["audit_events"] = _rehash_audit_events(events)
+    _refresh_publication_integrity(publication)
+    source, _ = _source(publication)
+
+    _assert_error("PAYROLL_BATCH_NOT_LOCKED", lambda: _pull(source, publication))
 
 
 @pytest.mark.parametrize(

@@ -720,7 +720,7 @@ def _validate_batch_exceptions(exceptions: list[object]) -> None:
         resolved = exception.get("resolved")
         if resolved is not None and not isinstance(resolved, bool):
             _invalid_response("payroll exception resolved flag is invalid")
-        if status != "RESOLVED" and resolved is not True:
+        if status != "RESOLVED" or resolved is False:
             raise PayrollIntegrationError(
                 "PAYROLL_BATCH_NOT_LOCKED",
                 "payroll publication contains an unresolved exception",
@@ -1137,7 +1137,7 @@ def _validate_publication_tree(
                     _require_stable_identifier(nested, "employee_id")
                 if key == "account_id":
                     _require_stable_identifier(nested, "account_id", account=True)
-                if key.endswith("_minor"):
+                if key.endswith(("_minor", "_cents")):
                     _require_minor_integer(nested, key)
                 _validate_publication_tree(
                     nested,
