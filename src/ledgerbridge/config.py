@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -74,6 +75,64 @@ class Settings(BaseSettings):
     payroll_base_url: str | None = Field(default=None, min_length=1, max_length=2048)
     payroll_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     payroll_company_mapping: dict[str, UUID] = Field(default_factory=dict)
+    payroll_bff_user_assertion_key: SecretStr | None = Field(
+        default=None,
+        min_length=32,
+        max_length=256,
+    )
+    payroll_bff_user_assertion_issuer: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+    )
+    payroll_bff_user_assertion_audience: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+    )
+    payroll_provider_workload_assertion_key: SecretStr | None = Field(
+        default=None,
+        min_length=32,
+        max_length=256,
+    )
+    payroll_provider_user_assertion_key: SecretStr | None = Field(
+        default=None,
+        min_length=32,
+        max_length=256,
+    )
+    payroll_provider_assertion_issuer: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+    )
+    payroll_provider_assertion_audience: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+    )
+    payroll_provider_service_subject: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+    )
+    enable_payroll_commands: bool = False
+    payroll_provider_trusted_command_contract: Literal[
+        "disabled",
+        "payroll-trusted-command/v1",
+    ] = "disabled"
+    payroll_command_allowlist: frozenset[
+        Literal[
+            "MATERIAL_REVIEW",
+            "BATCH_SUBMIT_REVIEW",
+            "BATCH_REVIEW",
+            "BATCH_APPROVE",
+            "VERIFY_RECEIPTS",
+        ]
+    ] = frozenset()
+    payroll_role_bindings: dict[
+        str,
+        dict[str, frozenset[Literal["maker", "checker", "approver"]]],
+    ] = Field(default_factory=dict)
     internal_read_policy_generation: int | None = Field(default=None, ge=1)
     dispatch_lease_seconds: int = Field(default=120, gt=0, le=3600)
     dispatch_max_attempts: int = Field(default=5, gt=0, le=16)
@@ -259,6 +318,70 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "payroll_company_mapping is required when payroll integration is enabled"
                 )
+            if (
+                self.payroll_bff_user_assertion_key is None
+                or self.payroll_bff_user_assertion_issuer is None
+                or self.payroll_bff_user_assertion_audience is None
+            ):
+                raise ValueError("payroll integration requires the BFF payroll assertion contract")
+            if self.env == "production":
+                if not _is_private_docker_service_origin(self.payroll_base_url):
+                    raise ValueError(
+                        "production payroll_base_url must be a private Docker service origin"
+                    )
+                if (
+                    self.payroll_provider_workload_assertion_key is None
+                    or self.payroll_provider_user_assertion_key is None
+                ):
+                    raise ValueError(
+                        "production payroll integration requires two provider assertion keys"
+                    )
+                if (
+                    self.payroll_provider_assertion_issuer is None
+                    or self.payroll_provider_assertion_audience is None
+                    or self.payroll_provider_service_subject is None
+                ):
+                    raise ValueError(
+                        "production payroll integration requires provider assertion identity"
+                    )
+                if (
+                    self.payroll_provider_assertion_issuer != "LedgerBridge"
+                    or self.payroll_provider_assertion_audience != "PayrollVerification"
+                ):
+                    raise ValueError(
+                        "production payroll provider assertion identity must match the provider"
+                    )
+                workload_secret = self.payroll_provider_workload_assertion_key
+                user_secret = self.payroll_provider_user_assertion_key
+                if workload_secret is None or user_secret is None:
+                    raise ValueError(
+                        "production payroll integration requires two provider assertion keys"
+                    )
+                if workload_secret.get_secret_value() == user_secret.get_secret_value():
+                    raise ValueError(
+                        "production payroll provider assertion keys must be independent"
+                    )
+        if self.enable_payroll_commands:
+            if not self.enable_payroll_integration:
+                raise ValueError("payroll commands require payroll integration")
+            if self.payroll_provider_trusted_command_contract != "payroll-trusted-command/v1":
+                raise ValueError("payroll commands require the trusted provider command contract")
+            if not self.payroll_command_allowlist:
+                raise ValueError("payroll commands require a non-empty command allowlist")
+            if not self.payroll_role_bindings:
+                raise ValueError("payroll commands require server-side payroll role bindings")
+            if self.env == "production" and self.payroll_command_allowlist - {"VERIFY_RECEIPTS"}:
+                raise ValueError("production payroll commands initially allow only VERIFY_RECEIPTS")
+            if (
+                self.payroll_provider_workload_assertion_key is None
+                or self.payroll_provider_user_assertion_key is None
+                or self.payroll_provider_assertion_issuer is None
+                or self.payroll_provider_assertion_audience is None
+                or self.payroll_provider_service_subject is None
+            ):
+                raise ValueError("payroll commands require complete provider assertion settings")
+        elif self.payroll_command_allowlist:
+            raise ValueError("payroll command allowlist must be empty while commands are disabled")
 
         if (self.runner_manifest_path is None) != (self.runner_verification_keys_path is None):
             raise ValueError(
@@ -361,6 +484,26 @@ class Settings(BaseSettings):
         if self.reader_database_url is None:
             raise ValueError("a reader database URL is required")
         return self.reader_database_url
+
+
+def _is_private_docker_service_origin(value: str | None) -> bool:
+    if value is None:
+        return False
+    parsed = urlsplit(value)
+    hostname = parsed.hostname
+    return bool(
+        parsed.scheme == "http"
+        and hostname
+        and hostname != "localhost"
+        and "." not in hostname
+        and ":" not in hostname
+        and hostname.replace("-", "a").isalnum()
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path in {"", "/"}
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def escape_alembic_ini_value(value: str) -> str:

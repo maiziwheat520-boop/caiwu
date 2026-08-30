@@ -37,6 +37,8 @@ class Capability(StrEnum):
     ACCOUNT_REGISTRY_READ = "account-registry:read"
     ACCOUNT_REGISTRY_WRITE = "account-registry:write"
     PAYROLL_PUBLICATION_READ = "payroll-publication:read"
+    PAYROLL_LIVE_READ = "payroll-live:read"
+    PAYROLL_COMMAND = "payroll:command"
 
 
 class ScopeMode(StrEnum):
