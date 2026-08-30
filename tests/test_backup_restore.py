@@ -1200,6 +1200,147 @@ def test_bank_statement_restore_metadata_covers_0021_contract() -> None:
     assert len(BANK_STATEMENT_CONSTRAINT_CONTRACT) == 62
 
 
+def test_restore_accepts_pg_dump_equivalent_text_array_check_definition() -> None:
+    expected = _bank_statement_database_metadata()
+    bank_constraints = cast(list[dict[str, object]], expected["bank_statement_constraints"])
+    counterparty_constraints = cast(list[dict[str, object]], expected["counterparty_constraints"])
+    actual = {
+        **expected,
+        "bank_statement_constraints": [
+            {
+                **item,
+                "definition": (
+                    "CHECK (((status)::text = ANY (ARRAY[('PENDING'::character varying)::text, "
+                    "('CONFIRMED'::character varying)::text, "
+                    "('REJECTED'::character varying)::text])))"
+                ),
+            }
+            if item.get("name") == "bank_statement_review_status_check"
+            else item
+            for item in bank_constraints
+        ],
+        "counterparty_constraints": [
+            {
+                **item,
+                "definition": (
+                    "CHECK (((relation)::text = ANY "
+                    "(ARRAY[('SAME_ECONOMIC_TRANSACTION'::character varying)::text, "
+                    "('PARTIAL_REFUND'::character varying)::text])))"
+                ),
+            }
+            if item.get("name") == "ck_candidate_evidence_link_candidate_evidence_link_rela_edfc"
+            else item
+            for item in counterparty_constraints
+        ],
+    }
+
+    _validate_restored_database(expected, actual)
+
+
+def test_restore_rejects_non_equivalent_text_array_check_definition() -> None:
+    expected = _bank_statement_database_metadata()
+    constraints = cast(list[dict[str, object]], expected["bank_statement_constraints"])
+    actual = {
+        **expected,
+        "bank_statement_constraints": [
+            {
+                **item,
+                "definition": (
+                    "CHECK (((status)::text = ANY (ARRAY[('PENDING'::character varying)::text, "
+                    "('CONFIRMED'::character varying)::text, "
+                    "('REVERSED'::character varying)::text])))"
+                ),
+            }
+            if item.get("name") == "bank_statement_review_status_check"
+            else item
+            for item in constraints
+        ],
+    }
+
+    with pytest.raises(BackupError, match="metadata differs"):
+        _validate_restored_database(expected, actual)
+
+
+def test_restore_accepts_omitted_redundant_table_owner_acls() -> None:
+    expected = _bank_statement_database_metadata()
+    actual = {
+        **expected,
+        "bank_statement_table_acls": [],
+        "counterparty_table_acls": [],
+    }
+
+    _validate_restored_database(expected, actual)
+
+
+def test_restore_rejects_non_owner_table_acl_during_roundtrip_comparison() -> None:
+    expected = _bank_statement_database_metadata()
+    actual = {
+        **expected,
+        "bank_statement_table_acls": [
+            {
+                "table": "bank_statement",
+                "grantee": "stale_role",
+                "privilege": "SELECT",
+                "grantable": False,
+            }
+        ],
+    }
+
+    with pytest.raises(BackupError, match="metadata differs"):
+        _validate_restored_database(expected, actual)
+
+
+def test_r1_restore_allows_0021_metadata_without_accounting_dimensions_function() -> None:
+    metadata = _bank_statement_database_metadata()
+    metadata["r1_functions"] = [
+        item
+        for item in cast(list[dict[str, object]], metadata["r1_functions"])
+        if item.get("name") != "get_accounting_dimensions"
+    ]
+    metadata["r1_effective_function_privileges"] = [
+        item
+        for item in cast(list[dict[str, object]], metadata["r1_effective_function_privileges"])
+        if item.get("name") != "get_accounting_dimensions"
+    ]
+
+    _validate_restored_database(metadata, metadata.copy())
+
+
+def test_r1_restore_requires_accounting_dimensions_function_by_0024() -> None:
+    metadata = _company_reporting_database_metadata()
+    metadata["r1_functions"] = [
+        item
+        for item in cast(list[dict[str, object]], metadata["r1_functions"])
+        if item.get("name") != "get_accounting_dimensions"
+    ]
+    metadata["r1_effective_function_privileges"] = [
+        item
+        for item in cast(list[dict[str, object]], metadata["r1_effective_function_privileges"])
+        if item.get("name") != "get_accounting_dimensions"
+    ]
+
+    with pytest.raises(BackupError, match="internal_read functions"):
+        _validate_restored_database(metadata, metadata.copy())
+
+
+def test_r1_restore_requires_accounting_dimensions_function_from_0022() -> None:
+    metadata = _bank_statement_database_metadata()
+    metadata["alembic_version"] = "20260830_0022"
+    metadata["r1_functions"] = [
+        item
+        for item in cast(list[dict[str, object]], metadata["r1_functions"])
+        if item.get("name") != "get_accounting_dimensions"
+    ]
+    metadata["r1_effective_function_privileges"] = [
+        item
+        for item in cast(list[dict[str, object]], metadata["r1_effective_function_privileges"])
+        if item.get("name") != "get_accounting_dimensions"
+    ]
+
+    with pytest.raises(BackupError, match="internal_read functions"):
+        _validate_restored_database(metadata, metadata.copy())
+
+
 def test_company_reporting_restore_metadata_covers_0024_contract() -> None:
     expected = _company_reporting_database_metadata()
 

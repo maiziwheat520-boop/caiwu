@@ -318,6 +318,7 @@ R1_INTERNAL_READ_FUNCTIONS = (
     "get_ledger_summary_as_of",
     "append_internal_evidence_read_audit",
 )
+R1_ACCOUNTING_DIMENSIONS_REVISION = "20260830_0022"
 # These are the exact strings emitted by PostgreSQL's
 # pg_get_function_identity_arguments().  Function identity does not include
 # varchar typmods, so the allowlist intentionally uses "character varying"
@@ -3805,6 +3806,101 @@ def _legacy_runtime_role_is_retired(metadata: dict[str, Any]) -> bool:
     )
 
 
+_SQL_STRING_LITERAL_PATTERN = r"'(?:''|[^'])*'"
+_SOURCE_TEXT_ARRAY_ITEM_PATTERN = rf"{_SQL_STRING_LITERAL_PATTERN}::character varying"
+_RESTORED_TEXT_ARRAY_ITEM_PATTERN = rf"\({_SQL_STRING_LITERAL_PATTERN}::character varying\)::text"
+_SOURCE_TEXT_ARRAY_PATTERN = re.compile(
+    rf"\(ARRAY\[(?P<items>{_SOURCE_TEXT_ARRAY_ITEM_PATTERN}"
+    rf"(?:,[ \t]*{_SOURCE_TEXT_ARRAY_ITEM_PATTERN})*)\]\)::text\[\]"
+)
+_RESTORED_TEXT_ARRAY_PATTERN = re.compile(
+    rf"ARRAY\[(?P<items>{_RESTORED_TEXT_ARRAY_ITEM_PATTERN}"
+    rf"(?:,[ \t]*{_RESTORED_TEXT_ARRAY_ITEM_PATTERN})*)\]"
+)
+_SQL_STRING_LITERAL = re.compile(_SQL_STRING_LITERAL_PATTERN)
+
+
+def _canonical_check_constraint_definition(definition: str) -> str:
+    """Normalize only PostgreSQL's equivalent varchar[] to text[] rendering.
+
+    ``pg_dump`` emits a varchar array followed by one array-level cast while a
+    restored catalog renders the same parse tree with an element-level text
+    cast.  The replacement retains every quoted literal and leaves every other
+    expression byte-for-byte unchanged.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        literals = _SQL_STRING_LITERAL.findall(match.group("items"))
+        return "LEDGERBRIDGE_TEXT_ARRAY[" + ",".join(literals) + "]"
+
+    canonical = _SOURCE_TEXT_ARRAY_PATTERN.sub(replace, definition)
+    return _RESTORED_TEXT_ARRAY_PATTERN.sub(replace, canonical)
+
+
+def _canonical_constraint_rows(value: Any) -> Any:
+    if not isinstance(value, list):
+        return value
+    canonical: list[Any] = []
+    for item in value:
+        if not isinstance(item, dict):
+            canonical.append(item)
+            continue
+        row = dict(item)
+        definition = row.get("definition")
+        if row.get("type") == "c" and isinstance(definition, str):
+            row["definition"] = _canonical_check_constraint_definition(definition)
+        canonical.append(row)
+    return canonical
+
+
+def _canonical_constraint_contract(
+    contract: dict[Any, tuple[Any, Any, Any]],
+) -> dict[Any, tuple[Any, Any, Any]]:
+    return {
+        name: (
+            table,
+            constraint_type,
+            _canonical_check_constraint_definition(definition)
+            if constraint_type == "c" and isinstance(definition, str)
+            else definition,
+        )
+        for name, (table, constraint_type, definition) in contract.items()
+    }
+
+
+_TABLE_ACL_OWNER_FIELDS = {
+    "counterparty_table_acls": "counterparty_tables",
+    "bank_statement_table_acls": "bank_statement_tables",
+    "account_registry_table_acls": "account_registry_tables",
+    "evidence_unlock_table_acls": "evidence_unlock_tables",
+}
+
+
+def _without_redundant_table_owner_acls(acls: Any, tables: Any) -> Any:
+    if (
+        not isinstance(acls, list)
+        or not isinstance(tables, list)
+        or any(not isinstance(item, dict) for item in tables)
+    ):
+        return acls
+    owners: dict[tuple[Any, Any], str] = {}
+    for item in tables:
+        table = item.get("table")
+        owner = item.get("owner")
+        identity = (item.get("schema"), table)
+        if not isinstance(table, str) or not isinstance(owner, str) or identity in owners:
+            return acls
+        owners[identity] = owner
+    return [
+        item
+        for item in acls
+        if not (
+            isinstance(item, dict)
+            and item.get("grantee") == owners.get((item.get("schema"), item.get("table")))
+        )
+    ]
+
+
 def _validate_restored_database(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
     is_v2 = expected.get("metadata_version") == 2
     compared_fields = sorted(expected)
@@ -3816,6 +3912,18 @@ def _validate_restored_database(expected: dict[str, Any], actual: dict[str, Any]
             # Keep them restorable without treating the unpaired new observation
             # as source evidence.
             comparison_actual.pop("cutover_inventory", None)
+        for field in set(comparison_expected) & set(comparison_actual):
+            if field.endswith("_constraints"):
+                comparison_expected[field] = _canonical_constraint_rows(comparison_expected[field])
+                comparison_actual[field] = _canonical_constraint_rows(comparison_actual[field])
+        for acl_field, table_field in _TABLE_ACL_OWNER_FIELDS.items():
+            if acl_field in comparison_expected and acl_field in comparison_actual:
+                comparison_expected[acl_field] = _without_redundant_table_owner_acls(
+                    comparison_expected[acl_field], expected.get(table_field)
+                )
+                comparison_actual[acl_field] = _without_redundant_table_owner_acls(
+                    comparison_actual[acl_field], actual.get(table_field)
+                )
         database_owner = expected.get("database_owner")
         if isinstance(database_owner, str):
             owner_grantees = {database_owner, "pg_database_owner"}
@@ -4139,16 +4247,26 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
     ):
         raise BackupError("restored R1 function metadata is invalid")
     internal_functions = [item for item in functions if item.get("schema") == "internal_read"]
-    expected_internal_function_keys = {
+    allowlisted_internal_function_keys = {
         ("internal_read", name, identity_arguments)
         for name, identity_arguments in R1_INTERNAL_READ_FUNCTION_SIGNATURES.items()
     }
+    required_internal_function_keys = set(allowlisted_internal_function_keys)
+    if revision < R1_ACCOUNTING_DIMENSIONS_REVISION:
+        required_internal_function_keys.remove(
+            (
+                "internal_read",
+                "get_accounting_dimensions",
+                R1_INTERNAL_READ_FUNCTION_SIGNATURES["get_accounting_dimensions"],
+            )
+        )
     actual_internal_function_keys = {
         (item["schema"], item["name"], item["identity_arguments"]) for item in internal_functions
     }
     if (
         len(actual_internal_function_keys) != len(internal_functions)
-        or actual_internal_function_keys != expected_internal_function_keys
+        or not required_internal_function_keys.issubset(actual_internal_function_keys)
+        or not actual_internal_function_keys.issubset(allowlisted_internal_function_keys)
     ):
         raise BackupError(
             "restored R1 internal_read functions differ from the required signature baseline"
@@ -4210,7 +4328,7 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
                 raise BackupError("restored R1 internal_read view privilege matrix is invalid")
 
     function_privileges = _list("r1_effective_function_privileges")
-    expected_function_objects = set(expected_internal_function_keys)
+    expected_function_objects = set(actual_internal_function_keys)
     expected_function_objects.update(
         (item["schema"], item["name"], item["identity_arguments"])
         for item in functions
@@ -4354,13 +4472,16 @@ def _validate_counterparty_security(metadata: dict[str, Any]) -> None:
         raise BackupError("restored counterparty trigger security boundary is invalid")
 
     constraints = _list("counterparty_constraints")
-    actual_constraint_contract = {
-        item.get("name"): (item.get("table"), item.get("type"), item.get("definition"))
-        for item in constraints
-    }
-    if (
-        len(actual_constraint_contract) != len(constraints)
-        or actual_constraint_contract != COUNTERPARTY_CONSTRAINT_CONTRACT
+    actual_constraint_contract = _canonical_constraint_contract(
+        {
+            item.get("name"): (item.get("table"), item.get("type"), item.get("definition"))
+            for item in constraints
+        }
+    )
+    if len(actual_constraint_contract) != len(
+        constraints
+    ) or actual_constraint_contract != _canonical_constraint_contract(
+        COUNTERPARTY_CONSTRAINT_CONTRACT
     ):
         raise BackupError("restored counterparty constraints differ from the required baseline")
     for item in constraints:
@@ -4564,18 +4685,19 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
         raise BackupError("restored bank statement trigger security boundary is invalid")
 
     constraints = _list("bank_statement_constraints")
-    actual_constraint_contract = {
-        item.get("name"): (item.get("table"), item.get("type"), item.get("definition"))
-        for item in constraints
-    }
+    actual_constraint_contract = _canonical_constraint_contract(
+        {
+            item.get("name"): (item.get("table"), item.get("type"), item.get("definition"))
+            for item in constraints
+        }
+    )
     expected_constraint_contract = dict(BANK_STATEMENT_CONSTRAINT_CONTRACT)
     if revision >= ACCOUNT_REGISTRY_SECURITY_REVISION:
         expected_constraint_contract.pop("managed_account_institution_code_check")
         expected_constraint_contract.update(ACCOUNT_REGISTRY_MANAGED_ACCOUNT_CONSTRAINT_CONTRACT)
-    if (
-        len(actual_constraint_contract) != len(constraints)
-        or actual_constraint_contract != expected_constraint_contract
-    ):
+    if len(actual_constraint_contract) != len(
+        constraints
+    ) or actual_constraint_contract != _canonical_constraint_contract(expected_constraint_contract):
         raise BackupError("restored bank statement constraints differ from the required baseline")
     for item in constraints:
         if (
