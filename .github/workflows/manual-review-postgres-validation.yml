@@ -40,7 +40,7 @@ jobs:
       - uses: actions/setup-python@751276eafca55f10f252026015f43c488f2322ba
         with:
           python-version: "3.12"
-      - run: python -m pip install --require-hashes --only-binary=:all: -r docker/uv-requirements.txt
+      - run: 'python -m pip install --require-hashes --only-binary=:all: -r docker/uv-requirements.txt'
       - run: uv sync --frozen --extra dev
       - name: Bootstrap least-privileged runtime roles
         run: >-
