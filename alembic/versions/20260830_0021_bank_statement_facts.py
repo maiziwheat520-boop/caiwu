@@ -27,7 +27,17 @@ _FACT_TABLES = (
 
 
 def upgrade() -> None:
-    op.execute(_UPGRADE_SQL)
+    connection = op.get_bind()
+    backup_role_exists = connection.execute(
+        sa.text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_backup')")
+    ).scalar_one()
+    upgrade_sql = _UPGRADE_SQL
+    if not backup_role_exists:
+        optional_fragment = ", ledgerbridge_backup;"
+        if upgrade_sql.count(optional_fragment) != 2:
+            raise RuntimeError("optional backup-role revocation contract is invalid")
+        upgrade_sql = upgrade_sql.replace(optional_fragment, ";")
+    op.execute(upgrade_sql)
 
 
 _UPGRADE_SQL = r"""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import runpy
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -984,3 +985,38 @@ def test_0021_migration_is_append_only_audit_bound_and_candidate_free() -> None:
     assert "INSERT INTO public.candidate" not in source
     assert "candidate_revision" not in source
     assert "journal_entry" not in source
+
+
+@pytest.mark.parametrize("backup_role_exists", [False, True])
+def test_0021_migration_handles_optional_backup_role(backup_role_exists: bool) -> None:
+    migration_path = (
+        Path(__file__).parents[1] / "alembic" / "versions" / "20260830_0021_bank_statement_facts.py"
+    )
+    namespace = runpy.run_path(str(migration_path))
+    executed_sql: list[str] = []
+
+    class _RoleResult:
+        def scalar_one(self) -> bool:
+            return backup_role_exists
+
+    class _Connection:
+        def execute(self, statement: object) -> _RoleResult:
+            assert "ledgerbridge_backup" in str(statement)
+            return _RoleResult()
+
+    class _MigrationOp:
+        def get_bind(self) -> _Connection:
+            return _Connection()
+
+        def execute(self, statement: str) -> None:
+            executed_sql.append(statement)
+
+    upgrade = cast(Any, namespace["upgrade"])
+    upgrade.__globals__["op"] = _MigrationOp()
+    upgrade()
+
+    assert len(executed_sql) == 1
+    if backup_role_exists:
+        assert executed_sql[0].count(", ledgerbridge_backup;") == 2
+    else:
+        assert "ledgerbridge_backup" not in executed_sql[0]
