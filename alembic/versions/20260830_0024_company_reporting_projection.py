@@ -935,6 +935,49 @@ GRANT EXECUTE ON FUNCTION company_reporting_read.get_company_report_v1_as_of(
 def downgrade() -> None:
     op.execute(
         """
+        DO $guard$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM public.business_unit)
+               OR EXISTS (SELECT 1 FROM public.reporting_category)
+               OR EXISTS (SELECT 1 FROM public.evidence_object)
+               OR EXISTS (SELECT 1 FROM public.encrypted_blob_version)
+               OR EXISTS (SELECT 1 FROM public.candidate)
+               OR EXISTS (SELECT 1 FROM public.candidate_source)
+               OR EXISTS (SELECT 1 FROM public.candidate_revision)
+               OR EXISTS (SELECT 1 FROM public.candidate_blocker)
+               OR EXISTS (SELECT 1 FROM public.candidate_event)
+               OR EXISTS (SELECT 1 FROM public.candidate_field_change)
+               OR EXISTS (SELECT 1 FROM public.candidate_conflict_resolution)
+               OR EXISTS (SELECT 1 FROM public.candidate_evidence)
+               OR EXISTS (SELECT 1 FROM public.encrypted_object_identity)
+               OR EXISTS (SELECT 1 FROM public.journal_entry)
+               OR EXISTS (SELECT 1 FROM public.journal_entry_attribution)
+               OR EXISTS (SELECT 1 FROM public.posting)
+               OR EXISTS (SELECT 1 FROM public.posting_attribution)
+               OR EXISTS (SELECT 1 FROM public.reconciliation_snapshot)
+               OR EXISTS (SELECT 1 FROM public.reconciliation_snapshot_blocker)
+               OR EXISTS (SELECT 1 FROM public.reconciliation_snapshot_proposal)
+               OR EXISTS (SELECT 1 FROM public.reconciliation_snapshot_suspense)
+               OR EXISTS (SELECT 1 FROM public.reconciliation_leg)
+               OR EXISTS (SELECT 1 FROM internal_read.evidence_read_receipt)
+               OR EXISTS (SELECT 1 FROM public.managed_account)
+               OR EXISTS (SELECT 1 FROM public.managed_account_lifecycle)
+               OR EXISTS (SELECT 1 FROM public.bank_statement)
+               OR EXISTS (SELECT 1 FROM public.bank_statement_transaction)
+               OR EXISTS (SELECT 1 FROM public.bank_statement_observation)
+               OR EXISTS (SELECT 1 FROM public.bank_statement_review)
+               OR EXISTS (SELECT 1 FROM public.account_business_unit_assignment)
+               OR EXISTS (SELECT 1 FROM public.fact_business_unit_allocation_set)
+               OR EXISTS (SELECT 1 FROM public.fact_business_unit_allocation_item) THEN
+                RAISE EXCEPTION
+                    'nonempty R1 fact database prevents destructive company-reporting downgrade';
+            END IF;
+        END
+        $guard$;
+        """
+    )
+    op.execute(
+        """
         REVOKE EXECUTE ON FUNCTION company_reporting_read.get_company_report_v1_as_of(
             uuid,uuid[],boolean,varchar,date,date,bigint,bytea
         ) FROM ledgerbridge_reader;

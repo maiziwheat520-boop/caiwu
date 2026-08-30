@@ -197,3 +197,22 @@ def test_downgrade_removes_only_the_company_reporting_read_surface() -> None:
     assert "company_reporting_read.get_company_report_v1_as_of" in sql
     assert "drop schema company_reporting_read" in sql
     assert "drop table public." not in sql
+
+
+def test_downgrade_fails_closed_before_removing_immutable_business_unit_snapshots() -> None:
+    source = _migration_source().lower()
+    downgrade = source.split("def downgrade() -> none:", maxsplit=1)[1]
+    guard = downgrade.index(
+        "nonempty r1 fact database prevents destructive company-reporting downgrade"
+    )
+    destructive_drop = downgrade.index("drop column business_unit_label_snapshot")
+
+    assert guard < destructive_drop
+    for relation in (
+        "public.business_unit",
+        "public.managed_account",
+        "public.candidate",
+        "public.bank_statement",
+        "public.journal_entry_attribution",
+    ):
+        assert f"select 1 from {relation}" in downgrade
