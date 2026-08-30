@@ -17,12 +17,13 @@ def test_payroll_live_compose_reuses_core_network_and_defaults_commands_closed()
     assert "PAYROLL_PROVIDER_USER_ASSERTION_KEY: replace" not in compose
 
 
-def test_payroll_live_example_uses_vm103_non_secret_identity_context() -> None:
+def test_payroll_live_example_uses_synthetic_non_secret_identity_context() -> None:
     root = Path(__file__).resolve().parents[1]
     example = (root / ".env.example").read_text(encoding="utf-8")
-    entity_ref = "a131ef1b-e250-5a6d-82ff-cab68f767997"
+    entity_ref = "00000000-0000-4000-8000-000000000001"
+    company_id = "00000000-0000-4000-8000-000000000002"
 
-    assert f'LEDGERBRIDGE_PAYROLL_COMPANY_MAPPING={{"{entity_ref}":"{entity_ref}"}}' in example
+    assert f'LEDGERBRIDGE_PAYROLL_COMPANY_MAPPING={{"{entity_ref}":"{company_id}"}}' in example
     assert "LEDGERBRIDGE_PAYROLL_PROVIDER_SERVICE_SUBJECT=workload:ledgerbridge-core" in example
     assert "LEDGERBRIDGE_ENABLE_PAYROLL_COMMANDS=false" in example
     assert "LEDGERBRIDGE_PAYROLL_ROLE_BINDINGS={}" in example
