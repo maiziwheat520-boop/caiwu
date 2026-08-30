@@ -14,6 +14,7 @@ import urllib.request
 import uuid
 from contextlib import closing
 from contextlib import redirect_stdout
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -108,11 +109,105 @@ def core_event() -> dict[str, object]:
     }
 
 
+REPORT_BASES = (
+    "CONFIRMED_CANDIDATE",
+    "ACCOUNT_STATEMENT",
+    "POSTED_LEDGER",
+)
+
+
+def core_report_metrics(basis: str) -> dict[str, object]:
+    if basis == "CONFIRMED_CANDIDATE":
+        return {
+            "basis": basis,
+            "confirmed_positive_minor": 800000,
+            "confirmed_negative_minor": -235000,
+            "confirmed_net_minor": 565000,
+            "confirmed_count": 3,
+            "source_count": 2,
+        }
+    if basis == "ACCOUNT_STATEMENT":
+        return {
+            "basis": basis,
+            "cash_inflow_minor": 700000,
+            "cash_outflow_minor": 200000,
+            "net_cash_flow_minor": 500000,
+            "confirmed_transaction_count": 2,
+            "statement_count": 1,
+        }
+    return {
+        "basis": basis,
+        "revenue_minor": 600000,
+        "expense_minor": 100000,
+        "profit_minor": 500000,
+        "posted_entry_count": 2,
+        "source_count": 2,
+    }
+
+
+def core_company_report_layer(basis: str) -> dict[str, object]:
+    common = {
+        "metrics": core_report_metrics(basis),
+        "pending_review_count": 4 if basis == "CONFIRMED_CANDIDATE" else 0,
+        "attribution_pending_count": 2 if basis == "ACCOUNT_STATEMENT" else 1 if basis == "CONFIRMED_CANDIDATE" else 0,
+        "missing_material_count": None,
+        "taxonomy_version": None,
+        "balance": {
+            "balance_basis": "UNAVAILABLE",
+            "opening_balance_minor": None,
+            "closing_balance_minor": None,
+            "gap": "AUTHORITATIVE_BALANCE_UNAVAILABLE",
+        },
+    }
+    return {
+        "contract_version": "ledgerbridge.company-report.v1",
+        "basis": basis,
+        "from_month": "2026-01",
+        "to_month": "2026-08",
+        "items": [
+            {
+                "company_ref": ENTITY_ID,
+                "company_name": "演示公司",
+                "currency": "CNY",
+                "business_unit_breakdown_status": "AVAILABLE",
+                **common,
+                "months": [
+                    {
+                        "month": "2026-08",
+                        **common,
+                        "business_unit_breakdown_status": "AVAILABLE",
+                        "business_units": [
+                            {
+                                "business_unit_ref": "unit-demo-a",
+                                "business_unit_label": "演示门店",
+                                **common,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def company_reports_bff() -> dict[str, object]:
+    return {
+        "contract_version": "ledgerbridge.company-reports-bff.v1",
+        "from_month": "2026-01",
+        "to_month": "2026-08",
+        "layers": [core_company_report_layer(basis) for basis in REPORT_BASES],
+    }
+
+
 class FakeCoreClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, bytes | None, dict[str, str]]] = []
         self.candidate_next_cursor: str | None = None
         self.candidate_payload = core_candidate()
+        self.company_report_payloads = {
+            basis: core_company_report_layer(basis)
+            for basis in REPORT_BASES
+        }
 
     def json(
         self,
@@ -137,6 +232,11 @@ class FakeCoreClient:
             return self.candidate_payload
         if path.startswith("/internal/v1/candidates?"):
             return {"items": [self.candidate_payload], "next_cursor": self.candidate_next_cursor}
+        if path.startswith("/internal/v1/company-reports?"):
+            basis = next(
+                value for value in REPORT_BASES if f"basis={value}" in path
+            )
+            return self.company_report_payloads[basis]
         raise AssertionError(f"unexpected Core path: {path}")
 
     def evidence(self, path: str) -> dict[str, object]:
@@ -241,6 +341,440 @@ def build_state(
 
 
 class CoreBackedAdapterTests(unittest.TestCase):
+    def test_company_reports_preserve_authoritative_company_and_business_unit_scope(self) -> None:
+        client = FakeCoreClient()
+
+        report = build_state(client).company_reports("2026-01", "2026-08")
+
+        self.assertEqual(report, company_reports_bff())
+        self.assertEqual(
+            client.calls[-3:],
+            [
+                (
+                    "GET",
+                    f"/internal/v1/company-reports?from_month=2026-01&to_month=2026-08&basis={basis}",
+                    None,
+                    {},
+                )
+                for basis in REPORT_BASES
+            ],
+        )
+
+    def test_company_reports_reject_private_fields_instead_of_silently_dropping_them(self) -> None:
+        client = FakeCoreClient()
+        payload = client.company_report_payloads["CONFIRMED_CANDIDATE"]
+        payload["internal_scope"] = "must-not-leak"
+
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(client).company_reports("2026-01", "2026-08")
+
+        self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_company_reports_reject_invalid_financial_integers_at_every_rollup_level(self) -> None:
+        invalid_values = (
+            ("CONFIRMED_CANDIDATE", "candidate net", lambda payload: payload["items"][0]["metrics"].update({"confirmed_net_minor": 1})),  # type: ignore[index,union-attr]
+            ("CONFIRMED_CANDIDATE", "month boolean", lambda payload: payload["items"][0]["months"][0]["metrics"].update({"confirmed_negative_minor": True})),  # type: ignore[index,union-attr]
+            ("CONFIRMED_CANDIDATE", "business unit unsafe", lambda payload: payload["items"][0]["months"][0]["business_units"][0]["metrics"].update({"confirmed_positive_minor": 2**53})),  # type: ignore[index,union-attr]
+            ("ACCOUNT_STATEMENT", "cash net", lambda payload: payload["items"][0]["metrics"].update({"net_cash_flow_minor": 1})),  # type: ignore[index,union-attr]
+            ("POSTED_LEDGER", "posted profit", lambda payload: payload["items"][0]["metrics"].update({"profit_minor": 1})),  # type: ignore[index,union-attr]
+            ("CONFIRMED_CANDIDATE", "negative count", lambda payload: payload["items"][0].update({"pending_review_count": -1})),  # type: ignore[index,union-attr]
+        )
+        for basis, label, mutate in invalid_values:
+            with self.subTest(label=label):
+                client = FakeCoreClient()
+                mutate(client.company_report_payloads[basis])
+
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(client).company_reports("2026-01", "2026-08")
+
+                self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_company_reports_reject_malformed_contracts_and_more_than_fifty_companies(self) -> None:
+        invalid_values = (
+            ("version", lambda payload: payload.update({"contract_version": "ledgerbridge.company-report.v2"})),
+            ("basis", lambda payload: payload.update({"basis": "PENDING_CANDIDATE"})),
+            ("range", lambda payload: payload.update({"from_month": "2025-01"})),
+            ("item limit", lambda payload: payload.update({"items": payload["items"] * 51})),  # type: ignore[operator]
+            ("missing company field", lambda payload: payload["items"][0].pop("company_name")),  # type: ignore[index,union-attr]
+            ("months shape", lambda payload: payload["items"][0].update({"months": {}})),  # type: ignore[index,union-attr]
+            ("business units shape", lambda payload: payload["items"][0]["months"][0].update({"business_units": None})),  # type: ignore[index,union-attr]
+            ("metrics discriminator", lambda payload: payload["items"][0]["metrics"].update({"basis": "ACCOUNT_STATEMENT"})),  # type: ignore[index,union-attr]
+            ("fabricated balance", lambda payload: payload["items"][0]["balance"].update({"opening_balance_minor": 0})),  # type: ignore[index,union-attr]
+            ("missing material shape", lambda payload: payload["items"][0].update({"missing_material_count": "unknown"})),  # type: ignore[index,union-attr]
+        )
+        for label, mutate in invalid_values:
+            with self.subTest(label=label):
+                client = FakeCoreClient()
+                mutate(client.company_report_payloads["CONFIRMED_CANDIDATE"])
+
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(client).company_reports("2026-01", "2026-08")
+
+                self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_company_reports_require_exact_fields_at_every_contract_boundary(self) -> None:
+        def report_nodes(payload: dict[str, object]) -> tuple[dict[str, object], ...]:
+            company = payload["items"][0]  # type: ignore[index]
+            month = company["months"][0]  # type: ignore[index]
+            business_unit = month["business_units"][0]  # type: ignore[index]
+            return (
+                payload,
+                company,
+                month,
+                business_unit,
+                company["metrics"],  # type: ignore[index]
+                company["balance"],  # type: ignore[index]
+            )
+
+        invalid_shapes = (
+            ("layer extra", 0, "internal_scope", "private"),
+            ("layer missing", 0, "items", None),
+            ("company extra", 1, "internal_note", "private"),
+            ("company missing", 1, "months", None),
+            ("company breakdown status missing", 1, "business_unit_breakdown_status", None),
+            ("month extra", 2, "candidate_refs", []),
+            ("month missing", 2, "business_units", None),
+            ("breakdown status missing", 2, "business_unit_breakdown_status", None),
+            ("business unit extra", 3, "bank_account", "private"),
+            ("business unit missing", 3, "business_unit_label", None),
+            ("metrics extra", 4, "income_minor", 1),
+            ("metrics missing", 4, "source_count", None),
+            ("balance extra", 5, "derived", True),
+            ("balance missing", 5, "gap", None),
+        )
+        for label, node_index, field, replacement in invalid_shapes:
+            with self.subTest(label=label):
+                client = FakeCoreClient()
+                node = report_nodes(
+                    client.company_report_payloads["CONFIRMED_CANDIDATE"]
+                )[node_index]
+                if replacement is None:
+                    node.pop(field)
+                else:
+                    node[field] = replacement
+
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(client).company_reports("2026-01", "2026-08")
+
+                self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_company_reports_fail_closed_on_cross_layer_company_identity_mismatch(self) -> None:
+        client = FakeCoreClient()
+        company = client.company_report_payloads["ACCOUNT_STATEMENT"]["items"][0]  # type: ignore[index]
+        company["currency"] = "USD"  # type: ignore[index]
+
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(client).company_reports("2026-01", "2026-08")
+
+        self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_company_reports_require_the_same_company_refs_in_all_three_layers(self) -> None:
+        client = FakeCoreClient()
+        client.company_report_payloads["ACCOUNT_STATEMENT"]["items"] = []
+
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(client).company_reports("2026-01", "2026-08")
+
+        self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_company_reports_preserve_explicit_business_unit_unavailability(self) -> None:
+        client = FakeCoreClient()
+        expected = {
+            "CONFIRMED_CANDIDATE": ("EMPTY", []),
+            "ACCOUNT_STATEMENT": ("UNAVAILABLE_ATTRIBUTION_PENDING", None),
+            "POSTED_LEDGER": ("UNAVAILABLE_MISSING_SNAPSHOT", None),
+        }
+        for basis, (status, business_units) in expected.items():
+            company = client.company_report_payloads[basis]["items"][0]  # type: ignore[index]
+            company["business_unit_breakdown_status"] = status  # type: ignore[index]
+            month = client.company_report_payloads[basis]["items"][0]["months"][0]  # type: ignore[index]
+            month["business_unit_breakdown_status"] = status  # type: ignore[index]
+            month["business_units"] = business_units  # type: ignore[index]
+
+        reports = build_state(client).company_reports("2026-01", "2026-08")
+
+        for layer in reports["layers"]:  # type: ignore[union-attr]
+            company = layer["items"][0]
+            month = layer["items"][0]["months"][0]
+            status, business_units = expected[layer["basis"]]
+            self.assertEqual(company["business_unit_breakdown_status"], status)
+            self.assertEqual(month["business_unit_breakdown_status"], status)
+            self.assertEqual(month["business_units"], business_units)
+
+    def test_company_reports_preserve_company_breakdown_status_priority(self) -> None:
+        client = FakeCoreClient()
+
+        candidate = client.company_report_payloads["CONFIRMED_CANDIDATE"]["items"][0]  # type: ignore[index]
+        candidate_empty = deepcopy(candidate["months"][0])  # type: ignore[index]
+        candidate_empty["month"] = "2026-07"
+        candidate_empty["business_unit_breakdown_status"] = "EMPTY"
+        candidate_empty["business_units"] = []
+        candidate["months"] = [candidate_empty, candidate["months"][0]]  # type: ignore[index]
+        candidate["business_unit_breakdown_status"] = "AVAILABLE"  # type: ignore[index]
+
+        statement = client.company_report_payloads["ACCOUNT_STATEMENT"]["items"][0]  # type: ignore[index]
+        statement_available = deepcopy(statement["months"][0])  # type: ignore[index]
+        statement_available["month"] = "2026-06"
+        statement_missing = deepcopy(statement["months"][0])  # type: ignore[index]
+        statement_missing["month"] = "2026-07"
+        statement_missing["business_unit_breakdown_status"] = "UNAVAILABLE_MISSING_SNAPSHOT"
+        statement_missing["business_units"] = None
+        statement_pending = deepcopy(statement["months"][0])  # type: ignore[index]
+        statement_pending["business_unit_breakdown_status"] = "UNAVAILABLE_ATTRIBUTION_PENDING"
+        statement_pending["business_units"] = None
+        statement["months"] = [statement_available, statement_missing, statement_pending]  # type: ignore[index]
+        statement["business_unit_breakdown_status"] = "UNAVAILABLE_ATTRIBUTION_PENDING"  # type: ignore[index]
+
+        posted = client.company_report_payloads["POSTED_LEDGER"]["items"][0]  # type: ignore[index]
+        posted_available = deepcopy(posted["months"][0])  # type: ignore[index]
+        posted_available["month"] = "2026-07"
+        posted_missing = deepcopy(posted["months"][0])  # type: ignore[index]
+        posted_missing["business_unit_breakdown_status"] = "UNAVAILABLE_MISSING_SNAPSHOT"
+        posted_missing["business_units"] = None
+        posted["months"] = [posted_available, posted_missing]  # type: ignore[index]
+        posted["business_unit_breakdown_status"] = "UNAVAILABLE_MISSING_SNAPSHOT"  # type: ignore[index]
+
+        reports = build_state(client).company_reports("2026-01", "2026-08")
+
+        self.assertEqual(
+            [layer["items"][0]["business_unit_breakdown_status"] for layer in reports["layers"]],  # type: ignore[index,union-attr]
+            ["AVAILABLE", "UNAVAILABLE_ATTRIBUTION_PENDING", "UNAVAILABLE_MISSING_SNAPSHOT"],
+        )
+
+    def test_company_reports_reject_company_breakdown_status_that_does_not_summarize_months(self) -> None:
+        def no_months_but_available(client: FakeCoreClient) -> None:
+            company = client.company_report_payloads["CONFIRMED_CANDIDATE"]["items"][0]  # type: ignore[index]
+            company["months"] = []  # type: ignore[index]
+            company["business_unit_breakdown_status"] = "AVAILABLE"  # type: ignore[index]
+
+        def candidate_empty_but_available(client: FakeCoreClient) -> None:
+            company = client.company_report_payloads["CONFIRMED_CANDIDATE"]["items"][0]  # type: ignore[index]
+            month = company["months"][0]  # type: ignore[index]
+            month["business_unit_breakdown_status"] = "EMPTY"  # type: ignore[index]
+            month["business_units"] = []  # type: ignore[index]
+            company["business_unit_breakdown_status"] = "AVAILABLE"  # type: ignore[index]
+
+        def statement_pending_but_missing(client: FakeCoreClient) -> None:
+            company = client.company_report_payloads["ACCOUNT_STATEMENT"]["items"][0]  # type: ignore[index]
+            month = company["months"][0]  # type: ignore[index]
+            month["business_unit_breakdown_status"] = "UNAVAILABLE_ATTRIBUTION_PENDING"  # type: ignore[index]
+            month["business_units"] = None  # type: ignore[index]
+            company["business_unit_breakdown_status"] = "UNAVAILABLE_MISSING_SNAPSHOT"  # type: ignore[index]
+
+        def statement_missing_but_available(client: FakeCoreClient) -> None:
+            company = client.company_report_payloads["ACCOUNT_STATEMENT"]["items"][0]  # type: ignore[index]
+            month = company["months"][0]  # type: ignore[index]
+            month["business_unit_breakdown_status"] = "UNAVAILABLE_MISSING_SNAPSHOT"  # type: ignore[index]
+            month["business_units"] = None  # type: ignore[index]
+            company["business_unit_breakdown_status"] = "AVAILABLE"  # type: ignore[index]
+
+        def posted_missing_but_available(client: FakeCoreClient) -> None:
+            company = client.company_report_payloads["POSTED_LEDGER"]["items"][0]  # type: ignore[index]
+            month = company["months"][0]  # type: ignore[index]
+            month["business_unit_breakdown_status"] = "UNAVAILABLE_MISSING_SNAPSHOT"  # type: ignore[index]
+            month["business_units"] = None  # type: ignore[index]
+            company["business_unit_breakdown_status"] = "AVAILABLE"  # type: ignore[index]
+
+        for label, mutate in (
+            ("no months", no_months_but_available),
+            ("candidate empty", candidate_empty_but_available),
+            ("statement pending priority", statement_pending_but_missing),
+            ("statement missing priority", statement_missing_but_available),
+            ("posted missing priority", posted_missing_but_available),
+        ):
+            with self.subTest(label=label):
+                client = FakeCoreClient()
+                mutate(client)
+
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(client).company_reports("2026-01", "2026-08")
+
+                self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_company_reports_reject_inconsistent_business_unit_breakdown_shapes(self) -> None:
+        invalid_shapes = (
+            ("candidate unavailable", "CONFIRMED_CANDIDATE", "UNAVAILABLE_ATTRIBUTION_PENDING", None),
+            ("candidate available empty", "CONFIRMED_CANDIDATE", "AVAILABLE", []),
+            ("candidate empty null", "CONFIRMED_CANDIDATE", "EMPTY", None),
+            ("statement unavailable list", "ACCOUNT_STATEMENT", "UNAVAILABLE_ATTRIBUTION_PENDING", []),
+            ("statement wrong unavailable status", "ACCOUNT_STATEMENT", "UNAVAILABLE_MISSING_SNAPSHOT", None),
+            ("posted unavailable list", "POSTED_LEDGER", "UNAVAILABLE_MISSING_SNAPSHOT", []),
+            ("posted wrong unavailable status", "POSTED_LEDGER", "UNAVAILABLE_ATTRIBUTION_PENDING", None),
+            ("unknown status", "POSTED_LEDGER", "UNKNOWN", None),
+        )
+        for label, basis, status, business_units in invalid_shapes:
+            with self.subTest(label=label):
+                client = FakeCoreClient()
+                month = client.company_report_payloads[basis]["items"][0]["months"][0]  # type: ignore[index]
+                month["business_unit_breakdown_status"] = status  # type: ignore[index]
+                month["business_units"] = business_units  # type: ignore[index]
+
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(client).company_reports("2026-01", "2026-08")
+
+                self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_company_reports_require_strictly_sorted_unique_aggregates(self) -> None:
+        def append_company(payload: dict[str, object], company_ref: str) -> None:
+            company = deepcopy(payload["items"][0])  # type: ignore[index]
+            company["company_ref"] = company_ref
+            payload["items"].append(company)  # type: ignore[union-attr]
+
+        invalid_mutations = (
+            (
+                "duplicate company",
+                lambda client: [
+                    client.company_report_payloads[basis]["items"].append(  # type: ignore[union-attr]
+                        deepcopy(client.company_report_payloads[basis]["items"][0])  # type: ignore[index]
+                    )
+                    for basis in REPORT_BASES
+                ],
+            ),
+            (
+                "unsorted company",
+                lambda client: [
+                    append_company(
+                        client.company_report_payloads[basis],
+                        "00000000-0000-4000-8000-000000000001",
+                    )
+                    for basis in REPORT_BASES
+                ],
+            ),
+            (
+                "duplicate month",
+                lambda client: client.company_report_payloads["CONFIRMED_CANDIDATE"]["items"][0]["months"].append(  # type: ignore[index,union-attr]
+                    deepcopy(client.company_report_payloads["CONFIRMED_CANDIDATE"]["items"][0]["months"][0])  # type: ignore[index]
+                ),
+            ),
+            (
+                "unsorted month",
+                lambda client: client.company_report_payloads["CONFIRMED_CANDIDATE"]["items"][0]["months"].append(  # type: ignore[index,union-attr]
+                    {
+                        **deepcopy(client.company_report_payloads["CONFIRMED_CANDIDATE"]["items"][0]["months"][0]),  # type: ignore[index]
+                        "month": "2026-07",
+                    }
+                ),
+            ),
+            (
+                "duplicate business unit",
+                lambda client: client.company_report_payloads["CONFIRMED_CANDIDATE"]["items"][0]["months"][0]["business_units"].append(  # type: ignore[index,union-attr]
+                    deepcopy(client.company_report_payloads["CONFIRMED_CANDIDATE"]["items"][0]["months"][0]["business_units"][0])  # type: ignore[index]
+                ),
+            ),
+            (
+                "unsorted business unit",
+                lambda client: client.company_report_payloads["CONFIRMED_CANDIDATE"]["items"][0]["months"][0]["business_units"].append(  # type: ignore[index,union-attr]
+                    {
+                        **deepcopy(client.company_report_payloads["CONFIRMED_CANDIDATE"]["items"][0]["months"][0]["business_units"][0]),  # type: ignore[index]
+                        "business_unit_ref": "a-unit",
+                    }
+                ),
+            ),
+        )
+        for label, mutate in invalid_mutations:
+            with self.subTest(label=label):
+                client = FakeCoreClient()
+                mutate(client)
+
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(client).company_reports("2026-01", "2026-08")
+
+                self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_company_reports_enforce_nested_cardinality_limits(self) -> None:
+        def fifty_one_companies(client: FakeCoreClient) -> tuple[str, str]:
+            for basis in REPORT_BASES:
+                original = client.company_report_payloads[basis]["items"][0]  # type: ignore[index]
+                client.company_report_payloads[basis]["items"] = [
+                    {**deepcopy(original), "company_ref": f"10000000-0000-4000-8000-{index:012d}"}
+                    for index in range(1, 52)
+                ]
+            return "2026-01", "2026-08"
+
+        def twenty_five_months(client: FakeCoreClient) -> tuple[str, str]:
+            month_values = [
+                f"{year}-{month:02d}"
+                for year in range(2024, 2027)
+                for month in range(1, 13)
+                if "2024-08" <= f"{year}-{month:02d}" <= "2026-08"
+            ]
+            for payload in client.company_report_payloads.values():
+                payload["from_month"] = "2024-08"
+                original = payload["items"][0]["months"][0]  # type: ignore[index]
+                payload["items"][0]["months"] = [  # type: ignore[index]
+                    {**deepcopy(original), "month": month}
+                    for month in month_values
+                ]
+            return "2024-08", "2026-08"
+
+        def fifty_one_business_units(client: FakeCoreClient) -> tuple[str, str]:
+            payload = client.company_report_payloads["CONFIRMED_CANDIDATE"]
+            month = payload["items"][0]["months"][0]  # type: ignore[index]
+            original = month["business_units"][0]  # type: ignore[index]
+            month["business_units"] = [  # type: ignore[index]
+                {**deepcopy(original), "business_unit_ref": f"unit-{index:03d}"}
+                for index in range(1, 52)
+            ]
+            return "2026-01", "2026-08"
+
+        for label, mutate in (
+            ("companies", fifty_one_companies),
+            ("months", twenty_five_months),
+            ("business units", fifty_one_business_units),
+        ):
+            with self.subTest(label=label):
+                client = FakeCoreClient()
+                from_month, to_month = mutate(client)
+
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(client).company_reports(from_month, to_month)
+
+                self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_company_reports_enforce_fact_source_count_relationships(self) -> None:
+        invalid_counts = (
+            ("CONFIRMED_CANDIDATE", "source_count", 4),
+            ("ACCOUNT_STATEMENT", "statement_count", 3),
+            ("POSTED_LEDGER", "source_count", 3),
+        )
+        for basis, field, value in invalid_counts:
+            with self.subTest(basis=basis):
+                client = FakeCoreClient()
+                metrics = client.company_report_payloads[basis]["items"][0]["metrics"]  # type: ignore[index]
+                metrics[field] = value  # type: ignore[index]
+
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(client).company_reports("2026-01", "2026-08")
+
+                self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_company_reports_require_material_count_and_taxonomy_version_as_a_pair(self) -> None:
+        for label, missing_material_count, taxonomy_version in (
+            ("count only", 1, None),
+            ("taxonomy only", None, "taxonomy-v1"),
+        ):
+            with self.subTest(label=label):
+                client = FakeCoreClient()
+                company = client.company_report_payloads["CONFIRMED_CANDIDATE"]["items"][0]  # type: ignore[index]
+                company["missing_material_count"] = missing_material_count  # type: ignore[index]
+                company["taxonomy_version"] = taxonomy_version  # type: ignore[index]
+
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(client).company_reports("2026-01", "2026-08")
+
+                self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+        client = FakeCoreClient()
+        company = client.company_report_payloads["CONFIRMED_CANDIDATE"]["items"][0]  # type: ignore[index]
+        company["missing_material_count"] = 0  # type: ignore[index]
+        company["taxonomy_version"] = "taxonomy-v1"  # type: ignore[index]
+
+        reports = build_state(client).company_reports("2026-01", "2026-08")
+
+        candidate_company = reports["layers"][0]["items"][0]  # type: ignore[index]
+        self.assertEqual(candidate_company["missing_material_count"], 0)
+        self.assertEqual(candidate_company["taxonomy_version"], "taxonomy-v1")
+
     def test_maps_only_valid_structured_evidence_unlock_state(self) -> None:
         source_ref = "21000000-0000-4000-8000-000000000001"
         client = FakeCoreClient()
@@ -407,6 +941,36 @@ class CoreBackedAdapterTests(unittest.TestCase):
                     f"cursor={client.candidate_next_cursor}",
                     client.calls[-1][1],
                 )
+
+                request = urllib.request.Request(
+                    f"{base_url}/api/v1/company-reports",
+                    headers={"Cookie": cookie},
+                )
+                with urllib.request.urlopen(request, timeout=2) as response:
+                    company_reports = json.load(response)
+                self.assertEqual(company_reports, company_reports_bff())
+                self.assertEqual(
+                    client.calls[-1][1],
+                    "/internal/v1/company-reports?from_month=2026-01&to_month=2026-08&basis=POSTED_LEDGER",
+                )
+
+                forwarded_call_count = len(client.calls)
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1",
+                    server.server_port,
+                    timeout=3,
+                )
+                connection.request(
+                    "GET",
+                    f"/api/v1/company-reports?company_ref={ENTITY_ID}",
+                    headers={"Cookie": cookie},
+                )
+                rejected = connection.getresponse()
+                problem = json.loads(rejected.read())
+                connection.close()
+                self.assertEqual(rejected.status, 400)
+                self.assertEqual(problem["code"], "INVALID_COMPANY_REPORT_QUERY")
+                self.assertEqual(len(client.calls), forwarded_call_count)
 
                 body = json.dumps(
                     {

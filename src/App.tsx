@@ -49,6 +49,11 @@ import type {
   Candidate,
   CandidateCorrections,
   CandidateDetail,
+  CompanyReportAggregate,
+  CompanyReportCompany,
+  CompanyReportLayer,
+  CompanyReportMonth,
+  CompanyReportsResponse,
   ConnectionStatus,
   EvidencePreview,
   EvidenceReference,
@@ -1291,14 +1296,278 @@ function PersonalFinanceOverview({ candidates, onNavigate }: { candidates: Candi
 }
 
 function CompanyReports() {
+  const [reports, setReports] = useState<CompanyReportsResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const loadReports = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      setReports(await api.getCompanyReports())
+    } catch (loadError) {
+      setReports(null)
+      const detail = loadError instanceof Error ? loadError.message : '公司报表暂不可用'
+      setError(`公司报表层暂不可用，未显示任何 0 值。${detail}`)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const loadTimer = window.setTimeout(() => void loadReports(), 0)
+    return () => window.clearTimeout(loadTimer)
+  }, [loadReports])
+
+  const header = (
+    <PageHeader
+      eyebrow="公司维度"
+      title="各公司报表"
+      description="按授权公司主体展示三层真实事实；正式收入、费用与利润仅来自已入账总账。"
+    />
+  )
+
+  if (loading) {
+    return <>{header}<LoadingState title="正在读取公司报表" description="正在分别读取已确认来源、账户流水与正式入账投影。" /></>
+  }
+  if (error) return <>{header}<ErrorState message={error} onRetry={() => void loadReports()} /></>
+  if (!reports) return null
+
+  const companyIndex = new Map<string, { name: string; currencyCode: string }>()
+  reports.layers.forEach((layer) => layer.items.forEach((company) => {
+    const current = companyIndex.get(company.company_ref)
+    if (!current || layer.basis === 'POSTED_LEDGER') {
+      companyIndex.set(company.company_ref, {
+        name: company.company_name,
+        currencyCode: company.currency,
+      })
+    }
+  }))
+
+  if (companyIndex.size === 0) {
+    return (
+      <>
+        {header}
+        <section className="empty-state company-report-empty">
+          <Database size={34} weight="light" />
+          <h2>当前期间没有可展示的公司报表</h2>
+          <p>未按名称、摘要或银行信息猜测公司归属；待 Core 提供权威公司事实后自动显示。</p>
+        </section>
+      </>
+    )
+  }
+
   return (
     <>
-      <PageHeader eyebrow="公司维度" title="各公司报表" description="公司报表会复用已确认的真实候选，并按公司主体隔离展示。" />
-      <section className="panel planning-panel">
-        <Database size={34} weight="light" />
-        <div><h2>按公司主体汇总将在后续接入</h2><p>当前不生成推测数据；待 Core 提供稳定的公司主体字段后再展示资产、收支与对账状态。</p></div>
+      {header}
+      <section className="company-report-basis-note" aria-label="公司报表口径说明">
+        <Info size={18} />
+        <div>
+          <strong>三层事实彼此独立，不合并计算</strong>
+          <span>已确认来源用于审核追踪，账户流水用于现金流核对；只有正式入账层形成收入、费用与利润。</span>
+        </div>
       </section>
+      <div className="company-report-list">
+        {[...companyIndex.entries()].map(([companyRef, identity]) => (
+          <CompanyReportCard
+            key={companyRef}
+            companyRef={companyRef}
+            companyName={identity.name}
+            currencyCode={identity.currencyCode}
+            layers={reports.layers}
+          />
+        ))}
+      </div>
     </>
+  )
+}
+
+function layerFor(reports: CompanyReportLayer[], basis: CompanyReportLayer['basis']) {
+  return reports.find((layer) => layer.basis === basis)
+}
+
+function companyFor(layer: CompanyReportLayer | undefined, companyRef: string) {
+  return layer?.items.find((company) => company.company_ref === companyRef)
+}
+
+function monthFor(company: CompanyReportCompany | undefined, month: string) {
+  return company?.months.find((item) => item.month === month)
+}
+
+function postedMetrics(aggregate: CompanyReportAggregate | undefined) {
+  return aggregate?.metrics.basis === 'POSTED_LEDGER' ? aggregate.metrics : null
+}
+
+function confirmedMetrics(aggregate: CompanyReportAggregate | undefined) {
+  return aggregate?.metrics.basis === 'CONFIRMED_CANDIDATE' ? aggregate.metrics : null
+}
+
+function statementMetrics(aggregate: CompanyReportAggregate | undefined) {
+  return aggregate?.metrics.basis === 'ACCOUNT_STATEMENT' ? aggregate.metrics : null
+}
+
+function reportMoney(amountMinor: number, currencyCode: string) {
+  try {
+    return new Intl.NumberFormat('zh-CN', {
+      style: 'currency',
+      currency: currencyCode,
+      minimumFractionDigits: 2,
+    }).format(minorToMajor(amountMinor))
+  } catch {
+    return `${currencyCode} ${minorToMajor(amountMinor).toFixed(2)}`
+  }
+}
+
+function reportMonthLabel(month: string) {
+  const [year, value] = month.split('-')
+  return `${year} 年 ${Number(value)} 月`
+}
+
+function CompanyReportCard({ companyRef, companyName, currencyCode, layers }: {
+  companyRef: string
+  companyName: string
+  currencyCode: string
+  layers: CompanyReportLayer[]
+}) {
+  const candidate = companyFor(layerFor(layers, 'CONFIRMED_CANDIDATE'), companyRef)
+  const statement = companyFor(layerFor(layers, 'ACCOUNT_STATEMENT'), companyRef)
+  const posted = companyFor(layerFor(layers, 'POSTED_LEDGER'), companyRef)
+  const candidateData = confirmedMetrics(candidate)
+  const statementData = statementMetrics(statement)
+  const postedData = postedMetrics(posted)
+  const monthKeys = new Set<string>()
+  ;[candidate, statement, posted].forEach((company) => company?.months.forEach((month) => monthKeys.add(month.month)))
+  const months = [...monthKeys].sort((left, right) => right.localeCompare(left))
+
+  return (
+    <article className="company-report-card">
+      <header className="company-report-card-header">
+        <div>
+          <span className="eyebrow">权威公司主体</span>
+          <h2>{companyName}</h2>
+        </div>
+        <Badge color="blue">{currencyCode}</Badge>
+      </header>
+
+      <section className="company-report-totals" aria-label={`${companyName} 正式财务总额`}>
+        <ReportTotal label="正式收入" value={reportMoney(postedData?.revenue_minor ?? 0, currencyCode)} />
+        <ReportTotal label="正式费用" value={reportMoney(postedData?.expense_minor ?? 0, currencyCode)} />
+        <ReportTotal label="正式利润" value={reportMoney(postedData?.profit_minor ?? 0, currencyCode)} emphasis />
+      </section>
+
+      <section className="company-report-layers" aria-label={`${companyName} 三层事实`}>
+        <div>
+          <span>已确认来源</span>
+          <strong>已确认来源 {candidateData?.confirmed_count ?? 0} 条</strong>
+          <small>{candidateData?.source_count ?? 0} 个来源；金额仅用于来源核验</small>
+        </div>
+        <div>
+          <span>账户流水</span>
+          <strong>账户流水 {statementData?.confirmed_transaction_count ?? 0} 条</strong>
+          <small>{statementData?.statement_count ?? 0} 份对账单；净现金流 {reportMoney(statementData?.net_cash_flow_minor ?? 0, currencyCode)}，非利润</small>
+        </div>
+        <div>
+          <span>正式入账</span>
+          <strong>正式入账 {postedData?.posted_entry_count ?? 0} 条</strong>
+          <small>{postedData?.source_count ?? 0} 个入账来源</small>
+        </div>
+      </section>
+
+      {(candidate?.pending_review_count ?? 0) > 0 ? (
+        <ReportAlert>{candidate?.pending_review_count} 条来源待审核</ReportAlert>
+      ) : null}
+      {(candidate?.attribution_pending_count ?? 0) > 0 ? (
+        <ReportAlert>{candidate?.attribution_pending_count} 条已确认来源待账户或经济性质归属</ReportAlert>
+      ) : null}
+      {(statement?.attribution_pending_count ?? 0) > 0 ? (
+        <ReportAlert>{statement?.attribution_pending_count} 条账户流水待分配业务单元；仍计入公司级现金流，不进入业务单元</ReportAlert>
+      ) : null}
+
+      <div className="company-balance-unavailable">
+        <Bank size={18} />
+        <div><strong>余额基础尚未建立</strong><span>没有权威期初或期末余额，不显示 0，也不由净现金流倒推。</span></div>
+      </div>
+
+      {months.length > 0 ? (
+        <div className="company-month-list">
+          {months.map((month) => (
+            <CompanyReportMonthCard
+              key={month}
+              month={month}
+              currencyCode={currencyCode}
+              candidate={monthFor(candidate, month)}
+              statement={monthFor(statement, month)}
+              posted={monthFor(posted, month)}
+            />
+          ))}
+        </div>
+      ) : (
+        <p className="company-report-no-months">当前期间没有可计入月份的权威事实。</p>
+      )}
+    </article>
+  )
+}
+
+function ReportTotal({ label, value, emphasis = false }: { label: string; value: string; emphasis?: boolean }) {
+  return <div className={emphasis ? 'emphasis' : ''}><span>{label}</span><strong>{value}</strong></div>
+}
+
+function ReportAlert({ children }: { children: React.ReactNode }) {
+  return <div className="company-report-alert"><Warning size={17} /><strong>{children}</strong><span>不计入正式财务总额</span></div>
+}
+
+function CompanyReportMonthCard({ month, currencyCode, candidate, statement, posted }: {
+  month: string
+  currencyCode: string
+  candidate: CompanyReportMonth | undefined
+  statement: CompanyReportMonth | undefined
+  posted: CompanyReportMonth | undefined
+}) {
+  const candidateData = confirmedMetrics(candidate)
+  const statementData = statementMetrics(statement)
+  const postedData = postedMetrics(posted)
+  const postedBusinessUnits = posted?.business_unit_breakdown_status === 'AVAILABLE'
+    ? posted.business_units
+    : []
+
+  return (
+    <section className="company-month-card">
+      <header>
+        <div><span>归属月份</span><h3>{reportMonthLabel(month)}</h3></div>
+        <small>{candidateData?.confirmed_count ?? 0} 条来源 · {statementData?.confirmed_transaction_count ?? 0} 条流水 · {postedData?.posted_entry_count ?? 0} 条入账</small>
+      </header>
+      <div className="company-month-totals">
+        <span>正式收入 <strong>{reportMoney(postedData?.revenue_minor ?? 0, currencyCode)}</strong></span>
+        <span>正式费用 <strong>{reportMoney(postedData?.expense_minor ?? 0, currencyCode)}</strong></span>
+        <span>正式利润 <strong>{reportMoney(postedData?.profit_minor ?? 0, currencyCode)}</strong></span>
+      </div>
+      {statement?.business_unit_breakdown_status === 'UNAVAILABLE_ATTRIBUTION_PENDING' ? (
+        <p className="company-breakdown-state warning">账户流水的业务单元归属待补；公司级现金流仍保留。</p>
+      ) : null}
+      {posted?.business_unit_breakdown_status === 'UNAVAILABLE_MISSING_SNAPSHOT' ? (
+        <p className="company-breakdown-state warning">历史业务单元快照缺失；未使用当前维度名称回填。</p>
+      ) : null}
+      {posted?.business_unit_breakdown_status === 'EMPTY' ? (
+        <p className="company-breakdown-state">正式入账层的业务单元事实确认为空。</p>
+      ) : null}
+      {postedBusinessUnits.length > 0 ? (
+        <div className="company-business-units">
+          {postedBusinessUnits.map((unit) => {
+            const unitMetrics = postedMetrics(unit)
+            return (
+              <article key={unit.business_unit_ref}>
+                <div><span>业务单元</span><strong>{unit.business_unit_label}</strong></div>
+                <dl>
+                  <div><dt>收入</dt><dd>{reportMoney(unitMetrics?.revenue_minor ?? 0, currencyCode)}</dd></div>
+                  <div><dt>费用</dt><dd>{reportMoney(unitMetrics?.expense_minor ?? 0, currencyCode)}</dd></div>
+                  <div><dt>利润</dt><dd>{reportMoney(unitMetrics?.profit_minor ?? 0, currencyCode)}</dd></div>
+                </dl>
+              </article>
+            )
+          })}
+        </div>
+      ) : null}
+    </section>
   )
 }
 
