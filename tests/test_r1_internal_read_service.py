@@ -121,6 +121,36 @@ def test_candidate_absence_and_cross_scope_access_are_indistinguishable() -> Non
     assert service.get_candidate(scoped, CANDIDATE_A).candidate_ref == CANDIDATE_A
 
 
+def test_accounting_dimensions_expose_only_authorized_stable_refs_and_codes() -> None:
+    service = SyntheticInternalReadService()
+    scoped = _principal(Capability.CANDIDATE_DECIDE)
+
+    dimensions = service.get_accounting_dimensions(scoped, entity_ref=ENTITY_A)
+
+    assert dimensions.contract_version == "ledgerbridge.accounting-dimensions.v1"
+    assert dimensions.entity_ref == ENTITY_A
+    assert [(item.ref, item.label) for item in dimensions.business_units] == [
+        ("unit-demo-a", "Demo unit A")
+    ]
+    assert [(item.code, item.label) for item in dimensions.categories] == [
+        ("SUPPLIES", "Synthetic supplies"),
+        ("TRAVEL", "Reviewed travel"),
+    ]
+
+    cross_company = _principal(
+        Capability.CANDIDATE_DECIDE,
+        entity_ref=ENTITY_B,
+        business_unit_ref="unit-demo-b",
+    )
+    with pytest.raises(ResourceNotVisible, match="not found"):
+        service.get_accounting_dimensions(cross_company, entity_ref=ENTITY_A)
+    with pytest.raises(AuthorizationDenied):
+        service.get_accounting_dimensions(
+            _principal(Capability.SYSTEM_READ),
+            entity_ref=ENTITY_A,
+        )
+
+
 def test_evidence_scope_precedes_bytes_and_verified_download_is_inert(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -45,6 +45,7 @@ from ledgerbridge.internal_read_audit import (
     InternalReadReceiptSink,
 )
 from ledgerbridge.internal_read_contract import (
+    AccountingDimensions,
     CandidatePage,
     CapabilitiesResponse,
     Capability,
@@ -65,7 +66,7 @@ from ledgerbridge.review_risk import derive_review_risks
 
 _RESOURCE_PACKAGE = "ledgerbridge.synthetic_read_data"
 _FIXTURE_NAME = "r0_contract_fixture.json"
-_FIXTURE_SHA256 = "9eacf0ff534f516489bf65fc9dd83a6770a4380074990a83d7a37f9acf57d2a8"
+_FIXTURE_SHA256 = "5c5892dd1c79cca0eb8ea280b35b5a1860e5320d5d52249f1a8a15acc4ce4807"
 _RESOURCE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 _MONTH = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
 _MAX_PAGE_ITEMS = 100
@@ -77,6 +78,10 @@ class SyntheticResourceIntegrityError(RuntimeError):
 
 class InternalReadBackendUnavailable(RuntimeError):
     """The database reader boundary is not available or returned malformed data."""
+
+
+class AccountingDimensionsInvalid(InternalReadBackendUnavailable):
+    """Active dimension labels are ambiguous and require registry governance."""
 
 
 class _FrozenModel(BaseModel):
@@ -164,6 +169,7 @@ class _CandidatePageFixture(_FrozenModel):
 
 class _ReadResponses(_FrozenModel):
     capabilities: CapabilitiesResponse
+    accounting_dimensions: tuple[AccountingDimensions, ...] = Field(min_length=1)
     candidate_page: _CandidatePageFixture
     reconciliation: ReconciliationProjection
     ledger_summary: LedgerSummary
@@ -184,6 +190,18 @@ class _SyntheticFixture(_FrozenModel):
             for entity in self.entities
             for business_unit_ref in entity.business_unit_refs
         }
+        dimensions_by_entity = {
+            dimensions.entity_ref: dimensions
+            for dimensions in self.read_responses.accounting_dimensions
+        }
+        if len(dimensions_by_entity) != len(self.read_responses.accounting_dimensions):
+            raise ValueError("accounting dimension entities must be unique")
+        for entity in self.entities:
+            dimensions = dimensions_by_entity.get(entity.entity_ref)
+            if dimensions is None or {item.ref for item in dimensions.business_units} != set(
+                entity.business_unit_refs
+            ):
+                raise ValueError("accounting dimension business units must match entity scope")
         evidence_by_ref = {item.evidence_ref: item for item in self.evidence_objects}
         if len(evidence_by_ref) != len(self.evidence_objects):
             raise ValueError("evidence refs must be unique")
@@ -229,6 +247,36 @@ class SyntheticInternalReadService:
     def capabilities(self, principal: WorkloadPrincipal) -> CapabilitiesResponse:
         authorize_read(principal, Capability.SYSTEM_READ)
         return self._fixture.read_responses.capabilities
+
+    def get_accounting_dimensions(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        entity_ref: UUID,
+    ) -> AccountingDimensions:
+        require_capability(principal, Capability.CANDIDATE_DECIDE)
+        matching = [grant for grant in principal.grants if grant.entity_ref == entity_ref]
+        if len(matching) != 1:
+            raise ResourceNotVisible("resource was not found")
+        grant = matching[0]
+        registered = next(
+            (
+                dimensions
+                for dimensions in self._fixture.read_responses.accounting_dimensions
+                if dimensions.entity_ref == entity_ref
+            ),
+            None,
+        )
+        if registered is None:
+            raise SyntheticResourceIntegrityError("synthetic accounting dimensions are not closed")
+        units = {item.ref: item for item in registered.business_units}
+        if any(ref not in units for ref in grant.business_unit_refs):
+            raise SyntheticResourceIntegrityError("synthetic accounting dimensions are not closed")
+        return AccountingDimensions(
+            entity_ref=entity_ref,
+            business_units=tuple(units[ref] for ref in sorted(grant.business_unit_refs)),
+            categories=registered.categories,
+        )
 
     def list_candidates(
         self,
@@ -445,8 +493,82 @@ class DatabaseInternalReadService:
         authorize_read(principal, Capability.SYSTEM_READ)
         return CapabilitiesResponse(
             data_mode="database",
-            enabled_modules=("candidates", "evidence", "reconciliations", "ledger-summary"),
+            enabled_modules=(
+                "accounting-dimensions",
+                "candidates",
+                "evidence",
+                "reconciliations",
+                "ledger-summary",
+            ),
         )
+
+    def get_accounting_dimensions(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        entity_ref: UUID,
+    ) -> AccountingDimensions:
+        require_capability(principal, Capability.CANDIDATE_DECIDE)
+        matching = [grant for grant in principal.grants if grant.entity_ref == entity_ref]
+        if len(matching) != 1:
+            raise ResourceNotVisible("resource was not found")
+        grant = matching[0]
+        if (grant.business_unit_refs or grant.business_unit_ids) and not (
+            grant.business_unit_bindings
+        ):
+            raise InternalReadBackendUnavailable(
+                "database grants require explicit business-unit ref/UUID bindings"
+            )
+        sorted_bindings = sorted(grant.business_unit_bindings, key=lambda item: item[0])
+        business_unit_refs = tuple(ref for ref, _ in sorted_bindings)
+        business_unit_ids = tuple(value for _, value in sorted_bindings)
+        try:
+            with self._session_factory() as session:
+                row = (
+                    session.execute(
+                        text(
+                            "SELECT internal_read.get_accounting_dimensions("
+                            "CAST(:entity_ref AS uuid), "
+                            "CAST(:business_unit_ids AS uuid[]), "
+                            "CAST(:business_unit_refs AS varchar[])) AS dimensions"
+                        ),
+                        {
+                            "entity_ref": entity_ref,
+                            "business_unit_ids": business_unit_ids,
+                            "business_unit_refs": business_unit_refs,
+                        },
+                    )
+                    .mappings()
+                    .first()
+                )
+                if row is None:
+                    raise InternalReadBackendUnavailable(
+                        "database accounting dimensions returned no result"
+                    )
+                dimensions = AccountingDimensions.model_validate(row["dimensions"])
+        except InternalReadBackendUnavailable:
+            raise
+        except SQLAlchemyError as exc:
+            sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+            if sqlstate == "LB005":
+                raise AccountingDimensionsInvalid(
+                    "active accounting dimension labels require registry governance"
+                ) from exc
+            raise InternalReadBackendUnavailable(
+                "database accounting dimensions read failed"
+            ) from exc
+        except (ValueError, TypeError, KeyError) as exc:
+            raise InternalReadBackendUnavailable(
+                "database accounting dimensions read failed"
+            ) from exc
+        returned_refs = {item.ref for item in dimensions.business_units}
+        if dimensions.entity_ref != entity_ref or not returned_refs.issubset(
+            set(business_unit_refs)
+        ):
+            raise InternalReadBackendUnavailable(
+                "database accounting dimension scope binding is invalid"
+            )
+        return dimensions
 
     def list_candidates(
         self,

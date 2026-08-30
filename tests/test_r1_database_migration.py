@@ -5,7 +5,7 @@ import json
 import os
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -37,6 +37,7 @@ INTERNAL_READ_VIEWS = (
 )
 INTERNAL_READ_FUNCTIONS = (
     "current_audit_horizon",
+    "get_accounting_dimensions",
     "list_candidates_as_of",
     "get_reconciliation_as_of",
     "resolve_active_evidence_blob",
@@ -45,6 +46,9 @@ INTERNAL_READ_FUNCTIONS = (
 )
 INTERNAL_READ_FUNCTION_IDENTITIES = {
     "current_audit_horizon": "",
+    "get_accounting_dimensions": (
+        "p_entity_id uuid, p_business_unit_ids uuid[], p_business_unit_refs character varying[]"
+    ),
     "list_candidates_as_of": (
         "p_entity_id uuid, p_business_unit_id uuid, p_status character varying, "
         "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea, "
@@ -78,6 +82,22 @@ SELECT internal_read.append_internal_evidence_read_audit(
     CAST(:blob_ref AS uuid),
     CAST(:byte_size AS bigint),
     CAST(:plaintext_sha256 AS bytea)
+)
+"""
+PENDING_CORRECTION_CALL_SQL = """
+SELECT internal_command.apply_candidate_decision(
+    CAST(:operation_id AS uuid), CAST(:assertion_jti AS uuid), CAST(:candidate_id AS uuid),
+    'human:r1-correction-test'::varchar(200),
+    'workload:r1-correction-test'::varchar(200),
+    'spiffe://ledgerbridge.test/r1-correction-test'::varchar(200),
+    CAST(:authorized_entity_id AS uuid), CAST(:current_business_unit_id AS uuid),
+    CAST(:target_business_unit_id AS uuid), 'CORRECT_AND_CONFIRM'::varchar(32),
+    :expected_revision, 'R1 pending candidate correction replay'::varchar(1000),
+    :set_business_unit, CAST(:business_unit_ref AS varchar(100)),
+    :set_category, CAST(:category_code AS varchar(100)),
+    :set_amount, CAST(:amount_minor AS bigint),
+    :set_month, CAST(:accounting_month AS date),
+    NULL::varchar(1000), CAST(:decided_at AS timestamptz)
 )
 """
 RUNTIME_ROLES = (
@@ -1230,6 +1250,376 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
         "sequence": int(horizon.sequence),
         "hash": bytes(horizon.hash),
     }
+
+
+def test_0022_replays_pending_correction_and_active_dimension_catalog_in_postgres(
+    isolated_r1_database: str,
+) -> None:
+    engine = create_engine(isolated_r1_database)
+    active_unit = uuid4()
+    retired_unit = uuid4()
+    active_category = uuid4()
+    retired_category = uuid4()
+    retired_at = datetime.now(UTC)
+    with engine.begin() as connection:
+        facts = _seed_read_facts(connection)
+        connection.execute(
+            text(
+                "INSERT INTO public.business_unit "
+                "(id, entity_id, ref, label, created_at, retired_at) VALUES "
+                "(:active, :entity, 'unit-reviewed', 'Reviewed unit', :now, NULL), "
+                "(:retired, :entity, 'unit-retired', 'Unit A', :now, :now)"
+            ),
+            {
+                "active": active_unit,
+                "retired": retired_unit,
+                "entity": facts["entity"],
+                "now": retired_at,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.reporting_category "
+                "(id, entity_id, code, label, created_at, retired_at) VALUES "
+                "(:active, :entity, 'category-reviewed', 'Reviewed category', :now, NULL), "
+                "(:retired, :entity, 'category-retired', 'Category A', :now, :now)"
+            ),
+            {
+                "active": active_category,
+                "retired": retired_category,
+                "entity": facts["entity"],
+                "now": retired_at,
+            },
+        )
+        immutable_rows = connection.execute(
+            text(
+                "SELECT "
+                "(SELECT count(*) FROM public.candidate_source WHERE candidate_id = :candidate), "
+                "(SELECT count(*) FROM public.candidate_evidence WHERE candidate_id = :candidate)"
+            ),
+            {"candidate": facts["candidate"]},
+        ).one()
+        duplicate_facts = _seed_read_facts(connection)
+        duplicate_unit = uuid4()
+        connection.execute(
+            text(
+                "INSERT INTO public.business_unit (id, entity_id, ref, label) "
+                "VALUES (:id, :entity, 'unit-duplicate', 'Unit A')"
+            ),
+            {"id": duplicate_unit, "entity": duplicate_facts["entity"]},
+        )
+        retired_current_unit_facts = _seed_read_facts(connection)
+        connection.execute(
+            text("UPDATE public.business_unit SET retired_at = :now WHERE id = :id"),
+            {"now": retired_at, "id": retired_current_unit_facts["unit"]},
+        )
+        retired_current_category_facts = _seed_read_facts(connection)
+        connection.execute(
+            text("UPDATE public.reporting_category SET retired_at = :now WHERE id = :id"),
+            {"now": retired_at, "id": retired_current_category_facts["category"]},
+        )
+
+    with (
+        _temporarily_runtime_membership(isolated_r1_database, "ledgerbridge_reader"),
+        engine.begin() as connection,
+    ):
+        connection.execute(text("SET LOCAL ROLE ledgerbridge_reader"))
+        dimensions = connection.execute(
+            text(
+                "SELECT internal_read.get_accounting_dimensions("
+                "CAST(:entity AS uuid), CAST(:ids AS uuid[]), "
+                "CAST(:refs AS varchar[]))"
+            ),
+            {
+                "entity": facts["entity"],
+                "ids": [facts["unit"], active_unit, retired_unit],
+                "refs": ["unit-a", "unit-reviewed", "unit-retired"],
+            },
+        ).scalar_one()
+    assert dimensions == {
+        "contract_version": "ledgerbridge.accounting-dimensions.v1",
+        "entity_ref": str(facts["entity"]),
+        "business_units": [
+            {"ref": "unit-a", "label": "Unit A"},
+            {"ref": "unit-reviewed", "label": "Reviewed unit"},
+        ],
+        "categories": [
+            {"code": "category-a", "label": "Category A"},
+            {"code": "category-reviewed", "label": "Reviewed category"},
+        ],
+    }
+    _assert_db_rejection(
+        engine,
+        [
+            (
+                "SELECT internal_read.get_accounting_dimensions("
+                "CAST(:entity AS uuid), CAST(:ids AS uuid[]), CAST(:refs AS varchar[]))",
+                {
+                    "entity": duplicate_facts["entity"],
+                    "ids": [duplicate_facts["unit"], duplicate_unit],
+                    "refs": ["unit-a", "unit-duplicate"],
+                },
+            )
+        ],
+        sqlstate="LB005",
+        message="active accounting dimension labels require registry governance",
+    )
+
+    base_parameters: dict[str, Any] = {
+        "operation_id": uuid4(),
+        "assertion_jti": uuid4(),
+        "candidate_id": facts["candidate"],
+        "authorized_entity_id": facts["entity"],
+        "current_business_unit_id": facts["unit"],
+        "target_business_unit_id": active_unit,
+        "expected_revision": 1,
+        "set_business_unit": True,
+        "business_unit_ref": "unit-reviewed",
+        "set_category": True,
+        "category_code": "category-reviewed",
+        "set_amount": True,
+        "amount_minor": -1_999,
+        "set_month": True,
+        "accounting_month": "2026-09-01",
+        "decided_at": datetime.now(UTC),
+    }
+    for overrides, message in (
+        (
+            {
+                "operation_id": uuid4(),
+                "assertion_jti": uuid4(),
+                "target_business_unit_id": retired_unit,
+                "business_unit_ref": "unit-retired",
+                "set_category": False,
+                "category_code": None,
+                "set_amount": False,
+                "amount_minor": None,
+                "set_month": False,
+                "accounting_month": None,
+            },
+            "referenced business unit is not visible",
+        ),
+        (
+            {
+                "operation_id": uuid4(),
+                "assertion_jti": uuid4(),
+                "target_business_unit_id": facts["unit"],
+                "set_business_unit": False,
+                "business_unit_ref": None,
+                "category_code": "category-retired",
+                "set_amount": False,
+                "amount_minor": None,
+                "set_month": False,
+                "accounting_month": None,
+            },
+            "referenced category is not visible",
+        ),
+        (
+            {
+                "operation_id": uuid4(),
+                "assertion_jti": uuid4(),
+                "target_business_unit_id": uuid4(),
+                "business_unit_ref": "unit-unknown",
+                "set_category": False,
+                "category_code": None,
+                "set_amount": False,
+                "amount_minor": None,
+                "set_month": False,
+                "accounting_month": None,
+            },
+            "referenced business unit is not visible",
+        ),
+        (
+            {
+                "operation_id": uuid4(),
+                "assertion_jti": uuid4(),
+                "authorized_entity_id": facts["other_entity"],
+            },
+            "candidate is outside authorized entity scope",
+        ),
+    ):
+        _assert_db_rejection(
+            engine,
+            [(PENDING_CORRECTION_CALL_SQL, {**base_parameters, **overrides})],
+            sqlstate="LB004",
+            message=message,
+        )
+
+    for current_facts, message in (
+        (
+            retired_current_unit_facts,
+            "final business unit is not an active candidate dimension",
+        ),
+        (
+            retired_current_category_facts,
+            "final category is not an active candidate dimension",
+        ),
+    ):
+        _assert_db_rejection(
+            engine,
+            [
+                (
+                    PENDING_CORRECTION_CALL_SQL,
+                    {
+                        **base_parameters,
+                        "operation_id": uuid4(),
+                        "assertion_jti": uuid4(),
+                        "candidate_id": current_facts["candidate"],
+                        "authorized_entity_id": current_facts["entity"],
+                        "current_business_unit_id": current_facts["unit"],
+                        "target_business_unit_id": current_facts["unit"],
+                        "set_business_unit": False,
+                        "business_unit_ref": None,
+                        "set_category": False,
+                        "category_code": None,
+                        "set_amount": True,
+                        "amount_minor": -1_998,
+                        "set_month": False,
+                        "accounting_month": None,
+                    },
+                )
+            ],
+            sqlstate="LB004",
+            message=message,
+        )
+
+    with engine.begin() as connection:
+        receipt = connection.execute(
+            text(PENDING_CORRECTION_CALL_SQL), base_parameters
+        ).scalar_one()
+    assert receipt["replayed"] is False
+    assert receipt["candidate"]["revision"] == 2
+    assert receipt["candidate"]["status"] == "CONFIRMED"
+    assert len(receipt["events"]) == 1
+    assert receipt["events"][0]["action"] == "CORRECT_AND_CONFIRM"
+
+    with engine.connect() as connection:
+        revisions = connection.execute(
+            text(
+                "SELECT revision, status, business_unit_ref_snapshot, category_code_snapshot, "
+                "amount_minor, accounting_month FROM public.candidate_revision "
+                "WHERE candidate_id = :candidate ORDER BY revision"
+            ),
+            {"candidate": facts["candidate"]},
+        ).all()
+        correction_event = connection.execute(
+            text(
+                "SELECT event_ref, from_status, to_status, from_revision, to_revision "
+                "FROM public.candidate_event WHERE candidate_id = :candidate "
+                "AND action = 'CORRECT_AND_CONFIRM'"
+            ),
+            {"candidate": facts["candidate"]},
+        ).one()
+        fields = set(
+            connection.execute(
+                text("SELECT field FROM public.candidate_field_change WHERE event_ref = :event"),
+                {"event": correction_event.event_ref},
+            ).scalars()
+        )
+        after_immutable_rows = connection.execute(
+            text(
+                "SELECT "
+                "(SELECT count(*) FROM public.candidate_source WHERE candidate_id = :candidate), "
+                "(SELECT count(*) FROM public.candidate_evidence WHERE candidate_id = :candidate)"
+            ),
+            {"candidate": facts["candidate"]},
+        ).one()
+        closure_source = connection.execute(
+            text(
+                "SELECT pg_get_functiondef("
+                "'public.r1_check_candidate_closure(uuid,uuid)'::regprocedure)"
+            )
+        ).scalar_one()
+    assert tuple(revisions[0]) == (
+        1,
+        "PENDING",
+        "unit-a",
+        "category-a",
+        1234,
+        date(2026, 8, 1),
+    )
+    assert tuple(revisions[1]) == (
+        2,
+        "CONFIRMED",
+        "unit-reviewed",
+        "category-reviewed",
+        -1_999,
+        date(2026, 9, 1),
+    )
+    assert tuple(correction_event)[1:] == ("PENDING", "CONFIRMED", 1, 2)
+    assert fields == {
+        "status",
+        "business_unit_ref",
+        "business_unit_label",
+        "category_code",
+        "category_label",
+        "amount_minor",
+        "accounting_month",
+    }
+    assert after_immutable_rows == immutable_rows
+    assert "CORRECT_AND_CONFIRM" in closure_source
+
+    _assert_db_rejection(
+        engine,
+        [
+            (
+                PENDING_CORRECTION_CALL_SQL,
+                {
+                    **base_parameters,
+                    "operation_id": uuid4(),
+                    "assertion_jti": uuid4(),
+                },
+            )
+        ],
+        sqlstate="LB002",
+        message="candidate revision is stale",
+    )
+    _assert_db_rejection(
+        engine,
+        [
+            (
+                PENDING_CORRECTION_CALL_SQL,
+                {
+                    **base_parameters,
+                    "operation_id": uuid4(),
+                    "assertion_jti": uuid4(),
+                    "current_business_unit_id": active_unit,
+                    "expected_revision": 2,
+                    "set_business_unit": False,
+                    "business_unit_ref": None,
+                    "set_category": False,
+                    "category_code": None,
+                    "set_month": False,
+                    "accounting_month": None,
+                    "amount_minor": -1_998,
+                },
+            )
+        ],
+        sqlstate="LB003",
+        message="only open candidates can be corrected",
+    )
+
+    with pytest.raises(SQLAlchemyError) as raised:
+        command.downgrade(_upgrade_config(isolated_r1_database), "20260830_0021")
+    assert "pending candidate correction events prevent destructive downgrade" in str(
+        getattr(raised.value, "orig", raised.value)
+    )
+    engine.dispose()
+
+
+def test_0022_nonempty_r1_database_without_pending_correction_rejects_downgrade(
+    isolated_r1_database: str,
+) -> None:
+    engine = create_engine(isolated_r1_database)
+    with engine.begin() as connection:
+        _seed_read_facts(connection)
+
+    with pytest.raises(SQLAlchemyError) as raised:
+        command.downgrade(_upgrade_config(isolated_r1_database), "20260830_0021")
+    assert "nonempty R1 fact database prevents destructive downgrade" in str(
+        getattr(raised.value, "orig", raised.value)
+    )
+    engine.dispose()
 
 
 def _seed_nonempty_downgrade_marker(connection: Connection) -> None:

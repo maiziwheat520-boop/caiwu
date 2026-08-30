@@ -38,6 +38,7 @@ from ledgerbridge.candidate_contract import (
 )
 from ledgerbridge.internal_read_contract import (
     CANDIDATE_ACTION_CAPABILITIES,
+    AccountingDimensions,
     CandidatePage,
     Capability,
     ResourceNotVisible,
@@ -293,12 +294,61 @@ class SyntheticInternalReviewService(SyntheticInternalReadService):
                 entity_ref=aggregate.projection.entity_ref,
                 business_unit_ref=aggregate.projection.business_unit_ref,
             )
+            corrections = request.corrections
+            correction_patch: CandidatePatch | None = None
+            if corrections is not None:
+                dimensions = self.get_accounting_dimensions(
+                    principal,
+                    entity_ref=aggregate.projection.entity_ref,
+                )
+                business_units = {item.ref for item in dimensions.business_units}
+                categories = {item.code for item in dimensions.categories}
+                final_business_unit = (
+                    corrections.business_unit
+                    if "business_unit" in corrections.model_fields_set
+                    else aggregate.projection.business_unit_ref
+                )
+                final_category = (
+                    corrections.category
+                    if "category" in corrections.model_fields_set
+                    else aggregate.projection.category_code
+                )
+                if request.decision == CandidateDecision.CORRECT_AND_CONFIRM:
+                    require_candidate_visible_scope(
+                        principal,
+                        entity_ref=aggregate.projection.entity_ref,
+                        business_unit_ref=final_business_unit,
+                    )
+                    if final_business_unit not in business_units:
+                        raise ResourceNotVisible(
+                            "final business unit is not an active candidate dimension"
+                        )
+                    if final_category not in categories:
+                        raise ResourceNotVisible(
+                            "final category is not an active candidate dimension"
+                        )
+                else:
+                    if "business_unit" in corrections.model_fields_set:
+                        require_candidate_visible_scope(
+                            principal,
+                            entity_ref=aggregate.projection.entity_ref,
+                            business_unit_ref=corrections.business_unit,
+                        )
+                        if corrections.business_unit not in business_units:
+                            raise ResourceNotVisible("target business unit is not visible")
+                    if (
+                        "category" in corrections.model_fields_set
+                        and corrections.category not in categories
+                    ):
+                        raise ResourceNotVisible("target category is not visible")
+                correction_patch = _candidate_patch(corrections, dimensions)
             events: list[CandidateEvent] = []
             for command in _commands_for_decision(
                 aggregate,
                 operation_id=operation_id,
                 request=request,
                 decided_at=decided_at,
+                correction_patch=correction_patch,
             ):
                 require_capability(
                     principal,
@@ -515,6 +565,7 @@ def _commands_for_decision(
     operation_id: UUID,
     request: CandidateDecisionRequest,
     decided_at: datetime,
+    correction_patch: CandidatePatch | None,
 ) -> tuple[CandidateCommand, ...]:
     current = aggregate.projection
     if request.expected_revision != current.revision:
@@ -527,18 +578,32 @@ def _commands_for_decision(
     if request.decision == CandidateDecision.IGNORE:
         return (_command(operation_id, "ignore", CandidateAction.IGNORE, request, decided_at),)
     if request.decision == CandidateDecision.CORRECT_AND_CONFIRM:
-        if current.status != CandidateStatus.INCOMPLETE or request.corrections is None:
-            raise CandidateCommandRejected(
-                "corrections are accepted only while completing an incomplete candidate"
+        if request.corrections is None:
+            raise CandidateCommandRejected("corrections are required")
+        if correction_patch is None:
+            raise CandidateCommandRejected("correction dimensions were not resolved")
+        if current.status == CandidateStatus.PENDING:
+            return (
+                _command(
+                    operation_id,
+                    "correct-and-confirm",
+                    CandidateAction.CORRECT_AND_CONFIRM,
+                    request,
+                    decided_at,
+                    patch=correction_patch,
+                ),
             )
-        patch = _candidate_patch(request.corrections)
+        if current.status != CandidateStatus.INCOMPLETE:
+            raise CandidateCommandRejected(
+                "corrections are accepted only for open reviewable candidates"
+            )
         complete = _command(
             operation_id,
             "complete-fields",
             CandidateAction.COMPLETE_FIELDS,
             request,
             decided_at,
-            patch=patch,
+            patch=correction_patch,
         )
         confirm = CandidateCommand(
             operation_id=uuid5(operation_id, "confirm-after-complete"),
@@ -559,9 +624,7 @@ def _commands_for_decision(
             action=CandidateAction.RESOLVE_CONFLICT,
             expected_revision=request.expected_revision,
             reason=request.reason,
-            patch=(
-                _candidate_patch(request.corrections) if request.corrections is not None else None
-            ),
+            patch=correction_patch,
             conflict_resolutions={
                 conflict_ref: request.conflict_resolution for conflict_ref in conflict_refs
             },
@@ -597,14 +660,23 @@ def _command(
     )
 
 
-def _candidate_patch(corrections: CandidateCorrections) -> CandidatePatch:
+def _candidate_patch(
+    corrections: CandidateCorrections,
+    dimensions: AccountingDimensions,
+) -> CandidatePatch:
     values: dict[str, str | int | None] = {}
     if "business_unit" in corrections.model_fields_set:
         values["business_unit_ref"] = corrections.business_unit
-        values["business_unit_label"] = corrections.business_unit
+        values["business_unit_label"] = next(
+            item.label
+            for item in dimensions.business_units
+            if item.ref == corrections.business_unit
+        )
     if "category" in corrections.model_fields_set:
         values["category_code"] = corrections.category
-        values["category_label"] = corrections.category
+        values["category_label"] = next(
+            item.label for item in dimensions.categories if item.code == corrections.category
+        )
     if "amount_minor" in corrections.model_fields_set:
         values["amount_minor"] = corrections.amount_minor
     if "accounting_month" in corrections.model_fields_set:

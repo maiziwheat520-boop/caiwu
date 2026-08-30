@@ -157,6 +157,53 @@ def test_complete_fields_goes_to_pending_and_is_append_only_and_idempotent() -> 
         apply_candidate_command(outcome.aggregate, command, actor_ref="human:other-reviewer")
 
 
+def test_pending_candidate_can_correct_posting_fields_and_confirm_append_only() -> None:
+    initial = _candidate(CandidateStatus.PENDING)
+    outcome = apply_candidate_command(
+        CandidateAggregate(projection=initial),
+        _command(
+            CandidateAction.CORRECT_AND_CONFIRM,
+            initial.revision,
+            patch=CandidatePatch(
+                business_unit_ref="unit-reviewed",
+                business_unit_label="Reviewed unit",
+                category_code="TRAVEL",
+                category_label="Reviewed travel",
+                amount_minor=-1_999,
+                accounting_month="2026-09",
+            ),
+        ),
+        actor_ref="human:test-reviewer",
+    )
+
+    corrected = outcome.aggregate.projection
+    assert corrected.status == CandidateStatus.CONFIRMED
+    assert corrected.revision == initial.revision + 1
+    assert (
+        corrected.business_unit_ref,
+        corrected.category_code,
+        corrected.amount_minor,
+        corrected.accounting_month,
+    ) == ("unit-reviewed", "TRAVEL", -1_999, "2026-09")
+    assert len(outcome.aggregate.events) == 1
+    event = outcome.aggregate.events[0]
+    assert event.action == CandidateAction.CORRECT_AND_CONFIRM
+    assert event.prior_projection == initial
+    assert event.result_projection == corrected
+    assert event.prior_projection.source == corrected.source
+    assert event.prior_projection.evidence == corrected.evidence
+    changes = {change.field for change in event.changes}
+    assert changes == {
+        "accounting_month",
+        "amount_minor",
+        "business_unit_label",
+        "business_unit_ref",
+        "category_code",
+        "category_label",
+        "status",
+    }
+
+
 def test_worker_creation_accepts_only_clean_open_initial_projections() -> None:
     for status in (
         CandidateStatus.INCOMPLETE,
@@ -335,14 +382,34 @@ def test_pending_confirms_open_states_ignore_and_terminal_states_reject() -> Non
         assert ignored.projection.status == CandidateStatus.IGNORED
         ignored_aggregates.append(ignored)
 
-    terminal_aggregates = [confirmed_aggregate, *ignored_aggregates]
+    superseded_aggregate = apply_candidate_command(
+        confirmed_aggregate,
+        _command(
+            CandidateAction.SUPERSEDE,
+            confirmed_aggregate.projection.revision,
+            patch=CandidatePatch(amount_minor=501),
+            derived_candidate_ref=uuid4(),
+            derived_short_id="C-TERMINAL",
+            at=NOW + timedelta(seconds=1),
+        ),
+        actor_ref="human:test-supervisor",
+    ).aggregate
+    terminal_aggregates = [confirmed_aggregate, superseded_aggregate, *ignored_aggregates]
     for aggregate in terminal_aggregates:
-        with pytest.raises(CandidateTransitionRejected):
-            apply_candidate_command(
-                aggregate,
-                _command(CandidateAction.CONFIRM, aggregate.projection.revision),
-                actor_ref="human:test-reviewer",
-            )
+        for command in (
+            _command(CandidateAction.CONFIRM, aggregate.projection.revision),
+            _command(
+                CandidateAction.CORRECT_AND_CONFIRM,
+                aggregate.projection.revision,
+                patch=CandidatePatch(amount_minor=777),
+            ),
+        ):
+            with pytest.raises(CandidateTransitionRejected):
+                apply_candidate_command(
+                    aggregate,
+                    command,
+                    actor_ref="human:test-reviewer",
+                )
 
 
 def test_confirmed_can_only_be_superseded_into_a_linked_pending_candidate() -> None:

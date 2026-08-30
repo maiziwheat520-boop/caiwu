@@ -13,6 +13,7 @@ from ledgerbridge.internal_read_contract import (
     READ_CAPABILITIES,
     READ_ROUTE_CAPABILITIES,
     READ_ROUTE_SCOPE_MODES,
+    AccountingDimensions,
     AuthenticationDenied,
     AuthorizationDenied,
     CandidatePage,
@@ -73,6 +74,7 @@ def test_openapi_is_a_separate_read_only_mutual_tls_contract() -> None:
     assert document["openapi"] == "3.1.0"
     assert set(document["paths"]) == {
         "/internal/v1/capabilities",
+        "/internal/v1/accounting-dimensions",
         "/internal/v1/candidates",
         "/internal/v1/candidates/{id}",
         "/internal/v1/evidence/{id}/content",
@@ -120,7 +122,7 @@ def test_openapi_is_a_separate_read_only_mutual_tls_contract() -> None:
     ):
         assert forbidden not in wire
 
-    # R1 installs exactly the six frozen GET routes behind a default-off gate.
+    # R1 installs the frozen GET routes behind a default-off gate.
     installed: dict[str, set[str]] = {}
     for route in app.routes:
         nested = getattr(getattr(route, "original_router", None), "routes", (route,))
@@ -136,9 +138,46 @@ def test_openapi_is_a_separate_read_only_mutual_tls_contract() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("business_units", "categories", "message"),
+    [
+        (
+            [
+                {"ref": "unit-a", "label": "Duplicate label"},
+                {"ref": "unit-b", "label": "Duplicate label"},
+            ],
+            [],
+            "active business unit labels",
+        ),
+        (
+            [],
+            [
+                {"code": "A", "label": "Duplicate label"},
+                {"code": "B", "label": "Duplicate label"},
+            ],
+            "active reporting category labels",
+        ),
+    ],
+)
+def test_accounting_dimensions_reject_duplicate_active_labels(
+    business_units: list[dict[str, str]],
+    categories: list[dict[str, str]],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        AccountingDimensions.model_validate(
+            {
+                "entity_ref": ENTITY_A,
+                "business_units": business_units,
+                "categories": categories,
+            }
+        )
+
+
 def test_route_capability_matrix_is_exact_and_non_transitive() -> None:
     assert set(READ_ROUTE_CAPABILITIES) == {
         "GET /internal/v1/capabilities",
+        "GET /internal/v1/accounting-dimensions",
         "GET /internal/v1/candidates",
         "GET /internal/v1/candidates/{id}",
         "GET /internal/v1/evidence/{id}/content",
@@ -147,6 +186,7 @@ def test_route_capability_matrix_is_exact_and_non_transitive() -> None:
     }
     assert READ_ROUTE_SCOPE_MODES == {
         "GET /internal/v1/capabilities": ScopeMode.SYSTEM,
+        "GET /internal/v1/accounting-dimensions": ScopeMode.OBJECT,
         "GET /internal/v1/candidates": ScopeMode.COLLECTION,
         "GET /internal/v1/candidates/{id}": ScopeMode.OBJECT,
         "GET /internal/v1/evidence/{id}/content": ScopeMode.OBJECT,
@@ -183,6 +223,7 @@ def test_worker_create_decide_and_supersede_are_separate_capabilities() -> None:
     assert CANDIDATE_ACTION_CAPABILITIES == {
         CandidateAction.COMPLETE_FIELDS: Capability.CANDIDATE_DECIDE,
         CandidateAction.RESOLVE_CONFLICT: Capability.CANDIDATE_DECIDE,
+        CandidateAction.CORRECT_AND_CONFIRM: Capability.CANDIDATE_DECIDE,
         CandidateAction.CONFIRM: Capability.CANDIDATE_DECIDE,
         CandidateAction.IGNORE: Capability.CANDIDATE_DECIDE,
         CandidateAction.SUPERSEDE: Capability.CANDIDATE_SUPERSEDE,
@@ -281,7 +322,11 @@ def test_fixture_supports_object_scope_and_posted_only_summary() -> None:
         for row in fixture["entities"]
         for unit in row["business_unit_refs"]
     }
-    assert entity_scopes == {(ENTITY_A, "unit-demo-a"), (ENTITY_B, "unit-demo-b")}
+    assert entity_scopes == {
+        (ENTITY_A, "unit-demo-a"),
+        (ENTITY_A, "unit-reviewed"),
+        (ENTITY_B, "unit-demo-b"),
+    }
 
     posted_a = sum(
         row["amount_minor"]

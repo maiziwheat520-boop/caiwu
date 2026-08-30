@@ -37,6 +37,39 @@ paths:
           $ref: "#/components/responses/NotFound"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /internal/v1/accounting-dimensions:
+    get:
+      operationId: getInternalAccountingDimensions
+      x-ledgerbridge-capability: candidate:decide
+      x-ledgerbridge-reject-unknown-query: true
+      description: >-
+        Return only stable accounting references visible to the authenticated
+        workload grant. Business-unit UUIDs remain internal; labels are display
+        values and are never accepted as correction identifiers. Duplicate active
+        labels within either entity catalog fail closed with
+        ACCOUNTING_DIMENSIONS_INVALID until the registry is governed.
+      parameters:
+        - $ref: "#/components/parameters/EntityRef"
+      responses:
+        "200":
+          description: Entity-scoped, stably ordered accounting dimensions
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountingDimensions"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /internal/v1/candidates:
     get:
       operationId: listInternalCandidates
@@ -349,7 +382,55 @@ components:
           type: array
           uniqueItems: true
           items:
-            enum: [candidates, evidence, reconciliations, ledger-summary]
+            enum: [accounting-dimensions, candidates, evidence, reconciliations, ledger-summary]
+    AccountingDimensions:
+      type: object
+      additionalProperties: false
+      required: [contract_version, entity_ref, business_units, categories]
+      properties:
+        contract_version:
+          const: ledgerbridge.accounting-dimensions.v1
+        entity_ref:
+          type: string
+          format: uuid
+        business_units:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: "#/components/schemas/BusinessUnitDimension"
+        categories:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: "#/components/schemas/ReportingCategoryDimension"
+    BusinessUnitDimension:
+      type: object
+      additionalProperties: false
+      required: [ref, label]
+      properties:
+        ref:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Stable correction identifier; never a display label.
+        label:
+          type: string
+          minLength: 1
+          maxLength: 200
+    ReportingCategoryDimension:
+      type: object
+      additionalProperties: false
+      required: [code, label]
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Stable correction identifier; never a display label.
+        label:
+          type: string
+          minLength: 1
+          maxLength: 200
     CandidateProjection:
       type: object
       additionalProperties: false

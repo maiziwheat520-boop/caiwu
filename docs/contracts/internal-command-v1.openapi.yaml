@@ -100,8 +100,20 @@ components:
           additionalProperties: false
           minProperties: 1
           properties:
-            business_unit: { type: string, minLength: 1, maxLength: 100 }
-            category: { type: string, minLength: 1, maxLength: 100 }
+            business_unit:
+              type: string
+              minLength: 1
+              maxLength: 100
+              description: >-
+                Stable business-unit ref selected from accounting-dimensions;
+                never a label or internal UUID.
+            category:
+              type: string
+              minLength: 1
+              maxLength: 100
+              description: >-
+                Stable reporting-category code selected from accounting-dimensions;
+                never a label or internal UUID.
             amount_minor:
               type: integer
               minimum: -9007199254740991
@@ -155,7 +167,7 @@ components:
         operation_id: { type: string, format: uuid }
         candidate_ref: { type: string, format: uuid }
         action:
-          enum: [COMPLETE_FIELDS, RESOLVE_CONFLICT, CONFIRM, IGNORE, SUPERSEDE]
+          enum: [COMPLETE_FIELDS, RESOLVE_CONFLICT, CORRECT_AND_CONFIRM, CONFIRM, IGNORE, SUPERSEDE]
         from_revision: { type: integer, minimum: 1 }
         to_revision: { type: integer, minimum: 2 }
         actor_ref: { type: string, minLength: 1, maxLength: 200 }

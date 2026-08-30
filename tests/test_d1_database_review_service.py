@@ -9,12 +9,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ledgerbridge.candidate_contract import (
+    CandidateProjection,
     CandidateRevisionConflict,
     CandidateStatus,
     IngestChannel,
 )
 from ledgerbridge.internal_candidate_command import (
     CandidateDecision,
+    CandidateDecisionReceipt,
     CandidateDecisionRequest,
     DatabaseInternalReviewService,
     SyntheticInternalReviewService,
@@ -22,6 +24,7 @@ from ledgerbridge.internal_candidate_command import (
 from ledgerbridge.internal_read_contract import (
     Capability,
     EntityGrant,
+    ResourceNotVisible,
     WorkloadPrincipal,
 )
 
@@ -94,7 +97,12 @@ class _SqlStateError(SQLAlchemyError):
         self.orig = type("Orig", (), {"sqlstate": sqlstate})()
 
 
-def _fixtures():  # type: ignore[no-untyped-def]
+def _fixtures() -> tuple[
+    CandidateProjection,
+    WorkloadPrincipal,
+    CandidateDecisionRequest,
+    CandidateDecisionReceipt,
+]:
     synthetic = SyntheticInternalReviewService()
     candidate = next(
         item for item in synthetic._fixture.candidates if item.status == CandidateStatus.PENDING
@@ -217,6 +225,26 @@ def test_database_review_service_maps_stale_revision_without_leaking_database_er
     service = DatabaseInternalReviewService(_factory(read), _factory(command))
 
     with pytest.raises(CandidateRevisionConflict, match="database revision conflict"):
+        service.append_decision(
+            principal,
+            candidate_ref=candidate.candidate_ref,
+            operation_id=receipt.operation_id,
+            assertion_jti=uuid4(),
+            actor_ref="human:web-reviewer",
+            request=request,
+            decided_at=datetime.now(UTC),
+        )
+
+    assert command.committed is False
+
+
+def test_database_review_service_maps_unknown_or_cross_scope_without_committing() -> None:
+    candidate, principal, request, receipt = _fixtures()
+    read = _Session(candidate.model_dump())
+    command = _Session(candidate.model_dump(), failure=_SqlStateError("LB004"))
+    service = DatabaseInternalReviewService(_factory(read), _factory(command))
+
+    with pytest.raises(ResourceNotVisible, match="authorized scope"):
         service.append_decision(
             principal,
             candidate_ref=candidate.candidate_ref,
