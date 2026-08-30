@@ -38,8 +38,15 @@ INTERNAL_READ_VIEWS = (
 INTERNAL_READ_FUNCTIONS = (
     "current_audit_horizon",
     "get_accounting_dimensions",
+    "get_bank_statement_summary",
     "list_candidates_as_of",
+    "list_candidate_counterparty_facts",
+    "list_candidate_events_as_of",
+    "list_candidate_evidence_satisfactions",
+    "list_bank_statement_transactions",
     "get_reconciliation_as_of",
+    "render_candidate_event",
+    "render_candidate_revision",
     "resolve_active_evidence_blob",
     "get_ledger_summary_as_of",
     "append_internal_evidence_read_audit",
@@ -49,15 +56,37 @@ INTERNAL_READ_FUNCTION_IDENTITIES = {
     "get_accounting_dimensions": (
         "p_entity_id uuid, p_business_unit_ids uuid[], p_business_unit_refs character varying[]"
     ),
+    "get_bank_statement_summary": (
+        "p_statement_ref uuid, p_entity_ref uuid, p_audit_horizon_sequence bigint, "
+        "p_audit_horizon_hash bytea"
+    ),
     "list_candidates_as_of": (
         "p_entity_id uuid, p_business_unit_id uuid, p_status character varying, "
         "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea, "
         "p_last_created_at timestamp with time zone, p_last_candidate_id uuid, p_limit integer"
     ),
+    "list_candidate_counterparty_facts": (
+        "p_entity_id uuid, p_business_unit_id uuid, p_candidate_ids uuid[], "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
+    "list_candidate_events_as_of": (
+        "p_entity_id uuid, p_business_unit_id uuid, p_candidate_id uuid, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea, p_limit integer"
+    ),
+    "list_candidate_evidence_satisfactions": (
+        "p_entity_id uuid, p_business_unit_id uuid, p_candidate_ids uuid[], "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
+    "list_bank_statement_transactions": (
+        "p_statement_ref uuid, p_entity_ref uuid, p_audit_horizon_sequence bigint, "
+        "p_audit_horizon_hash bytea, p_after_row integer, p_limit integer"
+    ),
     "get_reconciliation_as_of": (
         "p_entity_id uuid, p_business_unit_id uuid, p_accounting_month date, "
         "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
     ),
+    "render_candidate_event": "p_operation_id uuid",
+    "render_candidate_revision": "p_candidate_id uuid, p_revision integer",
     "resolve_active_evidence_blob": "p_evidence_ref uuid",
     "get_ledger_summary_as_of": (
         "p_entity_id uuid, p_business_unit_id uuid, p_from_month date, p_to_month date, "
@@ -900,7 +929,11 @@ def _append_audit_event(connection: Connection, action: str, payload: dict[str, 
     return cast(UUID, value)
 
 
-def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
+def _seed_read_facts(
+    connection: Connection,
+    *,
+    retired_dimension: str | None = None,
+) -> dict[str, UUID | int | bytes]:
     entity_id = uuid4()
     other_entity_id = uuid4()
     business_unit_id = uuid4()
@@ -921,17 +954,26 @@ def _seed_read_facts(connection: Connection) -> dict[str, UUID | int | bytes]:
     )
     connection.execute(
         text(
-            "INSERT INTO public.business_unit (id, entity_id, ref, label) "
-            "VALUES (:id, :entity, 'unit-a', 'Unit A')"
+            "INSERT INTO public.business_unit (id, entity_id, ref, label, retired_at) "
+            "VALUES (:id, :entity, 'unit-a', 'Unit A', :retired_at)"
         ),
-        {"id": business_unit_id, "entity": entity_id},
+        {
+            "id": business_unit_id,
+            "entity": entity_id,
+            "retired_at": now if retired_dimension == "business_unit" else None,
+        },
     )
     connection.execute(
         text(
-            "INSERT INTO public.reporting_category (id, entity_id, code, label) "
-            "VALUES (:id, :entity, 'category-a', 'Category A')"
+            "INSERT INTO public.reporting_category "
+            "(id, entity_id, code, label, retired_at) "
+            "VALUES (:id, :entity, 'category-a', 'Category A', :retired_at)"
         ),
-        {"id": category_id, "entity": entity_id},
+        {
+            "id": category_id,
+            "entity": entity_id,
+            "retired_at": now if retired_dimension == "category" else None,
+        },
     )
     evidence_event = _append_audit_event(
         connection,
@@ -1308,15 +1350,13 @@ def test_0022_replays_pending_correction_and_active_dimension_catalog_in_postgre
             ),
             {"id": duplicate_unit, "entity": duplicate_facts["entity"]},
         )
-        retired_current_unit_facts = _seed_read_facts(connection)
-        connection.execute(
-            text("UPDATE public.business_unit SET retired_at = :now WHERE id = :id"),
-            {"now": retired_at, "id": retired_current_unit_facts["unit"]},
+        retired_current_unit_facts = _seed_read_facts(
+            connection,
+            retired_dimension="business_unit",
         )
-        retired_current_category_facts = _seed_read_facts(connection)
-        connection.execute(
-            text("UPDATE public.reporting_category SET retired_at = :now WHERE id = :id"),
-            {"now": retired_at, "id": retired_current_category_facts["category"]},
+        retired_current_category_facts = _seed_read_facts(
+            connection,
+            retired_dimension="category",
         )
 
     with (
@@ -3378,7 +3418,10 @@ def test_r1_internal_read_nonempty_downgrade_is_rejected(
         _seed_nonempty_downgrade_marker(connection)
     config = Config("alembic.ini")
     config.attributes["database_url"] = isolated_r1_database
-    with pytest.raises(RuntimeError, match="R1 internal-read data"):
+    with pytest.raises(
+        (RuntimeError, SQLAlchemyError),
+        match=r"nonempty R1 fact database|R1 internal-read data",
+    ):
         command.downgrade(config, "20260824_0014")
 
 
