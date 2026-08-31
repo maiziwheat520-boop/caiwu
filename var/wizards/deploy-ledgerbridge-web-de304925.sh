@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # unless --execute is supplied together with the exact deployed Core revision.
 
 EXPECTED_REVISION=de3049253b219642484bfc352da2442709f8c162
-EXPECTED_ARCHIVE_SHA256=2a8ea9cf424505f1634bb760f7f1acd71d9eb9046675c6ca38fa2a981796dea7
+EXPECTED_ARCHIVE_SHA256=d0959522f1382e01bf5a67ec9605682aad3243473658caf16c145e96f013b6a8
 EXPECTED_CORE_MIGRATION=20260831_0026
 ARCHIVE=/home/aiadmin/private-releases/ledgerbridge-web/de3049253b21/release.tar.gz
 CURRENT=/home/aiadmin/services/ledgerbridge-web-auth-preview
