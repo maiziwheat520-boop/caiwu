@@ -1,6 +1,24 @@
 # Project status
 
-Updated: 2026-08-31
+Updated: 2026-09-01
+
+## Product-test payroll and statement intake checkpoint (2026-09-01)
+
+Core now exposes the company-scoped TEST_ONLY payroll workspace operations used by Web to read,
+organize, validate, and preview historical material.  The adapter binds every successful
+organize/validate receipt to the exact submitted workspace revision, period, material type, and
+company; it rejects raw-account-shaped identifiers, inconsistent gross pay, and any unexplained
+net-pay mismatch.  A mismatching net amount can remain visible only as an explicit blocking
+human-review exception.  Payment, payable, submission, and bank capabilities remain absent.
+
+The controlled statement tooling now includes a private-plan builder for the supplied MYbank
+workbook and an evidence-bound welfare-benefit source decomposition.  Welfare offsets are
+Candidate source components, not ledger Postings: the purchase is preserved and the proven
+offset becomes separate welfare income, while downstream double-entry balancing remains with the
+ledger.  No real statement, payroll material, account number, owner mapping, or private plan is
+tracked in Git.  Windows verification passes 1,121 tests with 208 environment skips; changed-file
+Ruff, strict mypy, sensitive-path, and diff checks pass.  Deployment and private test-bundle
+import are recorded separately after VM103 verification.
 
 ## Similar-transaction classification checkpoint (2026-08-31)
 

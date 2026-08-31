@@ -12,6 +12,21 @@ registry revision, workload principal, audit context, encrypted backup, passed
 isolated-restore report, evidence key, and artifact root. The command rejects
 unknown or missing fields and never prints those values.
 
+Do not hand-copy the source digest, size, or transaction count. Start from the
+synthetic draft in `docs/templates/mybank-cutover-draft.example.json`, place the
+real draft outside Git, and bind it to the verified XLSX with:
+
+```text
+LEDGERBRIDGE_MYBANK_PRIVATE_DRAFT=<absolute private draft path>
+LEDGERBRIDGE_MYBANK_PRIVATE_PLAN=<new absolute private plan path>
+```
+
+Then run `python scripts/build_mybank_cutover_plan.py`. The builder parses the
+whole statement, proves the institution and account suffix, derives the exact
+digest/size/row count, writes a new mode-`0600` plan, and prints only
+`MYBANK_CUTOVER_PLAN_READY`. It never guesses the Accounting Owner or company;
+those UUID bindings remain explicit operator inputs in the private draft.
+
 ## Isolated preflight
 
 Mount the protected source, plan, key, and a disposable restored database and

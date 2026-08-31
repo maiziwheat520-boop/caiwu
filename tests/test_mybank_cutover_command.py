@@ -14,6 +14,12 @@ from ledgerbridge.mybank_cutover_command import (
     load_private_mybank_cutover_plan,
     run_mybank_cutover_command,
 )
+from ledgerbridge.mybank_cutover_plan_builder import (
+    MYBANK_CUTOVER_DRAFT_SCHEMA,
+    MyBankCutoverPlanBuildError,
+    finalize_private_mybank_cutover_plan,
+    run_mybank_cutover_plan_builder,
+)
 from ledgerbridge.mybank_statement_cutover import (
     MyBankStatementCutoverReceipt,
     ProductionCounts,
@@ -85,6 +91,23 @@ def _write_private_plan(path: Path, payload: dict[str, object]) -> None:
         path.chmod(0o600)
 
 
+def _write_synthetic_mybank_xlsx(path: Path) -> bytes:
+    from tests.test_mybank_statement import _write_synthetic_mybank_xlsx as write_fixture
+
+    return write_fixture(path)
+
+
+def _synthetic_draft(tmp_path: Path) -> dict[str, object]:
+    payload = _synthetic_plan(tmp_path)
+    payload["schema_version"] = MYBANK_CUTOVER_DRAFT_SCHEMA
+    payload["scope"]["owner_kind"] = "COMPANY"  # type: ignore[index]
+    payload["source"] = {
+        "path": str((tmp_path / "synthetic-statement.xlsx").resolve()),
+        "account_suffix": "7968",
+    }
+    return payload
+
+
 def _counts(*, imported: bool) -> ProductionCounts:
     return ProductionCounts(
         evidence_objects=1 if imported else 0,
@@ -140,6 +163,72 @@ def test_private_plan_loads_one_explicit_owner_account_mapping(tmp_path: Path) -
     assert loaded.principal.grants[0].entity_ref == ENTITY_REF
     assert loaded.principal.grants[0].allow_account_registry is True
     assert loaded.safety_proof.restore_report.parent == loaded.safety_proof.backup_directory
+
+
+def test_private_draft_is_finalized_from_verified_source_without_guessing_metadata(
+    tmp_path: Path,
+) -> None:
+    source_path = (tmp_path / "synthetic-statement.xlsx").resolve()
+    source = _write_synthetic_mybank_xlsx(source_path)
+    draft_path = (tmp_path / "cutover-draft.json").resolve()
+    plan_path = (tmp_path / "cutover-plan.json").resolve()
+    _write_private_plan(draft_path, _synthetic_draft(tmp_path))
+
+    finalized = finalize_private_mybank_cutover_plan(draft_path, plan_path)
+
+    assert finalized == plan_path
+    payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == MYBANK_CUTOVER_PLAN_SCHEMA
+    assert payload["source"] == {
+        "path": str(source_path),
+        "sha256": __import__("hashlib").sha256(source).hexdigest(),
+        "size": len(source),
+        "account_suffix": "7968",
+        "transaction_count": 2,
+    }
+    loaded = load_private_mybank_cutover_plan(plan_path)
+    assert loaded.cutover.owner_kind is EntityType.COMPANY
+    assert loaded.cutover.registry_plan.owner_entity_ref == ENTITY_REF
+
+
+def test_private_draft_wrong_account_mapping_publishes_no_plan(tmp_path: Path) -> None:
+    source_path = (tmp_path / "synthetic-statement.xlsx").resolve()
+    _write_synthetic_mybank_xlsx(source_path)
+    draft = _synthetic_draft(tmp_path)
+    draft["source"]["account_suffix"] = "0000"  # type: ignore[index]
+    draft_path = (tmp_path / "cutover-draft.json").resolve()
+    plan_path = (tmp_path / "cutover-plan.json").resolve()
+    _write_private_plan(draft_path, draft)
+
+    with pytest.raises(MyBankCutoverPlanBuildError, match="could not be finalized"):
+        finalize_private_mybank_cutover_plan(draft_path, plan_path)
+
+    assert not plan_path.exists()
+
+
+def test_private_plan_builder_command_prints_no_source_or_alias_values(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source_path = (tmp_path / "synthetic-statement.xlsx").resolve()
+    _write_synthetic_mybank_xlsx(source_path)
+    draft = _synthetic_draft(tmp_path)
+    draft_path = (tmp_path / "cutover-draft.json").resolve()
+    plan_path = (tmp_path / "cutover-plan.json").resolve()
+    _write_private_plan(draft_path, draft)
+
+    result = run_mybank_cutover_plan_builder(
+        {
+            "LEDGERBRIDGE_MYBANK_PRIVATE_DRAFT": str(draft_path),
+            "LEDGERBRIDGE_MYBANK_PRIVATE_PLAN": str(plan_path),
+        }
+    )
+
+    assert result == 0
+    rendered = capsys.readouterr().out
+    assert rendered.strip() == "MYBANK_CUTOVER_PLAN_READY"
+    assert str(source_path) not in rendered
+    assert draft["account"]["aliases"][0]["alias_value"] not in rendered  # type: ignore[index]
 
 
 def test_preflight_writes_private_bound_receipt_without_disclosing_plan_values(
