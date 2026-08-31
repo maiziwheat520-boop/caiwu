@@ -113,7 +113,7 @@ def _assert_problem(response: Response, status_code: int, code: str) -> None:
     assert response.json()["code"] == code
 
 
-def test_payroll_router_exposes_only_frozen_reads_and_receipt_verification() -> None:
+def test_payroll_router_exposes_only_frozen_reads_and_explicit_nonpayment_test_actions() -> None:
     routes = [route for route in router.routes if isinstance(route, APIRoute)]
     assert [(route.path, route.methods) for route in routes] == [
         ("/internal/v1/payroll/status", {"GET"}),
@@ -124,8 +124,17 @@ def test_payroll_router_exposes_only_frozen_reads_and_receipt_verification() -> 
         ("/internal/v1/payroll/batches/{batch_id}/verify-receipts", {"POST"}),
         ("/internal/v1/payroll-publications/{publication_id}", {"GET"}),
         ("/internal/v1/payroll/test-workspaces/{test_batch_id}", {"GET"}),
+        (
+            "/internal/v1/payroll/test-workspaces/{test_batch_id}/materials/{material_id}/preview",
+            {"GET"},
+        ),
         ("/internal/v1/payroll/test-workspaces", {"POST"}),
         ("/internal/v1/payroll/test-workspaces/{test_batch_id}/clear", {"POST"}),
+        (
+            "/internal/v1/payroll/test-workspaces/{test_batch_id}/materials/{material_id}/organize",
+            {"POST"},
+        ),
+        ("/internal/v1/payroll/test-workspaces/{test_batch_id}/validate", {"POST"}),
     ]
 
 

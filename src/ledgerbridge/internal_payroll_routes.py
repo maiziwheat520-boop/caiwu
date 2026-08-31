@@ -121,6 +121,17 @@ class PayrollTestWorkspaceReadResponse(BaseModel):
     data: dict[str, object]
 
 
+class PayrollTestMaterialPreviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    contract_version: Literal["ledgerbridge.payroll-test-material-preview-read.v1"] = (
+        "ledgerbridge.payroll-test-material-preview-read.v1"
+    )
+    entity_ref: UUID
+    company_id: str
+    material_id: str
+    data: dict[str, object]
+
+
 class PayrollTestWorkspaceCommandResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     contract_version: Literal["ledgerbridge.payroll-test-workspace-command-result.v1"] = (
@@ -128,7 +139,12 @@ class PayrollTestWorkspaceCommandResponse(BaseModel):
     )
     entity_ref: UUID
     company_id: str
-    action: Literal["payroll.test_workspace.create", "payroll.test_workspace.clear"]
+    action: Literal[
+        "payroll.test_workspace.create",
+        "payroll.test_workspace.organize",
+        "payroll.test_workspace.validate",
+        "payroll.test_workspace.clear",
+    ]
     resource_ref: str
     replayed: bool
     data: dict[str, object]
@@ -151,6 +167,34 @@ class PayrollTestWorkspaceClear(BaseModel):
     explicitly_confirmed: Literal[True]
 
 
+class PayrollTestMaterialOrganize(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["payroll-test-material-organize-request/v1"]
+    expected_workspace_revision: int = Field(strict=True, ge=1)
+    period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+    material_type: Literal[
+        "PAYROLL_SHEET",
+        "RELEASE_LIST",
+        "CASH_LIST",
+        "ATTENDANCE_SHEET",
+        "ADJUSTMENT_SOURCE",
+        "PAYROLL_SUMMARY",
+        "SUPPORTING_SCAN",
+        "BACKUP",
+        "OBSOLETE",
+    ]
+    idempotency_key: UUID
+    explicitly_confirmed: Literal[True]
+
+
+class PayrollTestBatchValidate(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["payroll-test-batch-validation-request/v1"]
+    expected_workspace_revision: int = Field(strict=True, ge=1)
+    idempotency_key: UUID
+    explicitly_confirmed: Literal[True]
+
+
 class PayrollLiveSource(Protocol):
     def read_status(self, **kwargs: object) -> PayrollLiveRead: ...
     def read_dashboard(self, **kwargs: object) -> PayrollLiveRead: ...
@@ -169,6 +213,35 @@ class PayrollTestWorkspaceSource(Protocol):
         *,
         entity_ref: UUID,
         test_batch_id: str,
+        provider_headers: Mapping[str, str],
+        body: bytes,
+    ) -> PayrollTestWorkspaceResult: ...
+    def organize_material(
+        self,
+        *,
+        entity_ref: UUID,
+        test_batch_id: str,
+        material_id: str,
+        expected_workspace_revision: int,
+        expected_period: str,
+        expected_material_type: str,
+        provider_headers: Mapping[str, str],
+        body: bytes,
+    ) -> PayrollTestWorkspaceResult: ...
+    def preview_material(
+        self,
+        *,
+        entity_ref: UUID,
+        test_batch_id: str,
+        material_id: str,
+        provider_headers: Mapping[str, str],
+    ) -> PayrollTestWorkspaceResult: ...
+    def validate_batches(
+        self,
+        *,
+        entity_ref: UUID,
+        test_batch_id: str,
+        expected_workspace_revision: int,
         provider_headers: Mapping[str, str],
         body: bytes,
     ) -> PayrollTestWorkspaceResult: ...
@@ -987,6 +1060,66 @@ def get_payroll_test_workspace(
     )
 
 
+@router.get(
+    "/payroll/test-workspaces/{test_batch_id}/materials/{material_id}/preview",
+    response_model=PayrollTestMaterialPreviewResponse,
+    dependencies=[Depends(require_payroll_test_workspaces)],
+)
+def get_payroll_test_material_preview(
+    test_batch_id: str,
+    material_id: str,
+    request: Request,
+    assertion: Annotated[str, Header(alias="X-LedgerBridge-User-Assertion")],
+    principal: Annotated[WorkloadPrincipal, Depends(require_payroll_live_read)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    source: Annotated[PayrollTestWorkspaceSource, Depends(get_payroll_test_workspace_source)],
+    signer: Annotated[HmacPayrollProviderAssertionSigner, Depends(get_payroll_provider_signer)],
+    replay_store: Annotated[
+        PayrollAssertionReplayStore, Depends(get_payroll_assertion_replay_store)
+    ],
+) -> PayrollTestMaterialPreviewResponse:
+    if request.url.query:
+        raise InternalPayrollProblem(status.HTTP_400_BAD_REQUEST, "INVALID_QUERY")
+    claims = _verify_user_for_grant(
+        assertion,
+        settings=settings,
+        principal=principal,
+        method="GET",
+        path=request.url.path,
+        body=b"",
+        action="payroll.test_workspace.read",
+        resource_ref=material_id,
+    )
+    if not replay_store.consume(claims):
+        raise PayrollUserAssertionError("payroll assertion replayed")
+    company_id = _company_for_entity(settings, claims.entity_ref)
+    provider_path = f"{TEST_WORKSPACES_PATH}/{test_batch_id}/materials/{material_id}/preview"
+    headers = signer.headers(
+        user=claims,
+        company_id=company_id,
+        provider_action="payroll.test_workspace.read",
+        method="GET",
+        path=provider_path,
+        body=b"",
+    )
+    result = source.preview_material(
+        entity_ref=claims.entity_ref,
+        test_batch_id=test_batch_id,
+        material_id=material_id,
+        provider_headers=headers,
+    )
+    if result.entity_ref != claims.entity_ref or result.company_id != company_id:
+        raise PayrollIntegrationError(
+            "PAYROLL_IDENTITY_SCOPE_MISMATCH", "payroll test preview crosses company scope"
+        )
+    return PayrollTestMaterialPreviewResponse(
+        entity_ref=result.entity_ref,
+        company_id=result.company_id,
+        material_id=material_id,
+        data=result.payload_copy(),
+    )
+
+
 async def _payroll_test_workspace_command(
     *,
     request: Request,
@@ -997,12 +1130,23 @@ async def _payroll_test_workspace_command(
     signer: HmacPayrollProviderAssertionSigner,
     replay_store: PayrollAssertionReplayStore,
     test_batch_id: str,
-    action: Literal["payroll.test_workspace.create", "payroll.test_workspace.clear"],
+    action: Literal[
+        "payroll.test_workspace.create",
+        "payroll.test_workspace.organize",
+        "payroll.test_workspace.validate",
+        "payroll.test_workspace.clear",
+    ],
     expected_revision: int,
     operation_id: UUID,
     provider_path: str,
+    resource_ref: str | None = None,
+    provider_intent: str | None = None,
+    material_id: str | None = None,
+    reviewed_period: str | None = None,
+    reviewed_material_type: str | None = None,
 ) -> PayrollTestWorkspaceCommandResponse:
     body = await request.body()
+    command_resource_ref = resource_ref or test_batch_id
     claims = _verify_user_for_grant(
         assertion,
         settings=settings,
@@ -1011,28 +1155,60 @@ async def _payroll_test_workspace_command(
         path=request.url.path,
         body=body,
         action=action,
-        resource_ref=test_batch_id,
+        resource_ref=command_resource_ref,
         expected_revision=expected_revision,
         operation_id=operation_id,
     )
     if not replay_store.consume(claims):
         raise PayrollUserAssertionError("payroll assertion replayed")
     company_id = _company_for_entity(settings, claims.entity_ref)
-    headers = signer.headers(
-        user=claims,
-        company_id=company_id,
-        provider_action=action,
-        method="POST",
-        path=provider_path,
-        body=body,
+    headers = dict(
+        signer.headers(
+            user=claims,
+            company_id=company_id,
+            provider_action=action,
+            method="POST",
+            path=provider_path,
+            body=body,
+        )
     )
-    method = "create_workspace" if action.endswith("create") else "clear_workspace"
-    result = cast(Callable[..., PayrollTestWorkspaceResult], getattr(source, method))(
-        entity_ref=claims.entity_ref,
-        test_batch_id=test_batch_id,
-        provider_headers=headers,
-        body=body,
-    )
+    if provider_intent is not None:
+        headers["X-Payroll-Test-Intent"] = provider_intent
+    if action == "payroll.test_workspace.create":
+        result = source.create_workspace(
+            entity_ref=claims.entity_ref,
+            test_batch_id=test_batch_id,
+            provider_headers=headers,
+            body=body,
+        )
+    elif action == "payroll.test_workspace.organize":
+        if material_id is None or reviewed_period is None or reviewed_material_type is None:
+            raise InternalPayrollProblem(status.HTTP_400_BAD_REQUEST, "INVALID_RESOURCE")
+        result = source.organize_material(
+            entity_ref=claims.entity_ref,
+            test_batch_id=test_batch_id,
+            material_id=material_id,
+            expected_workspace_revision=expected_revision,
+            expected_period=reviewed_period,
+            expected_material_type=reviewed_material_type,
+            provider_headers=headers,
+            body=body,
+        )
+    elif action == "payroll.test_workspace.validate":
+        result = source.validate_batches(
+            entity_ref=claims.entity_ref,
+            test_batch_id=test_batch_id,
+            expected_workspace_revision=expected_revision,
+            provider_headers=headers,
+            body=body,
+        )
+    else:
+        result = source.clear_workspace(
+            entity_ref=claims.entity_ref,
+            test_batch_id=test_batch_id,
+            provider_headers=headers,
+            body=body,
+        )
     if result.entity_ref != claims.entity_ref or result.company_id != company_id:
         raise PayrollIntegrationError(
             "PAYROLL_IDENTITY_SCOPE_MISMATCH", "payroll test workspace crosses company scope"
@@ -1041,7 +1217,7 @@ async def _payroll_test_workspace_command(
         entity_ref=result.entity_ref,
         company_id=result.company_id,
         action=action,
-        resource_ref=test_batch_id,
+        resource_ref=command_resource_ref,
         replayed=result.replayed,
         data=result.payload_copy(),
     )
@@ -1111,4 +1287,80 @@ async def clear_payroll_test_workspace(
         expected_revision=command.expected_workspace_revision,
         operation_id=command.idempotency_key,
         provider_path=f"{TEST_WORKSPACES_PATH}/{test_batch_id}/clear",
+        provider_intent="clear-test-workspace",
+    )
+
+
+@router.post(
+    "/payroll/test-workspaces/{test_batch_id}/materials/{material_id}/organize",
+    response_model=PayrollTestWorkspaceCommandResponse,
+    dependencies=[Depends(require_payroll_test_workspaces)],
+)
+async def organize_payroll_test_material(
+    test_batch_id: str,
+    material_id: str,
+    command: PayrollTestMaterialOrganize,
+    request: Request,
+    assertion: Annotated[str, Header(alias="X-LedgerBridge-User-Assertion")],
+    principal: Annotated[WorkloadPrincipal, Depends(require_payroll_command)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    source: Annotated[PayrollTestWorkspaceSource, Depends(get_payroll_test_workspace_source)],
+    signer: Annotated[HmacPayrollProviderAssertionSigner, Depends(get_payroll_provider_signer)],
+    replay_store: Annotated[
+        PayrollAssertionReplayStore, Depends(get_payroll_assertion_replay_store)
+    ],
+) -> PayrollTestWorkspaceCommandResponse:
+    return await _payroll_test_workspace_command(
+        request=request,
+        assertion=assertion,
+        principal=principal,
+        settings=settings,
+        source=source,
+        signer=signer,
+        replay_store=replay_store,
+        test_batch_id=test_batch_id,
+        action="payroll.test_workspace.organize",
+        expected_revision=command.expected_workspace_revision,
+        operation_id=command.idempotency_key,
+        provider_path=(f"{TEST_WORKSPACES_PATH}/{test_batch_id}/materials/{material_id}/organize"),
+        resource_ref=material_id,
+        provider_intent="organize-test-material",
+        material_id=material_id,
+        reviewed_period=command.period,
+        reviewed_material_type=command.material_type,
+    )
+
+
+@router.post(
+    "/payroll/test-workspaces/{test_batch_id}/validate",
+    response_model=PayrollTestWorkspaceCommandResponse,
+    dependencies=[Depends(require_payroll_test_workspaces)],
+)
+async def validate_payroll_test_batches(
+    test_batch_id: str,
+    command: PayrollTestBatchValidate,
+    request: Request,
+    assertion: Annotated[str, Header(alias="X-LedgerBridge-User-Assertion")],
+    principal: Annotated[WorkloadPrincipal, Depends(require_payroll_command)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    source: Annotated[PayrollTestWorkspaceSource, Depends(get_payroll_test_workspace_source)],
+    signer: Annotated[HmacPayrollProviderAssertionSigner, Depends(get_payroll_provider_signer)],
+    replay_store: Annotated[
+        PayrollAssertionReplayStore, Depends(get_payroll_assertion_replay_store)
+    ],
+) -> PayrollTestWorkspaceCommandResponse:
+    return await _payroll_test_workspace_command(
+        request=request,
+        assertion=assertion,
+        principal=principal,
+        settings=settings,
+        source=source,
+        signer=signer,
+        replay_store=replay_store,
+        test_batch_id=test_batch_id,
+        action="payroll.test_workspace.validate",
+        expected_revision=command.expected_workspace_revision,
+        operation_id=command.idempotency_key,
+        provider_path=f"{TEST_WORKSPACES_PATH}/{test_batch_id}/validate",
+        provider_intent="validate-test-payroll-batches",
     )

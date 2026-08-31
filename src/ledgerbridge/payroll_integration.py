@@ -501,6 +501,77 @@ class HttpPayrollTestWorkspaceSource:
         _validate_test_workspace_projection(projection, company_id, test_batch_id)
         return self._result(entity_ref, company_id, bool(raw["replayed"]), projection)
 
+    def organize_material(
+        self,
+        *,
+        entity_ref: UUID,
+        test_batch_id: str,
+        material_id: str,
+        expected_workspace_revision: int,
+        expected_period: str,
+        expected_material_type: str,
+        provider_headers: Mapping[str, str],
+        body: bytes,
+    ) -> PayrollTestWorkspaceResult:
+        company_id = self._companies.company_for_entity(entity_ref)
+        batch_id = _require_stable_identifier(test_batch_id, "test_batch_id")
+        material_ref = _require_stable_identifier(material_id, "material_id")
+        path = (
+            f"{TEST_WORKSPACES_PATH}/{quote(batch_id, safe='')}/materials/"
+            f"{quote(material_ref, safe='')}/organize"
+        )
+        raw = self._post(path, provider_headers, body)
+        _validate_test_workspace_organize_receipt(
+            raw,
+            company_id,
+            batch_id,
+            material_ref,
+            expected_workspace_revision,
+            expected_period,
+            expected_material_type,
+        )
+        return self._result(entity_ref, company_id, bool(raw["replayed"]), raw)
+
+    def validate_batches(
+        self,
+        *,
+        entity_ref: UUID,
+        test_batch_id: str,
+        expected_workspace_revision: int,
+        provider_headers: Mapping[str, str],
+        body: bytes,
+    ) -> PayrollTestWorkspaceResult:
+        company_id = self._companies.company_for_entity(entity_ref)
+        batch_id = _require_stable_identifier(test_batch_id, "test_batch_id")
+        raw = self._post(
+            f"{TEST_WORKSPACES_PATH}/{quote(batch_id, safe='')}/validate",
+            provider_headers,
+            body,
+        )
+        _validate_test_workspace_validation_receipt(
+            raw, company_id, batch_id, expected_workspace_revision
+        )
+        return self._result(entity_ref, company_id, bool(raw["replayed"]), raw)
+
+    def preview_material(
+        self,
+        *,
+        entity_ref: UUID,
+        test_batch_id: str,
+        material_id: str,
+        provider_headers: Mapping[str, str],
+    ) -> PayrollTestWorkspaceResult:
+        company_id = self._companies.company_for_entity(entity_ref)
+        batch_id = _require_stable_identifier(test_batch_id, "test_batch_id")
+        material_ref = _require_stable_identifier(material_id, "material_id")
+        path = (
+            f"{TEST_WORKSPACES_PATH}/{quote(batch_id, safe='')}/materials/"
+            f"{quote(material_ref, safe='')}/preview"
+        )
+        raw = self._get(path, provider_headers)
+        _validate_test_material_preview(raw, company_id, batch_id, material_ref)
+        return self._result(entity_ref, company_id, False, raw)
+
     def clear_workspace(
         self,
         *,
@@ -2821,6 +2892,332 @@ def _validate_test_workspace_clear_receipt(
     _require_disabled_flags(
         value, ("payment_submission_supported", "payable", "submission_supported")
     )
+
+
+def _validate_test_material_preview(
+    value: Mapping[str, object],
+    expected_company_id: str,
+    expected_batch_id: str,
+    expected_material_id: str,
+) -> None:
+    _require_exact_keys(
+        value,
+        frozenset(
+            {
+                "schema_version",
+                "data_scope",
+                "test_batch_id",
+                "company_id",
+                "material_id",
+                "period",
+                "status",
+                "line_count",
+                "total_net_pay_cents",
+                "lines",
+                "exceptions",
+                "payment_submission_supported",
+                "payable",
+                "submission_supported",
+            }
+        ),
+        "test payroll material preview",
+    )
+    if (
+        value.get("schema_version") != "payroll-test-material-preview/v1"
+        or value.get("data_scope") != "TEST_ONLY"
+        or value.get("test_batch_id") != expected_batch_id
+        or value.get("company_id") != expected_company_id
+        or value.get("material_id") != expected_material_id
+        or value.get("status") not in {"READY_FOR_REVIEW", "NEEDS_HUMAN_REVIEW"}
+    ):
+        _invalid_response("payroll test material preview scope is invalid")
+    _require_period(value.get("period"), "preview.period")
+    line_count = _require_non_negative_integer(value.get("line_count"), "preview.line_count")
+    stated_total = _require_non_negative_integer(
+        value.get("total_net_pay_cents"), "preview.total_net_pay_cents"
+    )
+    _require_disabled_flags(
+        value, ("payment_submission_supported", "payable", "submission_supported")
+    )
+    line_fields = frozenset(
+        {
+            "company_id",
+            "employee_id",
+            "employee_name",
+            "account_id",
+            "account_masked",
+            "payment_channel",
+            "base_salary_cents",
+            "allowance_cents",
+            "bonus_cents",
+            "deduction_cents",
+            "social_insurance_cents",
+            "housing_fund_cents",
+            "individual_income_tax_cents",
+            "gross_pay_cents",
+            "net_pay_cents",
+            "notes",
+        }
+    )
+    exception_fields = frozenset(
+        {"code", "severity", "row", "field", "calculated_cents", "stated_cents"}
+    )
+    acknowledged_net_mismatches: set[tuple[int, int]] = set()
+    for exception_value in _require_list(value.get("exceptions"), "preview.exceptions"):
+        exception = _require_object(exception_value, "preview.exception")
+        if not {"code", "severity", "row"}.issubset(exception) or not set(exception).issubset(
+            exception_fields
+        ):
+            _invalid_response("payroll preview exception is invalid")
+        for field in ("code", "severity"):
+            text = exception.get(field)
+            if not isinstance(text, str) or not text or len(text) > 80:
+                _invalid_response("payroll preview exception is invalid")
+        if "field" in exception and (
+            not isinstance(exception["field"], str) or len(exception["field"]) > 80
+        ):
+            _invalid_response("payroll preview exception field is invalid")
+        if _require_non_negative_integer(exception.get("row"), "preview.exception.row") < 1:
+            _invalid_response("payroll preview exception row is invalid")
+        amounts: dict[str, int] = {}
+        for field in ("calculated_cents", "stated_cents"):
+            if field in exception:
+                amounts[field] = _require_non_negative_integer(
+                    exception[field], f"preview.exception.{field}"
+                )
+        if (
+            exception.get("code") == "NET_PAY_MISMATCH"
+            and exception.get("severity") == "BLOCKING"
+            and set(amounts) == {"calculated_cents", "stated_cents"}
+        ):
+            acknowledged_net_mismatches.add((amounts["calculated_cents"], amounts["stated_cents"]))
+
+    lines = _require_list(value.get("lines"), "preview.lines")
+    total = 0
+    for line_value in lines:
+        line = _require_object(line_value, "preview.line")
+        _require_exact_keys(line, line_fields, "test payroll preview line")
+        if line.get("company_id") != expected_company_id:
+            _invalid_response("payroll test preview line crosses company scope")
+        _require_stable_identifier(line.get("employee_id"), "preview.employee_id")
+        _require_stable_identifier(line.get("account_id"), "preview.account_id", account=True)
+        for field, maximum in (
+            ("employee_name", 120),
+            ("payment_channel", 40),
+            ("notes", 500),
+        ):
+            text = line.get(field)
+            if not isinstance(text, str) or len(text) > maximum:
+                _invalid_response(f"payroll preview {field} is invalid")
+            _validate_publishable_string(text, parent_key=field)
+        account_masked = line.get("account_masked")
+        if (
+            not isinstance(account_masked, str)
+            or re.fullmatch(r"\*{4}\d{4}", account_masked) is None
+        ):
+            _invalid_response("payroll preview account is not masked")
+        line_amounts: dict[str, int] = {}
+        for field in (
+            "base_salary_cents",
+            "allowance_cents",
+            "bonus_cents",
+            "deduction_cents",
+            "social_insurance_cents",
+            "housing_fund_cents",
+            "individual_income_tax_cents",
+            "gross_pay_cents",
+            "net_pay_cents",
+        ):
+            amount = _require_non_negative_integer(line.get(field), f"preview.{field}")
+            line_amounts[field] = amount
+            if field == "net_pay_cents":
+                total += amount
+                if total > 9_007_199_254_740_991:
+                    _invalid_response("payroll preview total is unsafe")
+        calculated_gross = (
+            line_amounts["base_salary_cents"]
+            + line_amounts["allowance_cents"]
+            + line_amounts["bonus_cents"]
+        )
+        if calculated_gross != line_amounts["gross_pay_cents"]:
+            _invalid_response("payroll preview gross pay is inconsistent")
+        calculated_net = (
+            calculated_gross
+            - line_amounts["deduction_cents"]
+            - line_amounts["social_insurance_cents"]
+            - line_amounts["housing_fund_cents"]
+            - line_amounts["individual_income_tax_cents"]
+        )
+        if calculated_net < 0:
+            _invalid_response("payroll preview net pay calculation is invalid")
+        if calculated_net != line_amounts["net_pay_cents"] and (
+            value.get("status") != "NEEDS_HUMAN_REVIEW"
+            or (calculated_net, line_amounts["net_pay_cents"]) not in acknowledged_net_mismatches
+        ):
+            _invalid_response("payroll preview net pay is inconsistent")
+    if len(lines) != line_count or total != stated_total:
+        _invalid_response("payroll test preview totals are inconsistent")
+
+
+def _validate_test_workspace_organize_receipt(
+    value: Mapping[str, object],
+    expected_company_id: str,
+    expected_batch_id: str,
+    expected_material_id: str,
+    expected_workspace_revision: int,
+    expected_period: str,
+    expected_material_type: str,
+) -> None:
+    _require_exact_keys(
+        value,
+        frozenset(
+            {
+                "schema_version",
+                "data_scope",
+                "test_batch_id",
+                "company_id",
+                "workspace_revision",
+                "projection_revision",
+                "material",
+                "payment_submission_supported",
+                "payable",
+                "submission_supported",
+                "replayed",
+            }
+        ),
+        "test workspace material organize receipt",
+    )
+    if (
+        value.get("schema_version") != "payroll-test-material-organize-result/v1"
+        or value.get("data_scope") != "TEST_ONLY"
+        or value.get("test_batch_id") != expected_batch_id
+        or value.get("company_id") != expected_company_id
+        or type(value.get("replayed")) is not bool
+    ):
+        _invalid_response("payroll test material organize receipt scope is invalid")
+    if (
+        _require_non_negative_integer(value.get("workspace_revision"), "workspace_revision")
+        != expected_workspace_revision + 1
+    ):
+        _invalid_response("payroll test material organize revision is invalid")
+    _require_sha256(value.get("projection_revision"), "projection_revision")
+    _require_disabled_flags(
+        value, ("payment_submission_supported", "payable", "submission_supported")
+    )
+    material = _require_object(value.get("material"), "material")
+    _require_exact_keys(
+        material,
+        frozenset(
+            {
+                "company_id",
+                "material_id",
+                "routing_status",
+                "period",
+                "material_type",
+                "payable",
+                "submission_supported",
+            }
+        ),
+        "test workspace organized material",
+    )
+    material_period = _require_period(material.get("period"), "material.period")
+    routing_status = material.get("routing_status")
+    if (
+        material.get("company_id") != expected_company_id
+        or material.get("material_id") != expected_material_id
+        or material_period != expected_period
+        or material.get("material_type") != expected_material_type
+        or routing_status not in {"AUTO_TEST", "REVIEW_REQUIRED"}
+        or (routing_status == "AUTO_TEST" and material_period > "2026-08")
+        or (routing_status == "REVIEW_REQUIRED" and material_period < "2026-09")
+    ):
+        _invalid_response("payroll test organized material is invalid")
+    _require_stable_identifier(material.get("material_type"), "material.material_type")
+    _require_disabled_flags(material, ("payable", "submission_supported"))
+
+
+def _validate_test_workspace_validation_receipt(
+    value: Mapping[str, object],
+    expected_company_id: str,
+    expected_batch_id: str,
+    expected_workspace_revision: int,
+) -> None:
+    _require_exact_keys(
+        value,
+        frozenset(
+            {
+                "schema_version",
+                "data_scope",
+                "test_batch_id",
+                "company_id",
+                "workspace_revision",
+                "ready_batch_count",
+                "blocked_material_count",
+                "batches",
+                "payment_submission_supported",
+                "payable",
+                "submission_supported",
+                "replayed",
+            }
+        ),
+        "test workspace validation receipt",
+    )
+    if (
+        value.get("schema_version") != "payroll-test-batch-validation-result/v1"
+        or value.get("data_scope") != "TEST_ONLY"
+        or value.get("test_batch_id") != expected_batch_id
+        or value.get("company_id") != expected_company_id
+        or type(value.get("replayed")) is not bool
+    ):
+        _invalid_response("payroll test workspace validation scope is invalid")
+    if (
+        _require_non_negative_integer(value.get("workspace_revision"), "workspace_revision")
+        != expected_workspace_revision
+    ):
+        _invalid_response("payroll test workspace validation revision is invalid")
+    ready_count = _require_non_negative_integer(value.get("ready_batch_count"), "ready_batch_count")
+    _require_non_negative_integer(value.get("blocked_material_count"), "blocked_material_count")
+    _require_disabled_flags(
+        value, ("payment_submission_supported", "payable", "submission_supported")
+    )
+    actual_ready = 0
+    for batch_value in _require_list(value.get("batches"), "batches"):
+        batch = _require_object(batch_value, "batch")
+        _require_exact_keys(
+            batch,
+            frozenset(
+                {
+                    "batch_id",
+                    "period",
+                    "material_count",
+                    "payroll_sheet_count",
+                    "supporting_material_count",
+                    "status",
+                }
+            ),
+            "test validation batch",
+        )
+        _require_stable_identifier(batch.get("batch_id"), "batch.batch_id")
+        _require_period(batch.get("period"), "batch.period")
+        material_count = _require_non_negative_integer(
+            batch.get("material_count"), "batch.material_count"
+        )
+        payroll_sheet_count = _require_non_negative_integer(
+            batch.get("payroll_sheet_count"), "batch.payroll_sheet_count"
+        )
+        supporting_count = _require_non_negative_integer(
+            batch.get("supporting_material_count"), "batch.supporting_material_count"
+        )
+        if material_count < 1 or material_count != payroll_sheet_count + supporting_count:
+            _invalid_response("payroll test validation material counts are invalid")
+        if batch.get("status") == "READY_FOR_TEST_REVIEW":
+            if payroll_sheet_count < 1:
+                _invalid_response("payroll test validation ready batch is invalid")
+            actual_ready += 1
+        elif batch.get("status") != "BLOCKED":
+            _invalid_response("payroll test validation status is invalid")
+    if actual_ready != ready_count:
+        _invalid_response("payroll test validation ready count is inconsistent")
 
 
 def _require_list(value: object, field: str) -> list[object]:

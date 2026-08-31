@@ -82,3 +82,16 @@ It shares the same PostgreSQL database and Financial Foundation with Personal Fi
 Reconciliation while owning its private schema and service interface. The current HTTP source is
 a transitional provider implementation; a future same-database implementation replaces the
 source behind the unchanged `payroll-ledgerbridge-publication/v1` contract.
+
+## TEST_ONLY workspace extension (2026-09-01)
+
+- Core adds authenticated read, organize, validate, clear, and material-preview operations for
+  the disposable historical payroll workspace without importing formal payroll data.
+- The provider response must match the exact requested company, batch, workspace revision,
+  material, period, and material type.  A syntactically valid but different provider receipt is
+  rejected before Web can show success.
+- Previewed account identifiers cannot resemble raw account numbers.  Gross pay is recomputed;
+  a net-pay mismatch is visible only when the provider also returns the exact blocking
+  `NET_PAY_MISMATCH` evidence and marks the material for human review.
+- The extension remains TEST_ONLY and cannot publish, pay, submit, export to a bank, or change a
+  formal payroll batch.

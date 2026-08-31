@@ -162,6 +162,15 @@ class _TestWorkspaceSource:
     def create_workspace(self, **kwargs: object) -> PayrollTestWorkspaceResult:
         return self._result("create", **kwargs)
 
+    def organize_material(self, **kwargs: object) -> PayrollTestWorkspaceResult:
+        return self._result("organize", **kwargs)
+
+    def preview_material(self, **kwargs: object) -> PayrollTestWorkspaceResult:
+        return self._result("preview", **kwargs)
+
+    def validate_batches(self, **kwargs: object) -> PayrollTestWorkspaceResult:
+        return self._result("validate", **kwargs)
+
     def clear_workspace(self, **kwargs: object) -> PayrollTestWorkspaceResult:
         return self._result("clear", **kwargs)
 
@@ -530,6 +539,109 @@ def test_test_workspace_read_create_and_clear_are_request_bound() -> None:
     )
     assert clear.status_code == 200, clear.text
     assert [name for name, _ in source.calls] == ["read", "create", "clear"]
+    clear_headers = source.calls[-1][1]["provider_headers"]
+    assert isinstance(clear_headers, Mapping)
+    assert clear_headers["X-Payroll-Test-Intent"] == "clear-test-workspace"
+
+
+def test_test_workspace_organize_and_validate_are_request_bound_and_nonpayable() -> None:
+    client, source = _test_workspace_client()
+    batch_id = "batch_test_2026_08"
+    material_id = "material_payroll_001"
+
+    operation_id = uuid4()
+    organize_path = (
+        f"/internal/v1/payroll/test-workspaces/{batch_id}/materials/{material_id}/organize"
+    )
+    organize_body = json.dumps(
+        {
+            "schema_version": "payroll-test-material-organize-request/v1",
+            "expected_workspace_revision": 1,
+            "period": "2026-08",
+            "material_type": "PAYROLL_SHEET",
+            "idempotency_key": str(operation_id),
+            "explicitly_confirmed": True,
+        },
+        separators=(",", ":"),
+    ).encode()
+    organized = client.post(
+        organize_path,
+        content=organize_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-LedgerBridge-User-Assertion": _assertion(
+                path=organize_path,
+                action="payroll.test_workspace.organize",
+                resource_ref=material_id,
+                body=organize_body,
+                operation_id=operation_id,
+                expected_revision=1,
+            ),
+        },
+    )
+    assert organized.status_code == 200, organized.text
+    assert organized.json()["action"] == "payroll.test_workspace.organize"
+
+    operation_id = uuid4()
+    validate_path = f"/internal/v1/payroll/test-workspaces/{batch_id}/validate"
+    validate_body = json.dumps(
+        {
+            "schema_version": "payroll-test-batch-validation-request/v1",
+            "expected_workspace_revision": 2,
+            "idempotency_key": str(operation_id),
+            "explicitly_confirmed": True,
+        },
+        separators=(",", ":"),
+    ).encode()
+    validated = client.post(
+        validate_path,
+        content=validate_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-LedgerBridge-User-Assertion": _assertion(
+                path=validate_path,
+                action="payroll.test_workspace.validate",
+                resource_ref=batch_id,
+                body=validate_body,
+                operation_id=operation_id,
+                expected_revision=2,
+            ),
+        },
+    )
+    assert validated.status_code == 200, validated.text
+    assert validated.json()["action"] == "payroll.test_workspace.validate"
+
+    assert [name for name, _ in source.calls] == ["organize", "validate"]
+    organize_headers = source.calls[0][1]["provider_headers"]
+    validate_headers = source.calls[1][1]["provider_headers"]
+    assert isinstance(organize_headers, Mapping)
+    assert isinstance(validate_headers, Mapping)
+    assert organize_headers["X-Payroll-Test-Intent"] == "organize-test-material"
+    assert validate_headers["X-Payroll-Test-Intent"] == "validate-test-payroll-batches"
+
+
+def test_test_workspace_material_preview_is_request_bound_read_only_and_nonpayable() -> None:
+    client, source = _test_workspace_client()
+    batch_id = "batch_test_2026_08"
+    material_id = "material_payroll_001"
+    path = f"/internal/v1/payroll/test-workspaces/{batch_id}/materials/{material_id}/preview"
+    response = client.get(
+        path,
+        headers={
+            "X-LedgerBridge-User-Assertion": _assertion(
+                path=path,
+                action="payroll.test_workspace.read",
+                resource_ref=material_id,
+            )
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert (
+        response.json()["contract_version"] == "ledgerbridge.payroll-test-material-preview-read.v1"
+    )
+    assert response.json()["material_id"] == material_id
+    assert [name for name, _ in source.calls] == ["preview"]
+    assert source.calls[0][1]["material_id"] == material_id
 
 
 def test_test_workspace_assertions_reject_wrong_action_path_and_resource() -> None:

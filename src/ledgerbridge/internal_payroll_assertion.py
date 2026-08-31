@@ -37,6 +37,8 @@ PayrollAction = Literal[
     "payroll.publication.read",
     "payroll.test_workspace.read",
     "payroll.test_workspace.create",
+    "payroll.test_workspace.organize",
+    "payroll.test_workspace.validate",
     "payroll.test_workspace.clear",
 ]
 

@@ -199,3 +199,248 @@ def test_clear_receipt_remains_non_payable():
         entity_ref=entity, test_batch_id="batch_demo", provider_headers={}, body=b"{}"
     )
     assert result.payload_copy()["payable"] is False
+
+
+def test_test_workspace_organize_returns_only_versioned_non_payable_material_receipt():
+    payload = {
+        "schema_version": "payroll-test-material-organize-result/v1",
+        "data_scope": "TEST_ONLY",
+        "test_batch_id": "batch_demo",
+        "company_id": "company_demo",
+        "workspace_revision": 2,
+        "projection_revision": "b" * 64,
+        "material": {
+            "company_id": "company_demo",
+            "material_id": "material_unknown",
+            "routing_status": "AUTO_TEST",
+            "period": "2026-08",
+            "material_type": "PAYROLL_SHEET",
+            "payable": False,
+            "submission_supported": False,
+        },
+        "payment_submission_supported": False,
+        "payable": False,
+        "submission_supported": False,
+        "replayed": False,
+    }
+    entity, adapter = source(payload)
+    result = adapter.organize_material(
+        entity_ref=entity,
+        test_batch_id="batch_demo",
+        material_id="material_unknown",
+        expected_workspace_revision=1,
+        expected_period="2026-08",
+        expected_material_type="PAYROLL_SHEET",
+        provider_headers={},
+        body=b"{}",
+    )
+    assert result.payload_copy()["material"]["period"] == "2026-08"
+    assert result.payload_copy()["payable"] is False
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.update(workspace_revision=99),
+        lambda payload: payload["material"].update(period="2026-01"),
+        lambda payload: payload["material"].update(material_type="SUPPORTING_SCAN"),
+    ],
+)
+def test_test_workspace_organize_receipt_is_bound_to_the_requested_change(mutate):
+    payload = {
+        "schema_version": "payroll-test-material-organize-result/v1",
+        "data_scope": "TEST_ONLY",
+        "test_batch_id": "batch_demo",
+        "company_id": "company_demo",
+        "workspace_revision": 2,
+        "projection_revision": "b" * 64,
+        "material": {
+            "company_id": "company_demo",
+            "material_id": "material_unknown",
+            "routing_status": "AUTO_TEST",
+            "period": "2026-08",
+            "material_type": "PAYROLL_SHEET",
+            "payable": False,
+            "submission_supported": False,
+        },
+        "payment_submission_supported": False,
+        "payable": False,
+        "submission_supported": False,
+        "replayed": False,
+    }
+    mutate(payload)
+    entity, adapter = source(payload)
+    with pytest.raises(PayrollIntegrationError):
+        adapter.organize_material(
+            entity_ref=entity,
+            test_batch_id="batch_demo",
+            material_id="material_unknown",
+            expected_workspace_revision=1,
+            expected_period="2026-08",
+            expected_material_type="PAYROLL_SHEET",
+            provider_headers={},
+            body=b"{}",
+        )
+
+
+def test_test_workspace_validation_returns_only_test_review_batches():
+    payload = {
+        "schema_version": "payroll-test-batch-validation-result/v1",
+        "data_scope": "TEST_ONLY",
+        "test_batch_id": "batch_demo",
+        "company_id": "company_demo",
+        "workspace_revision": 2,
+        "ready_batch_count": 1,
+        "blocked_material_count": 0,
+        "batches": [
+            {
+                "batch_id": "batch_demo_2026_08",
+                "period": "2026-08",
+                "material_count": 2,
+                "payroll_sheet_count": 1,
+                "supporting_material_count": 1,
+                "status": "READY_FOR_TEST_REVIEW",
+            }
+        ],
+        "payment_submission_supported": False,
+        "payable": False,
+        "submission_supported": False,
+        "replayed": False,
+    }
+    entity, adapter = source(payload)
+    result = adapter.validate_batches(
+        entity_ref=entity,
+        test_batch_id="batch_demo",
+        expected_workspace_revision=2,
+        provider_headers={},
+        body=b"{}",
+    )
+    assert result.payload_copy()["ready_batch_count"] == 1
+    assert result.payload_copy()["submission_supported"] is False
+
+
+def test_test_workspace_validation_receipt_is_bound_to_the_requested_revision():
+    payload = {
+        "schema_version": "payroll-test-batch-validation-result/v1",
+        "data_scope": "TEST_ONLY",
+        "test_batch_id": "batch_demo",
+        "company_id": "company_demo",
+        "workspace_revision": 99,
+        "ready_batch_count": 0,
+        "blocked_material_count": 0,
+        "batches": [],
+        "payment_submission_supported": False,
+        "payable": False,
+        "submission_supported": False,
+        "replayed": False,
+    }
+    entity, adapter = source(payload)
+    with pytest.raises(PayrollIntegrationError):
+        adapter.validate_batches(
+            entity_ref=entity,
+            test_batch_id="batch_demo",
+            expected_workspace_revision=2,
+            provider_headers={},
+            body=b"{}",
+        )
+
+
+def preview_payload():
+    return {
+        "schema_version": "payroll-test-material-preview/v1",
+        "data_scope": "TEST_ONLY",
+        "test_batch_id": "batch_demo",
+        "company_id": "company_demo",
+        "material_id": "material_old",
+        "period": "2026-08",
+        "status": "READY_FOR_REVIEW",
+        "line_count": 1,
+        "total_net_pay_cents": 500000,
+        "lines": [
+            {
+                "company_id": "company_demo",
+                "employee_id": "emp_preview_001",
+                "employee_name": "示例员工甲",
+                "account_id": "acct_preview_001",
+                "account_masked": "****0138",
+                "payment_channel": "MYBANK",
+                "base_salary_cents": 500000,
+                "allowance_cents": 30000,
+                "bonus_cents": 20000,
+                "deduction_cents": 5000,
+                "social_insurance_cents": 18000,
+                "housing_fund_cents": 12000,
+                "individual_income_tax_cents": 15000,
+                "gross_pay_cents": 550000,
+                "net_pay_cents": 500000,
+                "notes": "脱敏测试材料",
+            }
+        ],
+        "exceptions": [],
+        "payment_submission_supported": False,
+        "payable": False,
+        "submission_supported": False,
+    }
+
+
+def test_test_workspace_preview_returns_masked_non_payable_lines():
+    entity, adapter = source(preview_payload())
+    result = adapter.preview_material(
+        entity_ref=entity,
+        test_batch_id="batch_demo",
+        material_id="material_old",
+        provider_headers={},
+    )
+    assert result.payload_copy()["lines"][0]["account_masked"] == "****0138"
+    assert result.payload_copy()["total_net_pay_cents"] == 500000
+    assert result.payload_copy()["submission_supported"] is False
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.update(company_id="company_other"),
+        lambda payload: payload["lines"][0].update(account_masked="6222000000000138"),
+        lambda payload: payload["lines"][0].update(account_id="acct_6222000000000138"),
+        lambda payload: payload["lines"][0].update(net_pay_cents=500000.0),
+        lambda payload: payload["lines"][0].update(gross_pay_cents=1),
+        lambda payload: payload["lines"][0].update(net_pay_cents=499999),
+        lambda payload: payload.update(total_net_pay_cents=1),
+        lambda payload: payload.update(payable=True),
+    ],
+)
+def test_test_workspace_preview_fails_closed_on_scope_money_or_payment_drift(mutate):
+    payload = preview_payload()
+    mutate(payload)
+    entity, adapter = source(payload)
+    with pytest.raises(PayrollIntegrationError):
+        adapter.preview_material(
+            entity_ref=entity,
+            test_batch_id="batch_demo",
+            material_id="material_old",
+            provider_headers={},
+        )
+
+
+def test_test_workspace_preview_accepts_an_exact_blocking_net_mismatch_for_review():
+    payload = preview_payload()
+    payload["status"] = "NEEDS_HUMAN_REVIEW"
+    payload["total_net_pay_cents"] = 512000
+    payload["lines"][0]["net_pay_cents"] = 512000
+    payload["exceptions"] = [
+        {
+            "code": "NET_PAY_MISMATCH",
+            "severity": "BLOCKING",
+            "row": 4,
+            "calculated_cents": 500000,
+            "stated_cents": 512000,
+        }
+    ]
+    entity, adapter = source(payload)
+    result = adapter.preview_material(
+        entity_ref=entity,
+        test_batch_id="batch_demo",
+        material_id="material_old",
+        provider_headers={},
+    )
+    assert result.payload_copy()["status"] == "NEEDS_HUMAN_REVIEW"
