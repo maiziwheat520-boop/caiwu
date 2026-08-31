@@ -2018,6 +2018,70 @@ describe('LedgerBridge Web API client', () => {
     expect(within(categoryPanel!).queryByText('待审核')).not.toBeInTheDocument()
   })
 
+  it('keeps same-source repeats and removes only one lower-priority cross-source copy per match', async () => {
+    const personalCandidates: ApiCandidate[] = [
+      ...['candidate-platform-spend-1', 'candidate-platform-spend-2'].map((id, index): ApiCandidate => ({
+        ...candidates[3],
+        id,
+        short_id: `C-PS0${index + 1}`,
+        business_unit: '个人',
+        business_unit_ref: 'personal-main',
+        amount_minor: 2500,
+        accounting_month: '2026-08',
+        category: '餐饮',
+        category_code: 'DINING',
+        summary: '微信 | 2026-08-02 | 支出 | 商户消费 | 餐厅 | 零钱 | 支付成功',
+      })),
+      {
+        ...candidates[3],
+        id: 'candidate-bank-spend-copy',
+        short_id: 'C-BS01',
+        source_channel: 'controlled_upload',
+        business_unit: '个人',
+        business_unit_ref: 'personal-main',
+        amount_minor: -2500,
+        accounting_month: '2026-08',
+        category: '餐饮',
+        category_code: 'DINING',
+        summary: '建设银行 | 2026-08-02 | 支出 | 消费 | 餐厅 | 储蓄卡 | 交易成功',
+      },
+      ...['candidate-bank-transfer-1', 'candidate-bank-transfer-2'].map((id, index): ApiCandidate => ({
+        ...candidates[3],
+        id,
+        short_id: `C-BT0${index + 1}`,
+        source_channel: 'controlled_upload',
+        business_unit: '个人',
+        business_unit_ref: 'personal-main',
+        amount_minor: -20000,
+        accounting_month: '2026-08',
+        category: '转账',
+        category_code: 'TRANSFER',
+        summary: '建设银行 | 2026-08-03 | 支出 | 转账 | 张三 | 储蓄卡 | 交易成功',
+      })),
+      {
+        ...candidates[3],
+        id: 'candidate-platform-transfer-copy',
+        short_id: 'C-PT01',
+        business_unit: '个人',
+        business_unit_ref: 'personal-main',
+        amount_minor: -20000,
+        accounting_month: '2026-08',
+        category: '转账',
+        category_code: 'TRANSFER',
+        summary: '支付宝 | 2026-08-03 | 支出 | 转账 | 张三 | 建设银行 | 交易成功',
+      },
+    ]
+    installFetch({ items: personalCandidates })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+
+    const summary = screen.getByRole('region', { name: '个人财务收支概览' })
+    expect(within(summary).getByText('¥450.00')).toBeInTheDocument()
+    expect(within(summary).getByText('4 条已确认个人收支')).toBeInTheDocument()
+    expect(screen.getByText('2 条跨来源重复记录已合并')).toBeInTheDocument()
+  })
+
   it('groups ordinary transfers by counterparty and filters to the selected object', async () => {
     const transferCandidates: ApiCandidate[] = [
       ...[-10000, 4000].map((amount, index): ApiCandidate => ({ ...candidates[0], id: `candidate-wangshang-${index}`, short_id: `C-WS0${index + 1}`, amount_minor: amount, accounting_month: '2026-05', summary: `支付宝 | 2026-05-0${index + 8} | ${amount < 0 ? '支出' : '收入'} | 投资理财 | 网商银行 | 账户余额 | 交易成功`, review_risks: [{ code: 'RELATED_ACCOUNT_STATEMENT_REQUIRED', message: '需关联另一侧账户同期流水' }] })),

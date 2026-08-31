@@ -244,7 +244,7 @@ function selectPersonalFinanceEntries(candidates: Candidate[]): PersonalFinanceS
     const entry = personalTransaction(candidate)
     return entry ? [entry] : []
   })
-  let excludedCount = candidates.length - eligible.length
+  const excludedCount = candidates.length - eligible.length
   let deduplicatedCount = 0
   const groups = eligible.reduce((result, entry) => {
     const direction = entry.cashflowMinor < 0 ? 'OUT' : 'IN'
@@ -259,12 +259,12 @@ function selectPersonalFinanceEntries(candidates: Candidate[]): PersonalFinanceS
     const isTransfer = group.some((entry) => /(转账|提现)/.test(entry.transactionType))
     const preferredKind = isTransfer ? 'BANK' : 'PLATFORM'
     const preferred = group.filter((entry) => entry.sourceKind === preferredKind)
-    if (preferred.length === 0) {
-      excludedCount += group.length
-      return []
-    }
-    deduplicatedCount += group.length - 1
-    return [preferred.sort((left, right) => left.candidate.id.localeCompare(right.candidate.id))[0]]
+    const lowerPriority = group.filter((entry) => entry.sourceKind !== preferredKind)
+    if (preferred.length === 0 || lowerPriority.length === 0) return group
+
+    const pairedCount = Math.min(preferred.length, lowerPriority.length)
+    deduplicatedCount += pairedCount
+    return [...preferred, ...lowerPriority.slice(pairedCount)]
   })
 
   return { entries, excludedCount, deduplicatedCount }
