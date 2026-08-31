@@ -65,6 +65,7 @@ def projection(company_id="company_demo", batch="batch_demo"):
         "payment_submission_supported": False,
         "payable": False,
         "submission_supported": False,
+        "auto_test_ready": True,
         "routing_counts": {"auto_test": 1, "review_required": 1, "date_unknown": 1},
         "materials": materials,
     }
@@ -93,6 +94,16 @@ def test_read_accepts_cutoff_and_unknown_date_without_blocking():
     }
 
 
+def test_date_unknown_accepts_a_valid_derived_period_but_keeps_unknown_routing():
+    payload = projection()
+    payload["materials"][2]["period"] = "2026-08"
+    entity, adapter = source(payload)
+    result = adapter.read_workspace(
+        entity_ref=entity, test_batch_id="batch_demo", provider_headers={}
+    )
+    assert result.payload_copy()["routing_counts"]["date_unknown"] == 1
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -100,6 +111,9 @@ def test_read_accepts_cutoff_and_unknown_date_without_blocking():
         lambda p: p["materials"][0].update(company_id="other_company"),
         lambda p: p.update(payable=True),
         lambda p: p["routing_counts"].update(auto_test=2),
+        lambda p: p.update(auto_test_ready=False),
+        lambda p: p["materials"][0].update(routing_status="INVALID"),
+        lambda p: p["materials"][0].update(period="2026-09"),
     ],
 )
 def test_projection_fails_closed_on_scope_safety_and_routing(mutate):

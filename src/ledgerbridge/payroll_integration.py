@@ -2692,6 +2692,7 @@ def _validate_test_workspace_projection(
                 "payment_submission_supported",
                 "payable",
                 "submission_supported",
+                "auto_test_ready",
                 "routing_counts",
                 "materials",
             }
@@ -2744,14 +2745,20 @@ def _validate_test_workspace_projection(
             _invalid_response("payroll test workspace material scope is invalid")
         seen.add(material_id)
         period = item.get("period")
-        if period is None:
-            expected_status = "DATE_UNKNOWN"
+        routing_status = item.get("routing_status")
+        if routing_status == "AUTO_TEST":
+            if period is None or _require_period(period, "period") > "2026-08":
+                _invalid_response("payroll test workspace date routing is invalid")
+            key = "auto_test"
+        elif routing_status == "REVIEW_REQUIRED":
+            if period is None or _require_period(period, "period") < "2026-09":
+                _invalid_response("payroll test workspace date routing is invalid")
+            key = "review_required"
+        elif routing_status == "DATE_UNKNOWN":
+            if period is not None:
+                _require_period(period, "period")
             key = "date_unknown"
         else:
-            parsed = _require_period(period, "period")
-            expected_status = "AUTO_TEST" if parsed <= "2026-08" else "REVIEW_REQUIRED"
-            key = "auto_test" if expected_status == "AUTO_TEST" else "review_required"
-        if item.get("routing_status") != expected_status:
             _invalid_response("payroll test workspace date routing is invalid")
         material_type = item.get("material_type")
         if material_type is not None:
@@ -2761,6 +2768,10 @@ def _validate_test_workspace_projection(
     for key, expected in actual.items():
         if _require_non_negative_integer(counts.get(key), f"routing_counts.{key}") != expected:
             _invalid_response("payroll test workspace routing counts are inconsistent")
+    if type(value.get("auto_test_ready")) is not bool:
+        _invalid_response("payroll test workspace auto-test readiness is invalid")
+    if value.get("auto_test_ready") is not (actual["auto_test"] > 0):
+        _invalid_response("payroll test workspace auto-test readiness is inconsistent")
 
 
 def _validate_test_workspace_clear_receipt(
