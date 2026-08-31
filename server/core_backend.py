@@ -393,6 +393,7 @@ class CoreBackedState:
 
     def company_reports(self, from_month: str, to_month: str) -> dict[str, object]:
         layers = []
+        posted_ledger_status = "AVAILABLE"
         for basis in _COMPANY_REPORT_BASES:
             query = urlencode(
                 {
@@ -401,10 +402,16 @@ class CoreBackedState:
                     "basis": basis,
                 }
             )
-            payload = self.client.json(
-                "GET",
-                f"/internal/v1/company-reports?{query}",
-            )
+            try:
+                payload = self.client.json(
+                    "GET",
+                    f"/internal/v1/company-reports?{query}",
+                )
+            except CoreBackendError as error:
+                if basis == "POSTED_LEDGER" and error.status in {404, 503}:
+                    posted_ledger_status = "UNAVAILABLE"
+                    continue
+                raise
             layers.append(
                 _company_report_layer_from_core(
                     payload,
@@ -418,6 +425,7 @@ class CoreBackedState:
             "contract_version": "ledgerbridge.company-reports-bff.v1",
             "from_month": from_month,
             "to_month": to_month,
+            "posted_ledger_status": posted_ledger_status,
             "layers": layers,
         }
 

@@ -341,6 +341,7 @@ export type CompanyReportsResponse = {
   contract_version: 'ledgerbridge.company-reports-bff.v1'
   from_month: string
   to_month: string
+  posted_ledger_status: 'AVAILABLE' | 'UNAVAILABLE'
   layers: CompanyReportLayer[]
 }
 

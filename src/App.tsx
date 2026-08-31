@@ -1493,6 +1493,7 @@ function CompanyReports() {
             companyRef={companyRef}
             companyName={identity.name}
             currencyCode={identity.currencyCode}
+            postedLedgerStatus={reports.posted_ledger_status}
             layers={reports.layers}
           />
         ))}
@@ -2052,10 +2053,11 @@ function reportMonthLabel(month: string) {
   return `${year} 年 ${Number(value)} 月`
 }
 
-function CompanyReportCard({ companyRef, companyName, currencyCode, layers }: {
+function CompanyReportCard({ companyRef, companyName, currencyCode, postedLedgerStatus, layers }: {
   companyRef: string
   companyName: string
   currencyCode: string
+  postedLedgerStatus: CompanyReportsResponse['posted_ledger_status']
   layers: CompanyReportLayer[]
 }) {
   const candidate = companyFor(layerFor(layers, 'CONFIRMED_CANDIDATE'), companyRef)
@@ -2064,6 +2066,10 @@ function CompanyReportCard({ companyRef, companyName, currencyCode, layers }: {
   const candidateData = confirmedMetrics(candidate)
   const statementData = statementMetrics(statement)
   const postedData = postedMetrics(posted)
+  const postedAvailable = postedLedgerStatus === 'AVAILABLE' && postedData !== null
+  const postedMoney = (amountMinor: number | undefined) => postedAvailable && amountMinor !== undefined
+    ? reportMoney(amountMinor, currencyCode)
+    : '待接正式账簿'
   const monthKeys = new Set<string>()
   ;[candidate, statement, posted].forEach((company) => company?.months.forEach((month) => monthKeys.add(month.month)))
   const months = [...monthKeys].sort((left, right) => right.localeCompare(left))
@@ -2079,9 +2085,9 @@ function CompanyReportCard({ companyRef, companyName, currencyCode, layers }: {
       </header>
 
       <section className="company-report-totals" aria-label={`${companyName} 正式财务总额`}>
-        <ReportTotal label="正式收入" value={reportMoney(postedData?.revenue_minor ?? 0, currencyCode)} />
-        <ReportTotal label="正式费用" value={reportMoney(postedData?.expense_minor ?? 0, currencyCode)} />
-        <ReportTotal label="正式利润" value={reportMoney(postedData?.profit_minor ?? 0, currencyCode)} emphasis />
+        <ReportTotal label="正式收入" value={postedMoney(postedData?.revenue_minor)} />
+        <ReportTotal label="正式费用" value={postedMoney(postedData?.expense_minor)} />
+        <ReportTotal label="正式利润" value={postedMoney(postedData?.profit_minor)} emphasis />
       </section>
 
       <section className="company-report-layers" aria-label={`${companyName} 三层事实`}>
@@ -2097,8 +2103,8 @@ function CompanyReportCard({ companyRef, companyName, currencyCode, layers }: {
         </div>
         <div>
           <span>正式入账</span>
-          <strong>正式入账 {postedData?.posted_entry_count ?? 0} 条</strong>
-          <small>{postedData?.source_count ?? 0} 个入账来源</small>
+          <strong>{postedAvailable ? `正式入账 ${postedData.posted_entry_count} 条` : '待接正式账簿'}</strong>
+          <small>{postedAvailable ? `${postedData.source_count} 个入账来源` : '正式账簿接口暂不可用，未显示任何 0 值'}</small>
         </div>
       </section>
 
@@ -2127,6 +2133,7 @@ function CompanyReportCard({ companyRef, companyName, currencyCode, layers }: {
               candidate={monthFor(candidate, month)}
               statement={monthFor(statement, month)}
               posted={monthFor(posted, month)}
+              postedLedgerStatus={postedLedgerStatus}
             />
           ))}
         </div>
@@ -2145,17 +2152,22 @@ function ReportAlert({ children }: { children: React.ReactNode }) {
   return <div className="company-report-alert"><Warning size={17} /><strong>{children}</strong><span>不计入正式财务总额</span></div>
 }
 
-function CompanyReportMonthCard({ month, currencyCode, candidate, statement, posted }: {
+function CompanyReportMonthCard({ month, currencyCode, candidate, statement, posted, postedLedgerStatus }: {
   month: string
   currencyCode: string
   candidate: CompanyReportMonth | undefined
   statement: CompanyReportMonth | undefined
   posted: CompanyReportMonth | undefined
+  postedLedgerStatus: CompanyReportsResponse['posted_ledger_status']
 }) {
   const candidateData = confirmedMetrics(candidate)
   const statementData = statementMetrics(statement)
   const postedData = postedMetrics(posted)
-  const postedBusinessUnits = posted?.business_unit_breakdown_status === 'AVAILABLE'
+  const postedAvailable = postedLedgerStatus === 'AVAILABLE' && postedData !== null
+  const postedMoney = (amountMinor: number | undefined) => postedAvailable && amountMinor !== undefined
+    ? reportMoney(amountMinor, currencyCode)
+    : '待接正式账簿'
+  const postedBusinessUnits = postedAvailable && posted?.business_unit_breakdown_status === 'AVAILABLE'
     ? posted.business_units
     : []
 
@@ -2163,20 +2175,23 @@ function CompanyReportMonthCard({ month, currencyCode, candidate, statement, pos
     <section className="company-month-card">
       <header>
         <div><span>归属月份</span><h3>{reportMonthLabel(month)}</h3></div>
-        <small>{candidateData?.confirmed_count ?? 0} 条来源 · {statementData?.confirmed_transaction_count ?? 0} 条流水 · {postedData?.posted_entry_count ?? 0} 条入账</small>
+        <small>{candidateData?.confirmed_count ?? 0} 条来源 · {statementData?.confirmed_transaction_count ?? 0} 条流水 · {postedAvailable ? `${postedData.posted_entry_count} 条入账` : '待接正式账簿'}</small>
       </header>
       <div className="company-month-totals">
-        <span>正式收入 <strong>{reportMoney(postedData?.revenue_minor ?? 0, currencyCode)}</strong></span>
-        <span>正式费用 <strong>{reportMoney(postedData?.expense_minor ?? 0, currencyCode)}</strong></span>
-        <span>正式利润 <strong>{reportMoney(postedData?.profit_minor ?? 0, currencyCode)}</strong></span>
+        <span>正式收入 <strong>{postedMoney(postedData?.revenue_minor)}</strong></span>
+        <span>正式费用 <strong>{postedMoney(postedData?.expense_minor)}</strong></span>
+        <span>正式利润 <strong>{postedMoney(postedData?.profit_minor)}</strong></span>
       </div>
+      {!postedAvailable ? (
+        <p className="company-breakdown-state warning">正式账簿接口暂不可用；未显示任何 0 值。</p>
+      ) : null}
       {statement?.business_unit_breakdown_status === 'UNAVAILABLE_ATTRIBUTION_PENDING' ? (
         <p className="company-breakdown-state warning">账户流水的业务单元归属待补；公司级现金流仍保留。</p>
       ) : null}
-      {posted?.business_unit_breakdown_status === 'UNAVAILABLE_MISSING_SNAPSHOT' ? (
+      {postedAvailable && posted?.business_unit_breakdown_status === 'UNAVAILABLE_MISSING_SNAPSHOT' ? (
         <p className="company-breakdown-state warning">历史业务单元快照缺失；未使用当前维度名称回填。</p>
       ) : null}
-      {posted?.business_unit_breakdown_status === 'EMPTY' ? (
+      {postedAvailable && posted?.business_unit_breakdown_status === 'EMPTY' ? (
         <p className="company-breakdown-state">正式入账层的业务单元事实确认为空。</p>
       ) : null}
       {postedBusinessUnits.length > 0 ? (

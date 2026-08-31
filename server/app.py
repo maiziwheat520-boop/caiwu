@@ -271,6 +271,7 @@ class SyntheticState:
             "contract_version": "ledgerbridge.company-reports-bff.v1",
             "from_month": from_month,
             "to_month": to_month,
+            "posted_ledger_status": "AVAILABLE",
             "layers": [
                 {
                     "contract_version": "ledgerbridge.company-report.v1",

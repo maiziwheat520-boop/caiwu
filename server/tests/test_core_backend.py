@@ -305,6 +305,7 @@ def company_reports_bff() -> dict[str, object]:
         "contract_version": "ledgerbridge.company-reports-bff.v1",
         "from_month": "2026-01",
         "to_month": "2026-08",
+        "posted_ledger_status": "AVAILABLE",
         "layers": [core_company_report_layer(basis) for basis in REPORT_BASES],
     }
 
@@ -392,6 +393,33 @@ class StableReferenceCoreClient(FakeCoreClient):
                 "category"
             ) not in {"SETTLEMENT", "OTHER"}:
                 raise CoreBackendError(404, {"code": "RESOURCE_NOT_VISIBLE"})
+        return super().json(method, path, body=body, headers=headers)
+
+
+class UnavailableCompanyReportCoreClient(FakeCoreClient):
+    def __init__(self, basis: str, status: int = 503) -> None:
+        super().__init__()
+        self.unavailable_basis = basis
+        self.unavailable_status = status
+
+    def json(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        if (
+            method == "GET"
+            and path.startswith("/internal/v1/company-reports?")
+            and f"basis={self.unavailable_basis}" in path
+        ):
+            self.calls.append((method, path, body, dict(headers or {})))
+            raise CoreBackendError(
+                self.unavailable_status,
+                {"code": "CORE_COMPANY_REPORT_UNAVAILABLE"},
+            )
         return super().json(method, path, body=body, headers=headers)
 
 
@@ -804,6 +832,27 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 for basis in REPORT_BASES
             ],
         )
+
+    def test_company_reports_preserve_other_layers_when_posted_ledger_is_unavailable(self) -> None:
+        for status in (404, 503):
+            with self.subTest(status=status):
+                client = UnavailableCompanyReportCoreClient("POSTED_LEDGER", status)
+
+                report = build_state(client).company_reports("2026-01", "2026-08")
+
+                self.assertEqual(report["posted_ledger_status"], "UNAVAILABLE")
+                self.assertEqual(
+                    [layer["basis"] for layer in report["layers"]],  # type: ignore[index]
+                    ["CONFIRMED_CANDIDATE", "ACCOUNT_STATEMENT"],
+                )
+
+    def test_company_reports_do_not_mask_non_posted_layer_failures(self) -> None:
+        client = UnavailableCompanyReportCoreClient("ACCOUNT_STATEMENT")
+
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(client).company_reports("2026-01", "2026-08")
+
+        self.assertEqual(raised.exception.status, 503)
 
     def test_company_reports_reject_private_fields_instead_of_silently_dropping_them(self) -> None:
         client = FakeCoreClient()

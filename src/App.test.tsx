@@ -309,6 +309,7 @@ function companyReports(withCompany = false, posted = false) {
     contract_version: 'ledgerbridge.company-reports-bff.v1',
     from_month: '2026-01',
     to_month: '2026-08',
+    posted_ledger_status: 'AVAILABLE',
     layers: reportBases.map((basis) => ({
       contract_version: 'ledgerbridge.company-report.v1',
       basis,
@@ -1619,6 +1620,22 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.getByText('146 条来源待审核')).toBeInTheDocument()
     expect(screen.getAllByText('¥0.00').length).toBeGreaterThanOrEqual(3)
     expect(screen.getByText('正式入账 0 条')).toBeInTheDocument()
+  })
+
+  it('keeps source layers visible without showing zero when the posted ledger is unavailable', async () => {
+    window.history.replaceState({}, '', '/company-reports')
+    const reports = companyReports(true)
+    reports.posted_ledger_status = 'UNAVAILABLE'
+    reports.layers = reports.layers.filter((layer) => layer.basis !== 'POSTED_LEDGER')
+    installFetch({ runtimeMode: 'core-backed', companyReportResponse: reports })
+
+    renderApp()
+
+    expect(await screen.findByRole('heading', { name: '演示公司' })).toBeInTheDocument()
+    expect(screen.getByText('已确认来源 61 条')).toBeInTheDocument()
+    const formalTotals = screen.getByRole('region', { name: '演示公司 正式财务总额' })
+    expect(within(formalTotals).getAllByText('待接正式账簿')).toHaveLength(3)
+    expect(within(formalTotals).queryByText('¥0.00')).not.toBeInTheDocument()
   })
 
   it('distinguishes unavailable business-unit breakdowns without backfilling names', async () => {

@@ -143,6 +143,7 @@ class SyntheticBffTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["contract_version"], "ledgerbridge.company-reports-bff.v1")
+        self.assertEqual(payload["posted_ledger_status"], "AVAILABLE")
         self.assertRegex(payload["from_month"], r"^[0-9]{4}-01$")
         self.assertRegex(payload["to_month"], r"^[0-9]{4}-(0[1-9]|1[0-2])$")
         self.assertEqual(
