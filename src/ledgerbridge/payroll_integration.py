@@ -522,12 +522,20 @@ class HttpPayrollTestWorkspaceSource:
             raise PayrollIntegrationError(
                 "PAYROLL_TEST_WORKSPACE_DISABLED", "payroll test workspaces are disabled"
             )
-        return self._transport.get_json(
-            self._base_url + path,
-            timeout_seconds=self._timeout_seconds,
-            max_bytes=MAX_RESPONSE_BYTES,
-            headers=headers,
-        )
+        try:
+            return self._transport.get_json(
+                self._base_url + path,
+                timeout_seconds=self._timeout_seconds,
+                max_bytes=MAX_RESPONSE_BYTES,
+                headers=headers,
+            )
+        except PayrollIntegrationError as exc:
+            if isinstance(exc.__cause__, HTTPError) and exc.__cause__.code == 404:
+                raise PayrollIntegrationError(
+                    "PAYROLL_TEST_WORKSPACE_NOT_FOUND",
+                    "payroll test workspace is unavailable",
+                ) from exc
+            raise
 
     def _post(self, path: str, headers: Mapping[str, str], body: bytes) -> Mapping[str, object]:
         if not self._enabled:
@@ -2708,7 +2716,8 @@ def _validate_test_workspace_projection(
         or value.get("cutoff_date") != "2026-08-31"
     ):
         _invalid_response("payroll test workspace scope is invalid")
-    _require_non_negative_integer(value.get("workspace_revision"), "workspace_revision")
+    if _require_non_negative_integer(value.get("workspace_revision"), "workspace_revision") < 1:
+        _invalid_response("payroll test workspace revision is invalid")
     revision = _require_sha256(value.get("projection_revision"), "projection_revision")
     if value.get("etag") != f'"{revision}"':
         _invalid_response("payroll test workspace etag is invalid")

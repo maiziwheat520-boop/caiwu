@@ -136,6 +136,7 @@ class _TestWorkspaceSource:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.company_id = COMPANY
+        self.read_error: PayrollIntegrationError | None = None
 
     def _result(self, name: str, **kwargs: object) -> PayrollTestWorkspaceResult:
         self.calls.append((name, kwargs))
@@ -154,6 +155,8 @@ class _TestWorkspaceSource:
         )
 
     def read_workspace(self, **kwargs: object) -> PayrollTestWorkspaceResult:
+        if self.read_error is not None:
+            raise self.read_error
         return self._result("read", **kwargs)
 
     def create_workspace(self, **kwargs: object) -> PayrollTestWorkspaceResult:
@@ -563,6 +566,27 @@ def test_test_workspace_rejects_provider_company_scope_mismatch() -> None:
     )
     assert response.status_code == 422
     assert response.json()["code"] == "PAYROLL_IDENTITY_SCOPE_MISMATCH"
+
+
+def test_test_workspace_missing_is_preserved_as_core_404_for_autocreate() -> None:
+    client, source = _test_workspace_client()
+    source.read_error = PayrollIntegrationError(
+        "PAYROLL_TEST_WORKSPACE_NOT_FOUND", "workspace missing"
+    )
+    batch_id = "batch_test_2026_08"
+    path = f"/internal/v1/payroll/test-workspaces/{batch_id}"
+    response = client.get(
+        path,
+        headers={
+            "X-LedgerBridge-User-Assertion": _assertion(
+                path=path,
+                action="payroll.test_workspace.read",
+                resource_ref=batch_id,
+            )
+        },
+    )
+    assert response.status_code == 404
+    assert response.json()["code"] == "PAYROLL_TEST_WORKSPACE_NOT_FOUND"
 
 
 def test_test_workspace_commands_reject_wrong_action_path_and_resource() -> None:

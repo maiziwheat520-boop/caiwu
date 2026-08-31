@@ -1,4 +1,5 @@
 from copy import deepcopy
+from urllib.error import HTTPError
 from uuid import uuid4
 
 import pytest
@@ -18,6 +19,17 @@ class Transport:
 
     def post_json(self, *_args, **_kwargs):
         return deepcopy(self.response)
+
+
+class MissingTransport(Transport):
+    status_code = 404
+
+    def get_json(self, *_args, **_kwargs):
+        cause = HTTPError("http://payroll/test", self.status_code, "missing", {}, None)
+        try:
+            raise cause
+        except HTTPError as exc:
+            raise PayrollIntegrationError("PAYROLL_PROVIDER_REJECTED", "provider rejected") from exc
 
 
 def projection(company_id="company_demo", batch="batch_demo"):
@@ -104,6 +116,36 @@ def test_date_unknown_accepts_a_valid_derived_period_but_keeps_unknown_routing()
     assert result.payload_copy()["routing_counts"]["date_unknown"] == 1
 
 
+def test_test_workspace_get_maps_only_explicit_provider_404_to_stable_missing():
+    entity = uuid4()
+    adapter = HttpPayrollTestWorkspaceSource(
+        base_url="http://payroll:4318",
+        timeout_seconds=2,
+        company_mapping={"company_demo": entity},
+        enabled=True,
+        transport=MissingTransport({}),
+    )
+    with pytest.raises(PayrollIntegrationError) as captured:
+        adapter.read_workspace(entity_ref=entity, test_batch_id="batch_demo", provider_headers={})
+    assert captured.value.error_code == "PAYROLL_TEST_WORKSPACE_NOT_FOUND"
+
+
+def test_test_workspace_get_keeps_other_provider_rejections_fail_closed():
+    transport = MissingTransport({})
+    transport.status_code = 403
+    entity = uuid4()
+    adapter = HttpPayrollTestWorkspaceSource(
+        base_url="http://payroll:4318",
+        timeout_seconds=2,
+        company_mapping={"company_demo": entity},
+        enabled=True,
+        transport=transport,
+    )
+    with pytest.raises(PayrollIntegrationError) as captured:
+        adapter.read_workspace(entity_ref=entity, test_batch_id="batch_demo", provider_headers={})
+    assert captured.value.error_code == "PAYROLL_PROVIDER_REJECTED"
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -114,6 +156,7 @@ def test_date_unknown_accepts_a_valid_derived_period_but_keeps_unknown_routing()
         lambda p: p.update(auto_test_ready=False),
         lambda p: p["materials"][0].update(routing_status="INVALID"),
         lambda p: p["materials"][0].update(period="2026-09"),
+        lambda p: p.update(workspace_revision=0),
     ],
 )
 def test_projection_fails_closed_on_scope_safety_and_routing(mutate):

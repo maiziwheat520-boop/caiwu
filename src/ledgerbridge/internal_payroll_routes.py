@@ -263,7 +263,10 @@ class InternalPayrollRoute(APIRoute):
 def _payroll_error_response(error: PayrollIntegrationError) -> JSONResponse:
     if error.error_code == "PAYROLL_PUBLICATION_ID_INVALID":
         status_code = status.HTTP_400_BAD_REQUEST
-    elif error.error_code == "PAYROLL_PUBLICATION_NOT_FOUND":
+    elif error.error_code in {
+        "PAYROLL_PUBLICATION_NOT_FOUND",
+        "PAYROLL_TEST_WORKSPACE_NOT_FOUND",
+    }:
         status_code = status.HTTP_404_NOT_FOUND
     elif error.error_code in {
         "PAYROLL_IDEMPOTENCY_CONFLICT",
