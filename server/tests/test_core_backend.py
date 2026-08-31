@@ -1737,6 +1737,7 @@ class CoreBackedUnlockBffTests(unittest.TestCase):
         *,
         authenticated: bool = True,
         csrf: str = "csrf-token",
+        target: str = "/api/v1/evidence/unlocks",
     ) -> tuple[int, dict[str, object]]:
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
         headers = {
@@ -1750,7 +1751,7 @@ class CoreBackedUnlockBffTests(unittest.TestCase):
             headers["Cookie"] = f"{COOKIE_NAME}=session-token"
         connection.request(
             "POST",
-            "/api/v1/evidence/unlocks",
+            target,
             body=json.dumps(body).encode("utf-8"),
             headers=headers,
         )
@@ -1816,6 +1817,23 @@ class CoreBackedUnlockBffTests(unittest.TestCase):
         self.assertEqual(self.client.unlock_calls, 0)
         for _, _, secret_fragment in cases:
             self.assertNotIn(secret_fragment, capture.getvalue())
+
+    def test_rejects_unlock_query_without_logging_its_value(self) -> None:
+        secret = "url-query-secret"
+        capture = io.StringIO()
+        with redirect_stdout(capture):
+            status, problem = self.request(
+                {
+                    "source_ref": "24600000-0000-4000-8000-000000000001",
+                    "password": "body-only-secret",
+                },
+                target=f"/api/v1/evidence/unlocks?password={secret}",
+            )
+        self.assertEqual(status, 400)
+        self.assertEqual(problem["code"], "INVALID_EVIDENCE_UNLOCK_REQUEST")
+        self.assertEqual(self.client.unlock_calls, 0)
+        self.assertNotIn(secret, capture.getvalue())
+        self.assertNotIn("body-only-secret", capture.getvalue())
 
     def test_core_failure_is_generic_and_password_is_not_logged_or_returned(self) -> None:
         self.client.fail_unlock = True

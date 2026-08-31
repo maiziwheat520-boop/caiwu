@@ -2959,7 +2959,8 @@ function FilesAndConnections({ candidates, connections, csrfToken, onOpenCandida
   onRefresh: () => Promise<boolean>
   onNotice: (notice: Notice) => void
 }) {
-  const [unlockEvidence, setUnlockEvidence] = useState<EvidenceReference | null>(null)
+  const [selectedUnlockEvidence, setSelectedUnlockEvidence] = useState<EvidenceReference | null>(null)
+  const [dismissedUnlockSources, setDismissedUnlockSources] = useState<Set<string>>(() => new Set())
   const connection = (id: ConnectionStatus['id']) => connections.find((item) => item.id === id)
   const evidenceLibrary = [...candidates.reduce((items, candidate) => {
     for (const evidence of candidate.evidence) {
@@ -2981,6 +2982,14 @@ function FilesAndConnections({ candidates, connections, csrfToken, onOpenCandida
     }
     return items
   }, new Map<string, { evidence: EvidenceReference; candidates: Candidate[]; sources: Set<string>; periods: Set<string> }>()).values()]
+  const automaticUnlockEvidence = csrfToken
+    ? evidenceLibrary.find(({ evidence }) => (
+        evidence.unlock_status === 'PASSWORD_REQUIRED'
+        && Boolean(evidence.source_ref)
+        && !dismissedUnlockSources.has(evidence.source_ref ?? '')
+      ))?.evidence ?? null
+    : null
+  const unlockEvidence = selectedUnlockEvidence ?? automaticUnlockEvidence
   const materialGaps = [...candidates.reduce((items, candidate) => {
     for (const risk of candidate.reviewRisks) {
       if (!materialRiskCodes.has(risk.code)) continue
@@ -2995,6 +3004,15 @@ function FilesAndConnections({ candidates, connections, csrfToken, onOpenCandida
     }
     return items
   }, new Map<string, { material: string; period: string; reasons: Set<string>; candidates: Set<string> }>()).values()]
+
+  const closeUnlockDialog = () => {
+    const dismissedSourceRef = unlockEvidence?.source_ref
+    if (dismissedSourceRef) {
+      setDismissedUnlockSources((current) => new Set(current).add(dismissedSourceRef))
+    }
+    setSelectedUnlockEvidence(null)
+  }
+
   return (
     <>
       <PageHeader
@@ -3017,7 +3035,7 @@ function FilesAndConnections({ candidates, connections, csrfToken, onOpenCandida
                   <div className="evidence-library-title"><FileText size={20} /><div><strong>{item.evidence.original_filename ?? (item.evidence.kind === 'message' ? '消息原文' : '原始文件')}</strong><span>{[...item.sources].join('、')}</span></div><Badge color={hasPending ? 'amber' : allConfirmed ? 'green' : 'gray'}>{status}</Badge></div>
                   <div className="evidence-library-meta"><span>{[...item.periods].map(accountingMonthLabel).join('、') || '期间待确认'}</span><span>证据 {item.evidence.id}</span></div>
                   {item.evidence.unlock_status === 'PASSWORD_REQUIRED' ? (
-                    <Button className="evidence-unlock-button" size="1" variant="soft" color="amber" disabled={!csrfToken || !item.evidence.source_ref} onClick={() => setUnlockEvidence(item.evidence)}>输入解压密码</Button>
+                    <Button className="evidence-unlock-button" size="1" variant="soft" color="amber" disabled={!csrfToken || !item.evidence.source_ref} onClick={() => setSelectedUnlockEvidence(item.evidence)}>输入解压密码</Button>
                   ) : null}
                   <details>
                     <summary>关联 {item.candidates.length} 条候选</summary>
@@ -3076,7 +3094,7 @@ function FilesAndConnections({ candidates, connections, csrfToken, onOpenCandida
         <EvidenceUnlockDialog
           evidence={unlockEvidence}
           csrfToken={csrfToken}
-          onClose={() => setUnlockEvidence(null)}
+          onClose={closeUnlockDialog}
           onUnlocked={async () => {
             const refreshed = await onRefresh()
             onNotice(refreshed

@@ -492,6 +492,7 @@ paths:
   /api/v1/evidence/unlocks:
     post:
       operationId: unlockEvidenceSource
+      x-ledgerbridge-reject-unknown-query: true
       description: >-
         Forward one in-memory archive password to the configured Core adapter.
         The password is never persisted, logged, placed in a URL, or returned.
@@ -528,6 +529,12 @@ paths:
                   unlocked:
                     type: boolean
                     const: true
+        "400":
+          description: Query parameters are rejected before the request is processed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "422":

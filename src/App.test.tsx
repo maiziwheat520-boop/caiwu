@@ -1372,7 +1372,7 @@ describe('LedgerBridge Web API client', () => {
     expect(await screen.findByText('原始消息内容已直接展示')).toBeInTheDocument()
   })
 
-  it('shows a password-only dialog only for locked evidence, prevents duplicate submit, and refreshes after success', async () => {
+  it('opens a password-only dialog for locked evidence, prevents duplicate submit, and refreshes after success', async () => {
     const sourceRef = '21000000-0000-4000-8000-000000000001'
     const secondSourceRef = '21000000-0000-4000-8000-000000000004'
     const lockedEvidence = {
@@ -1411,11 +1411,9 @@ describe('LedgerBridge Web API client', () => {
     await screen.findByText('早上好，今天有几项需要确认')
     fireEvent.click(screen.getAllByText('文件与连接')[0])
 
-    const unlockButton = screen.getAllByRole('button', { name: '输入解压密码' })[0]
-    expect(screen.getAllByRole('button', { name: '输入解压密码' })).toHaveLength(2)
+    expect(document.querySelectorAll('.evidence-unlock-button')).toHaveLength(2)
     expect(screen.getByText('ordinary-statement.xlsx')).toBeInTheDocument()
-    fireEvent.click(unlockButton)
-    const passwordInput = screen.getByLabelText('解压密码')
+    const passwordInput = await screen.findByLabelText('解压密码')
     expect(passwordInput).toHaveAttribute('type', 'password')
     fireEvent.change(passwordInput, { target: { value: 'ephemeral-test-password' } })
     const submitButton = screen.getByRole('button', { name: '解锁账单' })
@@ -1425,7 +1423,7 @@ describe('LedgerBridge Web API client', () => {
     await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/evidence/unlocks')).toHaveLength(1))
     releaseUnlock()
     expect(await screen.findByText('账单已解锁，数据已刷新')).toBeInTheDocument()
-    await waitFor(() => expect(screen.getAllByRole('button', { name: '输入解压密码' })).toHaveLength(1))
+    await waitFor(() => expect(document.querySelectorAll('.evidence-unlock-button')).toHaveLength(1))
     expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/candidates').length).toBeGreaterThanOrEqual(2)
 
     const unlockCall = fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/evidence/unlocks')[0]
@@ -1435,14 +1433,39 @@ describe('LedgerBridge Web API client', () => {
     expect(JSON.parse(String(unlockCall[1]?.body))).toEqual({ source_ref: sourceRef, password: 'ephemeral-test-password' })
     expect(document.body).not.toHaveTextContent('ephemeral-test-password')
 
-    fireEvent.click(screen.getByRole('button', { name: '输入解压密码' }))
-    fireEvent.change(screen.getByLabelText('解压密码'), { target: { value: 'second-ephemeral-password' } })
+    const secondPasswordInput = await screen.findByLabelText('解压密码')
+    fireEvent.change(secondPasswordInput, { target: { value: 'second-ephemeral-password' } })
     fireEvent.click(screen.getByRole('button', { name: '解锁账单' }))
     await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/evidence/unlocks')).toHaveLength(2))
-    await waitFor(() => expect(screen.queryByRole('button', { name: '输入解压密码' })).not.toBeInTheDocument())
+    await waitFor(() => expect(document.querySelector('.evidence-unlock-button')).toBeNull())
     const secondUnlockCall = fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/evidence/unlocks')[1]
     expect(JSON.parse(String(secondUnlockCall[1]?.body))).toEqual({ source_ref: secondSourceRef, password: 'second-ephemeral-password' })
     expect(document.body).not.toHaveTextContent('second-ephemeral-password')
+  })
+
+  it('keeps a dismissed automatic unlock prompt closed until the user reopens it', async () => {
+    const lockedEvidence = {
+      id: '21500000-0000-4000-8000-000000000002',
+      kind: 'attachment' as const,
+      media_type: 'application/zip',
+      sha256: 'e'.repeat(64),
+      original_filename: 'dismissed-encrypted-statement.zip',
+      unlock_status: 'PASSWORD_REQUIRED' as const,
+      source_ref: '21500000-0000-4000-8000-000000000001',
+    }
+    installFetch({
+      items: [{ ...candidates[0], id: 'candidate-dismissed-unlock', short_id: 'C-LK05', evidence: [lockedEvidence] }],
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('文件与连接')[0])
+
+    expect(await screen.findByLabelText('解压密码')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    await waitFor(() => expect(screen.queryByLabelText('解压密码')).not.toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: '输入解压密码' }))
+    expect(await screen.findByLabelText('解压密码')).toBeInTheDocument()
   })
 
   it('clears the password and hides Core failure text after an unlock failure', async () => {
@@ -1463,8 +1486,7 @@ describe('LedgerBridge Web API client', () => {
     renderApp()
     await screen.findByText('早上好，今天有几项需要确认')
     fireEvent.click(screen.getAllByText('文件与连接')[0])
-    fireEvent.click(screen.getByRole('button', { name: '输入解压密码' }))
-    const passwordInput = screen.getByLabelText('解压密码')
+    const passwordInput = await screen.findByLabelText('解压密码')
     fireEvent.change(passwordInput, { target: { value: 'must-not-leak' } })
     fireEvent.click(screen.getByRole('button', { name: '解锁账单' }))
 
@@ -1491,8 +1513,7 @@ describe('LedgerBridge Web API client', () => {
     renderApp()
     await screen.findByText('早上好，今天有几项需要确认')
     fireEvent.click(screen.getAllByText('文件与连接')[0])
-    fireEvent.click(screen.getByRole('button', { name: '输入解压密码' }))
-    fireEvent.change(screen.getByLabelText('解压密码'), { target: { value: 'accepted-password' } })
+    fireEvent.change(await screen.findByLabelText('解压密码'), { target: { value: 'accepted-password' } })
     fireEvent.click(screen.getByRole('button', { name: '解锁账单' }))
 
     expect(await screen.findByText('已解锁，但列表刷新失败，请重试刷新')).toBeInTheDocument()

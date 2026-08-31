@@ -1181,7 +1181,8 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         # A rejected POST can leave an unread body. Close the connection so those
         # bytes can never be interpreted as a second HTTP request.
         self.close_connection = True
-        path = urlsplit(self.path).path
+        split = urlsplit(self.path)
+        path = split.path
         if self._auth_post(path):
             return
         decision_match = DECISION_PATH.fullmatch(path)
@@ -1195,6 +1196,9 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             and payroll_batch_command is None
         ):
             self._send_json(404 if path.startswith("/api/") else 405, _problem(404 if path.startswith("/api/") else 405, "API_ROUTE_NOT_FOUND" if path.startswith("/api/") else "METHOD_NOT_ALLOWED", "路径不接受该请求"))
+            return
+        if evidence_unlock and split.query:
+            self._send_json(400, _problem(400, "INVALID_EVIDENCE_UNLOCK_REQUEST", "解锁请求不接受查询参数"))
             return
         if not self._require_session():
             return
@@ -1366,7 +1370,11 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def log_message(self, format: str, *args: object) -> None:
-        print(f"{self.client_address[0]} {format % args}", flush=True)
+        safe_args = args
+        if urlsplit(self.path).path == EVIDENCE_UNLOCK_PATH:
+            safe_request_line = f"{self.command} {EVIDENCE_UNLOCK_PATH} {self.request_version}"
+            safe_args = tuple(safe_request_line if value == self.requestline else value for value in args)
+        print(f"{self.client_address[0]} {format % safe_args}", flush=True)
 
 
 class PreviewServer(ThreadingHTTPServer):
