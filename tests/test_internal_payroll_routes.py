@@ -123,6 +123,9 @@ def test_payroll_router_exposes_only_frozen_reads_and_receipt_verification() -> 
         ("/internal/v1/payroll/verification", {"GET"}),
         ("/internal/v1/payroll/batches/{batch_id}/verify-receipts", {"POST"}),
         ("/internal/v1/payroll-publications/{publication_id}", {"GET"}),
+        ("/internal/v1/payroll/test-workspaces/{test_batch_id}", {"GET"}),
+        ("/internal/v1/payroll/test-workspaces", {"POST"}),
+        ("/internal/v1/payroll/test-workspaces/{test_batch_id}/clear", {"POST"}),
     ]
 
 

@@ -116,6 +116,7 @@ class Settings(BaseSettings):
         max_length=200,
     )
     enable_payroll_commands: bool = False
+    enable_payroll_test_workspaces: bool = False
     payroll_provider_trusted_command_contract: Literal[
         "disabled",
         "payroll-trusted-command/v1",
@@ -382,6 +383,8 @@ class Settings(BaseSettings):
                 raise ValueError("payroll commands require complete provider assertion settings")
         elif self.payroll_command_allowlist:
             raise ValueError("payroll command allowlist must be empty while commands are disabled")
+        if self.enable_payroll_test_workspaces and not self.enable_payroll_integration:
+            raise ValueError("payroll test workspaces require payroll integration")
 
         if (self.runner_manifest_path is None) != (self.runner_verification_keys_path is None):
             raise ValueError(

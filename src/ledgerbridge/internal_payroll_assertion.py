@@ -35,6 +35,9 @@ PayrollAction = Literal[
     "payroll.batch.approve",
     "payroll.batch.verify-receipts",
     "payroll.publication.read",
+    "payroll.test_workspace.read",
+    "payroll.test_workspace.create",
+    "payroll.test_workspace.clear",
 ]
 
 

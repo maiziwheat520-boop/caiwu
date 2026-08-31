@@ -21,11 +21,16 @@ from ledgerbridge.internal_payroll_routes import (
     InMemoryPayrollAssertionReplayStore,
     get_payroll_assertion_replay_store,
     get_payroll_live_source,
+    get_payroll_test_workspace_source,
     router,
 )
 from ledgerbridge.internal_read_auth import get_internal_read_principal
 from ledgerbridge.internal_read_contract import Capability, EntityGrant, WorkloadPrincipal
-from ledgerbridge.payroll_integration import PayrollIntegrationError, PayrollLiveRead
+from ledgerbridge.payroll_integration import (
+    PayrollIntegrationError,
+    PayrollLiveRead,
+    PayrollTestWorkspaceResult,
+)
 
 ENTITY = UUID("10000000-0000-4000-8000-000000000001")
 COMPANY = "company_live_hotel"
@@ -127,6 +132,37 @@ class _LiveSource:
         )
 
 
+class _TestWorkspaceSource:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+        self.company_id = COMPANY
+
+    def _result(self, name: str, **kwargs: object) -> PayrollTestWorkspaceResult:
+        self.calls.append((name, kwargs))
+        return PayrollTestWorkspaceResult(
+            entity_ref=ENTITY,
+            company_id=self.company_id,
+            replayed=False,
+            payload=MappingProxyType(
+                {
+                    "schema_version": "payroll-ledgerbridge-test-projection/v1",
+                    "data_scope": "TEST_ONLY",
+                    "payable": False,
+                    "submission_supported": False,
+                }
+            ),
+        )
+
+    def read_workspace(self, **kwargs: object) -> PayrollTestWorkspaceResult:
+        return self._result("read", **kwargs)
+
+    def create_workspace(self, **kwargs: object) -> PayrollTestWorkspaceResult:
+        return self._result("create", **kwargs)
+
+    def clear_workspace(self, **kwargs: object) -> PayrollTestWorkspaceResult:
+        return self._result("clear", **kwargs)
+
+
 def _settings(*, commands: bool = True) -> Settings:
     return Settings(
         env="test",
@@ -147,6 +183,7 @@ def _settings(*, commands: bool = True) -> Settings:
         payroll_provider_assertion_audience="PayrollVerification",
         payroll_provider_service_subject=WORKLOAD,
         enable_payroll_commands=commands,
+        enable_payroll_test_workspaces=True,
         payroll_provider_trusted_command_contract=(
             "payroll-trusted-command/v1" if commands else "disabled"
         ),
@@ -181,6 +218,19 @@ def _client(
     app.dependency_overrides[get_internal_read_principal] = _principal
     app.dependency_overrides[get_payroll_live_source] = lambda: source
     app.dependency_overrides[get_payroll_assertion_replay_store] = lambda: replay_store
+    return TestClient(app), source
+
+
+def _test_workspace_client() -> tuple[TestClient, _TestWorkspaceSource]:
+    app = FastAPI()
+    app.include_router(router)
+    source = _TestWorkspaceSource()
+    app.dependency_overrides[get_settings] = lambda: _settings()
+    app.dependency_overrides[get_internal_read_principal] = _principal
+    app.dependency_overrides[get_payroll_test_workspace_source] = lambda: source
+    app.dependency_overrides[get_payroll_assertion_replay_store] = lambda: (
+        InMemoryPayrollAssertionReplayStore()
+    )
     return TestClient(app), source
 
 
@@ -402,3 +452,178 @@ def test_command_gate_and_assertion_replay_fail_closed() -> None:
     replay = client.get(path, headers={"X-LedgerBridge-User-Assertion": token})
     assert replay.status_code == 401
     assert replay.json()["code"] == "PAYROLL_USER_ASSERTION_INVALID"
+
+
+# TEST_ONLY workspace routes use the same request-bound assertion contract.
+def test_test_workspace_read_create_and_clear_are_request_bound() -> None:
+    client, source = _test_workspace_client()
+    batch_id = "batch_test_2026_08"
+    read_path = f"/internal/v1/payroll/test-workspaces/{batch_id}"
+    read = client.get(
+        read_path,
+        headers={
+            "X-LedgerBridge-User-Assertion": _assertion(
+                path=read_path, action="payroll.test_workspace.read", resource_ref=batch_id
+            )
+        },
+    )
+    assert read.status_code == 200, read.text
+    assert read.json()["contract_version"] == "ledgerbridge.payroll-test-workspace-read.v1"
+
+    operation_id = uuid4()
+    create_path = "/internal/v1/payroll/test-workspaces"
+    create_body = json.dumps(
+        {
+            "schema_version": "payroll-test-workspace-create-request/v1",
+            "test_batch_id": batch_id,
+            "expected_store_revision": 0,
+            "cutoff_date": "2026-08-31",
+            "idempotency_key": str(operation_id),
+        },
+        separators=(",", ":"),
+    ).encode()
+    create = client.post(
+        create_path,
+        content=create_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-LedgerBridge-User-Assertion": _assertion(
+                path=create_path,
+                action="payroll.test_workspace.create",
+                resource_ref=batch_id,
+                body=create_body,
+                operation_id=operation_id,
+                expected_revision=0,
+            ),
+        },
+    )
+    assert create.status_code == 200, create.text
+
+    operation_id = uuid4()
+    clear_path = f"{read_path}/clear"
+    clear_body = json.dumps(
+        {
+            "schema_version": "payroll-test-workspace-clear-request/v1",
+            "expected_workspace_revision": 1,
+            "idempotency_key": str(operation_id),
+            "explicitly_confirmed": True,
+        },
+        separators=(",", ":"),
+    ).encode()
+    clear = client.post(
+        clear_path,
+        content=clear_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-LedgerBridge-User-Assertion": _assertion(
+                path=clear_path,
+                action="payroll.test_workspace.clear",
+                resource_ref=batch_id,
+                body=clear_body,
+                operation_id=operation_id,
+                expected_revision=1,
+            ),
+        },
+    )
+    assert clear.status_code == 200, clear.text
+    assert [name for name, _ in source.calls] == ["read", "create", "clear"]
+
+
+def test_test_workspace_assertions_reject_wrong_action_path_and_resource() -> None:
+    client, source = _test_workspace_client()
+    batch_id = "batch_test_2026_08"
+    path = f"/internal/v1/payroll/test-workspaces/{batch_id}"
+    invalid = [
+        _assertion(path=path, action="payroll.dashboard.read", resource_ref=batch_id),
+        _assertion(
+            path="/internal/v1/payroll/test-workspaces/wrong_batch",
+            action="payroll.test_workspace.read",
+            resource_ref=batch_id,
+        ),
+        _assertion(path=path, action="payroll.test_workspace.read", resource_ref="wrong_batch"),
+    ]
+    for assertion in invalid:
+        response = client.get(path, headers={"X-LedgerBridge-User-Assertion": assertion})
+        assert response.status_code == 401
+    assert source.calls == []
+
+
+def test_test_workspace_rejects_provider_company_scope_mismatch() -> None:
+    client, source = _test_workspace_client()
+    source.company_id = "company_other"
+    batch_id = "batch_test_2026_08"
+    path = f"/internal/v1/payroll/test-workspaces/{batch_id}"
+    response = client.get(
+        path,
+        headers={
+            "X-LedgerBridge-User-Assertion": _assertion(
+                path=path, action="payroll.test_workspace.read", resource_ref=batch_id
+            )
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "PAYROLL_IDENTITY_SCOPE_MISMATCH"
+
+
+def test_test_workspace_commands_reject_wrong_action_path_and_resource() -> None:
+    client, source = _test_workspace_client()
+    batch_id = "batch_test_2026_08"
+    create_path = "/internal/v1/payroll/test-workspaces"
+    operation_id = uuid4()
+    create_body = json.dumps(
+        {
+            "schema_version": "payroll-test-workspace-create-request/v1",
+            "test_batch_id": batch_id,
+            "expected_store_revision": 0,
+            "cutoff_date": "2026-08-31",
+            "idempotency_key": str(operation_id),
+        },
+        separators=(",", ":"),
+    ).encode()
+    bad_create = _assertion(
+        path=create_path,
+        action="payroll.test_workspace.clear",
+        resource_ref=batch_id,
+        body=create_body,
+        operation_id=operation_id,
+        expected_revision=0,
+    )
+    response = client.post(
+        create_path,
+        content=create_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-LedgerBridge-User-Assertion": bad_create,
+        },
+    )
+    assert response.status_code == 401
+
+    operation_id = uuid4()
+    clear_path = f"/internal/v1/payroll/test-workspaces/{batch_id}/clear"
+    clear_body = json.dumps(
+        {
+            "schema_version": "payroll-test-workspace-clear-request/v1",
+            "expected_workspace_revision": 1,
+            "idempotency_key": str(operation_id),
+            "explicitly_confirmed": True,
+        },
+        separators=(",", ":"),
+    ).encode()
+    bad_clear = _assertion(
+        path=f"/internal/v1/payroll/test-workspaces/{batch_id}/wrong",
+        action="payroll.test_workspace.clear",
+        resource_ref="wrong_batch",
+        body=clear_body,
+        operation_id=operation_id,
+        expected_revision=1,
+    )
+    response = client.post(
+        clear_path,
+        content=clear_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-LedgerBridge-User-Assertion": bad_clear,
+        },
+    )
+    assert response.status_code == 401
+    assert source.calls == []

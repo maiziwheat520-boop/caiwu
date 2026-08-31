@@ -34,6 +34,8 @@ STATUS_SCHEMA = "1.0"
 LIVE_PROJECTION_SCHEMA = "payroll-ledgerbridge-live-projection/v1"
 LIVE_PROJECTION_CONTRACT_VERSION = "1.0.0"
 LIVE_PROJECTION_PATH = "/api/v1/ledgerbridge-projections/current"
+TEST_WORKSPACES_PATH = "/api/v1/test-workspaces"
+TEST_WORKSPACE_SCHEMA = "payroll-ledgerbridge-test-projection/v1"
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_SAFE_INTEGER = (2**53) - 1
 _PUBLICATION_ID = re.compile(r"^publication_[a-f0-9]{24}$")
@@ -432,6 +434,121 @@ class PayrollLiveRead:
 
     def payload_copy(self) -> dict[str, object]:
         return cast(dict[str, object], _deep_thaw(self.payload))
+
+
+@dataclass(frozen=True, slots=True)
+class PayrollTestWorkspaceResult:
+    """Company-scoped TEST_ONLY provider result; never a payable projection."""
+
+    entity_ref: UUID
+    company_id: str
+    replayed: bool
+    payload: Mapping[str, object]
+
+    def payload_copy(self) -> dict[str, object]:
+        return cast(dict[str, object], _deep_thaw(self.payload))
+
+
+class HttpPayrollTestWorkspaceSource:
+    """Narrow adapter for disposable payroll test workspaces."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        timeout_seconds: float,
+        company_mapping: Mapping[str, UUID],
+        enabled: bool,
+        transport: PayrollLiveHttpTransport,
+    ) -> None:
+        self._enabled = enabled
+        self._base_url = _require_base_url(base_url)
+        self._timeout_seconds = float(timeout_seconds)
+        self._companies = PayrollCompanyMap(company_mapping)
+        self._transport = transport
+
+    def read_workspace(
+        self, *, entity_ref: UUID, test_batch_id: str, provider_headers: Mapping[str, str]
+    ) -> PayrollTestWorkspaceResult:
+        company_id = self._companies.company_for_entity(entity_ref)
+        batch_id = _require_stable_identifier(test_batch_id, "test_batch_id")
+        path = f"{TEST_WORKSPACES_PATH}/{quote(batch_id, safe='')}"
+        raw = self._get(path, provider_headers)
+        _validate_test_workspace_projection(raw, company_id, batch_id)
+        return self._result(entity_ref, company_id, False, raw)
+
+    def create_workspace(
+        self,
+        *,
+        entity_ref: UUID,
+        test_batch_id: str,
+        provider_headers: Mapping[str, str],
+        body: bytes,
+    ) -> PayrollTestWorkspaceResult:
+        company_id = self._companies.company_for_entity(entity_ref)
+        raw = self._post(TEST_WORKSPACES_PATH, provider_headers, body)
+        _require_exact_keys(
+            raw,
+            frozenset({"schema_version", "replayed", "projection"}),
+            "test workspace create result",
+        )
+        if (
+            raw.get("schema_version") != "payroll-test-workspace-create-result/v1"
+            or type(raw.get("replayed")) is not bool
+        ):
+            _invalid_response("payroll test workspace create result is invalid")
+        projection = _require_object(raw.get("projection"), "test workspace projection")
+        _validate_test_workspace_projection(projection, company_id, test_batch_id)
+        return self._result(entity_ref, company_id, bool(raw["replayed"]), projection)
+
+    def clear_workspace(
+        self,
+        *,
+        entity_ref: UUID,
+        test_batch_id: str,
+        provider_headers: Mapping[str, str],
+        body: bytes,
+    ) -> PayrollTestWorkspaceResult:
+        company_id = self._companies.company_for_entity(entity_ref)
+        batch_id = _require_stable_identifier(test_batch_id, "test_batch_id")
+        raw = self._post(
+            f"{TEST_WORKSPACES_PATH}/{quote(batch_id, safe='')}/clear", provider_headers, body
+        )
+        _validate_test_workspace_clear_receipt(raw, company_id, batch_id)
+        return self._result(entity_ref, company_id, bool(raw["replayed"]), raw)
+
+    def _get(self, path: str, headers: Mapping[str, str]) -> Mapping[str, object]:
+        if not self._enabled:
+            raise PayrollIntegrationError(
+                "PAYROLL_TEST_WORKSPACE_DISABLED", "payroll test workspaces are disabled"
+            )
+        return self._transport.get_json(
+            self._base_url + path,
+            timeout_seconds=self._timeout_seconds,
+            max_bytes=MAX_RESPONSE_BYTES,
+            headers=headers,
+        )
+
+    def _post(self, path: str, headers: Mapping[str, str], body: bytes) -> Mapping[str, object]:
+        if not self._enabled:
+            raise PayrollIntegrationError(
+                "PAYROLL_TEST_WORKSPACE_DISABLED", "payroll test workspaces are disabled"
+            )
+        return self._transport.post_json(
+            self._base_url + path,
+            timeout_seconds=self._timeout_seconds,
+            max_bytes=MAX_RESPONSE_BYTES,
+            headers=headers,
+            body=body,
+        )
+
+    @staticmethod
+    def _result(
+        entity_ref: UUID, company_id: str, replayed: bool, payload: Mapping[str, object]
+    ) -> PayrollTestWorkspaceResult:
+        return PayrollTestWorkspaceResult(
+            entity_ref, company_id, replayed, cast(Mapping[str, object], _deep_freeze(payload))
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2553,6 +2670,137 @@ def _require_object(value: object, field: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         _invalid_response(f"payroll {field} is invalid")
     return value
+
+
+def _validate_test_workspace_projection(
+    value: Mapping[str, object], expected_company_id: str, expected_batch_id: str
+) -> None:
+    _require_exact_keys(
+        value,
+        frozenset(
+            {
+                "schema_version",
+                "contract_version",
+                "data_scope",
+                "test_batch_id",
+                "company_id",
+                "cutoff_date",
+                "workspace_revision",
+                "projection_revision",
+                "etag",
+                "generated_at",
+                "payment_submission_supported",
+                "payable",
+                "submission_supported",
+                "routing_counts",
+                "materials",
+            }
+        ),
+        "test workspace projection",
+    )
+    if (
+        value.get("schema_version") != TEST_WORKSPACE_SCHEMA
+        or value.get("contract_version") != "1.0.0"
+        or value.get("data_scope") != "TEST_ONLY"
+        or value.get("company_id") != expected_company_id
+        or value.get("test_batch_id") != expected_batch_id
+        or value.get("cutoff_date") != "2026-08-31"
+    ):
+        _invalid_response("payroll test workspace scope is invalid")
+    _require_non_negative_integer(value.get("workspace_revision"), "workspace_revision")
+    revision = _require_sha256(value.get("projection_revision"), "projection_revision")
+    if value.get("etag") != f'"{revision}"':
+        _invalid_response("payroll test workspace etag is invalid")
+    _require_live_timestamp(value.get("generated_at"), "generated_at")
+    _require_disabled_flags(
+        value, ("payment_submission_supported", "payable", "submission_supported")
+    )
+    counts = _require_object(value.get("routing_counts"), "routing_counts")
+    _require_exact_keys(
+        counts, frozenset({"auto_test", "review_required", "date_unknown"}), "routing counts"
+    )
+    actual = {"auto_test": 0, "review_required": 0, "date_unknown": 0}
+    materials = _require_list(value.get("materials"), "materials")
+    seen: set[str] = set()
+    for item_value in materials:
+        item = _require_object(item_value, "material")
+        _require_exact_keys(
+            item,
+            frozenset(
+                {
+                    "company_id",
+                    "material_id",
+                    "routing_status",
+                    "period",
+                    "material_type",
+                    "payable",
+                    "submission_supported",
+                }
+            ),
+            "test workspace material",
+        )
+        material_id = _require_stable_identifier(item.get("material_id"), "material_id")
+        if material_id in seen or item.get("company_id") != expected_company_id:
+            _invalid_response("payroll test workspace material scope is invalid")
+        seen.add(material_id)
+        period = item.get("period")
+        if period is None:
+            expected_status = "DATE_UNKNOWN"
+            key = "date_unknown"
+        else:
+            parsed = _require_period(period, "period")
+            expected_status = "AUTO_TEST" if parsed <= "2026-08" else "REVIEW_REQUIRED"
+            key = "auto_test" if expected_status == "AUTO_TEST" else "review_required"
+        if item.get("routing_status") != expected_status:
+            _invalid_response("payroll test workspace date routing is invalid")
+        material_type = item.get("material_type")
+        if material_type is not None:
+            _require_stable_identifier(material_type, "material_type")
+        _require_disabled_flags(item, ("payable", "submission_supported"))
+        actual[key] += 1
+    for key, expected in actual.items():
+        if _require_non_negative_integer(counts.get(key), f"routing_counts.{key}") != expected:
+            _invalid_response("payroll test workspace routing counts are inconsistent")
+
+
+def _validate_test_workspace_clear_receipt(
+    value: Mapping[str, object], expected_company_id: str, expected_batch_id: str
+) -> None:
+    _require_exact_keys(
+        value,
+        frozenset(
+            {
+                "schema_version",
+                "data_scope",
+                "test_batch_id",
+                "company_id",
+                "cleared_workspace_revision",
+                "cleared_material_count",
+                "cleared_at",
+                "payment_submission_supported",
+                "payable",
+                "submission_supported",
+                "replayed",
+            }
+        ),
+        "test workspace clear receipt",
+    )
+    if (
+        value.get("schema_version") != "payroll-test-workspace-clear-receipt/v1"
+        or value.get("data_scope") != "TEST_ONLY"
+        or value.get("test_batch_id") != expected_batch_id
+        or value.get("company_id") != expected_company_id
+        or type(value.get("replayed")) is not bool
+    ):
+        _invalid_response("payroll test workspace clear receipt scope is invalid")
+    _require_non_negative_integer(
+        value.get("cleared_workspace_revision"), "cleared_workspace_revision"
+    )
+    _require_non_negative_integer(value.get("cleared_material_count"), "cleared_material_count")
+    _require_live_timestamp(value.get("cleared_at"), "cleared_at")
+    _require_disabled_flags(
+        value, ("payment_submission_supported", "payable", "submission_supported")
+    )
 
 
 def _require_list(value: object, field: str) -> list[object]:
