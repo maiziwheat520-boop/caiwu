@@ -868,6 +868,23 @@ def _account_registry_database_metadata() -> dict[str, object]:
             "initially_deferred": False,
         }
         for table in ACCOUNT_REGISTRY_TABLES
+    ] + [
+        {
+            "table": table,
+            "name": name,
+            "type": "t",
+            "validated": True,
+            "deferrable": deferrable,
+            "initially_deferred": initially_deferred,
+        }
+        for name, (
+            table,
+            constraint,
+            deferrable,
+            initially_deferred,
+            _,
+        ) in ACCOUNT_REGISTRY_TRIGGER_CONTRACT.items()
+        if constraint
     ]
     metadata["account_registry_table_acls"] = [
         {
@@ -1396,6 +1413,26 @@ def test_company_reporting_restore_metadata_covers_0024_contract() -> None:
     for name, arguments in COMPANY_REPORTING_FUNCTION_SIGNATURES.items():
         assert f"('{name}', '{arguments}')" in COMPANY_REPORTING_SECURITY_SQL
     assert "company_reporting_effective_function_privileges" in COMPANY_REPORTING_SECURITY_SQL
+
+
+@pytest.mark.parametrize("mutation", ["unknown", "wrong_deferrability"])
+def test_account_registry_restore_rejects_constraint_trigger_drift(mutation: str) -> None:
+    metadata = _company_reporting_database_metadata()
+    constraints = cast(list[dict[str, object]], metadata["account_registry_constraints"])
+    constraint_trigger = next(item for item in constraints if item.get("type") == "t")
+    if mutation == "unknown":
+        drifted = {**constraint_trigger, "name": "unreviewed_constraint_trigger"}
+    else:
+        drifted = {
+            **constraint_trigger,
+            "deferrable": not cast(bool, constraint_trigger["deferrable"]),
+        }
+    metadata["account_registry_constraints"] = [
+        drifted if item is constraint_trigger else item for item in constraints
+    ]
+
+    with pytest.raises(BackupError, match="account registry constraint contract"):
+        _validate_restored_database(metadata, metadata.copy())
 
 
 def test_company_reporting_restore_rejects_missing_posted_integrity_dependency() -> None:

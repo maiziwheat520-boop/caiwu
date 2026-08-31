@@ -4968,12 +4968,38 @@ def _validate_account_registry_security(metadata: dict[str, Any]) -> None:
     constraints = _list("account_registry_constraints")
     required_primary_keys = {f"{table}_pkey" for table in ACCOUNT_REGISTRY_TABLES}
     constraint_names = {item.get("name") for item in constraints}
-    if not required_primary_keys.issubset(constraint_names) or any(
-        item.get("table") not in ACCOUNT_REGISTRY_TABLES
-        or item.get("validated") is not True
-        or item.get("deferrable") is not False
-        or item.get("initially_deferred") is not False
-        for item in constraints
+    constraint_triggers = {
+        name: (table, deferrable, initially_deferred)
+        for name, (
+            table,
+            is_constraint,
+            deferrable,
+            initially_deferred,
+            _,
+        ) in ACCOUNT_REGISTRY_TRIGGER_CONTRACT.items()
+        if is_constraint
+    }
+
+    def _constraint_is_invalid(item: dict[str, Any]) -> bool:
+        name = item.get("name")
+        if (
+            not isinstance(name, str)
+            or item.get("table") not in ACCOUNT_REGISTRY_TABLES
+            or item.get("validated") is not True
+        ):
+            return True
+        if item.get("type") == "t":
+            return constraint_triggers.get(name) != (
+                item.get("table"),
+                item.get("deferrable"),
+                item.get("initially_deferred"),
+            )
+        return item.get("deferrable") is not False or item.get("initially_deferred") is not False
+
+    if (
+        len(constraint_names) != len(constraints)
+        or not required_primary_keys.issubset(constraint_names)
+        or any(_constraint_is_invalid(item) for item in constraints)
     ):
         raise BackupError("restored account registry constraint contract is invalid")
 
