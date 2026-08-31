@@ -81,6 +81,7 @@ class _Session:
         self.failure = failure
         self.fail = fail
         self.statements: list[str] = []
+        self.parameters: list[dict[str, Any] | None] = []
 
     def __enter__(self) -> _Session:
         return self
@@ -91,6 +92,7 @@ class _Session:
     def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Result:
         sql = str(statement)
         self.statements.append(sql)
+        self.parameters.append(params)
         if self.failure is not None:
             raise self.failure
         if self.fail:
@@ -229,6 +231,14 @@ def test_database_accounting_dimensions_use_exact_grant_bindings() -> None:
     ]
     assert any("internal_read.get_accounting_dimensions" in sql for sql in session.statements)
     assert all("public." not in sql for sql in session.statements)
+    dimensions_call = next(
+        params
+        for sql, params in zip(session.statements, session.parameters, strict=True)
+        if "internal_read.get_accounting_dimensions" in sql
+    )
+    assert dimensions_call is not None
+    assert dimensions_call["business_unit_ids"] == [BUSINESS_UNIT]
+    assert dimensions_call["business_unit_refs"] == ["unit-demo-a"]
 
 
 def test_database_accounting_dimensions_allow_retired_grant_bindings_to_be_omitted() -> None:

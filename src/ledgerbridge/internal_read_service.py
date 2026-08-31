@@ -521,8 +521,11 @@ class DatabaseInternalReadService:
                 "database grants require explicit business-unit ref/UUID bindings"
             )
         sorted_bindings = sorted(grant.business_unit_bindings, key=lambda item: item[0])
-        business_unit_refs = tuple(ref for ref, _ in sorted_bindings)
-        business_unit_ids = tuple(value for _, value in sorted_bindings)
+        # Psycopg adapts tuples as PostgreSQL composite values, not arrays.
+        # Keep these bindings as lists so the explicit uuid[]/varchar[] casts
+        # receive valid array literals in the database-backed runtime.
+        business_unit_refs = [ref for ref, _ in sorted_bindings]
+        business_unit_ids = [value for _, value in sorted_bindings]
         try:
             with self._session_factory() as session:
                 row = (
