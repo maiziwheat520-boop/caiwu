@@ -445,6 +445,7 @@ function App() {
     intent: CandidateUpdateIntent,
     corrections?: CandidateCorrections,
     conflictResolution?: string,
+    reviewNote?: string,
   ) => {
     if (!session) {
       setNotice({ tone: 'error', message: '会话尚未就绪，请刷新后重试' })
@@ -460,10 +461,17 @@ function App() {
     }
     setDecisionBusyId(candidate.id)
     try {
+      const defaultReason = intent === 'IGNORE'
+        ? 'Web 审核：忽略候选'
+        : intent === 'RESOLVE_CONFLICT'
+          ? 'Web 审核：解决冲突并确认'
+          : corrections
+            ? 'Web 审核：更正并确认'
+            : 'Web 审核：确认候选'
       const result = await api.appendDecision({
         candidate: candidate.raw,
         decision: intent === 'IGNORE' ? 'IGNORE' : intent === 'RESOLVE_CONFLICT' ? 'RESOLVE_CONFLICT' : corrections ? 'CORRECT_AND_CONFIRM' : 'CONFIRM',
-        reason: intent === 'IGNORE' ? 'Web 审核：忽略候选' : intent === 'RESOLVE_CONFLICT' ? 'Web 审核：解决冲突并确认' : corrections ? 'Web 审核：更正并确认' : 'Web 审核：确认候选',
+        reason: reviewNote?.trim() || defaultReason,
         corrections,
         conflictResolution: conflictResolution?.trim(),
         csrfToken: session.csrf_token,
@@ -527,6 +535,7 @@ function App() {
     candidate: Candidate,
     group: ClassificationGroup,
     target: ClassificationTarget,
+    reviewNote?: string,
   ) => {
     if (!session || !classificationGroupsAvailable || decisionBusyId) return
     setDecisionBusyId(candidate.id)
@@ -535,7 +544,7 @@ function App() {
         group,
         sourceCandidate: candidate.raw,
         target,
-        reason: 'Web 审核：明确预览并确认相似交易组分类',
+        reason: reviewNote?.trim() || 'Web 审核：明确预览并确认相似交易组分类',
         csrfToken: session.csrf_token,
       })
       const updated = new Map(
@@ -585,7 +594,6 @@ function App() {
   const openCandidate = async (candidate: Candidate) => {
     const requestId = ++candidateDetailRequestRef.current
     const readOnly = ['CONFIRMED', 'IGNORED', 'SUPERSEDED'].includes(candidate.status)
-    setAccountingDimensions(null)
     setAccountingDimensionsError(null)
     setCandidateDetailReadyId(null)
     setSelectedCandidate(candidate)
@@ -597,7 +605,6 @@ function App() {
     if (candidateDetailRequestRef.current !== requestId) return
     if (detailResult.status === 'rejected') {
       const error = detailResult.reason
-      setAccountingDimensions(null)
       setAccountingDimensionsError('候选详情读取失败，不能提交更正')
       setNotice({ tone: 'error', message: error instanceof Error ? `证据详情读取失败：${error.message}` : '证据详情读取失败' })
       setCandidateDetailLoadingId(null)
@@ -609,7 +616,7 @@ function App() {
       if (dimensionsResult.status === 'fulfilled') {
         setAccountingDimensions(dimensionsResult.value)
       } else {
-        setAccountingDimensionsError('会计维度目录不可用，请先治理基础资料后重试；当前不能提交更正')
+        setAccountingDimensionsError('会计维度目录暂时不可用；可按现有分类继续确认，修改分类请在目录恢复后重试')
       }
     }
     if (candidateDetailRequestRef.current === requestId) setCandidateDetailLoadingId(null)
@@ -2657,11 +2664,12 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
   candidate: Candidate
   classificationGroup: ClassificationGroup | null
   onClose: () => void
-  onUpdate: (candidate: Candidate, intent: CandidateUpdateIntent, corrections?: CandidateCorrections, conflictResolution?: string) => void
+  onUpdate: (candidate: Candidate, intent: CandidateUpdateIntent, corrections?: CandidateCorrections, conflictResolution?: string, reviewNote?: string) => void
   onApplyGroup: (
     candidate: Candidate,
     group: ClassificationGroup,
     target: ClassificationTarget,
+    reviewNote?: string,
   ) => void
   busy: boolean
   detailLoading: boolean
@@ -2674,6 +2682,7 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
   const [amount, setAmount] = useState(minorToMajorInput(candidate.amountMinor))
   const [accountingMonth, setAccountingMonth] = useState(candidate.accountingMonth ?? '')
   const [conflictResolution, setConflictResolution] = useState('')
+  const [reviewNote, setReviewNote] = useState('')
   const [applyToGroup, setApplyToGroup] = useState(false)
   const [riskAcknowledged, setRiskAcknowledged] = useState(false)
   const readOnly = ['CONFIRMED', 'IGNORED', 'SUPERSEDED'].includes(candidate.status)
@@ -2717,6 +2726,15 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
     accountingDimensions?.business_units.some((unit) => unit.ref === businessUnitRef)
     && accountingDimensions.categories.some((item) => item.code === categoryCode),
   )
+  const classificationUnchanged = businessUnitRef === candidate.businessUnitRef
+    && categoryCode === candidate.categoryCode
+  const canKeepExistingClassification = Boolean(
+    accountingDimensionsError
+    && classificationUnchanged
+    && candidate.businessUnitRef
+    && candidate.categoryCode,
+  )
+  const classificationSelectionAllowed = dimensionsContainSelection || canKeepExistingClassification
   const formComplete = businessUnitRef.length > 0
     && categoryCode.length > 0
     && parsedAmountMinor !== null
@@ -2729,12 +2747,18 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
   const confirmBlocked = readOnly
     || busy
     || !detailReady
-    || !dimensionsContainSelection
+    || !classificationSelectionAllowed
     || !formComplete
     || (candidate.conflict && conflictResolution.trim().length === 0)
   const groupMember = classificationGroup?.members.find(
     (member) => member.candidate_ref === candidate.id,
   )
+  const selectedBusinessUnitLabel = accountingDimensions?.business_units.find(
+    (unit) => unit.ref === businessUnitRef,
+  )?.label ?? (businessUnitRef === candidate.businessUnitRef ? candidate.businessUnit : undefined)
+  const selectedCategoryLabel = accountingDimensions?.categories.find(
+    (item) => item.code === categoryCode,
+  )?.label ?? (categoryCode === candidate.categoryCode ? candidate.category : undefined)
   const groupMembers = classificationGroup
     ? eligibleClassificationBatchMembers(classificationGroup)
     : []
@@ -2769,7 +2793,7 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
       onApplyGroup(candidate, classificationGroup, {
         business_unit_ref: businessUnitRef,
         category_code: categoryCode,
-      })
+      }, reviewNote)
       return
     }
     const corrections: CandidateCorrections = {}
@@ -2782,7 +2806,14 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
       candidate.conflict ? 'RESOLVE_CONFLICT' : 'CONFIRM',
       Object.keys(corrections).length > 0 ? corrections : undefined,
       candidate.conflict ? conflictResolution.trim() : undefined,
+      reviewNote,
     )
+  }
+
+  const focusClassification = () => {
+    const field = document.getElementById('candidate-business-unit')
+    field?.scrollIntoView?.({ block: 'center' })
+    field?.focus()
   }
 
   return (
@@ -2817,7 +2848,7 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
                   <TextField.Root id="candidate-business-unit" readOnly value={candidate.businessUnit} />
                 ) : (
                   <select aria-describedby={dimensionsStatusId} id="candidate-business-unit" disabled={!accountingDimensions} value={businessUnitRef} onChange={(event) => setBusinessUnitRef(event.target.value)}>
-                    {!accountingDimensions?.business_units.some((unit) => unit.ref === businessUnitRef) ? <option value="">{accountingDimensions ? '请选择有效营业单元' : '目录加载中'}</option> : null}
+                    {!accountingDimensions?.business_units.some((unit) => unit.ref === businessUnitRef) ? <option value={businessUnitRef}>{accountingDimensions ? `当前（目录外）：${candidate.businessUnit}` : `当前：${candidate.businessUnit}`}</option> : null}
                     {accountingDimensions?.business_units.map((unit) => <option key={unit.ref} value={unit.ref}>{unit.label}</option>)}
                   </select>
                 )}
@@ -2828,7 +2859,7 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
                   <TextField.Root id="candidate-category" readOnly value={candidate.category} />
                 ) : (
                   <select aria-describedby={dimensionsStatusId} id="candidate-category" disabled={!accountingDimensions} value={categoryCode} onChange={(event) => setCategoryCode(event.target.value)}>
-                    {!accountingDimensions?.categories.some((item) => item.code === categoryCode) ? <option value="">{accountingDimensions ? '请选择有效科目' : '目录加载中'}</option> : null}
+                    {!accountingDimensions?.categories.some((item) => item.code === categoryCode) ? <option value={categoryCode}>{accountingDimensions ? `当前（目录外）：${candidate.category}` : `当前：${candidate.category}`}</option> : null}
                     {accountingDimensions?.categories.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
                   </select>
                 )}
@@ -2949,6 +2980,23 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
           </section>
         ) : null}
 
+        {!readOnly ? (
+          <section className="review-note-section" aria-labelledby="review-note-heading">
+            <label htmlFor="candidate-review-note">
+              <span className="section-label" id="review-note-heading">费用种类或说明</span>
+              <TextArea
+                id="candidate-review-note"
+                maxLength={500}
+                placeholder="例如：余额宝收益、日常餐饮、差旅住宿；留空则记录系统审核动作"
+                resize="vertical"
+                value={reviewNote}
+                onChange={(event) => setReviewNote(event.target.value)}
+              />
+            </label>
+            <small>说明会写入追加式审核记录，不会覆盖原始账单；正式科目仍从受控目录选择。</small>
+          </section>
+        ) : null}
+
         <section className="candidate-history" aria-labelledby="candidate-history-heading">
           <div className="candidate-history-heading">
             <span className="section-label" id="candidate-history-heading">审核历史</span>
@@ -2976,9 +3024,18 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
           ) : <p className="candidate-history-empty">此候选尚无审核事件。</p>}
         </section>
         <div className="dialog-actions">
+          {!readOnly ? (
+            <div className={`dialog-submit-context ${classificationSelectionAllowed ? '' : 'invalid'}`}>
+              <span>本次分类</span>
+              <strong>{selectedBusinessUnitLabel && selectedCategoryLabel ? `${selectedBusinessUnitLabel} · ${selectedCategoryLabel}` : '尚未选择营业单元和科目'}</strong>
+              {accountingDimensions
+                ? <button type="button" onClick={focusClassification}>选择或修改分类</button>
+                : <span className="dialog-submit-context-hint">目录恢复后可修改</span>}
+            </div>
+          ) : null}
           <Button variant="soft" color="gray" onClick={onClose}>{readOnly ? '关闭' : '取消'}</Button>
           {!readOnly ? <>
-            <Button disabled={busy || !detailReady} variant="outline" color="gray" onClick={() => onUpdate(candidate, 'IGNORE')}>忽略候选</Button>
+            <Button disabled={busy || !detailReady} variant="outline" color="gray" onClick={() => onUpdate(candidate, 'IGNORE', undefined, undefined, reviewNote)}>忽略候选</Button>
             <Button aria-describedby={dimensionsStatusId} disabled={applyToGroup ? groupConfirmBlocked : confirmBlocked} onClick={submitCorrection}>
               {applyToGroup ? `确认本组 ${groupMembers.length} 笔` : candidate.conflict ? '解决冲突并确认' : '保存更正并确认'}
             </Button>

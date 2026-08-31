@@ -291,6 +291,9 @@ button { -webkit-tap-highlight-color: transparent; }
 .classification-scope-preview > small { display: block; margin-top: 9px; color: #7a6642; font-size: 9px; }
 .classification-risk-ack { border-color: #e2c479; color: #7b6326; background: #fffaeb; }
 .classification-risk-ack strong { color: #765611; }
+.review-note-section { margin-top: 18px; padding: 15px 16px; border: 1px solid #d9e3ef; border-radius: 11px; background: #fbfcfe; }
+.review-note-section label { display: grid; gap: 9px; }
+.review-note-section small { display: block; margin-top: 7px; color: #708098; font-size: 10px; line-height: 1.55; }
 .candidate-history { margin-top: 22px; padding-top: 19px; border-top: 1px solid #e3e8ef; }
 .candidate-history-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .candidate-history-heading > span:last-child { color: var(--muted); font-size: 10px; }
@@ -304,7 +307,12 @@ button { -webkit-tap-highlight-color: transparent; }
 .candidate-history li > div > span, .candidate-history li small { color: #6a7890; font-size: 10px; line-height: 1.5; }
 .candidate-history li small { color: #8b4650; }
 .candidate-history-loading, .candidate-history-empty { display: flex; align-items: center; gap: 8px; min-height: 58px; margin: 10px 0 0; padding: 0 14px; border-radius: 9px; color: var(--muted); background: #f8fafc; font-size: 11px; }
-.dialog-actions { position: sticky; bottom: 0; z-index: 2; display: flex; justify-content: flex-end; gap: 9px; margin: 24px -24px 0; padding: 16px 24px; border-top: 1px solid #e1e6ee; background: rgb(255 255 255 / 97%); backdrop-filter: blur(10px); }
+.dialog-actions { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin: 24px -24px 0; padding: 13px 24px; border-top: 1px solid #e1e6ee; background: rgb(255 255 255 / 97%); backdrop-filter: blur(10px); }
+.dialog-submit-context { display: grid; grid-template-columns: auto auto; gap: 2px 9px; min-width: 0; margin-right: auto; color: #6b7a90; font-size: 9px; }
+.dialog-submit-context strong { overflow: hidden; color: #263b59; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.dialog-submit-context button { grid-column: 2; justify-self: start; padding: 0; border: 0; color: var(--accent); background: transparent; font: inherit; font-weight: 750; cursor: pointer; }
+.dialog-submit-context-hint { grid-column: 2; color: #7d899a; }
+.dialog-submit-context.invalid strong { color: var(--warning); }
 
 .blocking-banner { display: flex; align-items: center; gap: 13px; margin-bottom: 18px; padding: 14px 17px; border: 1px solid #f1bcc1; border-radius: 12px; color: var(--danger); background: var(--danger-soft); }
 .blocking-banner div { display: grid; gap: 3px; }
@@ -612,7 +620,8 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .candidate-history-meta { align-items: flex-start; flex-direction: column; gap: 6px; }
   .classification-scope-heading { flex-direction: column; }
   .dialog-actions { display: grid; grid-template-columns: 1fr 1fr; }
-  .dialog-actions button:last-child { grid-column: 1 / 3; grid-row: 1; }
+  .dialog-submit-context { grid-column: 1 / 3; width: 100%; }
+  .dialog-actions > button:last-child { grid-column: 1 / 3; grid-row: 2; }
   .blocking-banner { align-items: flex-start; flex-wrap: wrap; }
   .blocking-banner button { width: 100%; margin-left: 0; }
   .reconciliation-metrics { display: none; }

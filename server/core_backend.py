@@ -1320,6 +1320,7 @@ def _classification_batch_receipt_from_core(
     mapped_results: list[dict[str, object]] = []
     candidate_refs: set[str] = set()
     operations: set[str] = set()
+    event_operations: set[str] = set()
     for result in results:
         if not isinstance(result, dict) or set(result) != {
             "candidate_ref",
@@ -1336,6 +1337,16 @@ def _classification_batch_receipt_from_core(
             raise invalid from None
         candidate = result.get("candidate")
         events = result.get("events")
+        raw_event_operations: list[str] = []
+        if isinstance(events, list):
+            try:
+                raw_event_operations = [
+                    str(uuid.UUID(str(event.get("operation_id"))))
+                    for event in events
+                    if isinstance(event, dict)
+                ]
+            except (TypeError, ValueError):
+                raise invalid from None
         target_business_unit = target.get("business_unit_ref") if isinstance(target, dict) else None
         target_category = target.get("category_code") if isinstance(target, dict) else None
         if (
@@ -1351,10 +1362,13 @@ def _classification_batch_receipt_from_core(
             or not isinstance(events, list)
             or not 1 <= len(events) <= 2
             or any(not isinstance(event, dict) for event in events)
+            or len(raw_event_operations) != len(events)
+            or len(raw_event_operations) != len(set(raw_event_operations))
+            or any(operation in event_operations for operation in raw_event_operations)
             or any(
                 event.get("candidate_ref") != candidate_ref
-                or event.get("operation_id") != operation_id
-                for event in events
+                or event.get("operation_id") != raw_event_operations[index]
+                for index, event in enumerate(events)
                 if isinstance(event, dict)
             )
             or result.get("status")
@@ -1381,6 +1395,7 @@ def _classification_batch_receipt_from_core(
             raise invalid
         candidate_refs.add(candidate_ref)
         operations.add(operation_id)
+        event_operations.update(raw_event_operations)
         mapped_results.append(
             {
                 "candidate_ref": candidate_ref,

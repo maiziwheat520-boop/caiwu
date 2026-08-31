@@ -173,7 +173,9 @@ def core_classification_batch_receipt(operation_id: str) -> dict[str, object]:
         event["prior_projection"] = deepcopy(candidate) | {"revision": 1, "status": "PENDING"}
         event["result_projection"] = deepcopy(candidate)
         member_operation_id = f"60000000-0000-4000-8000-00000000000{ordinal}"
-        event["operation_id"] = member_operation_id
+        # Core returns the member decision receipt ID and the underlying state-event
+        # operation ID as distinct, independently valid identifiers.
+        event["operation_id"] = f"70000000-0000-4000-8000-00000000000{ordinal}"
         results.append(
             {
                 "candidate_ref": candidate_ref,
@@ -762,6 +764,8 @@ class CoreBackedAdapterTests(unittest.TestCase):
             "wrong-operation",
             "wrong-result-member",
             "wrong-event-binding",
+            "invalid-event-operation",
+            "duplicate-event-operation",
             "wrong-result-target",
             "broken-event-revision-chain",
         ):
@@ -818,6 +822,12 @@ class CoreBackedAdapterTests(unittest.TestCase):
                         second = payload["results"][1]  # type: ignore[index]
                         first["events"][0]["candidate_ref"] = second["candidate_ref"]
                         first["events"][0]["operation_id"] = second["operation_id"]
+                    elif _mutation == "invalid-event-operation" and args[0] == "POST":
+                        payload["results"][0]["events"][0]["operation_id"] = "not-a-uuid"  # type: ignore[index]
+                    elif _mutation == "duplicate-event-operation" and args[0] == "POST":
+                        payload["results"][1]["events"][0]["operation_id"] = (  # type: ignore[index]
+                            payload["results"][0]["events"][0]["operation_id"]  # type: ignore[index]
+                        )
                     elif _mutation == "wrong-result-target" and args[0] == "POST":
                         payload["results"][0]["candidate"]["category_code"] = "OTHER"  # type: ignore[index]
                     elif _mutation == "broken-event-revision-chain" and args[0] == "POST":

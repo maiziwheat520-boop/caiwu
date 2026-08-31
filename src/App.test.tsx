@@ -986,6 +986,11 @@ describe('LedgerBridge Web API client', () => {
 
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('严格平台摘要匹配')).toBeInTheDocument()
+    expect(within(dialog).getByRole('combobox', { name: '营业单元' })).toBeEnabled()
+    expect(within(dialog).getByRole('combobox', { name: '科目' })).toBeEnabled()
+    fireEvent.change(within(dialog).getByRole('textbox', { name: '费用种类或说明' }), {
+      target: { value: '余额宝收益，按月归入投资理财' },
+    })
     fireEvent.click(within(dialog).getByLabelText(/同时处理本组其余 1 笔/))
     const matchingDetails = within(dialog).getByText('匹配依据详情').closest('details')
     expect(matchingDetails).not.toHaveAttribute('open')
@@ -1028,7 +1033,7 @@ describe('LedgerBridge Web API client', () => {
         { candidate_ref: source.id, expected_revision: source.revision },
         { candidate_ref: peer.id, expected_revision: peer.revision },
       ],
-      reason: 'Web 审核：明确预览并确认相似交易组分类',
+      reason: '余额宝收益，按月归入投资理财',
       acknowledged_risk_codes: ['TRANSFER_REVIEW_REQUIRED'],
     })
     expect(fetchMock.mock.calls.filter(([input]) => (
@@ -1189,8 +1194,8 @@ describe('LedgerBridge Web API client', () => {
     })
   })
 
-  it('keeps correction submission closed when accounting dimensions are unavailable', async () => {
-    installFetch({ failAccountingDimensions: true, runtimeMode: 'core-backed' })
+  it('allows confirmation with unchanged stable dimensions when the catalog is temporarily unavailable', async () => {
+    const fetchMock = installFetch({ failAccountingDimensions: true, runtimeMode: 'core-backed' })
     renderApp()
     await screen.findByText('早上好，今天有几项需要确认')
     fireEvent.click(screen.getAllByText('待审核')[0])
@@ -1198,10 +1203,48 @@ describe('LedgerBridge Web API client', () => {
 
     const dialog = await screen.findByRole('dialog')
     const alert = await within(dialog).findByRole('alert')
-    expect(alert).toHaveTextContent('请先治理基础资料')
+    expect(alert).toHaveTextContent('可按现有分类继续确认')
+    expect(within(dialog).getByLabelText('营业单元')).toHaveValue(candidates[0].business_unit_ref)
+    expect(within(dialog).getByLabelText('科目')).toHaveValue(candidates[0].category_code)
     const submit = within(dialog).getByRole('button', { name: '保存更正并确认' })
-    expect(submit).toBeDisabled()
+    expect(submit).toBeEnabled()
     expect(submit).toHaveAttribute('aria-describedby', alert.id)
+    fireEvent.click(submit)
+
+    await screen.findByText(/C-8F21 已确认/)
+    const decisionCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/candidate-1/decisions'))
+    expect(JSON.parse(String(decisionCall?.[1]?.body))).not.toHaveProperty('corrections')
+  })
+
+  it('allows an unchanged similar group when the dimension catalog is temporarily unavailable', async () => {
+    const { source, peer, group } = similarClassificationFixture()
+    const fetchMock = installFetch({
+      items: [source, peer],
+      classificationGroups: [group],
+      failAccountingDimensions: true,
+      runtimeMode: 'core-backed',
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(screen.getByText(source.summary))
+
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByLabelText(/同时处理本组其余 1 笔/))
+    fireEvent.click(within(dialog).getByLabelText(/我已逐项核对并确认风险条件/))
+    const submit = within(dialog).getByRole('button', { name: '确认本组 2 笔' })
+    expect(submit).toBeEnabled()
+    fireEvent.click(submit)
+
+    expect(await screen.findByText(/已原子确认同组 2 笔交易/)).toBeInTheDocument()
+    const batchCall = fetchMock.mock.calls.find(([input]) => (
+      String(input).includes('/candidate-classification-groups/')
+      && String(input).endsWith('/decisions')
+    ))
+    expect(JSON.parse(String(batchCall?.[1]?.body)).target).toEqual({
+      business_unit_ref: source.business_unit_ref,
+      category_code: source.category_code,
+    })
   })
 
   it('does not install accounting dimensions when candidate detail fails', async () => {
