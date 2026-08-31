@@ -1184,6 +1184,19 @@ def _classification_batch_security_metadata() -> dict[str, object]:
     }
 
 
+def _classification_batch_roundtrip_metadata() -> dict[str, object]:
+    metadata = _company_reporting_database_metadata()
+    classification = _classification_batch_security_metadata()
+    metadata.update(
+        {
+            key: value
+            for key, value in classification.items()
+            if key not in {"database_owner", "r1_role_matrix"}
+        }
+    )
+    return metadata
+
+
 def test_classification_batch_restore_metadata_covers_0026_security_boundary() -> None:
     metadata = _classification_batch_security_metadata()
 
@@ -1193,6 +1206,53 @@ def test_classification_batch_restore_metadata_covers_0026_security_boundary() -
         assert f"internal_command.{table}" in CLASSIFICATION_BATCH_SECURITY_SQL
     for name, arguments in CLASSIFICATION_BATCH_FUNCTION_SIGNATURES.items():
         assert f"('{name}', '{arguments}')" in CLASSIFICATION_BATCH_SECURITY_SQL
+
+
+def test_classification_batch_restore_accepts_implicit_default_owner_table_acls() -> None:
+    expected = _classification_batch_roundtrip_metadata()
+    actual = {**expected, "classification_batch_table_acls": []}
+
+    _validate_restored_database(expected, actual)
+
+
+def test_classification_batch_restore_rejects_partial_owner_table_acl() -> None:
+    expected = _classification_batch_roundtrip_metadata()
+    owner_acls = cast(list[dict[str, object]], expected["classification_batch_table_acls"])
+    actual = {
+        **expected,
+        "classification_batch_table_acls": [
+            item
+            for item in owner_acls
+            if not (
+                item.get("table") == "candidate_classification_batch_receipt"
+                and item.get("privilege") == "SELECT"
+            )
+        ],
+    }
+
+    with pytest.raises(BackupError, match="classification_batch_table_acls"):
+        _validate_restored_database(expected, actual)
+
+
+def test_classification_batch_restore_rejects_effective_table_privilege_drift() -> None:
+    expected = _classification_batch_roundtrip_metadata()
+    privileges = cast(
+        list[dict[str, object]], expected["classification_batch_effective_table_privileges"]
+    )
+    actual = {
+        **expected,
+        "classification_batch_table_acls": [],
+        "classification_batch_effective_table_privileges": [
+            {**item, "select": True}
+            if item.get("role") == "ledgerbridge_api"
+            and item.get("table") == "candidate_classification_batch_receipt"
+            else item
+            for item in privileges
+        ],
+    }
+
+    with pytest.raises(BackupError, match="classification_batch_effective_table_privileges"):
+        _validate_restored_database(expected, actual)
 
 
 def test_classification_batch_security_query_treats_null_acls_as_no_rows() -> None:

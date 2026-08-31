@@ -4241,6 +4241,10 @@ _TABLE_ACL_OWNER_FIELDS = {
         "evidence_unlock_tables",
         "evidence_unlock_effective_table_privileges",
     ),
+    "classification_batch_table_acls": (
+        "classification_batch_tables",
+        "classification_batch_effective_table_privileges",
+    ),
 }
 
 
