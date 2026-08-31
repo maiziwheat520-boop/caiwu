@@ -16,6 +16,7 @@ from scripts.backup_restore import (
     ACCOUNT_REGISTRY_MANAGED_ACCOUNT_CONSTRAINT_CONTRACT,
     ACCOUNT_REGISTRY_MANAGED_ACCOUNT_TRIGGER_CONTRACT,
     ACCOUNT_REGISTRY_SECURITY_DEFINER_FUNCTIONS,
+    ACCOUNT_REGISTRY_SECURITY_SQL,
     ACCOUNT_REGISTRY_TABLES,
     ACCOUNT_REGISTRY_TRIGGER_CONTRACT,
     BACKUP_FORMAT_V1,
@@ -108,6 +109,17 @@ def test_mybank_restore_inventory_accepts_current_integrated_schema_revision() -
     inventory = _cutover_inventory(schema_revision="20260830_0025")
 
     assert inventory.schema_revision == "20260830_0025"
+
+
+def test_account_registry_privilege_probe_uses_catalog_function_oid() -> None:
+    assert "p.oid function_oid" in ACCOUNT_REGISTRY_SECURITY_SQL
+    assert (
+        "has_function_privilege(r.role_name::text,f.function_oid,'EXECUTE')"
+        in ACCOUNT_REGISTRY_SECURITY_SQL
+    )
+    assert "format('%I.%I(%s)',f.schema_name,f.function_name,f.identity_arguments)" not in (
+        ACCOUNT_REGISTRY_SECURITY_SQL
+    )
 
 
 def test_mybank_restore_inventory_rejects_unreviewed_future_schema_revision() -> None:

@@ -1457,7 +1457,7 @@ present_roles(role_name) AS (
  FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='public' AND c.relname IN (__ACCOUNT_REGISTRY_TABLES_SQL__)
 ), observed_functions AS (
- SELECT n.nspname schema_name,p.proname function_name,
+ SELECT p.oid function_oid,n.nspname schema_name,p.proname function_name,
   pg_get_function_identity_arguments(p.oid) identity_arguments,
   pg_get_function_result(p.oid) result,pg_get_userbyid(p.proowner) owner,
   p.prosecdef security_definer,COALESCE(to_jsonb(p.proconfig),'[]'::jsonb) proconfig
@@ -1505,8 +1505,7 @@ present_roles(role_name) AS (
  FROM present_roles r CROSS JOIN observed_tables t
 ), function_privileges AS (
  SELECT r.role_name role,f.schema_name,f.function_name,f.identity_arguments,
-  has_function_privilege(r.role_name::text,
-   format('%I.%I(%s)',f.schema_name,f.function_name,f.identity_arguments),'EXECUTE') can_execute
+  has_function_privilege(r.role_name::text,f.function_oid,'EXECUTE') can_execute
  FROM present_roles r CROSS JOIN observed_functions f
 )
 SELECT jsonb_build_object(
