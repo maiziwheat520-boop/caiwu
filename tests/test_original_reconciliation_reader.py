@@ -13,6 +13,7 @@ from ledgerbridge.internal_read_contract import (
     READ_CAPABILITIES,
     CandidatePage,
     EntityGrant,
+    LedgerSummary,
     WorkloadPrincipal,
 )
 from ledgerbridge.internal_read_service import InternalReadBackendUnavailable
@@ -28,6 +29,113 @@ from ledgerbridge.original_reconciliation_reader import (
 
 ENTITY_B = UUID("10000000-0000-4000-8000-000000000002")
 ENTITY_A = UUID("10000000-0000-4000-8000-000000000001")
+
+
+class EmptyPostedLedgerReader:
+    def get_ledger_summary(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        entity_ref: UUID,
+        business_unit_ref: str,
+        from_month: str,
+        to_month: str,
+    ) -> LedgerSummary:
+        _ = principal
+        return LedgerSummary(
+            entity_ref=entity_ref,
+            business_unit_ref=business_unit_ref,
+            from_month=from_month,
+            to_month=to_month,
+            posting_status="POSTED",
+            currency="CNY",
+            totals_minor={},
+        )
+
+
+def test_reader_treats_complete_empty_posted_ledger_as_formal_zero() -> None:
+    principal = WorkloadPrincipal(
+        principal_ref="workload:original-reconciliation-empty-ledger-test",
+        san_uri="spiffe://ledgerbridge.test/original-reconciliation-empty-ledger-test",
+        policy_generation=11,
+        capabilities=READ_CAPABILITIES,
+        grants=(
+            EntityGrant(
+                entity_ref=ENTITY_B,
+                business_unit_refs=frozenset({"unit-demo-b"}),
+            ),
+        ),
+    )
+    projection = InternalReadOriginalReconciliationAdapter(
+        get_synthetic_review_service(),
+        posted_ledger_reader=EmptyPostedLedgerReader(),
+        layout=LegacyReconciliationLayout(
+            layout_version="synthetic-layout.v1",
+            mapping_version="synthetic-mapping.v1",
+        ),
+    ).get(
+        principal,
+        month="2026-08",
+        entity_ref=ENTITY_B,
+        business_unit_ref="unit-demo-b",
+    )
+
+    assert projection.posted_ledger_complete is True
+    assert projection.totals.posted_income_minor == 0
+    assert projection.totals.posted_expense_minor == 0
+    assert projection.totals.posted_profit_minor == 0
+    assert projection.totals.posted_amount_minor == 0
+    assert projection.confirmed_pending_posting_count == 1
+
+
+def test_reader_fails_closed_before_aggregating_nonempty_posted_summary() -> None:
+    class NonemptyPostedLedgerReader(EmptyPostedLedgerReader):
+        def get_ledger_summary(
+            self,
+            principal: WorkloadPrincipal,
+            *,
+            entity_ref: UUID,
+            business_unit_ref: str,
+            from_month: str,
+            to_month: str,
+        ) -> LedgerSummary:
+            summary = super().get_ledger_summary(
+                principal,
+                entity_ref=entity_ref,
+                business_unit_ref=business_unit_ref,
+                from_month=from_month,
+                to_month=to_month,
+            )
+            return summary.model_copy(update={"totals_minor": {"UNMAPPED": 1}})
+
+    principal = WorkloadPrincipal(
+        principal_ref="workload:original-reconciliation-nonempty-ledger-test",
+        san_uri="spiffe://ledgerbridge.test/original-reconciliation-nonempty-ledger-test",
+        policy_generation=11,
+        capabilities=READ_CAPABILITIES,
+        grants=(
+            EntityGrant(
+                entity_ref=ENTITY_B,
+                business_unit_refs=frozenset({"unit-demo-b"}),
+            ),
+        ),
+    )
+    reader = InternalReadOriginalReconciliationAdapter(
+        get_synthetic_review_service(),
+        posted_ledger_reader=NonemptyPostedLedgerReader(),
+        layout=LegacyReconciliationLayout(
+            layout_version="synthetic-layout.v1",
+            mapping_version="synthetic-mapping.v1",
+        ),
+    )
+
+    with pytest.raises(InternalReadBackendUnavailable):
+        reader.get(
+            principal,
+            month="2026-08",
+            entity_ref=ENTITY_B,
+            business_unit_ref="unit-demo-b",
+        )
 
 
 def test_internal_reader_keeps_confirmed_as_pending_posting_with_strict_scope() -> None:

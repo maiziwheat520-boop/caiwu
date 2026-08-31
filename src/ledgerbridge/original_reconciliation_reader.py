@@ -10,6 +10,7 @@ from ledgerbridge.financial_foundation_blocker_taxonomy import classify_missing_
 from ledgerbridge.internal_read_contract import (
     CandidatePage,
     Capability,
+    LedgerSummary,
     WorkloadPrincipal,
     authorize_read,
 )
@@ -38,26 +39,41 @@ class CandidateReadPort(Protocol):
     ) -> CandidatePage: ...
 
 
+class PostedLedgerSummaryReadPort(Protocol):
+    def get_ledger_summary(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        entity_ref: UUID,
+        business_unit_ref: str,
+        from_month: str,
+        to_month: str,
+    ) -> LedgerSummary: ...
+
+
 class InternalReadOriginalReconciliationAdapter:
     """Consume only scope-checked Candidate projections through one deep interface.
 
-    Existing ledger summaries are intentionally not consumed: their category
-    aggregates do not expose the unique primary ``posting.id`` required for a
-    POSTED_LEDGER fact identity. A later posted-fact adapter can add those facts
-    behind this interface without changing the HTTP projection. The interface keeps
-    three states distinct: an unavailable posted reader yields null formal totals;
-    an explicitly complete empty identity set yields zero; and a future missing
-    business-unit posting snapshot yields a breakdown GAP without joining today's
-    dimension labels back onto historical postings.
+    The existing ledger summary is consumed only as proof that the complete POSTED
+    set is empty. Its non-empty category aggregates do not expose the unique primary
+    ``posting.id`` required for a POSTED_LEDGER fact identity, so they fail closed.
+    A later posted-fact adapter can add those facts behind this interface without
+    changing the HTTP projection. The interface keeps three states distinct: an
+    unavailable posted reader yields null formal totals; an explicitly complete
+    empty set yields zero; and a future missing business-unit posting snapshot yields
+    a breakdown GAP without joining today's dimension labels back onto historical
+    postings.
     """
 
     def __init__(
         self,
         candidate_reader: CandidateReadPort,
         *,
+        posted_ledger_reader: PostedLedgerSummaryReadPort | None = None,
         layout: LegacyReconciliationLayout,
     ) -> None:
         self._candidate_reader = candidate_reader
+        self._posted_ledger_reader = posted_ledger_reader
         self._layout = layout
 
     def get(
@@ -74,6 +90,31 @@ class InternalReadOriginalReconciliationAdapter:
             entity_ref=entity_ref,
             business_unit_ref=business_unit_ref,
         )
+        posted_ledger_complete = False
+        if self._posted_ledger_reader is not None:
+            summary = self._posted_ledger_reader.get_ledger_summary(
+                principal,
+                entity_ref=entity_ref,
+                business_unit_ref=business_unit_ref,
+                from_month=month,
+                to_month=month,
+            )
+            if (
+                summary.entity_ref != entity_ref
+                or summary.business_unit_ref != business_unit_ref
+                or summary.from_month != month
+                or summary.to_month != month
+                or summary.posting_status != "POSTED"
+                or summary.currency != "CNY"
+            ):
+                raise InternalReadBackendUnavailable(
+                    "posted ledger summary escaped original-reconciliation scope"
+                )
+            if summary.totals_minor:
+                raise InternalReadBackendUnavailable(
+                    "nonempty posted ledger requires posting-identity facts"
+                )
+            posted_ledger_complete = True
         rules = {
             (rule.source_kind, rule.source_code): rule.legacy_slot_ref
             for rule in self._layout.source_slot_rules
@@ -170,7 +211,7 @@ class InternalReadOriginalReconciliationAdapter:
                 review_items=tuple(review_items),
                 declared_missing_material_count=missing_material_count,
                 projection_gaps=("MISSING_TIME_GRANULARITY",),
-                posted_ledger_complete=False,
+                posted_ledger_complete=posted_ledger_complete,
                 layout=self._layout,
             )
         )

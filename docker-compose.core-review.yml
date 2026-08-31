@@ -46,6 +46,8 @@ services:
       LEDGERBRIDGE_INTERNAL_READ_TRANSPORT: unix-mtls-proxy
       LEDGERBRIDGE_INTERNAL_READ_MTLS_POLICY_PATH: /run/ledgerbridge-policy/policy.json
       LEDGERBRIDGE_INTERNAL_READ_POLICY_GENERATION: ${LEDGERBRIDGE_INTERNAL_READ_POLICY_GENERATION:?policy generation is required}
+      LEDGERBRIDGE_ORIGINAL_RECONCILIATION_LAYOUT_FILE: /run/ledgerbridge-private/original-reconciliation-layout.json
+      LEDGERBRIDGE_ORIGINAL_RECONCILIATION_LAYOUT_SHA256: ${LEDGERBRIDGE_ORIGINAL_RECONCILIATION_LAYOUT_SHA256:?reviewed original-reconciliation layout digest is required}
       LEDGERBRIDGE_ENABLE_INTERNAL_CANDIDATE_COMMAND_API: "true"
       LEDGERBRIDGE_INTERNAL_CANDIDATE_COMMAND_BACKEND: database
       LEDGERBRIDGE_INTERNAL_CANDIDATE_COMMAND_OPERATIONAL_GATE: d1-production-v1
@@ -81,6 +83,7 @@ services:
       - evidence-unlock-socket:/run/ledgerbridge-unlocker:ro
       - ${LEDGERBRIDGE_INTERNAL_READ_POLICY_HOST_FILE:?policy host file is required}:/run/ledgerbridge-policy/policy.json:ro
       - ${LEDGERBRIDGE_EVIDENCE_KEY_HOST_FILE:?evidence key host file is required}:/run/ledgerbridge-key/evidence-key.json:ro
+      - ${LEDGERBRIDGE_ORIGINAL_RECONCILIATION_LAYOUT_HOST_FILE:?reviewed original-reconciliation layout host file is required}:/run/ledgerbridge-private/original-reconciliation-layout.json:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect('/run/ledgerbridge-internal/core.sock'); e=bytes((13,10)); s.sendall(b'GET /health/ready HTTP/1.0'+e+b'Host: localhost'+e+e); data=s.recv(128); s.close(); raise SystemExit(0 if b' 200 ' in data else 1)"]
       interval: 15s

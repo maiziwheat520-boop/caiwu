@@ -14,7 +14,7 @@ paths:
   /internal/v1/original-reconciliations/{month}:
     get:
       operationId: getOriginalReconciliation
-      x-ledgerbridge-capabilities: [reconciliation:read, candidate:read]
+      x-ledgerbridge-capabilities: [reconciliation:read, candidate:read, ledger:read]
       x-ledgerbridge-reject-unknown-query: true
       parameters:
         - name: month

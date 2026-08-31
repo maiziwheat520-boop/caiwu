@@ -92,10 +92,18 @@ attribution blocker exists in the current Candidate contract, so this slice does
 ## HTTP interface
 
 `GET /internal/v1/original-reconciliations/{month}?entity_ref=<uuid>&business_unit=<ref>` uses the
-existing verified `WorkloadPrincipal`, requires both `reconciliation:read` and `candidate:read`,
+existing verified `WorkloadPrincipal`, requires `reconciliation:read`, `candidate:read`, and
+`ledger:read`,
 revalidates every returned Candidate against entity, business unit, month, and status, rejects
 unknown/duplicate query keys, returns the fixed problem contract, and always emits
 `Cache-Control: no-store`. The existing `/internal/v1/reconciliations/{month}` route is unchanged.
+
+The route loads a reviewed private layout from an absolute read-only mount and pins its SHA-256.
+It also queries the scoped POSTED ledger summary. A complete empty summary is the only case where
+the current aggregate reader can prove the formal result and return zero totals. Any non-empty
+summary fails closed with 503 because aggregate category totals do not carry the unique
+`posting.id` identities required by the frozen projection contract. Confirmed Candidates remain
+pending posting and never contribute to formal totals.
 
 ## TDD evidence
 

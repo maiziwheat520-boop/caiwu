@@ -105,10 +105,14 @@ unknown ledger totals or balances as null/GAP instead of zero. The deployed lega
 source-to-slot rules remain injected private configuration; no real labels, financial material,
 schema migration, production reader enablement, merge, or deployment is included. See
 `docs/tasks/2026-08-30-original-reconciliation-projection.md`.
-The route fails closed until that private layout is injected. The current Candidate-only reader
-also exposes `MISSING_TIME_GRANULARITY` rather than inferring the workbook's intra-month rows;
-future missing historical business-unit attribution is reserved as a breakdown GAP and must not
-invalidate an otherwise sound company-level formal total.
+The production adapter now loads that private layout only from a hash-pinned read-only mount and
+requires `ledger:read` in addition to the original capabilities. It can prove a complete empty
+POSTED ledger and return a valid zero-valued A:M / 40-row projection; any non-empty aggregate
+summary still fails closed because it lacks the primary `posting.id` identities required by the
+frozen fact contract. Confirmed Candidates remain pending posting and never enter formal totals.
+The reader also exposes `MISSING_TIME_GRANULARITY` rather than inferring the workbook's intra-month
+rows; future missing historical business-unit attribution is reserved as a breakdown GAP and must
+not invalidate an otherwise sound company-level formal total.
 ## Payroll publication adapter checkpoint (2026-08-30)
 
 The real-data cutover branch now contains a default-disabled, read-only adapter for the
