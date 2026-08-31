@@ -27,7 +27,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
-
 LEDGER_READ_CAPABILITY = "ledger:read"
 CORE_GENERATION_KEY = "LEDGERBRIDGE_INTERNAL_READ_POLICY_GENERATION"
 WEB_GENERATION_KEY = "CORE_POLICY_GENERATION"
@@ -63,6 +62,8 @@ class RolloutConfig:
     target_generation: int
     core_compose_paths: tuple[Path, ...]
     web_compose_paths: tuple[Path, ...]
+    core_project_name: str
+    web_project_name: str
     reader_service: str
     web_service: str
     reader_container: str
@@ -84,6 +85,8 @@ class RolloutConfig:
         if self.expected_generation < 1 or self.target_generation != self.expected_generation + 1:
             raise RolloutError("GENERATION_TRANSITION_INVALID")
         names = (
+            self.core_project_name,
+            self.web_project_name,
             self.reader_service,
             self.web_service,
             self.reader_container,
@@ -365,16 +368,20 @@ def compose_recreate_command(config: RolloutConfig, role: str) -> tuple[str, ...
     if role == "reader":
         compose_paths = config.core_compose_paths
         env_path = config.core_env_path
+        project_name = config.core_project_name
         service = config.reader_service
     elif role == "web":
         compose_paths = config.web_compose_paths
         env_path = config.web_env_path
+        project_name = config.web_project_name
         service = config.web_service
     else:
         raise RolloutError("TARGET_ROLE_INVALID")
     command = [
         "docker",
         "compose",
+        "--project-name",
+        project_name,
         "--project-directory",
         str(compose_paths[0].parent),
         "--env-file",
@@ -559,6 +566,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-generation", type=int, required=True)
     parser.add_argument("--core-compose-path", type=Path, action="append", required=True)
     parser.add_argument("--web-compose-path", type=Path, action="append", required=True)
+    parser.add_argument("--core-project-name", required=True)
+    parser.add_argument("--web-project-name", required=True)
     parser.add_argument("--reader-service", required=True)
     parser.add_argument("--web-service", required=True)
     parser.add_argument("--reader-container", required=True)
@@ -579,6 +588,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             target_generation=arguments.target_generation,
             core_compose_paths=tuple(path.resolve() for path in arguments.core_compose_path),
             web_compose_paths=tuple(path.resolve() for path in arguments.web_compose_path),
+            core_project_name=arguments.core_project_name,
+            web_project_name=arguments.web_project_name,
             reader_service=arguments.reader_service,
             web_service=arguments.web_service,
             reader_container=arguments.reader_container,

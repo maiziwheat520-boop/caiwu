@@ -14,7 +14,6 @@ from scripts.company_report_policy_rollout import (
     rollout_plan,
 )
 
-
 SENSITIVE_ENTITY = "10000000-0000-4000-8000-000000000001"
 SENSITIVE_MARKER = "must-never-reach-runner-output"
 
@@ -69,6 +68,8 @@ def _config(tmp_path: Path) -> RolloutConfig:
             tmp_path / "core-review.yml",
         ),
         web_compose_paths=(tmp_path / "web-compose.yml",),
+        core_project_name="ledgerbridge",
+        web_project_name="ledgerbridge-web-core",
         reader_service="internal-reader",
         web_service="web",
         reader_container="ledgerbridge-internal-reader-1",
@@ -168,12 +169,19 @@ class CompanyReportPolicyRolloutTests(unittest.TestCase):
     def test_reader_recreate_preserves_the_complete_compose_file_sequence(self) -> None:
         command = compose_recreate_command(self.config, "reader")
 
+        self.assertEqual(command[2:4], ("--project-name", "ledgerbridge"))
         self.assertEqual(command.count("-f"), 2)
         self.assertLess(
             command.index(str(self.config.core_compose_paths[0])),
             command.index(str(self.config.core_compose_paths[1])),
         )
         self.assertEqual(command[-3:], ("--no-deps", "--force-recreate", "internal-reader"))
+
+    def test_web_recreate_targets_the_existing_web_compose_project(self) -> None:
+        command = compose_recreate_command(self.config, "web")
+
+        self.assertEqual(command[2:4], ("--project-name", "ledgerbridge-web-core"))
+        self.assertEqual(command[-3:], ("--no-deps", "--force-recreate", "web"))
 
     def test_failed_web_health_restores_all_files_and_recreates_both_old_generations(self) -> None:
         originals = {
