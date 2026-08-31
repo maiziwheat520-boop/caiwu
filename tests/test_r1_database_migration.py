@@ -576,7 +576,7 @@ def _legacy_transition(
     if add_field_change:
         field_changes.append(("amount_minor", 1, 2))
     field_changes.sort(key=lambda item: item[0])
-    payload = {
+    payload: dict[str, object] = {
         "event_ref": str(event_ref),
         "candidate_id": str(candidate_id),
         "candidate_ref": str(candidate_id),
@@ -898,6 +898,103 @@ def _append_audit_event(connection: Connection, action: str, payload: dict[str, 
         },
     ).scalar_one()
     return cast(UUID, value)
+
+
+def _seed_classification_candidate(
+    connection: Connection,
+    *,
+    entity_id: UUID,
+    business_unit_id: UUID,
+    category_id: UUID,
+    category_code: str,
+    summary: str,
+    amount_minor: int,
+) -> UUID:
+    candidate_id = uuid4()
+    operation_id = uuid4()
+    event_ref = uuid4()
+    now = datetime.now(UTC)
+    payload: dict[str, object] = {
+        "event_ref": str(event_ref),
+        "candidate_id": str(candidate_id),
+        "candidate_ref": str(candidate_id),
+        "operation_id": str(operation_id),
+        "command_fingerprint": (operation_id.bytes * 2).hex(),
+        "event_type": "CREATE",
+        "action": None,
+        "from_revision": None,
+        "to_revision": 1,
+        "from_status": None,
+        "to_status": "PENDING",
+        "field_changes": [],
+        "conflict_resolutions": [],
+        "actor_ref": "classification-batch-test",
+        "reason": "classification batch integration fixture",
+        "derived_candidate_id": None,
+    }
+    audit_event = _append_audit_event(connection, "candidate.create", payload)
+    connection.execute(
+        text(
+            "INSERT INTO public.candidate "
+            "(id, short_id, entity_id, contract_version, created_at) VALUES "
+            "(:candidate, :short_id, :entity, 'ledgerbridge.candidate.v1', :now)"
+        ),
+        {
+            "candidate": candidate_id,
+            "short_id": "C-" + candidate_id.hex[:8].upper(),
+            "entity": entity_id,
+            "now": now,
+        },
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.candidate_source "
+            "(candidate_id, ingest_channel_id, source_system_id, source_event_ref, "
+            "display_label) VALUES "
+            "(:candidate, 'synthetic_upload', 'synthetic', :source_event, '支付宝交易')"
+        ),
+        {"candidate": candidate_id, "source_event": uuid4()},
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.candidate_revision "
+            "(candidate_id, revision, status, business_unit_id, business_unit_ref_snapshot, "
+            "business_unit_label_snapshot, category_id, category_code_snapshot, "
+            "category_label_snapshot, amount_minor, currency, accounting_month, summary, "
+            "confidence_basis_points, created_at, updated_at) VALUES "
+            "(:candidate, 1, 'PENDING', :unit, 'unit-a', 'Unit A', :category, "
+            ":category_code, 'Platform review', :amount, 'CNY', DATE '2026-08-01', "
+            ":summary, 9900, :now, :now)"
+        ),
+        {
+            "candidate": candidate_id,
+            "unit": business_unit_id,
+            "category": category_id,
+            "category_code": category_code,
+            "amount": amount_minor,
+            "summary": summary,
+            "now": now,
+        },
+    )
+    connection.execute(
+        text(
+            "INSERT INTO public.candidate_event "
+            "(event_ref, candidate_id, operation_id, command_fingerprint, event_type, "
+            "to_revision, to_status, actor_ref, reason, occurred_at, audit_event_id) VALUES "
+            "(:event, :candidate, :operation, :fingerprint, 'CREATE', 1, 'PENDING', "
+            "'classification-batch-test', 'classification batch integration fixture', "
+            ":now, :audit)"
+        ),
+        {
+            "event": event_ref,
+            "candidate": candidate_id,
+            "operation": operation_id,
+            "fingerprint": operation_id.bytes * 2,
+            "now": now,
+            "audit": audit_event,
+        },
+    )
+    return candidate_id
 
 
 def _seed_read_facts(
@@ -3389,6 +3486,220 @@ def test_r1_internal_read_empty_database_downgrade_round_trips() -> None:
                 is None
             )
         command.upgrade(config, "head")
+
+
+def test_0026_batch_recomputes_risk_key_atomically_and_replays_closed_receipt(
+    isolated_r1_database: str,
+) -> None:
+    engine = create_engine(isolated_r1_database)
+    summary = "支付宝 | 2026-08-01 | 收入 | 投资理财 | 中欧基金 | 余额宝 | 交易成功"
+    with engine.begin() as connection:
+        facts = _seed_read_facts(connection)
+        platform_category = uuid4()
+        connection.execute(
+            text(
+                "INSERT INTO public.reporting_category "
+                "(id, entity_id, code, label) VALUES "
+                "(:category, :entity, 'ALIPAY_TRANSACTION_REVIEW', 'Alipay review')"
+            ),
+            {"category": platform_category, "entity": facts["entity"]},
+        )
+        source = _seed_classification_candidate(
+            connection,
+            entity_id=cast(UUID, facts["entity"]),
+            business_unit_id=cast(UUID, facts["unit"]),
+            category_id=platform_category,
+            category_code="ALIPAY_TRANSACTION_REVIEW",
+            summary=summary,
+            amount_minor=101,
+        )
+        matching = _seed_classification_candidate(
+            connection,
+            entity_id=cast(UUID, facts["entity"]),
+            business_unit_id=cast(UUID, facts["unit"]),
+            category_id=platform_category,
+            category_code="ALIPAY_TRANSACTION_REVIEW",
+            summary=summary.replace("2026-08-01", "2026-08-02"),
+            amount_minor=202,
+        )
+        risk_drift = _seed_classification_candidate(
+            connection,
+            entity_id=cast(UUID, facts["entity"]),
+            business_unit_id=cast(UUID, facts["unit"]),
+            category_id=cast(UUID, facts["category"]),
+            category_code="category-a",
+            summary=summary.replace("2026-08-01", "2026-08-03"),
+            amount_minor=303,
+        )
+        group_key = connection.execute(
+            text("SELECT internal_command.candidate_classification_group_key(:candidate, 1)"),
+            {"candidate": source},
+        ).scalar_one()
+        assert group_key["conditions"]["risk_signature"] == ["TRANSFER_REVIEW_REQUIRED"]
+        canonical = "\x1f".join(
+            (
+                "ledgerbridge.classification-key.v1",
+                str(facts["entity"]),
+                "synthetic",
+                "SYNTHETIC",
+                "支付宝",
+                "INFLOW",
+                "投资理财",
+                "exact:中欧基金",
+                "EXACT_PLATFORM_SUMMARY_V1",
+                "余额宝",
+                "交易成功",
+                "CNY",
+                "TRANSFER_REVIEW_REQUIRED",
+            )
+        )
+        assert group_key["group_ref"] == (
+            "cg_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+        )
+
+    operation_id = uuid4()
+
+    def request(member_refs: list[UUID], *, assertion_jti: UUID) -> dict[str, object]:
+        members = []
+        for candidate_id in sorted(member_refs):
+            members.append(
+                {
+                    "candidate_ref": str(candidate_id),
+                    "expected_revision": 1,
+                    "operation_id": str(uuid4()),
+                    "assertion_jti": str(uuid4()),
+                    "decision": "CONFIRM",
+                    "reason": "explicitly reviewed transfer classification group",
+                    "current_business_unit_id": str(facts["unit"]),
+                    "target_business_unit_id": str(facts["unit"]),
+                    "set_business_unit": False,
+                    "business_unit_ref": None,
+                    "set_category": False,
+                    "category_code": None,
+                }
+            )
+        return {
+            "operation_id": str(operation_id),
+            "assertion_jti": str(assertion_jti),
+            "actor_ref": "human:classification-reviewer",
+            "workload_principal_ref": "workload:classification-review",
+            "verified_san": "spiffe://ledgerbridge.test/classification-review",
+            "authorized_entity_id": str(facts["entity"]),
+            "authorized_entity_ids": [str(facts["entity"])],
+            "authorized_business_unit_ids": [str(facts["unit"])],
+            "authorized_unassigned_entity_ids": [],
+            "group_ref": group_key["group_ref"],
+            "key_version": "ledgerbridge.classification-key.v1",
+            "accounting_month": "2026-08",
+            "source_candidate_ref": str(source),
+            "target": {
+                "business_unit_ref": "unit-a",
+                "category_code": "ALIPAY_TRANSACTION_REVIEW",
+            },
+            "acknowledged_risk_codes": ["TRANSFER_REVIEW_REQUIRED"],
+            "reason": "explicitly reviewed transfer classification group",
+            "members": members,
+            "decided_at": datetime.now(UTC).isoformat(),
+        }
+
+    drift_request = request([source, matching, risk_drift], assertion_jti=uuid4())
+    with (
+        _temporarily_runtime_membership(isolated_r1_database, "ledgerbridge_api"),
+        engine.connect() as connection,
+    ):
+        transaction = connection.begin()
+        connection.execute(text("SET LOCAL ROLE ledgerbridge_api"))
+        with pytest.raises(SQLAlchemyError) as raised:
+            connection.execute(
+                text(
+                    "SELECT internal_command.apply_candidate_classification_batch("
+                    "CAST(:request AS jsonb))"
+                ),
+                {"request": json.dumps(drift_request)},
+            )
+        assert _sqlstate(raised.value) == "LB002"
+        assert "risk signature, or group key drifted" in str(
+            getattr(raised.value, "orig", raised.value)
+        )
+        transaction.rollback()
+    with engine.connect() as connection:
+        assert (
+            connection.execute(
+                text(
+                    "SELECT count(*) FROM public.candidate_revision "
+                    "WHERE candidate_id = ANY(:candidates) AND revision > 1"
+                ),
+                {"candidates": [source, matching, risk_drift]},
+            ).scalar_one()
+            == 0
+        )
+        assert (
+            connection.execute(
+                text(
+                    "SELECT count(*) FROM internal_command.candidate_classification_batch_receipt "
+                    "WHERE operation_id = :operation"
+                ),
+                {"operation": operation_id},
+            ).scalar_one()
+            == 0
+        )
+
+    operation_id = uuid4()
+    applied_request = request([source, matching], assertion_jti=uuid4())
+    with (
+        _temporarily_runtime_membership(isolated_r1_database, "ledgerbridge_api"),
+        engine.begin() as connection,
+    ):
+        connection.execute(text("SET LOCAL ROLE ledgerbridge_api"))
+        receipt = connection.execute(
+            text(
+                "SELECT internal_command.apply_candidate_classification_batch("
+                "CAST(:request AS jsonb))"
+            ),
+            {"request": json.dumps(applied_request)},
+        ).scalar_one()
+        assert receipt["replayed"] is False
+        assert receipt["acknowledged_risk_codes"] == ["TRANSFER_REVIEW_REQUIRED"]
+
+    hidden_replay = {
+        **applied_request,
+        "assertion_jti": str(uuid4()),
+        "authorized_business_unit_ids": [str(uuid4())],
+    }
+    with (
+        _temporarily_runtime_membership(isolated_r1_database, "ledgerbridge_api"),
+        engine.begin() as connection,
+    ):
+        connection.execute(text("SET LOCAL ROLE ledgerbridge_api"))
+        assert (
+            connection.execute(
+                text(
+                    "SELECT internal_command.replay_candidate_classification_batch("
+                    "CAST(:request AS jsonb))"
+                ),
+                {"request": json.dumps(hidden_replay)},
+            ).scalar_one()
+            is None
+        )
+
+    replay_request = {**applied_request, "assertion_jti": str(uuid4())}
+    with (
+        _temporarily_runtime_membership(isolated_r1_database, "ledgerbridge_api"),
+        engine.begin() as connection,
+    ):
+        connection.execute(text("SET LOCAL ROLE ledgerbridge_api"))
+        replayed = connection.execute(
+            text(
+                "SELECT internal_command.replay_candidate_classification_batch("
+                "CAST(:request AS jsonb))"
+            ),
+            {"request": json.dumps(replay_request)},
+        ).scalar_one()
+        assert replayed["replayed"] is True
+        assert replayed["acknowledged_risk_codes"] == ["TRANSFER_REVIEW_REQUIRED"]
+        assert replayed["results"] == [
+            {**item, "status": "REPLAYED"} for item in receipt["results"]
+        ]
 
 
 def test_r1_internal_read_nonempty_downgrade_is_rejected(

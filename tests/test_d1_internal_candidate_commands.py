@@ -296,7 +296,7 @@ def test_classification_group_batch_is_explicit_atomic_audited_and_idempotent() 
         assert groups.status_code == 200
         group = next(item for item in groups.json()["items"] if item["batch_member_count"] == 2)
         assert group["conditions"]["counterparty_basis"] == "EXACT_PLATFORM_SUMMARY_V1"
-        request = {
+        request: dict[str, object] = {
             "source_candidate_ref": str(candidate_refs[0]),
             "accounting_month": "2026-05",
             "target": {"business_unit_ref": "unit-reviewed", "category_code": "TRAVEL"},
@@ -311,6 +311,7 @@ def test_classification_group_batch_is_explicit_atomic_audited_and_idempotent() 
         assert first.status_code == 200
         receipt = first.json()
         assert receipt["replayed"] is False
+        assert receipt["acknowledged_risk_codes"] == request["acknowledged_risk_codes"]
         assert len(receipt["results"]) == 2
         assert {item["status"] for item in receipt["results"]} == {"APPLIED"}
         assert {item["candidate"]["status"] for item in receipt["results"]} == {"CONFIRMED"}
@@ -320,6 +321,7 @@ def test_classification_group_batch_is_explicit_atomic_audited_and_idempotent() 
         _, replay = _post_group(client, group["group_ref"], request, operation_id=operation)
         assert replay.status_code == 200
         assert replay.json()["replayed"] is True
+        assert replay.json()["acknowledged_risk_codes"] == request["acknowledged_risk_codes"]
         assert {item["status"] for item in replay.json()["results"]} == {"REPLAYED"}
         for candidate_ref in candidate_refs:
             events = client.get(
@@ -337,7 +339,7 @@ def test_classification_group_stale_member_rolls_back_every_member() -> None:
             for item in client.get("/internal/v1/candidate-classification-groups").json()["items"]
             if item["batch_member_count"] == 2
         )
-        request = {
+        request: dict[str, object] = {
             "source_candidate_ref": str(candidate_refs[0]),
             "accounting_month": "2026-05",
             "target": {"business_unit_ref": "unit-reviewed", "category_code": "TRAVEL"},

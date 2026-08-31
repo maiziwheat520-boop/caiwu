@@ -29,6 +29,16 @@ from scripts.backup_restore import (
     BANK_STATEMENT_SECURITY_SQL,
     BANK_STATEMENT_TABLES,
     BANK_STATEMENT_TRIGGER_CONTRACT,
+    CLASSIFICATION_BATCH_CONSTRAINT_DEFINITION_MARKERS,
+    CLASSIFICATION_BATCH_CONSTRAINT_TABLES,
+    CLASSIFICATION_BATCH_FUNCTION_EXECUTORS,
+    CLASSIFICATION_BATCH_FUNCTION_RESULTS,
+    CLASSIFICATION_BATCH_FUNCTION_SIGNATURES,
+    CLASSIFICATION_BATCH_REQUIRED_COLUMNS,
+    CLASSIFICATION_BATCH_REQUIRED_CONSTRAINTS,
+    CLASSIFICATION_BATCH_SECURITY_SQL,
+    CLASSIFICATION_BATCH_TABLES,
+    CLASSIFICATION_BATCH_TRIGGER_CONTRACT,
     COMPANY_REPORTING_FUNCTION_RESULTS,
     COMPANY_REPORTING_FUNCTION_SIGNATURES,
     COMPANY_REPORTING_REQUIRED_COLUMNS,
@@ -76,6 +86,7 @@ from scripts.backup_restore import (
     _replace_database_host,
     _safe_extract_tar,
     _validate_backup_image,
+    _validate_classification_batch_security,
     _validate_restored_database,
     _verify_payload_hashes,
     _write_payload_hashes,
@@ -1060,6 +1071,200 @@ def _company_reporting_database_metadata() -> dict[str, object]:
         for name, arguments in COMPANY_REPORTING_FUNCTION_SIGNATURES.items()
     ]
     return metadata
+
+
+def _classification_batch_security_metadata() -> dict[str, object]:
+    owner = "ledgerbridge_owner"
+    return {
+        "database_owner": owner,
+        "r1_role_matrix": [{"role": role} for role in R1_ROLES],
+        "classification_batch_row_counts": {table: 0 for table in CLASSIFICATION_BATCH_TABLES},
+        "classification_batch_tables": [
+            {"table": table, "owner": owner, "kind": "r"} for table in CLASSIFICATION_BATCH_TABLES
+        ],
+        "classification_batch_functions": [
+            {
+                "name": name,
+                "identity_arguments": arguments,
+                "result": CLASSIFICATION_BATCH_FUNCTION_RESULTS[name],
+                "owner": owner,
+                "security_definer": True,
+                "proconfig": ["search_path=pg_catalog"],
+            }
+            for name, arguments in CLASSIFICATION_BATCH_FUNCTION_SIGNATURES.items()
+        ],
+        "classification_batch_triggers": [
+            {
+                "table": table,
+                "name": name,
+                "enabled": "O",
+                "trigger_type": trigger_type,
+                "function_schema": "internal_command",
+                "function_name": function_name,
+            }
+            for name, (table, trigger_type, function_name) in (
+                CLASSIFICATION_BATCH_TRIGGER_CONTRACT.items()
+            )
+        ],
+        "classification_batch_constraints": [
+            {
+                "table": CLASSIFICATION_BATCH_CONSTRAINT_TABLES[name],
+                "name": name,
+                "type": "c",
+                "validated": True,
+                "definition": " ".join(CLASSIFICATION_BATCH_CONSTRAINT_DEFINITION_MARKERS[name]),
+            }
+            for name in CLASSIFICATION_BATCH_REQUIRED_CONSTRAINTS
+        ],
+        "classification_batch_columns": [
+            {
+                "table": table,
+                "column": column,
+                "data_type": data_type,
+                "not_null": not_null,
+            }
+            for table, columns in CLASSIFICATION_BATCH_REQUIRED_COLUMNS.items()
+            for column, (data_type, not_null) in columns.items()
+        ],
+        "classification_batch_table_acls": [
+            {
+                "table": table,
+                "grantee": owner,
+                "privilege": privilege,
+                "grantable": False,
+            }
+            for table in CLASSIFICATION_BATCH_TABLES
+            for privilege in (
+                "SELECT",
+                "INSERT",
+                "UPDATE",
+                "DELETE",
+                "TRUNCATE",
+                "REFERENCES",
+                "TRIGGER",
+            )
+        ],
+        "classification_batch_function_acls": [
+            {
+                "name": name,
+                "identity_arguments": arguments,
+                "grantee": grantee,
+                "privilege": "EXECUTE",
+                "grantable": False,
+            }
+            for name, arguments in CLASSIFICATION_BATCH_FUNCTION_SIGNATURES.items()
+            for grantee in (
+                (owner, CLASSIFICATION_BATCH_FUNCTION_EXECUTORS[name])
+                if name in CLASSIFICATION_BATCH_FUNCTION_EXECUTORS
+                else (owner,)
+            )
+        ],
+        "classification_batch_effective_table_privileges": [
+            {
+                "role": role,
+                "table": table,
+                "select": False,
+                "insert": False,
+                "update": False,
+                "delete": False,
+            }
+            for role in R1_ROLES
+            for table in CLASSIFICATION_BATCH_TABLES
+        ],
+        "classification_batch_effective_function_privileges": [
+            {
+                "role": role,
+                "name": name,
+                "identity_arguments": arguments,
+                "execute": role == CLASSIFICATION_BATCH_FUNCTION_EXECUTORS.get(name),
+            }
+            for role in R1_ROLES
+            for name, arguments in CLASSIFICATION_BATCH_FUNCTION_SIGNATURES.items()
+        ],
+    }
+
+
+def test_classification_batch_restore_metadata_covers_0026_security_boundary() -> None:
+    metadata = _classification_batch_security_metadata()
+
+    _validate_classification_batch_security(metadata)
+
+    for table in CLASSIFICATION_BATCH_TABLES:
+        assert f"internal_command.{table}" in CLASSIFICATION_BATCH_SECURITY_SQL
+    for name, arguments in CLASSIFICATION_BATCH_FUNCTION_SIGNATURES.items():
+        assert f"('{name}', '{arguments}')" in CLASSIFICATION_BATCH_SECURITY_SQL
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "table_missing",
+        "function_security",
+        "trigger_disabled",
+        "constraint_missing",
+        "constraint_semantics",
+        "column_contract",
+        "api_execute_missing",
+        "direct_table_grant",
+    ],
+)
+def test_classification_batch_restore_rejects_security_metadata_drift(
+    mutation: str,
+) -> None:
+    metadata = _classification_batch_security_metadata()
+    if mutation == "table_missing":
+        metadata["classification_batch_tables"] = cast(
+            list[dict[str, object]], metadata["classification_batch_tables"]
+        )[1:]
+    elif mutation == "function_security":
+        rows = cast(list[dict[str, object]], metadata["classification_batch_functions"])
+        metadata["classification_batch_functions"] = [
+            {**rows[0], "security_definer": False},
+            *rows[1:],
+        ]
+    elif mutation == "trigger_disabled":
+        rows = cast(list[dict[str, object]], metadata["classification_batch_triggers"])
+        metadata["classification_batch_triggers"] = [{**rows[0], "enabled": "D"}, *rows[1:]]
+    elif mutation == "constraint_missing":
+        metadata["classification_batch_constraints"] = cast(
+            list[dict[str, object]], metadata["classification_batch_constraints"]
+        )[1:]
+    elif mutation == "constraint_semantics":
+        rows = cast(list[dict[str, object]], metadata["classification_batch_constraints"])
+        metadata["classification_batch_constraints"] = [
+            {**rows[0], "definition": "CHECK (true)"},
+            *rows[1:],
+        ]
+    elif mutation == "column_contract":
+        rows = cast(list[dict[str, object]], metadata["classification_batch_columns"])
+        metadata["classification_batch_columns"] = [
+            {**rows[0], "data_type": "text"},
+            *rows[1:],
+        ]
+    elif mutation == "api_execute_missing":
+        rows = cast(
+            list[dict[str, object]],
+            metadata["classification_batch_effective_function_privileges"],
+        )
+        metadata["classification_batch_effective_function_privileges"] = [
+            {**row, "execute": False}
+            if row["role"] == "ledgerbridge_api"
+            and row["name"] == "apply_candidate_classification_batch"
+            else row
+            for row in rows
+        ]
+    else:
+        rows = cast(
+            list[dict[str, object]],
+            metadata["classification_batch_effective_table_privileges"],
+        )
+        metadata["classification_batch_effective_table_privileges"] = [
+            {**rows[0], "select": True},
+            *rows[1:],
+        ]
+
+    with pytest.raises(BackupError, match="classification batch"):
+        _validate_classification_batch_security(metadata)
 
 
 def test_counterparty_restore_metadata_covers_0020_contract() -> None:

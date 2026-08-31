@@ -33,9 +33,10 @@ classification to the remaining PENDING members of the same stable group.
   separate risk and is never included in one-click approval or a learned rule.
 - Refund/reversal, internal or related-party movement, hotel payout, unsettled,
   blocker, low-confidence, and ambiguous records remain explicit review cases.
-- A learned rule is a pre-classification suggestion only. It never confirms or posts.
-- Rules are append-only, bind the source approval fact, expose conditions and current
-  match count, and can be disabled through a new audited event.
+- Learned-rule mutation and automatic suggestion are not exposed in this slice.
+  The group contract keeps read-only eligibility/block reasons and an `active_rule`
+  placeholder that remains `null`; a later append-only rule slice must still bind the
+  source approval fact and may only pre-classify, never confirm or post.
 
 ## Similarity-key sources
 
@@ -60,8 +61,8 @@ classification to the remaining PENDING members of the same stable group.
   Candidate event, and a reused operation with different content fails closed. A
   failed preflight may identify member-specific reasons, but no member succeeds and
   no batch receipt or Candidate event is written.
-- Rule conditions, source decision operation, source Candidate, match count, revision,
-  status, and disabled event remain visible through Core and Web.
+- Rule eligibility and block reasons remain visible. Rule CRUD, match-count execution,
+  automatic suggestions, and disabled events are explicitly deferred.
 
 ## Deployment boundary
 

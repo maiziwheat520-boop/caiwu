@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -15,9 +16,15 @@ from ledgerbridge.candidate_contract import (
     IngestChannel,
 )
 from ledgerbridge.internal_candidate_command import (
+    CandidateClassificationBatchReceipt,
+    CandidateClassificationBatchRequest,
+    CandidateCommandIdempotencyConflict,
     CandidateDecision,
     CandidateDecisionReceipt,
     CandidateDecisionRequest,
+    ClassificationBatchMember,
+    ClassificationBatchMemberResult,
+    ClassificationTarget,
     DatabaseInternalReviewService,
     SyntheticInternalReviewService,
 )
@@ -85,6 +92,8 @@ class _Session:
             return _Result([{"event": event} for event in self.events])
         if "apply_candidate_decision" in sql:
             return _Result([] if self.receipt is None else [{"receipt": self.receipt}])
+        if "replay_candidate_classification_batch" in sql:
+            return _Result([] if self.receipt is None else [{"receipt": self.receipt}])
         raise AssertionError(f"unexpected SQL: {sql}")
 
     def commit(self) -> None:
@@ -142,6 +151,101 @@ def _fixtures() -> tuple[
 
 def _factory(session: _Session):  # type: ignore[no-untyped-def]
     return lambda: cast(Session, session)
+
+
+def _batch_fixtures() -> tuple[
+    WorkloadPrincipal,
+    CandidateClassificationBatchRequest,
+    CandidateClassificationBatchReceipt,
+]:
+    candidate, principal, _, decision_receipt = _fixtures()
+    second_ref = uuid4()
+    request = CandidateClassificationBatchRequest(
+        source_candidate_ref=candidate.candidate_ref,
+        accounting_month=cast(str, candidate.accounting_month),
+        target=ClassificationTarget(
+            business_unit_ref=cast(str, candidate.business_unit_ref),
+            category_code=cast(str, candidate.category_code),
+        ),
+        members=(
+            ClassificationBatchMember(
+                candidate_ref=candidate.candidate_ref,
+                expected_revision=candidate.revision,
+            ),
+            ClassificationBatchMember(candidate_ref=second_ref, expected_revision=1),
+        ),
+        reason="reviewed exact classification group",
+        acknowledged_risk_codes=(),
+    )
+    operation_id = uuid4()
+    results = tuple(
+        ClassificationBatchMemberResult(
+            candidate_ref=candidate_ref,
+            operation_id=uuid4(),
+            status="REPLAYED",
+            candidate=decision_receipt.candidate,
+            events=decision_receipt.events,
+        )
+        for candidate_ref in (candidate.candidate_ref, second_ref)
+    )
+    receipt = CandidateClassificationBatchReceipt(
+        operation_id=operation_id,
+        replayed=True,
+        group_ref="cg_0123456789abcdef0123456789abcdef",
+        accounting_month=cast(str, candidate.accounting_month),
+        source_candidate_ref=candidate.candidate_ref,
+        target=request.target,
+        acknowledged_risk_codes=request.acknowledged_risk_codes,
+        results=results,
+    )
+    return principal, request, receipt
+
+
+def test_database_batch_replay_is_resolved_before_current_candidate_reads() -> None:
+    principal, request, receipt = _batch_fixtures()
+    read = _Session({}, failure=SQLAlchemyError("current Candidate reads are stale"))
+    command = _Session({}, receipt=receipt.model_dump(mode="json"))
+    service = DatabaseInternalReviewService(_factory(read), _factory(command))
+
+    result = service.apply_classification_batch(
+        principal,
+        group_ref=receipt.group_ref,
+        operation_id=receipt.operation_id,
+        assertion_jti=uuid4(),
+        actor_ref="human:web-reviewer",
+        request=request,
+        decided_at=datetime.now(UTC),
+    )
+
+    assert result == receipt
+    assert read.calls == []
+    assert command.committed is True
+    assert "internal_command.replay_candidate_classification_batch" in command.calls[0][0]
+    replay_payload = json.loads(command.calls[0][1]["request"])
+    assert replay_payload["authorized_entity_ids"] == [str(principal.grants[0].entity_ref)]
+    assert replay_payload["authorized_business_unit_ids"] == [str(BUSINESS_UNIT_ID)]
+    assert replay_payload["authorized_unassigned_entity_ids"] == []
+
+
+def test_database_batch_replay_conflict_fails_closed_before_candidate_reads() -> None:
+    principal, request, receipt = _batch_fixtures()
+    read = _Session({}, failure=SQLAlchemyError("must not disclose Candidate scope"))
+    command = _Session({}, failure=_SqlStateError("LB001"))
+    service = DatabaseInternalReviewService(_factory(read), _factory(command))
+
+    with pytest.raises(CandidateCommandIdempotencyConflict, match="idempotency conflict"):
+        service.apply_classification_batch(
+            principal,
+            group_ref=receipt.group_ref,
+            operation_id=receipt.operation_id,
+            assertion_jti=uuid4(),
+            actor_ref="human:wrong-actor",
+            request=request,
+            decided_at=datetime.now(UTC),
+        )
+
+    assert read.calls == []
+    assert command.committed is False
 
 
 def test_database_review_service_uses_only_scoped_functions_and_commits() -> None:

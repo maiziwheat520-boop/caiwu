@@ -1704,6 +1704,338 @@ SELECT json_build_object(
 
 EVIDENCE_UNLOCK_SECURITY_REVISION = "20260830_0025"
 CLASSIFICATION_BATCH_SECURITY_REVISION = "20260831_0026"
+CLASSIFICATION_BATCH_TABLES = (
+    "candidate_classification_batch_receipt",
+    "candidate_classification_batch_member",
+    "candidate_classification_batch_assertion_use",
+)
+CLASSIFICATION_BATCH_FUNCTION_SIGNATURES = {
+    "candidate_classification_risk_signature": "p_candidate_id uuid, p_revision integer",
+    "candidate_classification_group_key": "p_candidate_id uuid, p_revision integer",
+    "render_candidate_classification_batch_receipt": ("p_operation_id uuid, p_replayed boolean"),
+    "replay_candidate_classification_batch": "p_request jsonb",
+    "apply_candidate_classification_batch": "p_request jsonb",
+    "reject_cross_surface_assertion_reuse": "",
+}
+CLASSIFICATION_BATCH_FUNCTION_RESULTS = {
+    "candidate_classification_risk_signature": "character varying[]",
+    "candidate_classification_group_key": "jsonb",
+    "render_candidate_classification_batch_receipt": "jsonb",
+    "replay_candidate_classification_batch": "jsonb",
+    "apply_candidate_classification_batch": "jsonb",
+    "reject_cross_surface_assertion_reuse": "trigger",
+}
+CLASSIFICATION_BATCH_FUNCTION_EXECUTORS = {
+    "replay_candidate_classification_batch": "ledgerbridge_api",
+    "apply_candidate_classification_batch": "ledgerbridge_api",
+}
+CLASSIFICATION_BATCH_TRIGGER_CONTRACT = {
+    "candidate_assertion_cross_surface_guard": (
+        "candidate_assertion_use",
+        7,
+        "reject_cross_surface_assertion_reuse",
+    ),
+    "candidate_classification_batch_assertion_cross_surface_guard": (
+        "candidate_classification_batch_assertion_use",
+        7,
+        "reject_cross_surface_assertion_reuse",
+    ),
+    "candidate_classification_batch_receipt_append_only": (
+        "candidate_classification_batch_receipt",
+        27,
+        "reject_mutation",
+    ),
+    "candidate_classification_batch_member_append_only": (
+        "candidate_classification_batch_member",
+        27,
+        "reject_mutation",
+    ),
+    "candidate_classification_batch_assertion_append_only": (
+        "candidate_classification_batch_assertion_use",
+        27,
+        "reject_mutation",
+    ),
+}
+CLASSIFICATION_BATCH_REQUIRED_CONSTRAINTS = frozenset(
+    {
+        "candidate_classification_batch_receipt_pkey",
+        "candidate_classification_batch_group_shape",
+        "candidate_classification_batch_key_version",
+        "candidate_classification_batch_month_first",
+        "candidate_classification_batch_target_not_blank",
+        "candidate_classification_batch_actor_not_blank",
+        "candidate_classification_batch_san_shape",
+        "candidate_classification_batch_fingerprint_length",
+        "candidate_classification_batch_member_count",
+        "candidate_classification_batch_risks_closed",
+        "candidate_classification_batch_receipt_entity_fk",
+        "candidate_classification_batch_receipt_target_unit_fk",
+        "candidate_classification_batch_receipt_source_fk",
+        "candidate_classification_batch_receipt_audit_unique",
+        "candidate_classification_batch_receipt_audit_fk",
+        "candidate_classification_batch_member_pk",
+        "candidate_classification_batch_member_candidate_unique",
+        "candidate_classification_batch_member_ordinal",
+        "candidate_classification_batch_member_revision",
+        "candidate_classification_batch_member_batch_fk",
+        "candidate_classification_batch_member_candidate_fk",
+        "candidate_classification_batch_member_operation_unique",
+        "candidate_classification_batch_member_operation_fk",
+        "candidate_classification_batch_assertion_use_pkey",
+        "candidate_classification_batch_assertion_operation_fk",
+    }
+)
+CLASSIFICATION_BATCH_CONSTRAINT_TABLES = {
+    name: (
+        "candidate_classification_batch_receipt"
+        if name.startswith("candidate_classification_batch_receipt_")
+        or name
+        in {
+            "candidate_classification_batch_group_shape",
+            "candidate_classification_batch_key_version",
+            "candidate_classification_batch_month_first",
+            "candidate_classification_batch_target_not_blank",
+            "candidate_classification_batch_actor_not_blank",
+            "candidate_classification_batch_san_shape",
+            "candidate_classification_batch_fingerprint_length",
+            "candidate_classification_batch_member_count",
+            "candidate_classification_batch_risks_closed",
+        }
+        else "candidate_classification_batch_assertion_use"
+        if name.startswith("candidate_classification_batch_assertion_")
+        else "candidate_classification_batch_member"
+    )
+    for name in CLASSIFICATION_BATCH_REQUIRED_CONSTRAINTS
+}
+CLASSIFICATION_BATCH_REQUIRED_COLUMNS = {
+    "candidate_classification_batch_receipt": {
+        "operation_id": ("uuid", True),
+        "group_ref": ("character varying(35)", True),
+        "key_version": ("character varying(64)", True),
+        "accounting_month": ("date", True),
+        "authorized_entity_id": ("uuid", True),
+        "target_business_unit_id": ("uuid", True),
+        "source_candidate_id": ("uuid", True),
+        "target_business_unit_ref": ("character varying(100)", True),
+        "target_category_code": ("character varying(100)", True),
+        "acknowledged_risk_codes": ("character varying(64)[]", True),
+        "actor_ref": ("character varying(200)", True),
+        "workload_principal_ref": ("character varying(200)", True),
+        "verified_san": ("character varying(200)", True),
+        "request_fingerprint": ("bytea", True),
+        "member_operation_ids": ("uuid[]", True),
+        "decided_at": ("timestamp with time zone", True),
+        "audit_event_id": ("uuid", True),
+        "created_at": ("timestamp with time zone", True),
+    },
+    "candidate_classification_batch_member": {
+        "batch_operation_id": ("uuid", True),
+        "ordinal": ("integer", True),
+        "candidate_id": ("uuid", True),
+        "expected_revision": ("integer", True),
+        "member_operation_id": ("uuid", True),
+    },
+    "candidate_classification_batch_assertion_use": {
+        "assertion_jti": ("uuid", True),
+        "operation_id": ("uuid", True),
+        "created_at": ("timestamp with time zone", True),
+    },
+}
+CLASSIFICATION_BATCH_CONSTRAINT_DEFINITION_MARKERS = {
+    "candidate_classification_batch_receipt_pkey": ("primary key", "operation_id"),
+    "candidate_classification_batch_group_shape": ("check", "group_ref", "^cg_"),
+    "candidate_classification_batch_key_version": (
+        "check",
+        "key_version",
+        "ledgerbridge.classification-key.v1",
+    ),
+    "candidate_classification_batch_month_first": ("check", "accounting_month", "date_trunc"),
+    "candidate_classification_batch_target_not_blank": (
+        "check",
+        "target_business_unit_ref",
+        "target_category_code",
+    ),
+    "candidate_classification_batch_actor_not_blank": (
+        "check",
+        "actor_ref",
+        "workload_principal_ref",
+    ),
+    "candidate_classification_batch_san_shape": ("check", "verified_san", "spiffe://ledgerbridge"),
+    "candidate_classification_batch_fingerprint_length": (
+        "check",
+        "request_fingerprint",
+        "octet_length",
+    ),
+    "candidate_classification_batch_member_count": ("check", "member_operation_ids", "cardinality"),
+    "candidate_classification_batch_risks_closed": (
+        "check",
+        "acknowledged_risk_codes",
+        "transfer_review_required",
+        "cardinality",
+    ),
+    "candidate_classification_batch_receipt_entity_fk": (
+        "foreign key",
+        "authorized_entity_id",
+        "public.entity",
+    ),
+    "candidate_classification_batch_receipt_target_unit_fk": (
+        "foreign key",
+        "target_business_unit_id",
+        "public.business_unit",
+    ),
+    "candidate_classification_batch_receipt_source_fk": (
+        "foreign key",
+        "source_candidate_id",
+        "public.candidate",
+    ),
+    "candidate_classification_batch_receipt_audit_unique": ("unique", "audit_event_id"),
+    "candidate_classification_batch_receipt_audit_fk": (
+        "foreign key",
+        "audit_event_id",
+        "public.audit_event",
+    ),
+    "candidate_classification_batch_member_pk": ("primary key", "batch_operation_id", "ordinal"),
+    "candidate_classification_batch_member_candidate_unique": (
+        "unique",
+        "batch_operation_id",
+        "candidate_id",
+    ),
+    "candidate_classification_batch_member_ordinal": ("check", "ordinal", "100"),
+    "candidate_classification_batch_member_revision": ("check", "expected_revision", "1"),
+    "candidate_classification_batch_member_batch_fk": (
+        "foreign key",
+        "batch_operation_id",
+        "candidate_classification_batch_receipt",
+    ),
+    "candidate_classification_batch_member_candidate_fk": (
+        "foreign key",
+        "candidate_id",
+        "public.candidate",
+    ),
+    "candidate_classification_batch_member_operation_unique": ("unique", "member_operation_id"),
+    "candidate_classification_batch_member_operation_fk": (
+        "foreign key",
+        "member_operation_id",
+        "candidate_decision_receipt",
+    ),
+    "candidate_classification_batch_assertion_use_pkey": ("primary key", "assertion_jti"),
+    "candidate_classification_batch_assertion_operation_fk": (
+        "foreign key",
+        "operation_id",
+        "candidate_classification_batch_receipt",
+    ),
+}
+
+_CLASSIFICATION_BATCH_TABLES_SQL = ", ".join(f"'{name}'" for name in CLASSIFICATION_BATCH_TABLES)
+_CLASSIFICATION_BATCH_FUNCTIONS_SQL = ", ".join(
+    f"('{name}', '{arguments}')"
+    for name, arguments in CLASSIFICATION_BATCH_FUNCTION_SIGNATURES.items()
+)
+_CLASSIFICATION_BATCH_TRIGGERS_SQL = ", ".join(
+    f"'{name}'" for name in CLASSIFICATION_BATCH_TRIGGER_CONTRACT
+)
+_CLASSIFICATION_BATCH_ROLES_SQL = ", ".join(f"('{name}'::name)" for name in R1_CONTROLLED_ROLES)
+CLASSIFICATION_BATCH_SECURITY_SQL = (
+    ""  # nosec B608 - replacements use fixed allowlists only.
+    """
+WITH expected_roles(role_name) AS (VALUES __ROLES__),
+present_roles(role_name) AS (
+ SELECT e.role_name FROM expected_roles e JOIN pg_roles r ON r.rolname=e.role_name
+), expected_functions(function_name,identity_arguments) AS (VALUES __FUNCTIONS__),
+observed_tables AS (
+ SELECT c.relname table_name,pg_get_userbyid(c.relowner) owner,c.relkind kind,c.oid,c.relacl acl
+ FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='internal_command' AND c.relname IN (__TABLES__)
+), observed_functions AS (
+ SELECT p.proname function_name,pg_get_function_identity_arguments(p.oid) identity_arguments,
+  pg_get_function_result(p.oid) result,pg_get_userbyid(p.proowner) owner,
+  p.prosecdef security_definer,COALESCE(to_json(p.proconfig),'[]'::json) proconfig,p.oid,p.proacl acl
+ FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+ WHERE n.nspname='internal_command' AND EXISTS (
+  SELECT 1 FROM expected_functions e WHERE e.function_name=p.proname
+   AND e.identity_arguments=pg_get_function_identity_arguments(p.oid))
+), observed_triggers AS (
+ SELECT c.relname table_name,t.tgname trigger_name,t.tgenabled enabled,t.tgtype trigger_type,
+  fnn.nspname function_schema,fn.proname function_name
+ FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+ JOIN pg_namespace n ON n.oid=c.relnamespace
+ JOIN pg_proc fn ON fn.oid=t.tgfoid JOIN pg_namespace fnn ON fnn.oid=fn.pronamespace
+ WHERE n.nspname='internal_command' AND NOT t.tgisinternal AND t.tgname IN (__TRIGGERS__)
+), observed_constraints AS (
+ SELECT c.relname table_name,con.conname constraint_name,con.contype constraint_type,
+  con.convalidated validated,pg_get_constraintdef(con.oid,true) definition
+ FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid
+ JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='internal_command' AND c.relname IN (__TABLES__)
+), observed_columns AS (
+ SELECT c.relname table_name,a.attname column_name,
+  pg_catalog.format_type(a.atttypid,a.atttypmod) data_type,a.attnotnull not_null
+ FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
+ JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='internal_command' AND c.relname IN (__TABLES__)
+  AND a.attnum>0 AND NOT a.attisdropped
+), table_acls AS (
+ SELECT t.table_name,CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM observed_tables t CROSS JOIN LATERAL aclexplode(COALESCE(t.acl,'{}'::aclitem[])) a
+), function_acls AS (
+ SELECT f.function_name,f.identity_arguments,
+  CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM observed_functions f CROSS JOIN LATERAL aclexplode(COALESCE(f.acl,'{}'::aclitem[])) a
+), table_privileges AS (
+ SELECT r.role_name role,t.table_name,
+  has_table_privilege(r.role_name,t.oid,'SELECT') can_select,
+  has_table_privilege(r.role_name,t.oid,'INSERT') can_insert,
+  has_table_privilege(r.role_name,t.oid,'UPDATE') can_update,
+  has_table_privilege(r.role_name,t.oid,'DELETE') can_delete
+ FROM present_roles r CROSS JOIN observed_tables t
+), function_privileges AS (
+ SELECT r.role_name role,f.function_name,f.identity_arguments,
+  has_function_privilege(r.role_name,f.oid,'EXECUTE') can_execute
+ FROM present_roles r CROSS JOIN observed_functions f
+)
+SELECT json_build_object(
+ 'classification_batch_row_counts',json_build_object(
+  'candidate_classification_batch_receipt',(SELECT count(*) FROM internal_command.candidate_classification_batch_receipt),
+  'candidate_classification_batch_member',(SELECT count(*) FROM internal_command.candidate_classification_batch_member),
+  'candidate_classification_batch_assertion_use',(SELECT count(*) FROM internal_command.candidate_classification_batch_assertion_use)),
+ 'classification_batch_tables',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'owner',owner,'kind',kind) ORDER BY table_name) FROM observed_tables),'[]'::json),
+ 'classification_batch_functions',COALESCE((SELECT json_agg(json_build_object(
+  'name',function_name,'identity_arguments',identity_arguments,'result',result,'owner',owner,
+  'security_definer',security_definer,'proconfig',proconfig) ORDER BY function_name,identity_arguments)
+  FROM observed_functions),'[]'::json),
+ 'classification_batch_triggers',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'name',trigger_name,'enabled',enabled,'trigger_type',trigger_type,
+  'function_schema',function_schema,'function_name',function_name) ORDER BY trigger_name)
+  FROM observed_triggers),'[]'::json),
+ 'classification_batch_constraints',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'name',constraint_name,'type',constraint_type,'validated',validated,
+  'definition',definition) ORDER BY table_name,constraint_name) FROM observed_constraints),'[]'::json),
+ 'classification_batch_columns',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'column',column_name,'data_type',data_type,'not_null',not_null)
+  ORDER BY table_name,column_name) FROM observed_columns),'[]'::json),
+ 'classification_batch_table_acls',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'grantee',grantee,'privilege',privilege,'grantable',grantable)
+  ORDER BY table_name,grantee,privilege) FROM table_acls),'[]'::json),
+ 'classification_batch_function_acls',COALESCE((SELECT json_agg(json_build_object(
+  'name',function_name,'identity_arguments',identity_arguments,'grantee',grantee,
+  'privilege',privilege,'grantable',grantable) ORDER BY function_name,identity_arguments,grantee)
+  FROM function_acls),'[]'::json),
+ 'classification_batch_effective_table_privileges',COALESCE((SELECT json_agg(json_build_object(
+  'role',role,'table',table_name,'select',can_select,'insert',can_insert,'update',can_update,
+  'delete',can_delete) ORDER BY role,table_name) FROM table_privileges),'[]'::json),
+ 'classification_batch_effective_function_privileges',COALESCE((SELECT json_agg(json_build_object(
+  'role',role,'name',function_name,'identity_arguments',identity_arguments,'execute',can_execute)
+  ORDER BY role,function_name,identity_arguments) FROM function_privileges),'[]'::json)
+)::text;
+    """.replace("__ROLES__", _CLASSIFICATION_BATCH_ROLES_SQL)
+    .replace("__FUNCTIONS__", _CLASSIFICATION_BATCH_FUNCTIONS_SQL)
+    .replace("__TABLES__", _CLASSIFICATION_BATCH_TABLES_SQL)
+    .replace("__TRIGGERS__", _CLASSIFICATION_BATCH_TRIGGERS_SQL)
+    .strip()
+)
 EVIDENCE_UNLOCK_TABLES = (
     "evidence_unlock_source",
     "evidence_unlock_operation",
@@ -3038,6 +3370,26 @@ def _database_metadata(
         ):
             raise BackupError("evidence unlock security query returned an incomplete object")
         metadata.update(cast(dict[str, Any], evidence_unlock_security))
+    if revision >= CLASSIFICATION_BATCH_SECURITY_REVISION:
+        classification_batch_security = query(CLASSIFICATION_BATCH_SECURITY_SQL)
+        required_classification_batch_keys = {
+            "classification_batch_row_counts",
+            "classification_batch_tables",
+            "classification_batch_functions",
+            "classification_batch_triggers",
+            "classification_batch_constraints",
+            "classification_batch_columns",
+            "classification_batch_table_acls",
+            "classification_batch_function_acls",
+            "classification_batch_effective_table_privileges",
+            "classification_batch_effective_function_privileges",
+        }
+        if (
+            not isinstance(classification_batch_security, dict)
+            or set(classification_batch_security) != required_classification_batch_keys
+        ):
+            raise BackupError("classification batch security query returned an incomplete object")
+        metadata.update(cast(dict[str, Any], classification_batch_security))
     if revision >= "20260821_0003":
         artifact_sql = (
             R1_ARTIFACT_MANIFEST_SQL if revision >= "20260824_0012" else ARTIFACT_MANIFEST_SQL
@@ -5441,6 +5793,177 @@ def _validate_company_reporting_security(metadata: dict[str, Any]) -> None:
             raise BackupError("restored company reporting function privilege matrix is invalid")
 
 
+def _validate_classification_batch_security(metadata: dict[str, Any]) -> None:
+    def _list(name: str) -> list[dict[str, Any]]:
+        value = metadata.get(name)
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise BackupError(f"restored classification batch metadata is invalid: {name}")
+        return cast(list[dict[str, Any]], value)
+
+    owner = metadata.get("database_owner")
+    if not isinstance(owner, str):
+        raise BackupError("restored classification batch database owner is invalid")
+    row_counts = metadata.get("classification_batch_row_counts")
+    if not isinstance(row_counts, dict) or set(row_counts) != set(CLASSIFICATION_BATCH_TABLES):
+        raise BackupError("restored classification batch row-count inventory is incomplete")
+    if any(not isinstance(value, int) or value < 0 for value in row_counts.values()):
+        raise BackupError("restored classification batch row-count inventory is invalid")
+
+    tables = _list("classification_batch_tables")
+    table_names = {item.get("table") for item in tables}
+    if len(table_names) != len(tables) or table_names != set(CLASSIFICATION_BATCH_TABLES):
+        raise BackupError("restored classification batch tables are incomplete")
+    if any(item.get("owner") != owner or item.get("kind") != "r" for item in tables):
+        raise BackupError("restored classification batch table boundary is invalid")
+
+    functions = _list("classification_batch_functions")
+    function_keys = {(item.get("name"), item.get("identity_arguments")) for item in functions}
+    expected_function_keys = set(CLASSIFICATION_BATCH_FUNCTION_SIGNATURES.items())
+    if len(function_keys) != len(functions) or function_keys != expected_function_keys:
+        raise BackupError("restored classification batch functions are incomplete")
+    for item in functions:
+        name = cast(str, item.get("name"))
+        if (
+            item.get("owner") != owner
+            or item.get("result") != CLASSIFICATION_BATCH_FUNCTION_RESULTS[name]
+            or item.get("security_definer") is not True
+            or item.get("proconfig") != ["search_path=pg_catalog"]
+        ):
+            raise BackupError("restored classification batch function boundary is invalid")
+
+    triggers = _list("classification_batch_triggers")
+    trigger_contract = {
+        item.get("name"): (
+            item.get("table"),
+            item.get("trigger_type"),
+            item.get("function_name"),
+        )
+        for item in triggers
+    }
+    if (
+        len(trigger_contract) != len(triggers)
+        or trigger_contract != CLASSIFICATION_BATCH_TRIGGER_CONTRACT
+        or any(
+            item.get("enabled") != "O" or item.get("function_schema") != "internal_command"
+            for item in triggers
+        )
+    ):
+        raise BackupError("restored classification batch trigger boundary is invalid")
+
+    constraints = _list("classification_batch_constraints")
+    observed_constraint_tables = {
+        cast(str, item.get("name")): item.get("table")
+        for item in constraints
+        if item.get("name") in CLASSIFICATION_BATCH_REQUIRED_CONSTRAINTS
+    }
+    observed_constraints = {
+        cast(str, item.get("name")): item
+        for item in constraints
+        if item.get("name") in CLASSIFICATION_BATCH_REQUIRED_CONSTRAINTS
+    }
+    definitions_valid = all(
+        all(
+            marker
+            in " ".join(str(observed_constraints[name].get("definition", "")).lower().split())
+            for marker in CLASSIFICATION_BATCH_CONSTRAINT_DEFINITION_MARKERS[name]
+        )
+        for name in CLASSIFICATION_BATCH_REQUIRED_CONSTRAINTS
+        if name in observed_constraints
+    )
+    if (
+        observed_constraint_tables != CLASSIFICATION_BATCH_CONSTRAINT_TABLES
+        or set(observed_constraints) != CLASSIFICATION_BATCH_REQUIRED_CONSTRAINTS
+        or not definitions_valid
+        or any(item.get("validated") is not True for item in constraints)
+    ):
+        raise BackupError("restored classification batch constraints are incomplete")
+
+    columns = _list("classification_batch_columns")
+    observed_columns = {
+        (item.get("table"), item.get("column")): (item.get("data_type"), item.get("not_null"))
+        for item in columns
+    }
+    required_columns = {
+        (table, column): contract
+        for table, table_columns in CLASSIFICATION_BATCH_REQUIRED_COLUMNS.items()
+        for column, contract in table_columns.items()
+    }
+    if len(observed_columns) != len(columns) or any(
+        observed_columns.get(key) != contract for key, contract in required_columns.items()
+    ):
+        raise BackupError("restored classification batch column contract is incomplete")
+
+    table_acls = _list("classification_batch_table_acls")
+    for item in table_acls:
+        if (
+            item.get("table") not in CLASSIFICATION_BATCH_TABLES
+            or item.get("grantee") != owner
+            or item.get("privilege")
+            not in {"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"}
+            or item.get("grantable") not in {False, "NO"}
+        ):
+            raise BackupError("restored classification batch table ACL contains an excess grant")
+
+    function_acls = _list("classification_batch_function_acls")
+    required_api_acl = {
+        (name, arguments, "ledgerbridge_api", "EXECUTE")
+        for name, arguments in CLASSIFICATION_BATCH_FUNCTION_SIGNATURES.items()
+        if CLASSIFICATION_BATCH_FUNCTION_EXECUTORS.get(name) == "ledgerbridge_api"
+    }
+    observed_api_acl: set[tuple[Any, ...]] = set()
+    for item in function_acls:
+        key = (item.get("name"), item.get("identity_arguments"))
+        executor = CLASSIFICATION_BATCH_FUNCTION_EXECUTORS.get(cast(str, item.get("name")))
+        if (
+            key not in expected_function_keys
+            or item.get("grantee") not in {owner, executor}
+            or item.get("grantee") is None
+            or item.get("privilege") != "EXECUTE"
+            or item.get("grantable") not in {False, "NO"}
+        ):
+            raise BackupError("restored classification batch function ACL contains an excess grant")
+        if item.get("grantee") == "ledgerbridge_api":
+            observed_api_acl.add((*key, "ledgerbridge_api", "EXECUTE"))
+    if observed_api_acl != required_api_acl:
+        raise BackupError("restored classification batch API function ACL is incomplete")
+
+    roles = _list("r1_role_matrix")
+    active_roles = {item.get("role") for item in roles if item.get("role") in R1_CONTROLLED_ROLES}
+    table_privileges = _list("classification_batch_effective_table_privileges")
+    expected_table_keys = {
+        (role, table) for role in active_roles for table in CLASSIFICATION_BATCH_TABLES
+    }
+    actual_table_keys = {(item.get("role"), item.get("table")) for item in table_privileges}
+    if len(actual_table_keys) != len(table_privileges) or actual_table_keys != expected_table_keys:
+        raise BackupError("restored classification batch table privilege matrix is incomplete")
+    if any(
+        item.get(privilege) is not False
+        for item in table_privileges
+        for privilege in ("select", "insert", "update", "delete")
+    ):
+        raise BackupError("restored classification batch table privilege matrix is invalid")
+
+    function_privileges = _list("classification_batch_effective_function_privileges")
+    expected_privilege_keys = {
+        (role, name, arguments)
+        for role in active_roles
+        for name, arguments in CLASSIFICATION_BATCH_FUNCTION_SIGNATURES.items()
+    }
+    actual_privilege_keys = {
+        (item.get("role"), item.get("name"), item.get("identity_arguments"))
+        for item in function_privileges
+    }
+    if (
+        len(actual_privilege_keys) != len(function_privileges)
+        or actual_privilege_keys != expected_privilege_keys
+    ):
+        raise BackupError("restored classification batch function privilege matrix is incomplete")
+    for item in function_privileges:
+        expected_executor = CLASSIFICATION_BATCH_FUNCTION_EXECUTORS.get(cast(str, item.get("name")))
+        if item.get("execute") is not (item.get("role") == expected_executor):
+            raise BackupError("restored classification batch function privilege matrix is invalid")
+
+
 def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
     if metadata.get("metadata_version") != 2:
         raise BackupError("restored database lacks v2 metadata observations")
@@ -5460,6 +5983,8 @@ def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
         _validate_company_reporting_security(metadata)
     if revision >= EVIDENCE_UNLOCK_SECURITY_REVISION:
         _validate_evidence_unlock_security(metadata)
+    if revision >= CLASSIFICATION_BATCH_SECURITY_REVISION:
+        _validate_classification_batch_security(metadata)
     if metadata.get("database_temp_denied") is not True:
         raise BackupError("restored database TEMP privilege invariant failed")
     functions = metadata.get("security_functions")

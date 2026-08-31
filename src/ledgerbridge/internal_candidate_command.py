@@ -33,6 +33,7 @@ from ledgerbridge.candidate_contract import (
     CandidateProjection,
     CandidateStatus,
     IngestChannel,
+    ReviewRiskCode,
     apply_candidate_command,
     create_candidate_aggregate,
 )
@@ -55,8 +56,10 @@ from ledgerbridge.internal_read_service import (
     _wire_ingest_channel,
 )
 from ledgerbridge.review_similarity import (
+    KEY_VERSION,
     ClassificationGroup,
     build_classification_groups,
+    candidate_similarity,
 )
 
 
@@ -151,7 +154,7 @@ class CandidateClassificationBatchRequest(_FrozenModel):
     target: ClassificationTarget
     members: tuple[ClassificationBatchMember, ...] = Field(min_length=2, max_length=100)
     reason: str = Field(min_length=1, max_length=1_000)
-    acknowledged_risk_codes: tuple[str, ...] = Field(max_length=20, default=())
+    acknowledged_risk_codes: tuple[ReviewRiskCode, ...] = Field(max_length=6, default=())
 
     @model_validator(mode="after")
     def unique_members_and_risks(self) -> CandidateClassificationBatchRequest:
@@ -183,6 +186,7 @@ class CandidateClassificationBatchReceipt(_FrozenModel):
     accounting_month: str = Field(pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$")
     source_candidate_ref: UUID
     target: ClassificationTarget
+    acknowledged_risk_codes: tuple[ReviewRiskCode, ...] = Field(max_length=6)
     results: tuple[ClassificationBatchMemberResult, ...] = Field(min_length=2, max_length=100)
 
 
@@ -413,6 +417,7 @@ class SyntheticInternalReviewService(SyntheticInternalReadService):
                 accounting_month=request.accounting_month,
                 source_candidate_ref=request.source_candidate_ref,
                 target=request.target,
+                acknowledged_risk_codes=request.acknowledged_risk_codes,
                 results=tuple(results),
             )
             self._batch_assertion_jtis[assertion_jti] = operation_id
@@ -596,12 +601,28 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
         decided_at: datetime,
     ) -> CandidateClassificationBatchReceipt:
         require_capability(principal, Capability.CANDIDATE_DECIDE)
+        replayed = self._replay_classification_batch(
+            principal,
+            group_ref=group_ref,
+            operation_id=operation_id,
+            assertion_jti=assertion_jti,
+            actor_ref=actor_ref,
+            request=request,
+        )
+        if replayed is not None:
+            return replayed
+
         prepared = _prepare_classification_batch(self, principal, group_ref, request)
         source = next(
             candidate
             for candidate, _ in prepared
             if candidate.candidate_ref == request.source_candidate_ref
         )
+        similarity = candidate_similarity(source)
+        if similarity is None or similarity.group_ref != group_ref:
+            from ledgerbridge.candidate_contract import CandidateRevisionConflict
+
+            raise CandidateRevisionConflict("classification group key changed")
         member_payloads: list[dict[str, object]] = []
         for candidate, decision in prepared:
             current_business_unit_id, target_business_unit_id = self._command_scope(
@@ -648,12 +669,22 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
             "workload_principal_ref": principal.principal_ref,
             "verified_san": principal.san_uri,
             "authorized_entity_id": str(source.entity_ref),
+            "authorized_entity_ids": sorted(str(grant.entity_ref) for grant in principal.grants),
+            "authorized_business_unit_ids": sorted(
+                str(unit_id) for grant in principal.grants for unit_id in grant.business_unit_ids
+            ),
+            "authorized_unassigned_entity_ids": sorted(
+                str(grant.entity_ref)
+                for grant in principal.grants
+                if grant.allow_unassigned_candidates
+            ),
             "group_ref": group_ref,
             "accounting_month": request.accounting_month,
             "source_candidate_ref": str(request.source_candidate_ref),
             "target": request.target.model_dump(mode="json"),
-            "acknowledged_risk_codes": list(request.acknowledged_risk_codes),
-            "request_fingerprint": _classification_batch_fingerprint(group_ref, request),
+            "key_version": KEY_VERSION,
+            "acknowledged_risk_codes": [code.value for code in request.acknowledged_risk_codes],
+            "reason": request.reason,
             "members": member_payloads,
             "decided_at": decided_at.isoformat(),
         }
@@ -674,6 +705,69 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
                     raise CandidateCommandUnavailable(
                         "candidate classification batch returned no receipt"
                     )
+                receipt = CandidateClassificationBatchReceipt.model_validate(
+                    _database_candidate_classification_batch_receipt(row["receipt"])
+                )
+                session.commit()
+                return receipt
+        except SQLAlchemyError as exc:
+            self._raise_database_command_error(exc)
+
+    def _replay_classification_batch(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        group_ref: str,
+        operation_id: UUID,
+        assertion_jti: UUID,
+        actor_ref: str,
+        request: CandidateClassificationBatchRequest,
+    ) -> CandidateClassificationBatchReceipt | None:
+        payload = {
+            "operation_id": str(operation_id),
+            "assertion_jti": str(assertion_jti),
+            "actor_ref": actor_ref,
+            "workload_principal_ref": principal.principal_ref,
+            "verified_san": principal.san_uri,
+            "authorized_entity_ids": sorted(str(grant.entity_ref) for grant in principal.grants),
+            "authorized_business_unit_ids": sorted(
+                str(unit_id) for grant in principal.grants for unit_id in grant.business_unit_ids
+            ),
+            "authorized_unassigned_entity_ids": sorted(
+                str(grant.entity_ref)
+                for grant in principal.grants
+                if grant.allow_unassigned_candidates
+            ),
+            "group_ref": group_ref,
+            "accounting_month": request.accounting_month,
+            "source_candidate_ref": str(request.source_candidate_ref),
+            "target": request.target.model_dump(mode="json"),
+            "acknowledged_risk_codes": [code.value for code in request.acknowledged_risk_codes],
+            "reason": request.reason,
+            "members": [
+                {
+                    "candidate_ref": str(member.candidate_ref),
+                    "expected_revision": member.expected_revision,
+                    "operation_id": str(_member_operation_id(operation_id, member.candidate_ref)),
+                }
+                for member in sorted(request.members, key=lambda item: item.candidate_ref.int)
+            ],
+        }
+        try:
+            with self._command_session_factory() as session:
+                row = (
+                    session.execute(
+                        text(
+                            "SELECT internal_command.replay_candidate_classification_batch("
+                            "CAST(:request AS jsonb)) AS receipt"
+                        ),
+                        {"request": json.dumps(payload, ensure_ascii=True, separators=(",", ":"))},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if row is None or row["receipt"] is None:
+                    return None
                 receipt = CandidateClassificationBatchReceipt.model_validate(
                     _database_candidate_classification_batch_receipt(row["receipt"])
                 )

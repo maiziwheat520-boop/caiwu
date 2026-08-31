@@ -21,6 +21,14 @@ state, month, scope, source, and exact group facts, then calls the existing
 per-Candidate append-only command in the same PostgreSQL transaction. Any error
 rolls back all member events and the batch receipt; successful replay writes no
 new Candidate event. Only business unit and reporting category may propagate.
+Database-backed retries probe an actor-, scope-, content-, and operation-bound
+receipt before reading mutable Candidate projections, so a completed batch can
+still replay after its members become terminal. PostgreSQL independently
+recomputes the complete `ledgerbridge.classification-key.v1` key and current
+risk signature for every locked member, and the append-only receipt/audit event
+preserve the closed acknowledged-risk list. Backup/restore metadata now checks
+the new tables, constraints, triggers, pinned SECURITY DEFINER functions, ACLs,
+and API-only execution matrix.
 No production migration, Candidate mutation, enablement, or deployment was run.
 The Web vertical slice and registry-backed learned-rule management remain the
 next implementation steps.

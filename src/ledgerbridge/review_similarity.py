@@ -10,7 +10,6 @@ counterparty identity.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from collections import defaultdict
 from datetime import date
@@ -219,8 +218,27 @@ def candidate_similarity(candidate: CandidateProjection) -> CandidateSimilarity 
         currency=candidate.currency,
         risk_signature=tuple(sorted(risk.code.value for risk in candidate.review_risks)),
     )
+    # The delimiter-based UTF-8 canonical form is intentionally mirrored by
+    # the 0026 PostgreSQL preflight.  Unit/record separators cannot appear in
+    # the validated text fields and avoid Python/PostgreSQL JSON escaping drift.
     key_payload = conditions.model_dump(mode="json", exclude={"counterparty_label"})
-    canonical = json.dumps(key_payload, sort_keys=True, separators=(",", ":"))
+    canonical = "\x1f".join(
+        (
+            key_payload["key_version"],
+            key_payload["entity_ref"],
+            key_payload["source_system"],
+            key_payload["source_kind"],
+            key_payload["platform"],
+            key_payload["direction"],
+            key_payload["transaction_type"],
+            key_payload["counterparty_key"],
+            key_payload["counterparty_basis"],
+            key_payload["funding_instrument"],
+            key_payload["transaction_status"],
+            key_payload["currency"],
+            "\x1e".join(key_payload["risk_signature"]),
+        )
+    )
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
     return CandidateSimilarity(group_ref=f"cg_{digest}", conditions=conditions)
 
@@ -326,7 +344,9 @@ def build_classification_groups(
 
 
 def _normalize(value: str) -> str:
-    return _SPACE.sub(" ", value.strip()).casefold()
+    # PostgreSQL's locked preflight uses lower(); keep the Core projection on
+    # the same versioned normalization contract rather than broader casefold.
+    return _SPACE.sub(" ", value.strip()).lower()
 
 
 def _direction(value: str) -> ClassificationDirection | None:

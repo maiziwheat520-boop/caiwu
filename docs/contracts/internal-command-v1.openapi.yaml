@@ -235,7 +235,9 @@ components:
         currency: { const: CNY }
         risk_signature:
           type: array
-          items: { type: string }
+          maxItems: 6
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/ReviewRiskCode" }
     ClassificationGroupMember:
       type: object
       additionalProperties: false
@@ -332,9 +334,9 @@ components:
         reason: { type: string, minLength: 1, maxLength: 1000 }
         acknowledged_risk_codes:
           type: array
-          maxItems: 20
+          maxItems: 6
           uniqueItems: true
-          items: { type: string }
+          items: { $ref: "#/components/schemas/ReviewRiskCode" }
     ClassificationTarget:
       type: object
       additionalProperties: false
@@ -353,6 +355,7 @@ components:
         - accounting_month
         - source_candidate_ref
         - target
+        - acknowledged_risk_codes
         - results
       properties:
         contract_version: { const: ledgerbridge.classification-batch.v1 }
@@ -364,6 +367,11 @@ components:
           pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
         source_candidate_ref: { type: string, format: uuid }
         target: { $ref: "#/components/schemas/ClassificationTarget" }
+        acknowledged_risk_codes:
+          type: array
+          maxItems: 6
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/ReviewRiskCode" }
         results:
           type: array
           minItems: 2
@@ -385,6 +393,14 @@ components:
                 items: { $ref: "#/components/schemas/CandidateEvent" }
     CandidateStatus:
       enum: [INCOMPLETE, CONFLICTED, PENDING, CONFIRMED, IGNORED, SUPERSEDED]
+    ReviewRiskCode:
+      enum:
+        - FUNDING_STATEMENT_REQUIRED
+        - RELATED_ACCOUNT_STATEMENT_REQUIRED
+        - HOTEL_PAYOUT_STATEMENT_REQUIRED
+        - TRANSFER_REVIEW_REQUIRED
+        - REVERSAL_MATCH_REQUIRED
+        - UNSETTLED_TRANSACTION
     CandidateDecisionRequest:
       type: object
       additionalProperties: false
