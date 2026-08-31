@@ -1195,6 +1195,13 @@ def test_classification_batch_restore_metadata_covers_0026_security_boundary() -
         assert f"('{name}', '{arguments}')" in CLASSIFICATION_BATCH_SECURITY_SQL
 
 
+def test_classification_batch_security_query_treats_null_acls_as_no_rows() -> None:
+    assert "aclexplode(t.acl)" in CLASSIFICATION_BATCH_SECURITY_SQL
+    assert "aclexplode(f.acl)" in CLASSIFICATION_BATCH_SECURITY_SQL
+    assert "COALESCE(t.acl,'{}'::aclitem[])" not in CLASSIFICATION_BATCH_SECURITY_SQL
+    assert "COALESCE(f.acl,'{}'::aclitem[])" not in CLASSIFICATION_BATCH_SECURITY_SQL
+
+
 @pytest.mark.parametrize(
     "mutation",
     [

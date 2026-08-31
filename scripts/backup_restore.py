@@ -1977,12 +1977,12 @@ observed_tables AS (
 ), table_acls AS (
  SELECT t.table_name,CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
   a.privilege_type privilege,a.is_grantable grantable
- FROM observed_tables t CROSS JOIN LATERAL aclexplode(COALESCE(t.acl,'{}'::aclitem[])) a
+ FROM observed_tables t CROSS JOIN LATERAL aclexplode(t.acl) a
 ), function_acls AS (
  SELECT f.function_name,f.identity_arguments,
   CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
   a.privilege_type privilege,a.is_grantable grantable
- FROM observed_functions f CROSS JOIN LATERAL aclexplode(COALESCE(f.acl,'{}'::aclitem[])) a
+ FROM observed_functions f CROSS JOIN LATERAL aclexplode(f.acl) a
 ), table_privileges AS (
  SELECT r.role_name role,t.table_name,
   has_table_privilege(r.role_name,t.oid,'SELECT') can_select,
