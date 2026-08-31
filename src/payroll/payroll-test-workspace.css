@@ -1,0 +1,114 @@
+.payroll-test-actions {
+  display: grid;
+  gap: 18px;
+  padding: 28px;
+  border: 1px solid #d7e0ee;
+  border-radius: 18px;
+  background: #fff;
+}
+
+.payroll-test-actions > header,
+.payroll-test-actions > footer,
+.payroll-test-materials article,
+.payroll-test-material-actions,
+.payroll-test-editor {
+  display: flex;
+  align-items: center;
+}
+
+.payroll-test-actions > header,
+.payroll-test-actions > footer {
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.payroll-test-actions h2 { margin: 4px 0 6px; color: #12233f; }
+.payroll-test-actions p { margin: 0; color: #64748b; }
+.payroll-test-eyebrow { color: #2563eb; font-size: 13px; font-weight: 700; }
+
+.payroll-test-actions button,
+.payroll-test-actions input,
+.payroll-test-actions select {
+  min-height: 40px;
+  border: 1px solid #cbd5e1;
+  border-radius: 9px;
+  background: #fff;
+  color: #1e293b;
+  font: inherit;
+}
+
+.payroll-test-actions button { padding: 0 14px; cursor: pointer; }
+.payroll-test-actions button:disabled { cursor: not-allowed; opacity: .55; }
+.payroll-test-actions .payroll-test-primary { border-color: #2563eb; background: #2563eb; color: #fff; }
+
+.payroll-test-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.payroll-test-summary button { text-align: left; }
+.payroll-test-summary button[data-active='true'] { border-color: #2563eb; background: #eff6ff; color: #1d4ed8; }
+
+.payroll-test-message { padding: 12px 14px; border-radius: 10px; }
+.payroll-test-message.success { background: #ecfdf5; color: #047857; }
+.payroll-test-message.error { background: #fef2f2; color: #b91c1c; }
+
+.payroll-test-materials { display: grid; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; }
+.payroll-test-materials article { flex-wrap: wrap; justify-content: space-between; gap: 20px; padding: 14px 16px; border-bottom: 1px solid #e2e8f0; }
+.payroll-test-materials article:last-child { border-bottom: 0; }
+.payroll-test-material-main { display: grid; gap: 4px; min-width: 210px; }
+.payroll-test-material-main span { color: #64748b; font-size: 13px; }
+.payroll-test-material-actions { justify-content: flex-end; gap: 14px; }
+.payroll-test-material-actions span { color: #64748b; }
+.payroll-test-material-actions span[data-routing='DATE_UNKNOWN'],
+.payroll-test-material-actions span[data-routing='REVIEW_REQUIRED'] { color: #b45309; }
+
+.payroll-test-editor { flex: 1; justify-content: flex-end; gap: 10px; }
+.payroll-test-editor label { display: grid; gap: 4px; color: #475569; font-size: 12px; }
+.payroll-test-editor input,
+.payroll-test-editor select { padding: 0 10px; }
+.payroll-test-editor select { min-width: 150px; }
+
+.payroll-test-preview {
+  display: grid;
+  width: 100%;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.payroll-test-preview-summary,
+.payroll-test-preview-table > div {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) 110px 120px;
+  gap: 14px;
+  align-items: center;
+}
+.payroll-test-preview-summary span,
+.payroll-test-preview-table span { color: #64748b; }
+.payroll-test-preview-boundary {
+  width: fit-content;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #e8f1ff;
+  color: #245daa;
+  font-size: 12px;
+  font-weight: 700;
+}
+.payroll-test-preview-table { display: grid; gap: 8px; }
+.payroll-test-preview-table > div { padding-top: 8px; border-top: 1px solid #e2e8f0; }
+.payroll-test-preview-table strong { text-align: right; }
+
+.payroll-test-empty { padding: 30px; text-align: center; }
+.payroll-test-validation { display: grid; gap: 9px; padding: 16px; border-radius: 12px; background: #f8fafc; }
+.payroll-test-validation > div { display: grid; grid-template-columns: 110px 1fr auto; gap: 18px; padding-top: 9px; border-top: 1px solid #e2e8f0; }
+.payroll-test-validation b { color: #047857; }
+
+@media (max-width: 900px) {
+  .payroll-test-actions > header,
+  .payroll-test-materials article,
+  .payroll-test-editor { align-items: stretch; flex-direction: column; }
+  .payroll-test-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .payroll-test-material-actions { justify-content: space-between; }
+}

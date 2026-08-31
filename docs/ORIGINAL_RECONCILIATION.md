@@ -1,15 +1,22 @@
-# 原口径对账投影
+# 原口径业务窗口
 
 ## 模块边界
 
-`/original-reconciliation` 是独立的只读报表入口，不替代以下模块：
+`/original-reconciliation` 是独立的业务事项补录与审核入口，不是 Excel 预览器，也不替代以下模块：
 
 - `/reconciliation`：现有月度对账草稿和工作簿生成流程。
 - `/personal-finance`：完整个人财务材料与审核概览。
 - `/company-reports`：按公司主体汇总的报表入口。
 - `/payroll`：工资发布契约与连接状态。
 
-Web 不在本地重算旧表业务规则。Core 的 `ledgerbridge.original-reconciliation.v1` 投影是唯一输入，旧表栏位映射和经济分类由 Core 管理。
+Web 不在本地重算旧表业务规则。Core 的 `ledgerbridge.original-reconciliation.v1` 投影是唯一输入，旧表栏位映射和经济分类由 Core 管理。Web 只把投影转换为以下业务窗口：
+
+- 当月收入、支出和利润合计；
+- 已导入的业务事项，可返回原始材料；
+- 待补录、待归属和待审核清单；
+- 跳转到文件、待审核和月度对账的操作入口。
+
+用户不在网页中面对 A–M 列或 40 行网格；这些只是 Core 与 Web 之间的兼容传输结构。
 
 每份投影携带共享分类 `taxonomy_version`、固定布局 `layout_version` 和栏位规则 `mapping_version`；Web 只展示这些追溯版本，不维护版本 allowlist，也不据此推断业务分类。
 
@@ -31,9 +38,9 @@ BFF 不接受浏览器选择任意公司或门店，也不从候选显示名称�
 - `is_complete` 由 Core 决定。GAP、待审核、待补材料、未映射已确认事实或余额缺口存在时必须为 `false`。
 - `projection_gaps` 单独保留不属于某个单元格的维度缺口：当前月度候选使用 `MISSING_TIME_GRANULARITY`，不能解析摘要猜周次；未来公司合计有效但历史营业单元快照缺失时使用 `MISSING_BUSINESS_UNIT_ATTRIBUTION`，只缺拆分，不把公司合计改成未知。
 
-## 固定布局与缺口
+## 兼容传输结构与缺口
 
-合同固定返回 A–M 共 13 列、1–40 共 40 行，每行固定 13 个 cell。F、G 是 SPACER 且始终为 BLANK。cell kind 含义：
+为兼容旧口径，合同内部仍固定返回 A–M 共 13 列、1–40 共 40 行，每行固定 13 个 cell。F、G 是 SPACER 且始终为 BLANK。该结构不直接渲染为网页表格。cell kind 含义：
 
 - `BLANK`：保留原表空白。
 - `LABEL`：原表文字标签。

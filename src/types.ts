@@ -541,6 +541,17 @@ export type PayrollReadResponse<T> = {
 
 export type PayrollTestRoutingStatus = 'AUTO_TEST' | 'REVIEW_REQUIRED' | 'DATE_UNKNOWN'
 
+export type PayrollTestMaterialType =
+  | 'PAYROLL_SHEET'
+  | 'RELEASE_LIST'
+  | 'CASH_LIST'
+  | 'ATTENDANCE_SHEET'
+  | 'ADJUSTMENT_SOURCE'
+  | 'PAYROLL_SUMMARY'
+  | 'SUPPORTING_SCAN'
+  | 'BACKUP'
+  | 'OBSOLETE'
+
 export type PayrollTestWorkspaceMaterial = {
   company_id: string
   material_id: string
@@ -579,6 +590,105 @@ export type PayrollTestWorkspaceReadResponse = {
   entity_ref: string
   company_id: string
   data: PayrollTestWorkspaceProjection
+}
+
+export type PayrollTestMaterialPreviewLine = {
+  company_id: string
+  employee_id: string
+  employee_name: string
+  account_id: string
+  account_masked: string
+  payment_channel: string
+  base_salary_cents: number
+  allowance_cents: number
+  bonus_cents: number
+  deduction_cents: number
+  social_insurance_cents: number
+  housing_fund_cents: number
+  individual_income_tax_cents: number
+  gross_pay_cents: number
+  net_pay_cents: number
+  notes: string
+}
+
+export type PayrollTestMaterialPreview = {
+  schema_version: 'payroll-test-material-preview/v1'
+  data_scope: 'TEST_ONLY'
+  test_batch_id: string
+  company_id: string
+  material_id: string
+  period: string
+  status: 'READY_FOR_REVIEW' | 'NEEDS_HUMAN_REVIEW'
+  line_count: number
+  total_net_pay_cents: number
+  lines: PayrollTestMaterialPreviewLine[]
+  exceptions: Array<{
+    code: string
+    severity: string
+    row: number
+    field?: string
+    calculated_cents?: number
+    stated_cents?: number
+  }>
+  payment_submission_supported: false
+  payable: false
+  submission_supported: false
+}
+
+export type PayrollTestMaterialPreviewResponse = {
+  contract_version: 'ledgerbridge.payroll-test-material-preview-read.v1'
+  entity_ref: string
+  company_id: string
+  material_id: string
+  data: PayrollTestMaterialPreview
+}
+
+export type PayrollTestMaterialOrganizeResult = {
+  schema_version: 'payroll-test-material-organize-result/v1'
+  data_scope: 'TEST_ONLY'
+  test_batch_id: string
+  company_id: string
+  workspace_revision: number
+  projection_revision: string
+  material: PayrollTestWorkspaceMaterial
+  payment_submission_supported: false
+  payable: false
+  submission_supported: false
+  replayed: boolean
+}
+
+export type PayrollTestBatchResult = {
+  batch_id: string
+  period: string
+  material_count: number
+  payroll_sheet_count: number
+  supporting_material_count: number
+  status: 'READY_FOR_TEST_REVIEW' | 'BLOCKED'
+}
+
+export type PayrollTestBatchValidationResult = {
+  schema_version: 'payroll-test-batch-validation-result/v1'
+  data_scope: 'TEST_ONLY'
+  test_batch_id: string
+  company_id: string
+  workspace_revision: number
+  ready_batch_count: number
+  blocked_material_count: number
+  batches: PayrollTestBatchResult[]
+  payment_submission_supported: false
+  payable: false
+  submission_supported: false
+  replayed: boolean
+}
+
+export type PayrollTestWorkspaceCommandResult<T> = {
+  contract_version: 'ledgerbridge.payroll-test-workspace-command-result.v1'
+  entity_ref: string
+  company_id: string
+  action: 'payroll.test_workspace.organize' | 'payroll.test_workspace.validate'
+  resource_ref: string
+  replayed: boolean
+  data: T
 }
 
 export type PayrollStatusData = {

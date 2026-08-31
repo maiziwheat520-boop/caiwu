@@ -26,6 +26,11 @@ import type {
   PayrollStatusData,
   PayrollVerificationListData,
   PayrollTestWorkspaceReadResponse,
+  PayrollTestWorkspaceCommandResult,
+  PayrollTestMaterialOrganizeResult,
+  PayrollTestBatchValidationResult,
+  PayrollTestMaterialType,
+  PayrollTestMaterialPreviewResponse,
   Problem,
   Reconciliation,
   ReviewEvent,
@@ -408,6 +413,56 @@ export const api = {
 
   getPayrollTestWorkspace: () =>
     requestJson<PayrollTestWorkspaceReadResponse>('/api/v1/payroll/test-workspace'),
+
+  previewPayrollTestMaterial: (materialId: string) =>
+    requestJson<PayrollTestMaterialPreviewResponse>(
+      `/api/v1/payroll/test-workspace/materials/${encodeURIComponent(materialId)}/preview`,
+    ),
+
+  organizePayrollTestMaterial: ({
+    materialId,
+    expectedWorkspaceRevision,
+    period,
+    materialType,
+    csrfToken,
+  }: {
+    materialId: string
+    expectedWorkspaceRevision: number
+    period: string
+    materialType: PayrollTestMaterialType
+    csrfToken: string
+  }) => requestJson<PayrollTestWorkspaceCommandResult<PayrollTestMaterialOrganizeResult>>(
+    `/api/v1/payroll/test-workspace/materials/${encodeURIComponent(materialId)}/organize`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': createOperationId(),
+        'X-CSRF-Token': csrfToken,
+      },
+      body: JSON.stringify({
+        expected_workspace_revision: expectedWorkspaceRevision,
+        period,
+        material_type: materialType,
+      }),
+    },
+  ),
+
+  validatePayrollTestWorkspace: ({ expectedWorkspaceRevision, csrfToken }: {
+    expectedWorkspaceRevision: number
+    csrfToken: string
+  }) => requestJson<PayrollTestWorkspaceCommandResult<PayrollTestBatchValidationResult>>(
+    '/api/v1/payroll/test-workspace/validate',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': createOperationId(),
+        'X-CSRF-Token': csrfToken,
+      },
+      body: JSON.stringify({ expected_workspace_revision: expectedWorkspaceRevision }),
+    },
+  ),
 
   getPayrollDashboard: () =>
     requestJson<PayrollReadResponse<PayrollDashboardData>>('/api/v1/payroll/dashboard'),

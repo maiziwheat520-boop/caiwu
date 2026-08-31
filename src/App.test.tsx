@@ -1964,6 +1964,60 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.getByText('4 条需补关联单据')).toBeInTheDocument()
   })
 
+  it('does not keep material gaps from confirmed or ignored candidates', async () => {
+    const materialCandidates: ApiCandidate[] = [
+      { ...candidates[0], id: 'candidate-gap-pending', short_id: 'C-GP01', summary: '微信 | 2026-08-02 | 支出 | 商户消费 | 通信商 | 中国建设银行储蓄卡(7564) | 支付成功', review_risks: [{ code: 'FUNDING_STATEMENT_REQUIRED', message: '需关联资金账户明细后再确认' }] },
+      { ...candidates[3], id: 'candidate-gap-confirmed', short_id: 'C-GC01', summary: '微信 | 2026-08-03 | 支出 | 商户消费 | 商户 | 中国银行借记卡(2061) | 支付成功', review_risks: [{ code: 'FUNDING_STATEMENT_REQUIRED', message: '历史风险已终结' }] },
+      { ...candidates[3], id: 'candidate-gap-ignored', short_id: 'C-GI01', status: 'IGNORED', summary: '微信 | 2026-08-04 | 支出 | 商户消费 | 商户 | 农业银行借记卡(1234) | 支付成功', review_risks: [{ code: 'FUNDING_STATEMENT_REQUIRED', message: '已忽略的历史风险' }] },
+    ]
+    installFetch({ items: materialCandidates })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('文件与连接')[0])
+
+    expect(screen.getByText('中国建设银行储蓄卡(7564)明细')).toBeInTheDocument()
+    expect(screen.queryByText('中国银行借记卡(2061)明细')).not.toBeInTheDocument()
+    expect(screen.queryByText('农业银行借记卡(1234)明细')).not.toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: '待补账单清单' })).getByText('1 项')).toBeInTheDocument()
+  })
+
+  it('puts pending review first and summarizes only confirmed personal facts with source-priority deduplication', async () => {
+    const personalCandidates: ApiCandidate[] = [
+      { ...candidates[3], id: 'candidate-income-aug', short_id: 'C-PF01', business_unit: '个人', business_unit_ref: 'personal-main', amount_minor: 10000, accounting_month: '2026-08', category: '工资', category_code: 'SALARY', summary: '支付宝 | 2026-08-01 | 收入 | 工资 | 公司 | 余额 | 交易成功' },
+      { ...candidates[3], id: 'candidate-expense-aug', short_id: 'C-PF02', business_unit: '个人', business_unit_ref: 'personal-main', amount_minor: 2500, accounting_month: '2026-08', category: '餐饮', category_code: 'DINING', summary: '微信 | 2026-08-02 | 支出 | 商户消费 | 餐厅 | 零钱 | 支付成功' },
+      { ...candidates[3], id: 'candidate-expense-bank-copy', short_id: 'C-PF03', source_channel: 'controlled_upload', business_unit: '个人', business_unit_ref: 'personal-main', amount_minor: -2500, accounting_month: '2026-08', category: '餐饮', category_code: 'DINING', summary: '建设银行 | 2026-08-02 | 支出 | 消费 | 餐厅 | 储蓄卡 | 交易成功' },
+      { ...candidates[3], id: 'candidate-transfer-platform', short_id: 'C-PF04', business_unit: '个人', business_unit_ref: 'personal-main', amount_minor: -20000, accounting_month: '2026-08', category: '转账', category_code: 'TRANSFER', summary: '支付宝 | 2026-08-03 | 支出 | 转账 | 张三 | 建设银行 | 交易成功' },
+      { ...candidates[3], id: 'candidate-transfer-bank', short_id: 'C-PF05', source_channel: 'controlled_upload', business_unit: '个人', business_unit_ref: 'personal-main', amount_minor: -20000, accounting_month: '2026-08', category: '转账', category_code: 'TRANSFER', summary: '建设银行 | 2026-08-03 | 支出 | 转账 | 张三 | 储蓄卡 | 交易成功' },
+      { ...candidates[0], id: 'candidate-pending-expense', short_id: 'C-PEND', business_unit: '个人', business_unit_ref: 'personal-main', amount_minor: 999999, accounting_month: '2026-08', category: '待审核', category_code: 'PENDING', summary: '微信 | 2026-08-04 | 支出 | 商户消费 | 商户 | 零钱 | 支付成功' },
+      { ...candidates[3], id: 'candidate-company-income', short_id: 'C-COMP', business_unit: '景怡公司', business_unit_ref: 'company-jingyi', amount_minor: 880000, accounting_month: '2026-08', category: '公司收入', category_code: 'COMPANY_INCOME', summary: '支付宝 | 2026-08-05 | 收入 | 酒店收款 | 平台 | 余额 | 交易成功' },
+      { ...candidates[3], id: 'candidate-unscoped-bank', short_id: 'C-UNSC', source_channel: 'controlled_upload', business_unit: '待归属', business_unit_ref: '', amount_minor: 500000, accounting_month: '2026-08', category: '转账', category_code: 'TRANSFER', summary: '中国银行 | 2026-08-06 | 收入 | 转账 | 某人 | 借记卡 | 交易成功' },
+    ]
+    installFetch({ items: personalCandidates })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+
+    const review = screen.getByRole('region', { name: '个人财务待审核' })
+    const summary = screen.getByRole('region', { name: '个人财务收支概览' })
+    expect(review.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(within(review).getByText('C-PEND')).toBeInTheDocument()
+    expect(within(summary).getByText('¥100.00')).toBeInTheDocument()
+    expect(within(summary).getByText('¥225.00')).toBeInTheDocument()
+    expect(within(summary).getByText('-¥125.00')).toBeInTheDocument()
+    expect(within(summary).getByText('3 条已确认个人收支')).toBeInTheDocument()
+    expect(screen.getByText('3 条待来源归属或状态确认，未计入汇总')).toBeInTheDocument()
+    expect(screen.getByText('2 条跨来源重复记录已合并')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '分类占比' })).toBeInTheDocument()
+    expect(screen.getByText('工资')).toBeInTheDocument()
+    expect(screen.getByText('61.5%')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '月度趋势' })).toBeInTheDocument()
+    expect(screen.getByText('2026 年 8 月')).toBeInTheDocument()
+    expect(screen.queryByText('公司收入')).not.toBeInTheDocument()
+    const categoryPanel = screen.getByRole('heading', { name: '分类占比' }).closest('section')
+    expect(categoryPanel).not.toBeNull()
+    expect(within(categoryPanel!).queryByText('待审核')).not.toBeInTheDocument()
+  })
+
   it('groups ordinary transfers by counterparty and filters to the selected object', async () => {
     const transferCandidates: ApiCandidate[] = [
       ...[-10000, 4000].map((amount, index): ApiCandidate => ({ ...candidates[0], id: `candidate-wangshang-${index}`, short_id: `C-WS0${index + 1}`, amount_minor: amount, accounting_month: '2026-05', summary: `支付宝 | 2026-05-0${index + 8} | ${amount < 0 ? '支出' : '收入'} | 投资理财 | 网商银行 | 账户余额 | 交易成功`, review_risks: [{ code: 'RELATED_ACCOUNT_STATEMENT_REQUIRED', message: '需关联另一侧账户同期流水' }] })),
@@ -2056,6 +2110,85 @@ describe('LedgerBridge Web API client', () => {
     const formalTotals = screen.getByRole('region', { name: '演示公司 正式财务总额' })
     expect(within(formalTotals).getAllByText('待接正式账簿')).toHaveLength(3)
     expect(within(formalTotals).queryByText('¥0.00')).not.toBeInTheDocument()
+    expect(screen.getByText('正式账簿尚未接入')).toBeInTheDocument()
+  })
+
+  it('prioritizes confirmed test totals and account cash flow when the posted ledger is empty', async () => {
+    window.history.replaceState({}, '', '/company-reports')
+    const reports = companyReports(true)
+    const candidateCompany = reports.layers[0].items[0]
+    Object.assign(candidateCompany.metrics, {
+      confirmed_positive_minor: 150000,
+      confirmed_negative_minor: -60000,
+      confirmed_net_minor: 90000,
+    })
+    Object.assign(candidateCompany.months[0].metrics, {
+      confirmed_positive_minor: 150000,
+      confirmed_negative_minor: -60000,
+      confirmed_net_minor: 90000,
+    })
+    const statementCompany = reports.layers[1].items[0]
+    Object.assign(statementCompany.metrics, {
+      cash_inflow_minor: 200000,
+      cash_outflow_minor: 80000,
+      net_cash_flow_minor: 120000,
+      confirmed_transaction_count: 12,
+      statement_count: 2,
+    })
+    Object.assign(statementCompany.months[0].metrics, {
+      cash_inflow_minor: 200000,
+      cash_outflow_minor: 80000,
+      net_cash_flow_minor: 120000,
+      confirmed_transaction_count: 12,
+      statement_count: 2,
+    })
+    installFetch({ runtimeMode: 'core-backed', companyReportResponse: reports })
+
+    renderApp()
+
+    const testSummary = await screen.findByRole('region', { name: '演示公司 测试汇总' })
+    expect(within(testSummary).getByText('测试汇总·未正式入账')).toBeInTheDocument()
+    expect(within(testSummary).getByText('¥1,500.00')).toBeInTheDocument()
+    expect(within(testSummary).getByText('¥600.00')).toBeInTheDocument()
+    expect(within(testSummary).getByText('¥900.00')).toBeInTheDocument()
+    expect(within(testSummary).getByText(/账户流水净额/)).toBeInTheDocument()
+    expect(within(testSummary).getByText('¥1,200.00')).toBeInTheDocument()
+    expect(within(testSummary).getByText('12 条流水·2 份账单')).toBeInTheDocument()
+    expect(screen.getByText('正式账簿尚无入账金额')).toBeInTheDocument()
+  })
+
+  it('warns when Core only returns the generic company placeholder', async () => {
+    window.history.replaceState({}, '', '/company-reports')
+    const reports = companyReports(true)
+    reports.layers.forEach((layer) => {
+      layer.items[0].company_name = 'LedgerBridge controlled reconciliation'
+    })
+    installFetch({ runtimeMode: 'core-backed', companyReportResponse: reports })
+
+    renderApp()
+
+    expect(await screen.findByText('待完成公司归属')).toBeInTheDocument()
+    expect(screen.getByText('当前 Core 只返回一个通用公司主体，已导入数据尚未分配到各家公司；下方汇总不代表公司报表已完整。')).toBeInTheDocument()
+  })
+
+  it('renders every authoritative company independently without the generic attribution warning', async () => {
+    window.history.replaceState({}, '', '/company-reports')
+    const reports = companyReports(true)
+    reports.layers.forEach((layer) => {
+      layer.items[0].company_name = '薇旭公司'
+      layer.items.push({
+        ...structuredClone(layer.items[0]),
+        company_ref: '20000000-0000-4000-8000-000000000002',
+        company_name: '景怡公司',
+      })
+    })
+    installFetch({ runtimeMode: 'core-backed', companyReportResponse: reports })
+
+    renderApp()
+
+    expect(await screen.findByRole('heading', { name: '薇旭公司' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '景怡公司' })).toBeInTheDocument()
+    expect(screen.queryByText('待完成公司归属')).not.toBeInTheDocument()
   })
 
   it('distinguishes unavailable business-unit breakdowns without backfilling names', async () => {
@@ -2113,32 +2246,43 @@ describe('LedgerBridge Web API client', () => {
     expect(await screen.findByText('当前期间没有可展示的公司报表')).toBeInTheDocument()
   })
 
-  it('renders the fixed original columns and uses projection totals without mixing pending review', async () => {
+  it('renders original-reconciliation as actionable business items instead of an Excel-style grid', async () => {
+    window.history.replaceState({}, '', '/original-reconciliation')
+    installFetch()
+    renderApp()
+
+    expect(await screen.findByRole('heading', { name: '原口径对账表' })).toBeInTheDocument()
+    expect(screen.queryByRole('table', { name: '原口径固定列对账表' })).not.toBeInTheDocument()
+    const workflow = screen.getByRole('region', { name: '原口径事项录入与审核' })
+    expect(within(workflow).getByRole('heading', { name: '已导入业务事项' })).toBeInTheDocument()
+    expect(within(workflow).getByText('已确认候选（脱敏）')).toBeInTheDocument()
+    expect(within(workflow).getByText('待补经济影响')).toBeInTheDocument()
+
+    fireEvent.click(within(workflow).getByRole('button', { name: '前往待审核' }))
+    expect(window.location.pathname).toBe('/review')
+  })
+
+  it('uses original-reconciliation projection totals without mixing pending review into business items', async () => {
     window.history.replaceState({}, '', '/original-reconciliation')
     const fetchMock = installFetch()
     renderApp()
 
     expect(await screen.findByRole('heading', { name: '原口径对账表' })).toBeInTheDocument()
-    const table = await screen.findByRole('table', { name: '原口径固定列对账表' })
-    expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual(
-      ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M'],
-    )
-    expect(within(table).getByText('示例科目')).toBeInTheDocument()
-    expect(within(table).getByText('¥123.45')).toBeInTheDocument()
-    expect(within(table).getByText('-¥23.45')).toBeInTheDocument()
-    expect(within(table).getByText('待补经济影响')).toBeInTheDocument()
+    const workflow = screen.getByRole('region', { name: '原口径事项录入与审核' })
+    expect(within(workflow).getByText('¥123.45')).toBeInTheDocument()
+    expect(within(workflow).getByText('-¥23.45')).toBeInTheDocument()
+    expect(within(workflow).getByText('待补经济影响')).toBeInTheDocument()
     expect(within(screen.getByRole('region', { name: '原口径合计' })).getByText('¥100.00')).toBeInTheDocument()
-    expect(screen.getByText('3 条待审核未计入')).toBeInTheDocument()
+    expect(screen.getByText('3 条交易待审核')).toBeInTheDocument()
     expect(screen.getByText('2 条已确认待入账')).toBeInTheDocument()
-    expect(screen.getByText('1 份待补材料')).toBeInTheDocument()
-    expect(screen.getByText('1 条已确认但未映射')).toBeInTheDocument()
-    expect(screen.getByText('月内时间粒度待补')).toBeInTheDocument()
-    expect(screen.getByText('不解析摘要猜周次')).toBeInTheDocument()
-    expect(screen.getByText('不完整 / 有缺口')).toBeInTheDocument()
+    expect(screen.getByText('1 份关联材料待补')).toBeInTheDocument()
+    expect(screen.getByText('1 条已确认事项待归类')).toBeInTheDocument()
+    expect(screen.getByText('月内日期待补')).toBeInTheDocument()
+    expect(screen.getByText('仍有待办')).toBeInTheDocument()
     expect(screen.getByText('synthetic_confirmed')).toBeInTheDocument()
     expect(screen.getByText('synthetic_statement')).toBeInTheDocument()
     expect(screen.getAllByText('待补账户映射')).toHaveLength(2)
-    expect(screen.getByText('分类、布局与映射版本可追溯')).toHaveAttribute(
+    expect(screen.getByText('规则版本可追溯')).toHaveAttribute(
       'title',
       `${originalReconciliationFixture.taxonomy_version} · ${originalReconciliationFixture.layout_version} · ${originalReconciliationFixture.mapping_version}`,
     )
@@ -2158,7 +2302,7 @@ describe('LedgerBridge Web API client', () => {
     const loadingView = renderApp()
     expect(await screen.findByText('正在读取原口径对账表')).toBeInTheDocument()
     await act(async () => releaseProjection())
-    expect(await screen.findByRole('table', { name: '原口径固定列对账表' })).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: '原口径事项录入与审核' })).toBeInTheDocument()
     loadingView.unmount()
 
     vi.restoreAllMocks()
@@ -2202,9 +2346,9 @@ describe('LedgerBridge Web API client', () => {
       },
     })
     renderApp()
-    expect(await screen.findByRole('heading', { name: '本月没有可映射的原口径数据' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '本月暂无已导入业务事项' })).toBeInTheDocument()
     expect(within(screen.getByRole('region', { name: '原口径合计' })).getAllByText('¥0.00')).toHaveLength(3)
-    expect(screen.getByRole('table', { name: '原口径固定列对账表' })).toBeInTheDocument()
+    expect(screen.queryByRole('table', { name: '原口径固定列对账表' })).not.toBeInTheDocument()
   })
 
   it('shows unavailable posted-ledger totals as missing instead of zero', async () => {
@@ -2240,10 +2384,11 @@ describe('LedgerBridge Web API client', () => {
     expect(await screen.findByRole('heading', { name: '工资与发放验证' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: '工资与发放验证' })).toHaveLength(2)
     expect(await screen.findByText('历史工资材料已进入测试账本')).toBeInTheDocument()
-    expect(screen.getByText('已自动接入 1 份')).toBeInTheDocument()
-    expect(screen.getByText('待审核 0 份')).toBeInTheDocument()
-    expect(screen.getByText('日期待确认 0 份')).toBeInTheDocument()
-    expect(screen.getByText('已接入测试账本')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '8 月及以前 1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '9 月后待审核 0' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '日期待确认 0' })).toBeInTheDocument()
+    expect(screen.getByText('已进入测试账本')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '生成并验证测试批次' })).toBeInTheDocument()
     expect(screen.getByText('只读工资发布契约已部署')).toBeInTheDocument()
     expect(screen.getByText('服务已接通，待归属材料 3 份')).toBeInTheDocument()
     expect(screen.getByText('工资材料仍有待归属项')).toBeInTheDocument()

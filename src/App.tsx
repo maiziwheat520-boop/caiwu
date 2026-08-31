@@ -81,6 +81,7 @@ import type {
   ReviewEvent,
   Session,
 } from './types'
+import { PayrollTestWorkspaceActionsPanel } from './payroll/PayrollTestWorkspaceActionsPanel'
 
 const CURRENT_MONTH = '2026-08'
 const CLASSIFICATION_GROUPS_UNAVAILABLE_NOTICE = '同类批量归类暂不可用，可继续逐笔审核'
@@ -189,6 +190,84 @@ const platformInternalAccounts = new Set(['花呗', '余额宝', '账户余额',
 
 function summaryFields(candidate: Candidate): string[] {
   return candidate.summary.split('|').map((value) => value.trim())
+}
+
+function candidateCashflowMinor(candidate: Candidate): number {
+  const statedDirection = summaryFields(candidate)[2]
+  if (statedDirection === '收入') return Math.abs(candidate.amountMinor)
+  if (statedDirection === '支出') return -Math.abs(candidate.amountMinor)
+  return candidate.amountMinor
+}
+
+type PersonalTransaction = {
+  candidate: Candidate
+  cashflowMinor: number
+  date: string
+  transactionType: string
+  counterparty: string
+  sourceKind: 'PLATFORM' | 'BANK'
+}
+
+type PersonalFinanceSelection = {
+  entries: PersonalTransaction[]
+  excludedCount: number
+  deduplicatedCount: number
+}
+
+function personalTransaction(candidate: Candidate): PersonalTransaction | null {
+  if (candidate.status !== 'CONFIRMED') return null
+  const fields = summaryFields(candidate)
+  if (fields.length < 7 || !/^\d{4}-\d{2}-\d{2}$/.test(fields[1])) return null
+  const sourceKind = fields[0] === '微信' || fields[0] === '支付宝'
+    ? 'PLATFORM'
+    : fields[0].includes('银行')
+      ? 'BANK'
+      : null
+  if (!sourceKind) return null
+
+  const scope = `${candidate.businessUnit} ${candidate.businessUnitRef}`.trim()
+  if (!/(个人|本人|personal)/i.test(scope)) return null
+  if (/(公司|酒店|宾馆|门店|company|hotel)/i.test(scope)) return null
+
+  return {
+    candidate,
+    cashflowMinor: candidateCashflowMinor(candidate),
+    date: fields[1],
+    transactionType: fields[3],
+    counterparty: fields[4],
+    sourceKind,
+  }
+}
+
+function selectPersonalFinanceEntries(candidates: Candidate[]): PersonalFinanceSelection {
+  const eligible = candidates.flatMap((candidate) => {
+    const entry = personalTransaction(candidate)
+    return entry ? [entry] : []
+  })
+  let excludedCount = candidates.length - eligible.length
+  let deduplicatedCount = 0
+  const groups = eligible.reduce((result, entry) => {
+    const direction = entry.cashflowMinor < 0 ? 'OUT' : 'IN'
+    const key = `${entry.date}|${direction}|${Math.abs(entry.cashflowMinor)}|${entry.counterparty}`
+    const group = result.get(key) ?? []
+    group.push(entry)
+    result.set(key, group)
+    return result
+  }, new Map<string, PersonalTransaction[]>())
+
+  const entries = [...groups.values()].flatMap((group) => {
+    const isTransfer = group.some((entry) => /(转账|提现)/.test(entry.transactionType))
+    const preferredKind = isTransfer ? 'BANK' : 'PLATFORM'
+    const preferred = group.filter((entry) => entry.sourceKind === preferredKind)
+    if (preferred.length === 0) {
+      excludedCount += group.length
+      return []
+    }
+    deduplicatedCount += group.length - 1
+    return [preferred.sort((left, right) => left.candidate.id.localeCompare(right.candidate.id))[0]]
+  })
+
+  return { entries, excludedCount, deduplicatedCount }
 }
 
 function counterpartyFor(candidate: Candidate): string {
@@ -726,7 +805,7 @@ function App() {
       )
     }
     if (page === 'personal-finance') {
-      return <PersonalFinanceOverview candidates={candidates} onNavigate={navigate} />
+      return <PersonalFinanceOverview candidates={candidates} onNavigate={navigate} onOpenCandidate={openCandidate} />
     }
     if (page === 'review') {
       return (
@@ -754,6 +833,7 @@ function App() {
           loading={originalReconciliationLoading}
           selectedMonth={originalMonth}
           onMonthChange={changeOriginalMonth}
+          onNavigate={navigate}
           onRetry={() => void loadOriginalReconciliation()}
         />
       )
@@ -1498,10 +1578,49 @@ function StatusLine({ icon, label, detail, tone }: { icon: React.ReactNode; labe
   )
 }
 
-function PersonalFinanceOverview({ candidates, onNavigate }: { candidates: Candidate[]; onNavigate: (page: Page) => void }) {
+function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate }: {
+  candidates: Candidate[]
+  onNavigate: (page: Page) => void
+  onOpenCandidate: (candidate: Candidate) => void
+}) {
   const pending = candidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
-  const evidenceCount = new Set(candidates.flatMap((candidate) => candidate.evidence.map((evidence) => evidence.id))).size
-  const months = new Set(candidates.map((candidate) => candidate.accountingMonth).filter(Boolean)).size
+  const personalSelection = selectPersonalFinanceEntries(candidates)
+  const financialEntries = personalSelection.entries
+  const financialCandidates = financialEntries.map((entry) => entry.candidate)
+  const incomeMinor = financialEntries.reduce((total, entry) => total + Math.max(entry.cashflowMinor, 0), 0)
+  const expenseMinor = financialEntries.reduce((total, entry) => total + Math.abs(Math.min(entry.cashflowMinor, 0)), 0)
+  const netMinor = incomeMinor - expenseMinor
+  const evidenceCount = new Set(financialCandidates.flatMap((candidate) => candidate.evidence.map((evidence) => evidence.id))).size
+
+  const categoryTotals = financialEntries.reduce((totals, entry) => {
+    const amountMinor = Math.abs(entry.cashflowMinor)
+    if (amountMinor === 0) return totals
+    const category = entry.candidate.category.trim() || '待分类'
+    totals.set(category, (totals.get(category) ?? 0) + amountMinor)
+    return totals
+  }, new Map<string, number>())
+  const categorizedTotalMinor = [...categoryTotals.values()].reduce((total, amountMinor) => total + amountMinor, 0)
+  const categoryShares = [...categoryTotals.entries()]
+    .map(([category, amountMinor]) => ({
+      category,
+      amountMinor,
+      percentage: categorizedTotalMinor > 0 ? (amountMinor / categorizedTotalMinor) * 100 : 0,
+    }))
+    .sort((left, right) => right.amountMinor - left.amountMinor || left.category.localeCompare(right.category, 'zh-CN'))
+
+  const monthlyTotals = financialEntries.reduce((totals, entry) => {
+    if (!entry.candidate.accountingMonth) return totals
+    const current = totals.get(entry.candidate.accountingMonth) ?? { incomeMinor: 0, expenseMinor: 0 }
+    if (entry.cashflowMinor >= 0) current.incomeMinor += entry.cashflowMinor
+    else current.expenseMinor += Math.abs(entry.cashflowMinor)
+    totals.set(entry.candidate.accountingMonth, current)
+    return totals
+  }, new Map<string, { incomeMinor: number; expenseMinor: number }>())
+  const monthlyTrend = [...monthlyTotals.entries()]
+    .map(([month, totals]) => ({ ...totals, month, netMinor: totals.incomeMinor - totals.expenseMinor }))
+    .sort((left, right) => right.month.localeCompare(left.month))
+  const latestTrend = monthlyTrend[0]
+  const leadingCategory = categoryShares[0]
   return (
     <>
       <PageHeader
@@ -1510,16 +1629,79 @@ function PersonalFinanceOverview({ candidates, onNavigate }: { candidates: Candi
         description="汇总当前已导入的账单、凭证和待审核事项；所有数字均可回到原始材料。"
         action={<Button onClick={() => onNavigate('review')}><ListChecks size={17} />处理待审核</Button>}
       />
-      <section className="metric-grid" aria-label="个人财务材料概览">
-        <Metric primary label="全部候选" value={`${candidates.length} 条`} detail={`${pending.length} 条仍待确认`} tone={pending.length > 0 ? 'attention' : undefined} icon={<ListChecks size={20} />} />
-        <Metric label="原始材料" value={`${evidenceCount} 份`} detail="已按证据编号去重" icon={<FolderOpen size={20} />} />
-        <Metric label="覆盖期间" value={`${months} 个月`} detail="来自当前 Core 候选事实" icon={<Table size={20} />} />
+
+      <section className="panel personal-review-priority" aria-label="个人财务待审核">
+        <div className="panel-heading">
+          <div><h2>待审核</h2><p>先处理仍可能改变收支归类的事项</p></div>
+          <div className="personal-review-actions"><Badge color={pending.length > 0 ? 'amber' : 'green'}>{pending.length} 条</Badge><Button size="1" variant="soft" onClick={() => onNavigate('review')}>查看全部<CaretRight size={14} /></Button></div>
+        </div>
+        {pending.length > 0 ? (
+          <div className="personal-review-list">
+            {pending.slice(0, 4).map((candidate) => (
+              <button key={candidate.id} onClick={() => onOpenCandidate(candidate)} type="button">
+                <span><strong>{candidate.shortId}</strong><small>{candidate.businessUnit} · {candidate.category} · {accountingMonthLabel(candidate.accountingMonth)}</small></span>
+                <span>{candidate.summary}</span>
+                <strong>{currency.format(minorToMajor(candidateCashflowMinor(candidate)))}</strong>
+                <CaretRight size={16} />
+              </button>
+            ))}
+          </div>
+        ) : <div className="empty-state compact-empty personal-review-empty"><CheckCircle size={30} /><h3>当前没有待审核事项</h3><p>新导入的风险或信息不完整事项会出现在这里。</p></div>}
       </section>
-      <section className="panel report-entry-panel">
-        <div><h2>从真实材料继续</h2><p>先确认风险候选，再检查已导入材料和仍需补交的账单。</p></div>
+
+      <section className="metric-grid personal-finance-metrics" aria-label="个人财务收支概览">
+        <Metric primary label="收入" value={currency.format(minorToMajor(incomeMinor))} detail={`${financialEntries.length} 条已确认个人收支`} icon={<CloudArrowUp size={20} />} />
+        <Metric label="支出" value={currency.format(minorToMajor(expenseMinor))} detail={`${financialEntries.filter((entry) => entry.cashflowMinor < 0).length} 条已确认个人支出`} icon={<Bank size={20} />} />
+        <Metric label="净额" value={currency.format(minorToMajor(netMinor))} detail="已确认个人收入减支出" icon={<ArrowsClockwise size={20} />} />
+        <Metric label="原始材料" value={`${evidenceCount} 份`} detail="只计入本次汇总所依据的材料" icon={<FolderOpen size={20} />} />
+      </section>
+
+      <div className="personal-finance-boundary" role="status">
+        <span>{personalSelection.excludedCount} 条待来源归属或状态确认，未计入汇总</span>
+        <span>{personalSelection.deduplicatedCount} 条跨来源重复记录已合并</span>
+      </div>
+
+      <div className="personal-insight-grid">
+        <section className="panel personal-category-panel">
+          <div className="panel-heading"><div><h2>分类占比</h2><p>按收入与支出的绝对金额计算</p></div></div>
+          {categoryShares.length > 0 ? (
+            <div className="personal-category-list">
+              {categoryShares.map((item) => (
+                <article key={item.category}>
+                  <div><strong>{item.category}</strong><span>{currency.format(minorToMajor(item.amountMinor))}</span><b>{item.percentage.toFixed(1)}%</b></div>
+                  <div aria-label={`${item.category}占比 ${item.percentage.toFixed(1)}%`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={Number(item.percentage.toFixed(1))} className="personal-category-bar" role="progressbar"><span style={{ width: `${item.percentage}%` }} /></div>
+                </article>
+              ))}
+            </div>
+          ) : <p className="personal-finance-empty">暂无可统计的收支分类。</p>}
+        </section>
+
+        <section className="panel personal-trend-panel">
+          <div className="panel-heading"><div><h2>月度趋势</h2><p>按已确认个人事实的归属月份汇总</p></div></div>
+          {latestTrend ? (
+            <p className="personal-trend-summary">
+              {accountingMonthLabel(latestTrend.month)}净额 {currency.format(minorToMajor(latestTrend.netMinor))}
+              {leadingCategory ? `；当前金额占比最高的分类是${leadingCategory.category} ${leadingCategory.percentage.toFixed(1)}%` : ''}。
+            </p>
+          ) : null}
+          {monthlyTrend.length > 0 ? (
+            <div className="personal-trend-list">
+              {monthlyTrend.map((item) => (
+                <article key={item.month}>
+                  <strong>{accountingMonthLabel(item.month)}</strong>
+                  <dl><div><dt>收入</dt><dd>{currency.format(minorToMajor(item.incomeMinor))}</dd></div><div><dt>支出</dt><dd>{currency.format(minorToMajor(item.expenseMinor))}</dd></div><div><dt>净额</dt><dd>{currency.format(minorToMajor(item.netMinor))}</dd></div></dl>
+                </article>
+              ))}
+            </div>
+          ) : <p className="personal-finance-empty">暂无已确认归属月份的收支数据。</p>}
+        </section>
+      </div>
+
+      <section className="panel report-entry-panel personal-finance-actions">
+        <div><h2>材料与对账去向</h2><p>查看原始账单、凭证、待补材料和月度对账。</p></div>
         <div className="review-header-actions">
-          <Button onClick={() => onNavigate('review')}>查看待审核</Button>
           <Button variant="outline" color="gray" onClick={() => onNavigate('files')}>查看材料总览</Button>
+          <Button variant="outline" color="gray" onClick={() => onNavigate('reconciliation')}>查看月度对账</Button>
         </div>
       </section>
     </>
@@ -1587,6 +1769,8 @@ function CompanyReports() {
       </>
     )
   }
+  const onlyCompany = companyIndex.size === 1 ? [...companyIndex.values()][0] : null
+  const genericCompanyOnly = onlyCompany?.name.trim().toLowerCase() === 'ledgerbridge controlled reconciliation'
 
   return (
     <>
@@ -1595,9 +1779,18 @@ function CompanyReports() {
         <Info size={18} />
         <div>
           <strong>三层事实彼此独立，不合并计算</strong>
-          <span>已确认来源用于审核追踪，账户流水用于现金流核对；只有正式入账层形成收入、费用与利润。</span>
+          <span>已确认候选用于当前测试收支汇总，账户流水用于现金流核对；两者均不与正式账簿混算。</span>
         </div>
       </section>
+      {genericCompanyOnly ? (
+        <section className="company-attribution-warning" role="alert">
+          <Warning size={20} />
+          <div>
+            <strong>待完成公司归属</strong>
+            <span>当前 Core 只返回一个通用公司主体，已导入数据尚未分配到各家公司；下方汇总不代表公司报表已完整。</span>
+          </div>
+        </section>
+      ) : null}
       <div className="company-report-list">
         {[...companyIndex.entries()].map(([companyRef, identity]) => (
           <CompanyReportCard
@@ -1691,12 +1884,13 @@ async function readPayrollViews(): Promise<PayrollLiveViews> {
   return { dashboard, materials, batches, verification }
 }
 
-function OriginalReconciliation({ data, error, loading, selectedMonth, onMonthChange, onRetry }: {
+function OriginalReconciliation({ data, error, loading, selectedMonth, onMonthChange, onNavigate, onRetry }: {
   data: OriginalReconciliationData | null
   error: string | null
   loading: boolean
   selectedMonth: string
   onMonthChange: (month: string) => void
+  onNavigate: (page: Page) => void
   onRetry: () => void
 }) {
   const monthLabel = accountingMonthLabel(selectedMonth)
@@ -1714,6 +1908,11 @@ function OriginalReconciliation({ data, error, loading, selectedMonth, onMonthCh
       default: return '待补原表栏位映射'
     }
   }
+  const gapLabels = data
+    ? Array.from(new Set(data.rows.flatMap((row) => row.cells
+      .filter((cell) => cell.kind === 'GAP')
+      .map((cell) => gapLabel(cell.gap_code)))))
+    : []
   const empty = Boolean(
     data
     && data.totals.mapped_cell_count === 0
@@ -1725,7 +1924,7 @@ function OriginalReconciliation({ data, error, loading, selectedMonth, onMonthCh
       <PageHeader
         eyebrow="历史口径"
         title="原口径对账表"
-        description="按用户原有工作表的固定 A–M 列序只读展示；只消费 Core 已确认或正式入账事实。"
+        description="按原有口径整理为业务事项；已导入数据自动带入，缺口统一进入补录和审核流程。"
         action={(
           <div className="original-reconciliation-filters">
             <input
@@ -1759,116 +1958,72 @@ function OriginalReconciliation({ data, error, loading, selectedMonth, onMonthCh
             <Metric label="期末余额" value={formatBalance(data.totals.closing_balance_minor)} detail="缺少账户映射时不推算" icon={<Database size={20} />} />
           </section>
 
-          <section className="original-reconciliation-status" aria-label="原口径材料状态">
-            <div><Warning size={18} /><strong>{data.pending_review_count} 条待审核未计入</strong><span>与合计隔离</span></div>
-            <div><ClockCounterClockwise size={18} /><strong>{data.confirmed_pending_posting_count} 条已确认待入账</strong><span>不进入 POSTED 合计</span></div>
-            <div><Paperclip size={18} /><strong>{data.missing_material_count} 份待补材料</strong><span>不猜测缺失金额</span></div>
-            <div><Info size={18} /><strong>{data.unmapped_confirmed_count} 条已确认但未映射</strong><span>以缺口标记展示</span></div>
-            <div>
-              <ClockCounterClockwise size={18} />
-              <strong>{data.projection_gaps.includes('MISSING_TIME_GRANULARITY') ? '月内时间粒度待补' : '月内时间粒度已确认'}</strong>
-              <span>{data.projection_gaps.includes('MISSING_BUSINESS_UNIT_ATTRIBUTION') ? '营业单元拆分仍有缺口' : '不解析摘要猜周次'}</span>
-            </div>
-          </section>
-
-          {empty ? (
-            <div className="empty-state compact-empty original-reconciliation-empty">
-              <Table size={32} />
-              <h2>本月没有可映射的原口径数据</h2>
-              <p>固定列序仍保留；待 Core 提供已确认或正式入账事实后显示金额。</p>
-            </div>
-          ) : null}
-
-          <section className="panel table-panel original-reconciliation-panel">
-            <div className="panel-heading">
-              <div><h2>{monthLabel}固定列投影</h2><p>F、G 为原表留白列；空值保持空白，缺映射单独标记。</p></div>
-              <div className="original-projection-state">
-                <Badge color={data.is_complete ? 'green' : 'amber'}>{data.is_complete ? '完整' : '不完整 / 有缺口'}</Badge>
-                <span title={`${data.taxonomy_version} · ${data.layout_version} · ${data.mapping_version}`}>分类、布局与映射版本可追溯</span>
-                <Badge color="blue">只读</Badge>
+          <section className="panel original-reconciliation-workflow" aria-label="原口径事项录入与审核">
+            <div className="panel-heading original-workflow-heading">
+              <div><h2>已导入业务事项</h2><p>{monthLabel}的平台结算、账户流水与正式入账事实，不再展示 Excel 网格。</p></div>
+              <div className="original-workflow-actions">
+                <Badge color={data.is_complete ? 'green' : 'amber'}>{data.is_complete ? '已完成对账' : '仍有待办'}</Badge>
+                <Button onClick={() => onNavigate('review')}><ListChecks size={16} />前往待审核</Button>
               </div>
             </div>
-            <div className="desktop-table-wrap original-reconciliation-table-wrap">
-              <table aria-label="原口径固定列对账表" className="original-reconciliation-table">
-                <thead><tr>{data.columns.map((column) => <th data-role={column.role} key={column.column}>{column.column}</th>)}</tr></thead>
-                <tbody>
-                  {data.rows.map((row) => (
-                    <tr key={row.row_number}>
-                      {row.cells.map((cell) => (
-                        <td
-                          className={`original-cell ${cell.kind.toLowerCase()}`}
-                          data-coordinate={cell.coordinate}
-                          data-kind={cell.kind}
-                          key={cell.coordinate}
-                        >
-                          {cell.kind === 'AMOUNT' && cell.amount_minor !== null
-                            ? currency.format(minorToMajor(cell.amount_minor))
-                            : cell.kind === 'GAP'
-                              ? <span title={cell.gap_code ?? '缺少映射'}>{gapLabel(cell.gap_code)}</span>
-                              : cell.label}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p className="mobile-grid-note"><Info size={16} />完整原口径网格请在平板或电脑查看。</p>
-          </section>
 
-          <section className="panel original-source-panel">
-            <div className="panel-heading"><div><h2>数据来源</h2><p>按事实层级和脱敏来源系统分别列示</p></div></div>
-            <div className="original-source-list">
+            <div className="original-business-item-list">
               {data.sources.map((source) => (
                 <article key={`${source.source_kind}:${source.source_system}`}>
-                  <div>
+                  <div className="original-business-item-title">
                     <Badge color={source.source_kind === 'POSTED_LEDGER' ? 'green' : source.source_kind === 'ACCOUNT_STATEMENT' ? 'gray' : 'blue'}>
                       {source.source_kind === 'POSTED_LEDGER' ? '正式入账' : source.source_kind === 'ACCOUNT_STATEMENT' ? '账户材料' : '已确认候选'}
                     </Badge>
                     <strong>{source.source_label ?? source.source_system}</strong>
                     {source.source_label ? <small>{source.source_system}</small> : null}
                   </div>
-                  <span>{source.mapped_fact_count} / {source.fact_count} 条已映射</span>
-                  <strong>{currency.format(minorToMajor(source.amount_minor))}</strong>
+                  <dl>
+                    <div><dt>事项数量</dt><dd>{source.fact_count} 条</dd></div>
+                    <div><dt>已归类</dt><dd>{source.mapped_fact_count} 条</dd></div>
+                    <div><dt>合计金额</dt><dd>{currency.format(minorToMajor(source.amount_minor))}</dd></div>
+                  </dl>
+                  <Button
+                    size="1"
+                    variant="soft"
+                    color="gray"
+                    onClick={() => onNavigate(source.source_kind === 'POSTED_LEDGER' ? 'company-reports' : source.source_kind === 'ACCOUNT_STATEMENT' ? 'files' : 'review')}
+                  >
+                    {source.source_kind === 'POSTED_LEDGER' ? '查看正式报表' : source.source_kind === 'ACCOUNT_STATEMENT' ? '查看关联材料' : '审核与归类'}<CaretRight size={14} />
+                  </Button>
                 </article>
               ))}
-              {data.sources.length === 0 ? <p className="muted-copy">本月没有已确认或正式入账来源。</p> : null}
+              {empty ? (
+                <div className="empty-state compact-empty original-reconciliation-empty">
+                  <ListChecks size={30} />
+                  <h3>本月暂无已导入业务事项</h3>
+                  <p>新导入的平台结算、账户流水与正式入账事实将自动出现在这里。</p>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="original-workflow-todos">
+              <div className="original-workflow-subheading">
+                <div><h3>待补录与审核</h3><p>只展示真正需要处理的缺口；已导入数据不需要重复填写。</p></div>
+                <span title={`${data.taxonomy_version} · ${data.layout_version} · ${data.mapping_version}`}>规则版本可追溯</span>
+              </div>
+              <div className="original-todo-list">
+                {data.pending_review_count > 0 ? <article><Warning size={18} /><div><strong>{data.pending_review_count} 条交易待审核</strong><span>补入营业单元、种类、金额和说明后确认</span></div></article> : null}
+                {data.confirmed_pending_posting_count > 0 ? <article><ClockCounterClockwise size={18} /><div><strong>{data.confirmed_pending_posting_count} 条已确认待入账</strong><span>已完成分类，不需要重复审核</span></div></article> : null}
+                {data.missing_material_count > 0 ? <article><Paperclip size={18} /><div><strong>{data.missing_material_count} 份关联材料待补</strong><span>从文件与连接页导入账单或凭证</span></div></article> : null}
+                {data.unmapped_confirmed_count > 0 ? <article><Info size={18} /><div><strong>{data.unmapped_confirmed_count} 条已确认事项待归类</strong><span>完成经济种类和归属后自动进入汇总</span></div></article> : null}
+                {gapLabels.map((label) => <article key={label}><Warning size={18} /><div><strong>{label}</strong><span>需在待审核事项中补入对应字段</span></div></article>)}
+                {data.projection_gaps.includes('MISSING_TIME_GRANULARITY') ? <article><ClockCounterClockwise size={18} /><div><strong>月内日期待补</strong><span>需核对具体日期，不从摘要猜测</span></div></article> : null}
+                {data.projection_gaps.includes('MISSING_BUSINESS_UNIT_ATTRIBUTION') ? <article><Bank size={18} /><div><strong>公司或门店归属待补</strong><span>补入历史归属后进入对应公司报表</span></div></article> : null}
+              </div>
+              <div className="original-workflow-footer-actions">
+                <Button variant="outline" color="gray" onClick={() => onNavigate('files')}><Paperclip size={16} />查看文件与连接</Button>
+                <Button variant="outline" color="gray" onClick={() => onNavigate('reconciliation')}><Table size={16} />查看月度对账</Button>
+              </div>
             </div>
           </section>
         </>
       ) : null}
     </>
-  )
-}
-
-function PayrollTestWorkspacePanel({ workspace }: { workspace: PayrollTestWorkspaceReadResponse }) {
-  return (
-    <section className="panel payroll-live-section" aria-labelledby="payroll-test-workspace-heading">
-      <div className="section-heading payroll-live-heading">
-        <div><span>测试数据</span><h2 id="payroll-test-workspace-heading">历史材料接入</h2></div>
-        <Badge color="blue">可整批清除</Badge>
-      </div>
-      <div className="payroll-metric-grid">
-        <div><strong>已自动接入 {workspace.data.routing_counts.auto_test} 份</strong><span>2026 年 8 月及以前</span></div>
-        <div><strong>待审核 {workspace.data.routing_counts.review_required} 份</strong><span>2026 年 9 月及以后</span></div>
-        <div><strong>日期待确认 {workspace.data.routing_counts.date_unknown} 份</strong><span>已接入，不阻挡历史材料</span></div>
-      </div>
-      {workspace.data.materials.length > 0 ? (
-        <div className="payroll-record-list" aria-label="工资测试材料">
-          {workspace.data.materials.map((material) => (
-            <article key={material.material_id}>
-              <div>
-                <strong>{material.period ?? '日期待确认'}</strong>
-                <span>{material.material_type === 'PAYROLL_SHEET' ? '工资表' : '工资材料'}</span>
-              </div>
-              <Badge color={material.routing_status === 'AUTO_TEST' ? 'green' : 'amber'}>
-                {material.routing_status === 'AUTO_TEST' ? '已接入测试账本' : material.routing_status === 'REVIEW_REQUIRED' ? '9 月后待审核' : '日期待确认'}
-              </Badge>
-            </article>
-          ))}
-        </div>
-      ) : <p className="payroll-empty-state">测试账本暂无材料</p>}
-    </section>
   )
 }
 
@@ -2008,7 +2163,13 @@ function PayrollVerificationStatus() {
             </div>
             <Badge color={testWorkspace ? 'blue' : 'amber'}>{testWorkspaceReady ? '测试账本' : testWorkspace ? '暂无历史材料' : '待接通'}</Badge>
           </div>
-          {testWorkspace ? <PayrollTestWorkspacePanel workspace={testWorkspace} /> : null}
+          {testWorkspace && csrfToken ? (
+            <PayrollTestWorkspaceActionsPanel
+              workspace={testWorkspace}
+              csrfToken={csrfToken}
+              onWorkspaceChange={setTestWorkspace}
+            />
+          ) : null}
           {status.data.setup_summary?.provider_connected ? (
             <section className="panel payroll-setup-progress" aria-label="工资材料接入进度">
               <Database size={28} weight="light" />
@@ -2037,7 +2198,13 @@ function PayrollVerificationStatus() {
       ) : null}
 
       {!loading && !error && status?.data.live_data_ready && testWorkspace ? (
-        <PayrollTestWorkspacePanel workspace={testWorkspace} />
+        csrfToken ? (
+          <PayrollTestWorkspaceActionsPanel
+            workspace={testWorkspace}
+            csrfToken={csrfToken}
+            onWorkspaceChange={setTestWorkspace}
+          />
+        ) : null
       ) : null}
 
       {!loading && !error && dashboard && verification ? (
@@ -2226,6 +2393,7 @@ function CompanyReportCard({ companyRef, companyName, currencyCode, postedLedger
   const statementData = statementMetrics(statement)
   const postedData = postedMetrics(posted)
   const postedAvailable = postedLedgerStatus === 'AVAILABLE' && postedData !== null
+  const postedHasEntries = postedAvailable && postedData.posted_entry_count > 0
   const postedMoney = (amountMinor: number | undefined) => postedAvailable && amountMinor !== undefined
     ? reportMoney(amountMinor, currencyCode)
     : '待接正式账簿'
@@ -2243,6 +2411,27 @@ function CompanyReportCard({ companyRef, companyName, currencyCode, postedLedger
         <Badge color="blue">{currencyCode}</Badge>
       </header>
 
+      {candidateData || statementData ? (
+        <section className="company-test-summary" aria-label={`${companyName} 测试汇总`}>
+          <header>
+            <div><strong>测试汇总·未正式入账</strong><span>来自已导入且已确认的候选事项，不冒充正式账簿。</span></div>
+            <Badge color="amber">测试口径</Badge>
+          </header>
+          <div className="company-test-totals">
+            <ReportTotal label="测试汇总收入" value={reportMoney(candidateData?.confirmed_positive_minor ?? 0, currencyCode)} />
+            <ReportTotal label="测试汇总支出" value={reportMoney(Math.abs(candidateData?.confirmed_negative_minor ?? 0), currencyCode)} />
+            <ReportTotal label="测试汇总净额" value={reportMoney(candidateData?.confirmed_net_minor ?? 0, currencyCode)} emphasis />
+          </div>
+          {statementData ? (
+            <div className="company-statement-summary">
+              <span>账户流水净额 <strong>{reportMoney(statementData.net_cash_flow_minor, currencyCode)}</strong></span>
+              <small>{statementData.confirmed_transaction_count} 条流水·{statementData.statement_count} 份账单</small>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {!postedHasEntries ? <p className="company-formal-empty">{postedAvailable ? '正式账簿尚无入账金额' : '正式账簿尚未接入'}</p> : null}
       <section className="company-report-totals" aria-label={`${companyName} 正式财务总额`}>
         <ReportTotal label="正式收入" value={postedMoney(postedData?.revenue_minor)} />
         <ReportTotal label="正式费用" value={postedMoney(postedData?.expense_minor)} />
@@ -2253,7 +2442,7 @@ function CompanyReportCard({ companyRef, companyName, currencyCode, postedLedger
         <div>
           <span>已确认来源</span>
           <strong>已确认来源 {candidateData?.confirmed_count ?? 0} 条</strong>
-          <small>{candidateData?.source_count ?? 0} 个来源；金额仅用于来源核验</small>
+          <small>{candidateData?.source_count ?? 0} 个来源；上方仅作测试收支汇总，未正式入账</small>
         </div>
         <div>
           <span>账户流水</span>
@@ -3364,7 +3553,8 @@ function FilesAndConnections({ candidates, connections, csrfToken, onOpenCandida
       ))?.evidence ?? null
     : null
   const unlockEvidence = selectedUnlockEvidence ?? automaticUnlockEvidence
-  const materialGaps = [...candidates.reduce((items, candidate) => {
+  const actionableCandidates = candidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
+  const materialGaps = [...actionableCandidates.reduce((items, candidate) => {
     for (const risk of candidate.reviewRisks) {
       if (!materialRiskCodes.has(risk.code)) continue
       const material = materialNameFor(candidate, risk.code)
@@ -3424,7 +3614,7 @@ function FilesAndConnections({ candidates, connections, csrfToken, onOpenCandida
         ) : <div className="empty-state compact-empty"><FolderOpen size={34} weight="light" /><h2>尚无已导入材料</h2><p>Core 返回的候选证据会显示在这里。</p></div>}
       </section>
 
-      <section className="panel material-gap-panel">
+      <section className="panel material-gap-panel" aria-label="待补账单清单">
         <div className="panel-heading"><div><h2>待补账单清单</h2><p>只展示 Core 明确标记的资金、关联账户和酒店结算材料缺口。</p></div><Badge color={materialGaps.length > 0 ? 'amber' : 'green'}>{materialGaps.length} 项</Badge></div>
         {materialGaps.length > 0 ? (
           <div className="material-gap-list">

@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from .auth import AuthError, AuthManager, AuthStore
 from .core_backend import (
     CLASSIFICATION_RISK_CODES,
+    PAYROLL_TEST_MATERIAL_TYPES,
     CoreBackedState,
     CoreBackendError,
     CoreHttpClient,
@@ -61,6 +62,15 @@ EVIDENCE_UNLOCK_PATH = "/api/v1/evidence/unlocks"
 PAYROLL_BATCH_COMMAND_PATH = re.compile(
     r"^/api/v1/payroll/batches/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/verify-receipts$"
 )
+PAYROLL_TEST_MATERIAL_ORGANIZE_PATH = re.compile(
+    r"^/api/v1/payroll/test-workspace/materials/"
+    r"([A-Za-z0-9][A-Za-z0-9._-]{0,127})/organize$"
+)
+PAYROLL_TEST_MATERIAL_PREVIEW_PATH = re.compile(
+    r"^/api/v1/payroll/test-workspace/materials/"
+    r"([A-Za-z0-9][A-Za-z0-9._-]{0,127})/preview$"
+)
+PAYROLL_TEST_VALIDATE_PATH = "/api/v1/payroll/test-workspace/validate"
 MAX_REQUEST_BYTES = 64 * 1024
 JSON_SAFE_INTEGER = 9_007_199_254_740_991
 STATUSES = {"INCOMPLETE", "PENDING", "CONFLICTED", "CONFIRMED", "IGNORED", "SUPERSEDED"}
@@ -987,6 +997,37 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 return
             self._send_json(200, getattr(state, payroll_method)(session_token, session_subject))
             return
+        payroll_preview = PAYROLL_TEST_MATERIAL_PREVIEW_PATH.fullmatch(path)
+        if payroll_preview:
+            if query:
+                self._send_json(
+                    400,
+                    _problem(
+                        400,
+                        "INVALID_PAYROLL_QUERY",
+                        "工资材料预览不接受浏览器作用域参数",
+                    ),
+                )
+                return
+            identity = self._payroll_session_identity()
+            if identity is None:
+                return
+            if not hasattr(state, "payroll_test_material_preview"):
+                self._send_json(
+                    503,
+                    _problem(503, "PAYROLL_INTEGRATION_UNAVAILABLE", "工资服务尚未配置"),
+                )
+                return
+            session_token, session_subject = identity
+            self._send_json(
+                200,
+                state.payroll_test_material_preview(
+                    session_token,
+                    session_subject,
+                    payroll_preview.group(1),
+                ),
+            )
+            return
         if path == "/api/v1/accounting-dimensions":
             if query:
                 self._send_json(
@@ -1359,12 +1400,16 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         draft_match = DRAFT_CREATE_PATH.fullmatch(path)
         evidence_unlock = path == EVIDENCE_UNLOCK_PATH
         payroll_batch_command = PAYROLL_BATCH_COMMAND_PATH.fullmatch(path)
+        payroll_test_organize = PAYROLL_TEST_MATERIAL_ORGANIZE_PATH.fullmatch(path)
+        payroll_test_validate = path == PAYROLL_TEST_VALIDATE_PATH
         if (
             decision_match is None
             and classification_batch_match is None
             and draft_match is None
             and not evidence_unlock
             and payroll_batch_command is None
+            and payroll_test_organize is None
+            and not payroll_test_validate
         ):
             self._send_json(404 if path.startswith("/api/") else 405, _problem(404 if path.startswith("/api/") else 405, "API_ROUTE_NOT_FOUND" if path.startswith("/api/") else "METHOD_NOT_ALLOWED", "路径不接受该请求"))
             return
@@ -1395,11 +1440,15 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             self._send_json(400, _problem(400, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key 必须使用规范 UUID 格式"))
             return
         payroll_identity: tuple[str, str] | None = None
-        if payroll_batch_command is not None:
+        if (
+            payroll_batch_command is not None
+            or payroll_test_organize is not None
+            or payroll_test_validate
+        ):
             payroll_identity = self._payroll_session_identity()
             if payroll_identity is None:
                 return
-        if payroll_identity is not None and not bool(
+        if payroll_batch_command is not None and payroll_identity is not None and not bool(
             getattr(self.preview_server.state, "payroll_commands_enabled", False)
         ):
             self._send_json(
@@ -1409,6 +1458,78 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             return
         request = self._read_json_object()
         if request is None:
+            return
+        if payroll_test_organize is not None or payroll_test_validate:
+            if payroll_identity is None:
+                self._send_json(401, _problem(401, "AUTH_REQUIRED", "需要登录"))
+                return
+            if not bool(
+                getattr(self.preview_server.state, "payroll_test_workspace_enabled", False)
+            ):
+                self._send_json(
+                    404,
+                    _problem(404, "PAYROLL_TEST_WORKSPACE_DISABLED", "工资测试整理功能未启用"),
+                )
+                return
+            expected_fields = {
+                "expected_workspace_revision",
+                "period",
+                "material_type",
+            } if payroll_test_organize is not None else {"expected_workspace_revision"}
+            if set(request) != expected_fields:
+                self._send_json(
+                    422,
+                    _problem(422, "INVALID_PAYROLL_TEST_COMMAND", "工资材料整理请求字段无效"),
+                )
+                return
+            expected_revision = request.get("expected_workspace_revision")
+            if (
+                isinstance(expected_revision, bool)
+                or not isinstance(expected_revision, int)
+                or not 1 <= expected_revision <= JSON_SAFE_INTEGER
+            ):
+                self._send_json(
+                    422,
+                    _problem(422, "INVALID_PAYROLL_VERSION", "测试工作区版本必须是正整数"),
+                )
+                return
+            session_token, session_subject = payroll_identity
+            if payroll_test_organize is not None:
+                period = request.get("period")
+                material_type = request.get("material_type")
+                if (
+                    not isinstance(period, str)
+                    or MONTH_PATTERN.fullmatch(period) is None
+                    or material_type not in PAYROLL_TEST_MATERIAL_TYPES
+                ):
+                    self._send_json(
+                        422,
+                        _problem(422, "INVALID_PAYROLL_MATERIAL_CLASSIFICATION", "期间或材料类型无效"),
+                    )
+                    return
+                if not hasattr(self.preview_server.state, "payroll_test_workspace_organize"):
+                    self._send_json(503, _problem(503, "PAYROLL_TEST_COMMAND_UNAVAILABLE", "工资材料整理尚未配置"))
+                    return
+                status, payload = self.preview_server.state.payroll_test_workspace_organize(
+                    session_token=session_token,
+                    session_subject=session_subject,
+                    material_id=payroll_test_organize.group(1),
+                    expected_workspace_revision=expected_revision,
+                    period=period,
+                    material_type=str(material_type),
+                    idempotency_key=idempotency_key.lower(),
+                )
+            else:
+                if not hasattr(self.preview_server.state, "payroll_test_workspace_validate"):
+                    self._send_json(503, _problem(503, "PAYROLL_TEST_COMMAND_UNAVAILABLE", "工资批次验证尚未配置"))
+                    return
+                status, payload = self.preview_server.state.payroll_test_workspace_validate(
+                    session_token=session_token,
+                    session_subject=session_subject,
+                    expected_workspace_revision=expected_revision,
+                    idempotency_key=idempotency_key.lower(),
+                )
+            self._send_json(status, payload)
             return
         if payroll_batch_command is not None:
             if payroll_identity is None or not hasattr(self.preview_server.state, "payroll_batch_command"):

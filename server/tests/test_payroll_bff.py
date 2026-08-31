@@ -13,7 +13,11 @@ from pathlib import Path
 from urllib.error import HTTPError
 
 from server.app import COOKIE_NAME, create_server
-from server.core_backend import CoreBackedState, CoreBackendError
+from server.core_backend import (
+    CoreBackedState,
+    CoreBackendError,
+    _validate_payroll_test_material_preview_payload,
+)
 
 
 ENTITY_ID = "10000000-0000-4000-8000-000000000001"
@@ -64,6 +68,8 @@ class FakePayrollCoreClient:
         self.status_data_updates: dict[str, object] = {}
         self.verification_evidence_updates: dict[str, object] = {}
         self.test_workspace_data_updates: dict[str, object] = {}
+        self.test_workspace_command_data_updates: dict[str, object] = {}
+        self.test_material_preview_updates: dict[str, object] = {}
 
     def test_workspace_projection(self) -> dict[str, object]:
         data: dict[str, object] = {
@@ -142,6 +148,80 @@ class FakePayrollCoreClient:
                 "replayed": False,
                 "data": self.test_workspace_projection(),
             }
+        if (
+            method == "POST"
+            and path
+            == (
+                f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/materials/"
+                "material_date_unknown/organize"
+            )
+        ):
+            request = json.loads(body or b"{}")
+            data: dict[str, object] = {
+                "schema_version": "payroll-test-material-organize-result/v1",
+                "data_scope": "TEST_ONLY",
+                "test_batch_id": TEST_BATCH_ID,
+                "company_id": "company_live_hotel",
+                "workspace_revision": request["expected_workspace_revision"] + 1,
+                "projection_revision": "a" * 64,
+                "material": {
+                    "company_id": "company_live_hotel",
+                    "material_id": "material_date_unknown",
+                    "routing_status": "AUTO_TEST",
+                    "period": request["period"],
+                    "material_type": request["material_type"],
+                    "payable": False,
+                    "submission_supported": False,
+                },
+                "payment_submission_supported": False,
+                "payable": False,
+                "submission_supported": False,
+                "replayed": False,
+            }
+            data.update(self.test_workspace_command_data_updates)
+            return {
+                "contract_version": "ledgerbridge.payroll-test-workspace-command-result.v1",
+                "entity_ref": ENTITY_ID,
+                "company_id": "company_live_hotel",
+                "action": "payroll.test_workspace.organize",
+                "resource_ref": "material_date_unknown",
+                "replayed": False,
+                "data": data,
+            }
+        if (
+            method == "POST"
+            and path == f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/validate"
+        ):
+            request = json.loads(body or b"{}")
+            return {
+                "contract_version": "ledgerbridge.payroll-test-workspace-command-result.v1",
+                "entity_ref": ENTITY_ID,
+                "company_id": "company_live_hotel",
+                "action": "payroll.test_workspace.validate",
+                "resource_ref": TEST_BATCH_ID,
+                "replayed": False,
+                "data": {
+                    "schema_version": "payroll-test-batch-validation-result/v1",
+                    "data_scope": "TEST_ONLY",
+                    "test_batch_id": TEST_BATCH_ID,
+                    "company_id": "company_live_hotel",
+                    "workspace_revision": request["expected_workspace_revision"],
+                    "ready_batch_count": 1,
+                    "blocked_material_count": 0,
+                    "batches": [{
+                        "batch_id": f"{TEST_BATCH_ID}_2026_08",
+                        "period": "2026-08",
+                        "material_count": 2,
+                        "payroll_sheet_count": 1,
+                        "supporting_material_count": 1,
+                        "status": "READY_FOR_TEST_REVIEW",
+                    }],
+                    "payment_submission_supported": False,
+                    "payable": False,
+                    "submission_supported": False,
+                    "replayed": False,
+                },
+            }
         if method == "POST" and path.startswith("/internal/v1/payroll/"):
             action = path.rsplit("/", 1)[-1]
             resource_ref = path.split("/")[-2]
@@ -195,6 +275,52 @@ class FakePayrollCoreClient:
             return response
         if method == "GET" and path.startswith("/internal/v1/payroll/"):
             data: dict[str, object]
+            if path == (
+                f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/materials/"
+                "material_history_2026_08/preview"
+            ):
+                data = {
+                    "schema_version": "payroll-test-material-preview/v1",
+                    "data_scope": "TEST_ONLY",
+                    "test_batch_id": TEST_BATCH_ID,
+                    "company_id": "company_live_hotel",
+                    "material_id": "material_history_2026_08",
+                    "period": "2026-08",
+                    "status": "READY_FOR_REVIEW",
+                    "line_count": 1,
+                    "total_net_pay_cents": 512000,
+                    "lines": [{
+                        "company_id": "company_live_hotel",
+                        "employee_id": "emp_preview_001",
+                        "employee_name": "示例员工甲",
+                        "account_id": "acct_preview_001",
+                        "account_masked": "****0138",
+                        "payment_channel": "MYBANK",
+                        "base_salary_cents": 500000,
+                        "allowance_cents": 30000,
+                        "bonus_cents": 20000,
+                        "deduction_cents": 5000,
+                        "social_insurance_cents": 18000,
+                        "housing_fund_cents": 12000,
+                        "individual_income_tax_cents": 15000,
+                        "gross_pay_cents": 550000,
+                        "net_pay_cents": 512000,
+                        "notes": "脱敏测试材料",
+                    }],
+                    "exceptions": [],
+                    "payment_submission_supported": False,
+                    "payable": False,
+                    "submission_supported": False,
+                }
+                data.update(self.test_material_preview_updates)
+                return {
+                    "contract_version":
+                        "ledgerbridge.payroll-test-material-preview-read.v1",
+                    "entity_ref": self.response_entity_ref,
+                    "company_id": "company_live_hotel",
+                    "material_id": "material_history_2026_08",
+                    "data": data,
+                }
             if path == f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}":
                 data = self.test_workspace_projection()
                 return {
@@ -546,6 +672,151 @@ class PayrollBffTests(unittest.TestCase):
         self.assertEqual(claims["action"], "payroll.test_workspace.read")
         self.assertEqual(claims["resource_ref"], TEST_BATCH_ID)
         self.assertEqual(claims["canonical_path"], path)
+
+    def test_authenticated_session_previews_masked_test_payroll_spreadsheet_lines(self) -> None:
+        material_id = "material_history_2026_08"
+        request = urllib.request.Request(
+            (
+                f"http://127.0.0.1:{self.server.server_port}"
+                f"/api/v1/payroll/test-workspace/materials/{material_id}/preview"
+            ),
+            headers={"Cookie": f"{COOKIE_NAME}=session-token"},
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            payload = json.load(response)
+
+        self.assertEqual(
+            payload["contract_version"],
+            "ledgerbridge.payroll-test-material-preview-read.v1",
+        )
+        self.assertEqual(payload["data"]["line_count"], 1)
+        self.assertEqual(payload["data"]["lines"][0]["account_masked"], "****0138")
+        self.assertFalse(payload["data"]["payment_submission_supported"])
+        method, path, body, headers = self.client.calls[-1]
+        self.assertEqual(
+            (method, path, body),
+            (
+                "GET",
+                (
+                    f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/materials/"
+                    f"{material_id}/preview"
+                ),
+                None,
+            ),
+        )
+        _, encoded, _ = headers["X-LedgerBridge-User-Assertion"].split(".")
+        claims = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        self.assertEqual(claims["action"], "payroll.test_workspace.read")
+        self.assertEqual(claims["resource_ref"], material_id)
+
+    def test_test_payroll_preview_rejects_full_account_or_float_money(self) -> None:
+        state = build_state(self.client, payroll_test_workspace_enabled=True)
+        self.client.test_material_preview_updates = {"total_net_pay_cents": 512000.0}
+        with self.assertRaises(CoreBackendError):
+            state.payroll_test_material_preview(
+                "session-token", "ledgerbridge-owner", "material_history_2026_08"
+            )
+        self.client.test_material_preview_updates = {}
+        payload = self.client.json(
+            "GET",
+            (
+                f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/materials/"
+                "material_history_2026_08/preview"
+            ),
+        )
+        payload["data"]["lines"][0]["account_masked"] = "6222000000000138"
+        with self.assertRaises(CoreBackendError):
+            _validate_payroll_test_material_preview_payload(
+                payload,
+                expected_entity_ref=ENTITY_ID,
+                expected_batch_id=TEST_BATCH_ID,
+                expected_material_id="material_history_2026_08",
+            )
+
+    def test_test_workspace_material_can_be_organized_and_batches_validated(self) -> None:
+        organize_status, organized = self.post_payroll(
+            "/api/v1/payroll/test-workspace/materials/material_date_unknown/organize",
+            {
+                "expected_workspace_revision": 1,
+                "period": "2026-08",
+                "material_type": "PAYROLL_SHEET",
+            },
+            idempotency_key="70000000-0000-4000-8000-000000000011",
+        )
+        self.assertEqual(organize_status, 200, organized)
+        self.assertEqual(organized["action"], "payroll.test_workspace.organize")
+        self.assertFalse(organized["data"]["payable"])
+
+        validate_status, validated = self.post_payroll(
+            "/api/v1/payroll/test-workspace/validate",
+            {"expected_workspace_revision": 2},
+            idempotency_key="70000000-0000-4000-8000-000000000012",
+        )
+        self.assertEqual(validate_status, 200, validated)
+        self.assertEqual(validated["action"], "payroll.test_workspace.validate")
+        self.assertEqual(validated["data"]["ready_batch_count"], 1)
+        self.assertFalse(validated["data"]["payment_submission_supported"])
+
+        organize_call, validate_call = self.client.calls[-2:]
+        self.assertEqual(
+            organize_call[:2],
+            (
+                "POST",
+                f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/materials/material_date_unknown/organize",
+            ),
+        )
+        self.assertEqual(
+            validate_call[:2],
+            ("POST", f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/validate"),
+        )
+        organize_request = json.loads(organize_call[2] or b"{}")
+        validate_request = json.loads(validate_call[2] or b"{}")
+        self.assertEqual(
+            set(organize_request),
+            {
+                "schema_version",
+                "expected_workspace_revision",
+                "period",
+                "material_type",
+                "idempotency_key",
+                "explicitly_confirmed",
+            },
+        )
+        self.assertEqual(
+            set(validate_request),
+            {
+                "schema_version",
+                "expected_workspace_revision",
+                "idempotency_key",
+                "explicitly_confirmed",
+            },
+        )
+        self.assertTrue(organize_request["explicitly_confirmed"])
+        self.assertTrue(validate_request["explicitly_confirmed"])
+
+        _, organize_encoded, _ = organize_call[3][
+            "X-LedgerBridge-User-Assertion"
+        ].split(".")
+        organize_claims = json.loads(
+            base64.urlsafe_b64decode(
+                organize_encoded + "=" * (-len(organize_encoded) % 4)
+            )
+        )
+        self.assertEqual(organize_claims["action"], "payroll.test_workspace.organize")
+        self.assertEqual(organize_claims["resource_ref"], "material_date_unknown")
+
+    def test_test_workspace_command_rejects_payment_mode_drift(self) -> None:
+        self.client.test_workspace_command_data_updates = {"payable": True}
+        status, payload = self.post_payroll(
+            "/api/v1/payroll/test-workspace/materials/material_date_unknown/organize",
+            {
+                "expected_workspace_revision": 1,
+                "period": "2026-08",
+                "material_type": "PAYROLL_SHEET",
+            },
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["code"], "CORE_CONTRACT_INVALID")
 
     def test_test_workspace_is_disabled_by_default(self) -> None:
         state = build_state(self.client)
