@@ -1098,7 +1098,8 @@ _CLASSIFICATION_BATCH_PRETTY_FK_FIXTURES = {
         "internal_command",
         "candidate_classification_batch_receipt",
         "FOREIGN KEY (batch_operation_id) REFERENCES "
-        "candidate_classification_batch_receipt(operation_id) ON DELETE RESTRICT",
+        "internal_command.candidate_classification_batch_receipt(operation_id) "
+        "ON DELETE RESTRICT",
     ),
     "candidate_classification_batch_member_candidate_fk": (
         "public",
@@ -1109,13 +1110,14 @@ _CLASSIFICATION_BATCH_PRETTY_FK_FIXTURES = {
         "internal_command",
         "candidate_decision_receipt",
         "FOREIGN KEY (member_operation_id) REFERENCES "
-        "candidate_decision_receipt(operation_id) ON DELETE RESTRICT",
+        "internal_command.candidate_decision_receipt(operation_id) ON DELETE RESTRICT",
     ),
     "candidate_classification_batch_assertion_operation_fk": (
         "internal_command",
         "candidate_classification_batch_receipt",
         "FOREIGN KEY (operation_id) REFERENCES "
-        "candidate_classification_batch_receipt(operation_id) ON DELETE RESTRICT",
+        "internal_command.candidate_classification_batch_receipt(operation_id) "
+        "ON DELETE RESTRICT",
     ),
 }
 

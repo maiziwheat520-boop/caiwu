@@ -1913,7 +1913,7 @@ CLASSIFICATION_BATCH_CONSTRAINT_DEFINITION_MARKERS = {
     "candidate_classification_batch_member_batch_fk": (
         "foreign key",
         "batch_operation_id",
-        "references candidate_classification_batch_receipt",
+        "candidate_classification_batch_receipt",
         "(operation_id)",
         "on delete restrict",
     ),
@@ -1928,7 +1928,7 @@ CLASSIFICATION_BATCH_CONSTRAINT_DEFINITION_MARKERS = {
     "candidate_classification_batch_member_operation_fk": (
         "foreign key",
         "member_operation_id",
-        "references candidate_decision_receipt",
+        "candidate_decision_receipt",
         "(operation_id)",
         "on delete restrict",
     ),
@@ -1936,7 +1936,7 @@ CLASSIFICATION_BATCH_CONSTRAINT_DEFINITION_MARKERS = {
     "candidate_classification_batch_assertion_operation_fk": (
         "foreign key",
         "operation_id",
-        "references candidate_classification_batch_receipt",
+        "candidate_classification_batch_receipt",
         "(operation_id)",
         "on delete restrict",
     ),
