@@ -106,9 +106,9 @@ def _cutover_inventory(
 
 
 def test_mybank_restore_inventory_accepts_current_integrated_schema_revision() -> None:
-    inventory = _cutover_inventory(schema_revision="20260830_0025")
+    inventory = _cutover_inventory(schema_revision="20260831_0026")
 
-    assert inventory.schema_revision == "20260830_0025"
+    assert inventory.schema_revision == "20260831_0026"
 
 
 def test_account_registry_privilege_probe_uses_catalog_function_oid() -> None:
@@ -124,7 +124,7 @@ def test_account_registry_privilege_probe_uses_catalog_function_oid() -> None:
 
 def test_mybank_restore_inventory_rejects_unreviewed_future_schema_revision() -> None:
     with pytest.raises(BackupError, match="schema revision"):
-        _cutover_inventory(schema_revision="20260830_0026")
+        _cutover_inventory(schema_revision="20260831_0027")
 
 
 def test_mybank_restore_inventory_accepts_exact_import_replay_and_conflict_sequence() -> None:

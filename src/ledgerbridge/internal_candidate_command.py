@@ -54,6 +54,10 @@ from ledgerbridge.internal_read_service import (
     SyntheticInternalReadService,
     _wire_ingest_channel,
 )
+from ledgerbridge.review_similarity import (
+    ClassificationGroup,
+    build_classification_groups,
+)
 
 
 class CandidateDecision(StrEnum):
@@ -123,6 +127,65 @@ class CandidateEventPage(_FrozenModel):
     next_cursor: None = None
 
 
+class ClassificationGroupPage(_FrozenModel):
+    contract_version: Literal["ledgerbridge.classification-groups.v1"] = (
+        "ledgerbridge.classification-groups.v1"
+    )
+    items: tuple[ClassificationGroup, ...] = Field(max_length=10_000)
+    next_cursor: None = None
+
+
+class ClassificationBatchMember(_FrozenModel):
+    candidate_ref: UUID
+    expected_revision: int = Field(ge=1)
+
+
+class ClassificationTarget(_FrozenModel):
+    business_unit_ref: str = Field(min_length=1, max_length=100)
+    category_code: str = Field(min_length=1, max_length=100)
+
+
+class CandidateClassificationBatchRequest(_FrozenModel):
+    source_candidate_ref: UUID
+    accounting_month: str = Field(pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+    target: ClassificationTarget
+    members: tuple[ClassificationBatchMember, ...] = Field(min_length=2, max_length=100)
+    reason: str = Field(min_length=1, max_length=1_000)
+    acknowledged_risk_codes: tuple[str, ...] = Field(max_length=20, default=())
+
+    @model_validator(mode="after")
+    def unique_members_and_risks(self) -> CandidateClassificationBatchRequest:
+        member_refs = [item.candidate_ref for item in self.members]
+        if len(member_refs) != len(set(member_refs)):
+            raise ValueError("classification batch members must be unique")
+        if self.source_candidate_ref not in member_refs:
+            raise ValueError("classification batch must contain its source Candidate")
+        if len(self.acknowledged_risk_codes) != len(set(self.acknowledged_risk_codes)):
+            raise ValueError("acknowledged risk codes must be unique")
+        return self
+
+
+class ClassificationBatchMemberResult(_FrozenModel):
+    candidate_ref: UUID
+    operation_id: UUID
+    status: Literal["APPLIED", "REPLAYED"]
+    candidate: CandidateProjection
+    events: tuple[CandidateEvent, ...] = Field(min_length=1, max_length=2)
+
+
+class CandidateClassificationBatchReceipt(_FrozenModel):
+    contract_version: Literal["ledgerbridge.classification-batch.v1"] = (
+        "ledgerbridge.classification-batch.v1"
+    )
+    operation_id: UUID
+    replayed: bool
+    group_ref: str = Field(pattern=r"^cg_[0-9a-f]{32}$")
+    accounting_month: str = Field(pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+    source_candidate_ref: UUID
+    target: ClassificationTarget
+    results: tuple[ClassificationBatchMemberResult, ...] = Field(min_length=2, max_length=100)
+
+
 class CandidateCommandUnavailable(RuntimeError):
     """The command backend is unavailable or not enabled."""
 
@@ -173,6 +236,26 @@ def _database_candidate_decision_receipt(value: object) -> object:
     return payload
 
 
+def _database_candidate_classification_batch_receipt(value: object) -> object:
+    payload = deepcopy(value)
+    if not isinstance(payload, dict):
+        return payload
+    results = payload.get("results")
+    if not isinstance(results, list):
+        return payload
+    for index, result in enumerate(results):
+        if not isinstance(result, dict):
+            continue
+        mapped = _database_candidate_decision_receipt(
+            {"candidate": result.get("candidate"), "events": result.get("events")}
+        )
+        if isinstance(mapped, dict):
+            result["candidate"] = mapped.get("candidate")
+            result["events"] = mapped.get("events")
+        results[index] = result
+    return payload
+
+
 class SyntheticInternalReviewService(SyntheticInternalReadService):
     """One process-local synthetic read/write adapter for the D1 contract proof."""
 
@@ -186,6 +269,8 @@ class SyntheticInternalReviewService(SyntheticInternalReadService):
         }
         self._receipts: dict[UUID, tuple[str, str, CandidateDecisionReceipt]] = {}
         self._assertion_jtis: dict[UUID, UUID] = {}
+        self._batch_receipts: dict[UUID, tuple[str, str, CandidateClassificationBatchReceipt]] = {}
+        self._batch_assertion_jtis: dict[UUID, UUID] = {}
 
     def list_candidates(
         self,
@@ -253,6 +338,86 @@ class SyntheticInternalReviewService(SyntheticInternalReadService):
                 events.extend(aggregate.events)
         events.sort(key=lambda item: (item.created_at, item.operation_id.int), reverse=True)
         return CandidateEventPage(items=tuple(events[:100]))
+
+    def list_classification_groups(
+        self,
+        principal: WorkloadPrincipal,
+    ) -> ClassificationGroupPage:
+        return ClassificationGroupPage(
+            items=build_classification_groups(_all_candidates(self, principal))
+        )
+
+    def apply_classification_batch(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        group_ref: str,
+        operation_id: UUID,
+        assertion_jti: UUID,
+        actor_ref: str,
+        request: CandidateClassificationBatchRequest,
+        decided_at: datetime,
+    ) -> CandidateClassificationBatchReceipt:
+        fingerprint = _classification_batch_fingerprint(group_ref, request)
+        with self._lock:
+            prior_assertion = self._batch_assertion_jtis.get(assertion_jti)
+            if prior_assertion is not None and prior_assertion != operation_id:
+                raise CandidateCommandIdempotencyConflict(
+                    "batch assertion JTI was reused for another operation"
+                )
+            prior = self._batch_receipts.get(operation_id)
+            if prior is not None:
+                prior_fingerprint, prior_actor, prior_batch_receipt = prior
+                if prior_fingerprint != fingerprint or prior_actor != actor_ref:
+                    raise CandidateCommandIdempotencyConflict(
+                        "batch operation ID was reused with different content or actor"
+                    )
+                return _replayed_batch_receipt(prior_batch_receipt)
+
+            prepared = _prepare_classification_batch(self, principal, group_ref, request)
+            aggregate_snapshot = deepcopy(self._aggregates)
+            receipt_snapshot = deepcopy(self._receipts)
+            assertion_snapshot = deepcopy(self._assertion_jtis)
+            results: list[ClassificationBatchMemberResult] = []
+            try:
+                for candidate, decision in prepared:
+                    member_operation = _member_operation_id(operation_id, candidate.candidate_ref)
+                    member_assertion = _member_assertion_jti(assertion_jti, candidate.candidate_ref)
+                    member_receipt = self.append_decision(
+                        principal,
+                        candidate_ref=candidate.candidate_ref,
+                        operation_id=member_operation,
+                        assertion_jti=member_assertion,
+                        actor_ref=actor_ref,
+                        request=decision,
+                        decided_at=decided_at,
+                    )
+                    results.append(
+                        ClassificationBatchMemberResult(
+                            candidate_ref=candidate.candidate_ref,
+                            operation_id=member_operation,
+                            status="REPLAYED" if member_receipt.replayed else "APPLIED",
+                            candidate=member_receipt.candidate,
+                            events=member_receipt.events,
+                        )
+                    )
+            except Exception:
+                self._aggregates = aggregate_snapshot
+                self._receipts = receipt_snapshot
+                self._assertion_jtis = assertion_snapshot
+                raise
+            batch_receipt = CandidateClassificationBatchReceipt(
+                operation_id=operation_id,
+                replayed=False,
+                group_ref=group_ref,
+                accounting_month=request.accounting_month,
+                source_candidate_ref=request.source_candidate_ref,
+                target=request.target,
+                results=tuple(results),
+            )
+            self._batch_assertion_jtis[assertion_jti] = operation_id
+            self._batch_receipts[operation_id] = (fingerprint, actor_ref, batch_receipt)
+            return batch_receipt
 
     def append_decision(
         self,
@@ -411,6 +576,112 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
             raise CandidateCommandUnavailable("candidate event reader is unavailable") from exc
         return CandidateEventPage(items=events)
 
+    def list_classification_groups(
+        self,
+        principal: WorkloadPrincipal,
+    ) -> ClassificationGroupPage:
+        return ClassificationGroupPage(
+            items=build_classification_groups(_all_candidates(self, principal))
+        )
+
+    def apply_classification_batch(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        group_ref: str,
+        operation_id: UUID,
+        assertion_jti: UUID,
+        actor_ref: str,
+        request: CandidateClassificationBatchRequest,
+        decided_at: datetime,
+    ) -> CandidateClassificationBatchReceipt:
+        require_capability(principal, Capability.CANDIDATE_DECIDE)
+        prepared = _prepare_classification_batch(self, principal, group_ref, request)
+        source = next(
+            candidate
+            for candidate, _ in prepared
+            if candidate.candidate_ref == request.source_candidate_ref
+        )
+        member_payloads: list[dict[str, object]] = []
+        for candidate, decision in prepared:
+            current_business_unit_id, target_business_unit_id = self._command_scope(
+                principal,
+                candidate,
+                decision,
+            )
+            corrections = decision.corrections
+            fields = corrections.model_fields_set if corrections is not None else set()
+            member_payloads.append(
+                {
+                    "candidate_ref": str(candidate.candidate_ref),
+                    "expected_revision": decision.expected_revision,
+                    "operation_id": str(
+                        _member_operation_id(operation_id, candidate.candidate_ref)
+                    ),
+                    "assertion_jti": str(
+                        _member_assertion_jti(assertion_jti, candidate.candidate_ref)
+                    ),
+                    "decision": decision.decision.value,
+                    "reason": decision.reason,
+                    "current_business_unit_id": (
+                        str(current_business_unit_id)
+                        if current_business_unit_id is not None
+                        else None
+                    ),
+                    "target_business_unit_id": (
+                        str(target_business_unit_id)
+                        if target_business_unit_id is not None
+                        else None
+                    ),
+                    "set_business_unit": "business_unit" in fields,
+                    "business_unit_ref": (
+                        corrections.business_unit if corrections is not None else None
+                    ),
+                    "set_category": "category" in fields,
+                    "category_code": corrections.category if corrections is not None else None,
+                }
+            )
+        payload = {
+            "operation_id": str(operation_id),
+            "assertion_jti": str(assertion_jti),
+            "actor_ref": actor_ref,
+            "workload_principal_ref": principal.principal_ref,
+            "verified_san": principal.san_uri,
+            "authorized_entity_id": str(source.entity_ref),
+            "group_ref": group_ref,
+            "accounting_month": request.accounting_month,
+            "source_candidate_ref": str(request.source_candidate_ref),
+            "target": request.target.model_dump(mode="json"),
+            "acknowledged_risk_codes": list(request.acknowledged_risk_codes),
+            "request_fingerprint": _classification_batch_fingerprint(group_ref, request),
+            "members": member_payloads,
+            "decided_at": decided_at.isoformat(),
+        }
+        try:
+            with self._command_session_factory() as session:
+                row = (
+                    session.execute(
+                        text(
+                            "SELECT internal_command.apply_candidate_classification_batch("
+                            "CAST(:request AS jsonb)) AS receipt"
+                        ),
+                        {"request": json.dumps(payload, ensure_ascii=True, separators=(",", ":"))},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if row is None:
+                    raise CandidateCommandUnavailable(
+                        "candidate classification batch returned no receipt"
+                    )
+                receipt = CandidateClassificationBatchReceipt.model_validate(
+                    _database_candidate_classification_batch_receipt(row["receipt"])
+                )
+                session.commit()
+                return receipt
+        except SQLAlchemyError as exc:
+            self._raise_database_command_error(exc)
+
     def append_decision(
         self,
         principal: WorkloadPrincipal,
@@ -550,6 +821,136 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
         if sqlstate == "LB004":
             raise ResourceNotVisible("candidate is outside the authorized scope") from exc
         raise CandidateCommandUnavailable("candidate command backend is unavailable") from exc
+
+
+def _all_candidates(
+    service: SyntheticInternalReviewService | DatabaseInternalReviewService,
+    principal: WorkloadPrincipal,
+) -> tuple[CandidateProjection, ...]:
+    candidates: list[CandidateProjection] = []
+    cursor: str | None = None
+    visited: set[str] = set()
+    while True:
+        page = service.list_candidates(principal, cursor=cursor)
+        candidates.extend(page.items)
+        if len(candidates) > 10_000:
+            raise CandidateCommandUnavailable("classification group collection is too large")
+        if page.next_cursor is None:
+            break
+        if page.next_cursor in visited:
+            raise CandidateCommandUnavailable("classification group cursor repeated")
+        visited.add(page.next_cursor)
+        cursor = page.next_cursor
+    return tuple(candidates)
+
+
+def _prepare_classification_batch(
+    service: SyntheticInternalReviewService | DatabaseInternalReviewService,
+    principal: WorkloadPrincipal,
+    group_ref: str,
+    request: CandidateClassificationBatchRequest,
+) -> tuple[tuple[CandidateProjection, CandidateDecisionRequest], ...]:
+    candidates = _all_candidates(service, principal)
+    groups = build_classification_groups(candidates)
+    group = next(
+        (
+            item
+            for item in groups
+            if item.group_ref == group_ref and item.accounting_month == request.accounting_month
+        ),
+        None,
+    )
+    if group is None:
+        raise ResourceNotVisible("classification group was not found")
+    expected_refs = {
+        member.candidate_ref
+        for member in group.members
+        if member.batch_eligible and member.status == CandidateStatus.PENDING
+    }
+    supplied = {member.candidate_ref: member.expected_revision for member in request.members}
+    if set(supplied) != expected_refs or request.source_candidate_ref not in expected_refs:
+        from ledgerbridge.candidate_contract import CandidateRevisionConflict
+
+        raise CandidateRevisionConflict("classification group membership changed")
+    current = {candidate.candidate_ref: candidate for candidate in candidates}
+    for candidate_ref, expected_revision in supplied.items():
+        candidate = current.get(candidate_ref)
+        if candidate is None or candidate.revision != expected_revision:
+            from ledgerbridge.candidate_contract import CandidateRevisionConflict
+
+            raise CandidateRevisionConflict("classification group member revision changed")
+    expected_risks = tuple(group.conditions.risk_signature)
+    if tuple(sorted(request.acknowledged_risk_codes)) != expected_risks:
+        raise CandidateCommandRejected(
+            "classification group risks were not explicitly acknowledged"
+        )
+
+    source = current[request.source_candidate_ref]
+    dimensions = service.get_accounting_dimensions(principal, entity_ref=source.entity_ref)
+    visible_business_units = {item.ref for item in dimensions.business_units}
+    visible_categories = {item.code for item in dimensions.categories}
+    if request.target.business_unit_ref not in visible_business_units:
+        raise ResourceNotVisible("target business unit is not an active authorized dimension")
+    if request.target.category_code not in visible_categories:
+        raise ResourceNotVisible("target category is not an active authorized dimension")
+
+    prepared: list[tuple[CandidateProjection, CandidateDecisionRequest]] = []
+    for candidate_ref in sorted(expected_refs, key=lambda item: item.int):
+        candidate = current[candidate_ref]
+        corrections: dict[str, str] = {}
+        if candidate.business_unit_ref != request.target.business_unit_ref:
+            corrections["business_unit"] = request.target.business_unit_ref
+        if candidate.category_code != request.target.category_code:
+            corrections["category"] = request.target.category_code
+        if corrections:
+            decision = CandidateDecisionRequest(
+                decision=CandidateDecision.CORRECT_AND_CONFIRM,
+                expected_revision=supplied[candidate_ref],
+                reason=request.reason,
+                corrections=CandidateCorrections.model_validate(corrections),
+            )
+        else:
+            decision = CandidateDecisionRequest(
+                decision=CandidateDecision.CONFIRM,
+                expected_revision=supplied[candidate_ref],
+                reason=request.reason,
+            )
+        prepared.append((candidate, decision))
+    return tuple(prepared)
+
+
+def _classification_batch_fingerprint(
+    group_ref: str,
+    request: CandidateClassificationBatchRequest,
+) -> str:
+    canonical = json.dumps(
+        {"group_ref": group_ref, "request": request.model_dump(mode="json")},
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _member_operation_id(batch_operation_id: UUID, candidate_ref: UUID) -> UUID:
+    return uuid5(batch_operation_id, f"classification-member:{candidate_ref}")
+
+
+def _member_assertion_jti(batch_assertion_jti: UUID, candidate_ref: UUID) -> UUID:
+    return uuid5(batch_assertion_jti, f"classification-member:{candidate_ref}")
+
+
+def _replayed_batch_receipt(
+    receipt: CandidateClassificationBatchReceipt,
+) -> CandidateClassificationBatchReceipt:
+    return receipt.model_copy(
+        update={
+            "replayed": True,
+            "results": tuple(
+                result.model_copy(update={"status": "REPLAYED"}) for result in receipt.results
+            ),
+        }
+    )
 
 
 @lru_cache(maxsize=1)

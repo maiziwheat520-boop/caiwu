@@ -1,4 +1,4 @@
-"""Disabled-by-default synthetic D1 candidate command routes."""
+"""Closed D1 Candidate command routes for single and atomic group decisions."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Path, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -19,12 +19,15 @@ from ledgerbridge.candidate_contract import (
 from ledgerbridge.config import Settings, get_settings
 from ledgerbridge.db import get_session_factory
 from ledgerbridge.internal_candidate_command import (
+    CandidateClassificationBatchReceipt,
+    CandidateClassificationBatchRequest,
     CandidateCommandIdempotencyConflict,
     CandidateCommandRejected,
     CandidateCommandUnavailable,
     CandidateDecisionReceipt,
     CandidateDecisionRequest,
     CandidateEventPage,
+    ClassificationGroupPage,
     DatabaseInternalReviewService,
     SyntheticInternalReviewService,
     get_synthetic_review_service,
@@ -155,6 +158,13 @@ def require_candidate_events_read(
     return principal
 
 
+def require_candidate_groups_read(
+    principal: Annotated[WorkloadPrincipal, Depends(get_internal_read_principal)],
+) -> WorkloadPrincipal:
+    require_capability(principal, Capability.CANDIDATE_READ)
+    return principal
+
+
 router = APIRouter(
     prefix="/internal/v1",
     tags=["internal-candidate-command"],
@@ -173,6 +183,17 @@ def list_candidate_events(
     candidate_ref: UUID | None = None,
 ) -> CandidateEventPage:
     return service.list_candidate_events(principal, candidate_ref=candidate_ref)
+
+
+@router.get("/candidate-classification-groups", response_model=ClassificationGroupPage)
+def list_candidate_classification_groups(
+    principal: Annotated[WorkloadPrincipal, Depends(require_candidate_groups_read)],
+    service: Annotated[
+        SyntheticInternalReviewService | DatabaseInternalReviewService,
+        Depends(get_candidate_command_service),
+    ],
+) -> ClassificationGroupPage:
+    return service.list_classification_groups(principal)
 
 
 @router.post(
@@ -231,6 +252,73 @@ async def append_candidate_decision(
     return service.append_decision(
         principal,
         candidate_ref=candidate_ref,
+        operation_id=operation_id,
+        assertion_jti=claims.jti,
+        actor_ref=claims.subject,
+        request=command,
+        decided_at=datetime.now(UTC),
+    )
+
+
+@router.post(
+    "/candidate-classification-groups/{group_ref}/decisions",
+    response_model=CandidateClassificationBatchReceipt,
+)
+async def apply_candidate_classification_group(
+    command: CandidateClassificationBatchRequest,
+    request: Request,
+    principal: Annotated[WorkloadPrincipal, Depends(require_candidate_decide)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    service: Annotated[
+        SyntheticInternalReviewService | DatabaseInternalReviewService,
+        Depends(get_candidate_command_service),
+    ],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=36, max_length=36)],
+    user_assertion: Annotated[
+        str,
+        Header(alias="X-LedgerBridge-User-Assertion", min_length=1, max_length=4096),
+    ],
+    group_ref: Annotated[str, Path(pattern=r"^cg_[0-9a-f]{32}$")],
+) -> CandidateClassificationBatchReceipt:
+    if request.url.query:
+        raise InternalCandidateCommandProblem(status.HTTP_400_BAD_REQUEST, "INVALID_QUERY")
+    try:
+        operation_id = UUID(idempotency_key)
+    except ValueError as exc:
+        raise InternalCandidateCommandProblem(
+            status.HTTP_400_BAD_REQUEST,
+            "INVALID_IDEMPOTENCY_KEY",
+        ) from exc
+    if str(operation_id) != idempotency_key.lower():
+        raise InternalCandidateCommandProblem(
+            status.HTTP_400_BAD_REQUEST,
+            "INVALID_IDEMPOTENCY_KEY",
+        )
+    assertion_key = settings.internal_command_assertion_key
+    issuer = settings.internal_command_assertion_issuer
+    audience = settings.internal_command_assertion_audience
+    if assertion_key is None or issuer is None or audience is None:
+        raise UserAssertionError("user assertion verifier is unavailable")
+    source = next(
+        item for item in command.members if item.candidate_ref == command.source_candidate_ref
+    )
+    body = await request.body()
+    claims = verify_user_assertion(
+        user_assertion,
+        key=assertion_key.get_secret_value().encode("utf-8"),
+        issuer=issuer,
+        audience=audience,
+        method="POST",
+        canonical_path=request.url.path,
+        body=body,
+        resource_ref=command.source_candidate_ref,
+        expected_revision=source.expected_revision,
+        operation_id=operation_id,
+        workload_principal=principal,
+    )
+    return service.apply_classification_batch(
+        principal,
+        group_ref=group_ref,
         operation_id=operation_id,
         assertion_jti=claims.jti,
         actor_ref=claims.subject,

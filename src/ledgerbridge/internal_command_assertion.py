@@ -27,15 +27,18 @@ MAX_CLOCK_SKEW_SECONDS = 5
 class UserAssertionClaims(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    version: Literal["ledgerbridge.bff-user-assertion.v1"] = (
-        "ledgerbridge.bff-user-assertion.v1"
-    )
+    version: Literal["ledgerbridge.bff-user-assertion.v1"] = "ledgerbridge.bff-user-assertion.v1"
     issuer: str = Field(min_length=1, max_length=200)
     audience: str = Field(min_length=1, max_length=200)
     subject: str = Field(min_length=1, max_length=200)
     authentication_generation: int = Field(ge=1)
     method: Literal["POST"] = "POST"
-    canonical_path: str = Field(pattern=r"^/internal/v1/candidates/[0-9a-f-]{36}/decisions$")
+    canonical_path: str = Field(
+        pattern=(
+            r"^/internal/v1/(?:candidates/[0-9a-f-]{36}|"
+            r"candidate-classification-groups/cg_[0-9a-f]{32})/decisions$"
+        )
+    )
     body_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     resource_ref: UUID
     expected_revision: int = Field(ge=1)

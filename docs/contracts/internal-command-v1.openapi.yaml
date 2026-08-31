@@ -3,8 +3,8 @@ info:
   title: LedgerBridge Internal Candidate Command API
   version: 1.0.0
   description: >-
-    Disabled-by-default synthetic D1 contract. Production and database-backed
-    command execution remain unavailable until their independent gates pass.
+    Closed Candidate command contract. Similar-transaction groups are computed
+    by Core; explicit batches are preflighted and applied atomically.
 servers: []
 paths:
   /internal/v1/candidate-events:
@@ -72,6 +72,66 @@ paths:
         "404": { $ref: "#/components/responses/Problem" }
         "409": { $ref: "#/components/responses/Problem" }
         "422": { $ref: "#/components/responses/Problem" }
+  /internal/v1/candidate-classification-groups:
+    get:
+      operationId: listCandidateClassificationGroups
+      responses:
+        "200":
+          description: Core-owned exact similarity groups and eligibility facts.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClassificationGroupPage"
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+  /internal/v1/candidate-classification-groups/{group_ref}/decisions:
+    post:
+      operationId: applyCandidateClassificationBatch
+      parameters:
+        - in: path
+          name: group_ref
+          required: true
+          schema:
+            type: string
+            pattern: "^cg_[0-9a-f]{32}$"
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, format: uuid }
+        - in: header
+          name: X-LedgerBridge-User-Assertion
+          required: true
+          description: >-
+            Signed v1 assertion binding the human session, exact batch body,
+            group path, source Candidate revision, workload, and operation.
+          schema: { type: string, maxLength: 4096 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CandidateClassificationBatchRequest"
+      responses:
+        "200":
+          description: >-
+            Original or replayed batch receipt. A failed preflight returns 409
+            and persists no member events or receipt.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateClassificationBatchReceipt"
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
 components:
   responses:
     Problem:
@@ -81,6 +141,250 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
   schemas:
+    ClassificationGroupPage:
+      type: object
+      additionalProperties: false
+      required: [contract_version, items, next_cursor]
+      properties:
+        contract_version: { const: ledgerbridge.classification-groups.v1 }
+        items:
+          type: array
+          maxItems: 10000
+          items: { $ref: "#/components/schemas/ClassificationGroup" }
+        next_cursor: { type: "null" }
+    ClassificationGroup:
+      type: object
+      additionalProperties: false
+      required:
+        - contract_version
+        - group_ref
+        - accounting_month
+        - conditions
+        - members
+        - batch_member_count
+        - one_click_member_count
+        - terminal_statuses
+        - terminal_classifications
+        - rule_learning_eligible
+        - rule_learning_blocks
+        - active_rule
+      properties:
+        contract_version: { const: ledgerbridge.classification-group.v1 }
+        group_ref: { type: string, pattern: "^cg_[0-9a-f]{32}$" }
+        accounting_month:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        conditions: { $ref: "#/components/schemas/SimilarityConditions" }
+        members:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/ClassificationGroupMember" }
+        batch_member_count: { type: integer, minimum: 0 }
+        one_click_member_count: { type: integer, minimum: 0 }
+        terminal_statuses:
+          type: array
+          items: { $ref: "#/components/schemas/CandidateStatus" }
+        terminal_classifications:
+          type: array
+          items: { type: string }
+        rule_learning_eligible: { type: boolean }
+        rule_learning_blocks:
+          type: array
+          items:
+            enum:
+              - PROVISIONAL_BASIS
+              - TERMINAL_DECISION_CONFLICT
+              - REVIEW_RISK_PRESENT
+              - AMOUNT_OUTLIER
+              - NO_CONFIRMED_SOURCE
+        active_rule:
+          oneOf:
+            - { $ref: "#/components/schemas/LearnedClassificationRule" }
+            - { type: "null" }
+    SimilarityConditions:
+      type: object
+      additionalProperties: false
+      required:
+        - key_version
+        - entity_ref
+        - source_system
+        - source_kind
+        - platform
+        - direction
+        - transaction_type
+        - counterparty_key
+        - counterparty_label
+        - counterparty_basis
+        - funding_instrument
+        - transaction_status
+        - currency
+        - risk_signature
+      properties:
+        key_version: { const: ledgerbridge.classification-key.v1 }
+        entity_ref: { type: string, format: uuid }
+        source_system: { type: string, minLength: 1, maxLength: 100 }
+        source_kind: { type: string, minLength: 1, maxLength: 64 }
+        platform: { type: string, minLength: 1, maxLength: 100 }
+        direction: { enum: [INFLOW, OUTFLOW, NEUTRAL] }
+        transaction_type: { type: string, minLength: 1, maxLength: 100 }
+        counterparty_key: { type: string, minLength: 1, maxLength: 200 }
+        counterparty_label: { type: string, minLength: 1, maxLength: 200 }
+        counterparty_basis: { enum: [REGISTRY_COUNTERPARTY, EXACT_PLATFORM_SUMMARY_V1] }
+        funding_instrument: { type: string, minLength: 1, maxLength: 200 }
+        transaction_status: { type: string, minLength: 1, maxLength: 100 }
+        currency: { const: CNY }
+        risk_signature:
+          type: array
+          items: { type: string }
+    ClassificationGroupMember:
+      type: object
+      additionalProperties: false
+      required:
+        - candidate_ref
+        - short_id
+        - revision
+        - status
+        - amount_minor
+        - accounting_month
+        - confidence_basis_points
+        - review_risk_codes
+        - amount_outlier
+        - batch_eligible
+        - one_click_eligible
+        - exclusion_codes
+      properties:
+        candidate_ref: { type: string, format: uuid }
+        short_id: { type: string }
+        revision: { type: integer, minimum: 1 }
+        status: { $ref: "#/components/schemas/CandidateStatus" }
+        amount_minor:
+          type: integer
+          minimum: -9007199254740991
+          maximum: 9007199254740991
+        accounting_month:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        confidence_basis_points: { type: integer, minimum: 0, maximum: 10000 }
+        review_risk_codes:
+          type: array
+          items: { type: string }
+        amount_outlier: { type: boolean }
+        batch_eligible: { type: boolean }
+        one_click_eligible: { type: boolean }
+        exclusion_codes:
+          type: array
+          items: { enum: [NOT_PENDING, LOW_CONFIDENCE, BLOCKED, STRUCTURAL_RISK, AMOUNT_OUTLIER] }
+    LearnedClassificationRule:
+      type: object
+      additionalProperties: false
+      required:
+        - contract_version
+        - rule_ref
+        - revision
+        - status
+        - group_ref
+        - conditions
+        - business_unit_ref
+        - category_code
+        - source_candidate_ref
+        - source_decision_operation_id
+        - effective_from
+        - created_at
+      properties:
+        contract_version: { const: ledgerbridge.classification-rule.v1 }
+        rule_ref: { type: string, format: uuid }
+        revision: { type: integer, minimum: 1 }
+        status: { enum: [ACTIVE, DISABLED] }
+        group_ref: { type: string, pattern: "^cg_[0-9a-f]{32}$" }
+        conditions: { $ref: "#/components/schemas/SimilarityConditions" }
+        business_unit_ref: { type: string }
+        category_code: { type: string }
+        source_candidate_ref: { type: string, format: uuid }
+        source_decision_operation_id: { type: string, format: uuid }
+        effective_from: { type: string, format: date }
+        effective_to:
+          oneOf: [{ type: string, format: date }, { type: "null" }]
+        created_at: { type: string, format: date-time }
+        disabled_at:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+    CandidateClassificationBatchRequest:
+      type: object
+      additionalProperties: false
+      required: [source_candidate_ref, accounting_month, target, members, reason]
+      properties:
+        source_candidate_ref: { type: string, format: uuid }
+        accounting_month:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        target: { $ref: "#/components/schemas/ClassificationTarget" }
+        members:
+          type: array
+          minItems: 2
+          maxItems: 100
+          uniqueItems: true
+          items:
+            type: object
+            additionalProperties: false
+            required: [candidate_ref, expected_revision]
+            properties:
+              candidate_ref: { type: string, format: uuid }
+              expected_revision: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+        acknowledged_risk_codes:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          items: { type: string }
+    ClassificationTarget:
+      type: object
+      additionalProperties: false
+      required: [business_unit_ref, category_code]
+      properties:
+        business_unit_ref: { type: string, minLength: 1, maxLength: 100 }
+        category_code: { type: string, minLength: 1, maxLength: 100 }
+    CandidateClassificationBatchReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - contract_version
+        - operation_id
+        - replayed
+        - group_ref
+        - accounting_month
+        - source_candidate_ref
+        - target
+        - results
+      properties:
+        contract_version: { const: ledgerbridge.classification-batch.v1 }
+        operation_id: { type: string, format: uuid }
+        replayed: { type: boolean }
+        group_ref: { type: string, pattern: "^cg_[0-9a-f]{32}$" }
+        accounting_month:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        source_candidate_ref: { type: string, format: uuid }
+        target: { $ref: "#/components/schemas/ClassificationTarget" }
+        results:
+          type: array
+          minItems: 2
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [candidate_ref, operation_id, status, candidate, events]
+            properties:
+              candidate_ref: { type: string, format: uuid }
+              operation_id: { type: string, format: uuid }
+              status: { enum: [APPLIED, REPLAYED] }
+              candidate:
+                $ref: "./internal-read-v1.openapi.yaml#/components/schemas/CandidateProjection"
+              events:
+                type: array
+                minItems: 1
+                maxItems: 2
+                items: { $ref: "#/components/schemas/CandidateEvent" }
+    CandidateStatus:
+      enum: [INCOMPLETE, CONFLICTED, PENDING, CONFIRMED, IGNORED, SUPERSEDED]
     CandidateDecisionRequest:
       type: object
       additionalProperties: false

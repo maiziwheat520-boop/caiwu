@@ -11,6 +11,14 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from pydantic import SecretStr
 
+from ledgerbridge.candidate_contract import (
+    CandidateProjection,
+    CandidateStatus,
+    IngestChannel,
+    ReviewSummary,
+    SourceProjection,
+    create_candidate_aggregate,
+)
 from ledgerbridge.config import Settings, get_settings
 from ledgerbridge.internal_candidate_command import SyntheticInternalReviewService
 from ledgerbridge.internal_candidate_command_routes import (
@@ -160,6 +168,85 @@ def _post(
     return operation, response
 
 
+def _group_service() -> tuple[SyntheticInternalReviewService, tuple[UUID, UUID]]:
+    service = SyntheticInternalReviewService()
+    candidate_refs = (PENDING, CONFLICTED)
+    for index, candidate_ref in enumerate(candidate_refs, start=1):
+        original = next(
+            item for item in service._fixture.candidates if item.candidate_ref == candidate_ref
+        )
+        payload = original.model_dump(mode="python")
+        payload.update(
+            {
+                "revision": 1,
+                "status": CandidateStatus.PENDING,
+                "business_unit_ref": "unit-demo-a",
+                "business_unit_label": "Demo unit A",
+                "category_code": "SUPPLIES",
+                "category_label": "Synthetic supplies",
+                "amount_minor": index,
+                "accounting_month": "2026-05",
+                "summary": (
+                    f"支付宝 | 2026-05-0{index} | 收入 | 基金收益 | "
+                    "中欧基金管理有限公司 | 余额宝 | 交易成功"
+                ),
+                "counterparty_ref": None,
+                "counterparty_class": None,
+                "confidence_basis_points": 9_900,
+                "source": SourceProjection(
+                    ingest_channel=IngestChannel.CONTROLLED_UPLOAD,
+                    source_system="alipay_export",
+                    source_event_ref=original.source.source_event_ref,
+                    display_label="支付宝交易",
+                ),
+                "blockers": (),
+                "review_risks": (),
+                "review_summary": ReviewSummary(event_count=0, current_revision=1),
+                "updated_at": original.created_at,
+                "supersedes_candidate_ref": None,
+                "superseded_by_candidate_ref": None,
+            }
+        )
+        projection = CandidateProjection.model_validate(payload)
+        service._aggregates[candidate_ref] = create_candidate_aggregate(projection)
+    return service, candidate_refs
+
+
+def _post_group(
+    client: TestClient,
+    group_ref: str,
+    request: dict[str, object],
+    *,
+    operation_id: UUID | None = None,
+) -> tuple[UUID, Response]:
+    operation = operation_id or uuid4()
+    body = _body(request)
+    members = request["members"]
+    assert isinstance(members, list)
+    source_ref = UUID(str(request["source_candidate_ref"]))
+    source_member = next(item for item in members if item["candidate_ref"] == str(source_ref))
+    revision = source_member["expected_revision"]
+    assert type(revision) is int
+    path = f"/internal/v1/candidate-classification-groups/{group_ref}/decisions"
+    assertion = _assertion(
+        body=body,
+        candidate_ref=source_ref,
+        operation_id=operation,
+        expected_revision=revision,
+        path=path,
+    )
+    response = client.post(
+        path,
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "Idempotency-Key": str(operation),
+            "X-LedgerBridge-User-Assertion": assertion,
+        },
+    )
+    return operation, response
+
+
 def test_confirm_is_actor_bound_append_only_and_idempotent() -> None:
     app, _ = _app()
     request = {
@@ -199,6 +286,80 @@ def test_confirm_is_actor_bound_append_only_and_idempotent() -> None:
         assert len(events.json()["items"]) == 1
         refreshed = client.get(f"/internal/v1/candidates/{PENDING}")
         assert refreshed.json()["status"] == "CONFIRMED"
+
+
+def test_classification_group_batch_is_explicit_atomic_audited_and_idempotent() -> None:
+    service, candidate_refs = _group_service()
+    app, _ = _app(service)
+    with TestClient(app) as client:
+        groups = client.get("/internal/v1/candidate-classification-groups")
+        assert groups.status_code == 200
+        group = next(item for item in groups.json()["items"] if item["batch_member_count"] == 2)
+        assert group["conditions"]["counterparty_basis"] == "EXACT_PLATFORM_SUMMARY_V1"
+        request = {
+            "source_candidate_ref": str(candidate_refs[0]),
+            "accounting_month": "2026-05",
+            "target": {"business_unit_ref": "unit-reviewed", "category_code": "TRAVEL"},
+            "members": [
+                {"candidate_ref": str(candidate_ref), "expected_revision": 1}
+                for candidate_ref in candidate_refs
+            ],
+            "reason": "reviewed the exact Yu'e Bao group",
+            "acknowledged_risk_codes": [],
+        }
+        operation, first = _post_group(client, group["group_ref"], request)
+        assert first.status_code == 200
+        receipt = first.json()
+        assert receipt["replayed"] is False
+        assert len(receipt["results"]) == 2
+        assert {item["status"] for item in receipt["results"]} == {"APPLIED"}
+        assert {item["candidate"]["status"] for item in receipt["results"]} == {"CONFIRMED"}
+        assert {item["candidate"]["category_code"] for item in receipt["results"]} == {"TRAVEL"}
+        assert len({item["operation_id"] for item in receipt["results"]}) == 2
+
+        _, replay = _post_group(client, group["group_ref"], request, operation_id=operation)
+        assert replay.status_code == 200
+        assert replay.json()["replayed"] is True
+        assert {item["status"] for item in replay.json()["results"]} == {"REPLAYED"}
+        for candidate_ref in candidate_refs:
+            events = client.get(
+                f"/internal/v1/candidate-events?candidate_ref={candidate_ref}"
+            ).json()["items"]
+            assert len(events) == 1
+
+
+def test_classification_group_stale_member_rolls_back_every_member() -> None:
+    service, candidate_refs = _group_service()
+    app, _ = _app(service)
+    with TestClient(app) as client:
+        group = next(
+            item
+            for item in client.get("/internal/v1/candidate-classification-groups").json()["items"]
+            if item["batch_member_count"] == 2
+        )
+        request = {
+            "source_candidate_ref": str(candidate_refs[0]),
+            "accounting_month": "2026-05",
+            "target": {"business_unit_ref": "unit-reviewed", "category_code": "TRAVEL"},
+            "members": [
+                {"candidate_ref": str(candidate_refs[0]), "expected_revision": 1},
+                {"candidate_ref": str(candidate_refs[1]), "expected_revision": 2},
+            ],
+            "reason": "stale atomic batch",
+            "acknowledged_risk_codes": [],
+        }
+        _, response = _post_group(client, group["group_ref"], request)
+        assert response.status_code == 409
+        for candidate_ref in candidate_refs:
+            candidate = client.get(f"/internal/v1/candidates/{candidate_ref}").json()
+            assert candidate["status"] == "PENDING"
+            assert candidate["revision"] == 1
+            assert (
+                client.get(f"/internal/v1/candidate-events?candidate_ref={candidate_ref}").json()[
+                    "items"
+                ]
+                == []
+            )
 
 
 def test_complete_and_conflict_decisions_preserve_frozen_state_graph() -> None:

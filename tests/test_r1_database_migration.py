@@ -3420,7 +3420,7 @@ def test_company_reporting_nonempty_downgrade_preserves_immutable_snapshots(
 
     with engine.connect() as connection:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "20260830_0025"
+            "20260831_0026"
         )
         snapshot_columns = set(
             connection.execute(

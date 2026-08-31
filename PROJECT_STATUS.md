@@ -1,6 +1,29 @@
 # Project status
 
-Updated: 2026-08-30
+Updated: 2026-08-31
+
+## Similar-transaction classification checkpoint (2026-08-31)
+
+Core now owns a versioned exact similarity key and a visible group contract. It
+prefers registry counterparty identity and otherwise accepts only the frozen
+seven-field platform summary shape; date and amount are excluded from the key,
+while direction, type, counterparty, funding instrument, status, source, Entity,
+currency, and risk signature remain bound. The provisional summary basis is
+shown to Web and cannot learn a rule. Low-confidence, blocked, structural-risk,
+and robust amount-outlier members are excluded. `TRANSFER_REVIEW_REQUIRED` may
+participate only after an explicit risk acknowledgement, never via one click or
+learned automation.
+
+Migration `20260831_0026` adds an API-only SECURITY DEFINER batch command and
+append-only batch/member/assertion receipts. It validates all supplied members,
+locks Candidate UUIDs in deterministic order, checks current revision, PENDING
+state, month, scope, source, and exact group facts, then calls the existing
+per-Candidate append-only command in the same PostgreSQL transaction. Any error
+rolls back all member events and the batch receipt; successful replay writes no
+new Candidate event. Only business unit and reporting category may propagate.
+No production migration, Candidate mutation, enablement, or deployment was run.
+The Web vertical slice and registry-backed learned-rule management remain the
+next implementation steps.
 
 ## MYbank reviewed one-shot runner checkpoint (2026-08-31)
 
