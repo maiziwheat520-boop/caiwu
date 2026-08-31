@@ -9,6 +9,7 @@ from pathlib import Path
 from sqlalchemy import create_engine
 
 from ledgerbridge.controlled_import import import_prepared_manifest
+from ledgerbridge.historical_auto_confirmation import HistoricalAutoConfirmationSettings
 
 
 def main() -> int:
@@ -20,13 +21,19 @@ def main() -> int:
         raise RuntimeError("LEDGERBRIDGE_IMPORT_DATABASE_URL is required")
     engine = create_engine(database_url, pool_pre_ping=True)
     try:
-        result = import_prepared_manifest(engine, args.prepared_manifest.resolve())
+        result = import_prepared_manifest(
+            engine,
+            args.prepared_manifest.resolve(),
+            historical_auto_confirmation=HistoricalAutoConfirmationSettings(),
+        )
     finally:
         engine.dispose()
     print(
         "CONTROLLED_REVIEW_IMPORT_OK "
         f"replayed={str(result.replayed).lower()} evidence={result.evidence_count} "
-        f"candidates={result.candidate_count} horizon={result.audit_horizon_sequence}"
+        f"candidates={result.candidate_count} "
+        f"historical_auto_confirmed={result.historical_auto_confirmed_count} "
+        f"horizon={result.audit_horizon_sequence}"
     )
     return 0
 

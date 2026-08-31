@@ -26,6 +26,10 @@ from ledgerbridge.crypto import (
 )
 from ledgerbridge.encrypted_artifacts import EncryptedArtifactStore
 from ledgerbridge.file_key_provider import FileKeyProvider
+from ledgerbridge.historical_auto_confirmation import (
+    HistoricalAutoConfirmationSettings,
+    confirm_test_historical_candidates,
+)
 
 SOURCE_MANIFEST_SCHEMA = "ledgerbridge.controlled-review-source.v1"
 PREPARED_MANIFEST_SCHEMA = "ledgerbridge.controlled-review-prepared.v1"
@@ -261,6 +265,7 @@ class ImportResult(_FrozenModel):
     replayed: bool
     evidence_count: int
     candidate_count: int
+    historical_auto_confirmed_count: int = Field(ge=0)
     audit_horizon_sequence: int
     audit_horizon_hash: str = Field(pattern=_HEX_64.pattern)
 
@@ -366,8 +371,17 @@ def prepare_source_manifest(
     return prepared
 
 
-def import_prepared_manifest(engine: Engine, prepared_manifest_path: Path) -> ImportResult:
+def import_prepared_manifest(
+    engine: Engine,
+    prepared_manifest_path: Path,
+    *,
+    historical_auto_confirmation: HistoricalAutoConfirmationSettings | None = None,
+) -> ImportResult:
     manifest, raw = load_prepared_manifest(prepared_manifest_path)
+    auto_confirmation = historical_auto_confirmation or HistoricalAutoConfirmationSettings(
+        enabled=False,
+        cutoff_month="2026-08",
+    )
     prepared_sha256 = hashlib.sha256(raw).digest()
     source_sha256 = bytes.fromhex(manifest.source_manifest_sha256)
     with engine.begin() as connection:
@@ -391,24 +405,38 @@ def import_prepared_manifest(engine: Engine, prepared_manifest_path: Path) -> Im
                 or receipt["candidate_count"] != len(manifest.candidates)
             ):
                 raise ControlledImportError("batch receipt conflicts with prepared manifest")
+        else:
+            _preflight_empty_batch(connection, manifest)
+            _insert_dimensions(connection, manifest)
+            for evidence in manifest.evidence:
+                _insert_evidence(connection, manifest, evidence)
+            categories = {item.code: item for item in manifest.categories}
+            for candidate in manifest.candidates:
+                _insert_candidate(
+                    connection,
+                    manifest,
+                    categories[candidate.category_code],
+                    candidate,
+                )
+                _insert_candidate_counterparty(connection, manifest, candidate)
+            for link in manifest.candidate_links:
+                _insert_candidate_link(connection, manifest, link)
+
+        historical_confirmation = confirm_test_historical_candidates(
+            connection,
+            auto_confirmation,
+            candidate_refs=(candidate.candidate_ref for candidate in manifest.candidates),
+        )
+        if receipt is not None:
             return ImportResult(
                 batch_ref=manifest.batch_ref,
                 replayed=True,
                 evidence_count=receipt["evidence_count"],
                 candidate_count=receipt["candidate_count"],
+                historical_auto_confirmed_count=historical_confirmation.confirmed_count,
                 audit_horizon_sequence=receipt["audit_horizon_sequence"],
                 audit_horizon_hash=bytes(receipt["audit_horizon_hash"]).hex(),
             )
-        _preflight_empty_batch(connection, manifest)
-        _insert_dimensions(connection, manifest)
-        for evidence in manifest.evidence:
-            _insert_evidence(connection, manifest, evidence)
-        categories = {item.code: item for item in manifest.categories}
-        for candidate in manifest.candidates:
-            _insert_candidate(connection, manifest, categories[candidate.category_code], candidate)
-            _insert_candidate_counterparty(connection, manifest, candidate)
-        for link in manifest.candidate_links:
-            _insert_candidate_link(connection, manifest, link)
         horizon = (
             connection.execute(
                 text("SELECT sequence, hash FROM public.audit_event ORDER BY sequence DESC LIMIT 1")
@@ -442,6 +470,7 @@ def import_prepared_manifest(engine: Engine, prepared_manifest_path: Path) -> Im
             replayed=False,
             evidence_count=len(manifest.evidence),
             candidate_count=len(manifest.candidates),
+            historical_auto_confirmed_count=historical_confirmation.confirmed_count,
             audit_horizon_sequence=horizon["sequence"],
             audit_horizon_hash=bytes(horizon["hash"]).hex(),
         )
