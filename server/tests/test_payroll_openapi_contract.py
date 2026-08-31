@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import cast
 from uuid import UUID
 
-from server.tests.test_payroll_bff import FakePayrollCoreClient
+from server.tests.test_payroll_bff import FakePayrollCoreClient, TEST_BATCH_ID
 
 
 OPENAPI_PATH = Path(__file__).resolve().parents[2] / "contracts" / "openapi.yaml"
@@ -188,6 +188,9 @@ def _validate(document: str, schema: dict[str, object], value: object, path: str
     minimum = schema.get("minimum")
     if type(value) is int and isinstance(minimum, int) and value < minimum:
         raise AssertionError(f"{path} is below its minimum")
+    maximum = schema.get("maximum")
+    if type(value) is int and isinstance(maximum, int) and value > maximum:
+        raise AssertionError(f"{path} is above its maximum")
 
 
 class PayrollOpenApiContractTests(unittest.TestCase):
@@ -199,6 +202,14 @@ class PayrollOpenApiContractTests(unittest.TestCase):
                 "/api/v1/payroll/status",
                 "PayrollStatusEnvelope",
                 client.json("GET", "/internal/v1/payroll/status"),
+            ),
+            (
+                "/api/v1/payroll/test-workspace",
+                "PayrollTestWorkspaceEnvelope",
+                client.json(
+                    "GET",
+                    f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}",
+                ),
             ),
             (
                 "/api/v1/payroll/dashboard",
@@ -234,6 +245,19 @@ class PayrollOpenApiContractTests(unittest.TestCase):
             headers={"Idempotency-Key": operation_id},
         )
         _validate(document, _component(document, "PayrollCommandResult"), command)
+
+    def test_openapi_rejects_test_workspace_revision_above_javascript_safe_integer(self) -> None:
+        document = OPENAPI_PATH.read_text(encoding="utf-8")
+        client = FakePayrollCoreClient()
+        response = client.json(
+            "GET",
+            f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}",
+        )
+        data = cast(dict[str, object], response["data"])
+        data["workspace_revision"] = 9_007_199_254_740_992
+
+        with self.assertRaises(AssertionError, msg="workspace revision must be JS-safe"):
+            _validate(document, _component(document, "PayrollTestWorkspaceEnvelope"), response)
 
     def test_openapi_rejects_the_three_retired_response_shapes(self) -> None:
         document = OPENAPI_PATH.read_text(encoding="utf-8")

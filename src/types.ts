@@ -539,6 +539,48 @@ export type PayrollReadResponse<T> = {
   data: T
 }
 
+export type PayrollTestRoutingStatus = 'AUTO_TEST' | 'REVIEW_REQUIRED' | 'DATE_UNKNOWN'
+
+export type PayrollTestWorkspaceMaterial = {
+  company_id: string
+  material_id: string
+  routing_status: PayrollTestRoutingStatus
+  period: string | null
+  material_type: string | null
+  payable: false
+  submission_supported: false
+}
+
+export type PayrollTestWorkspaceProjection = {
+  contract_version: '1.0.0'
+  schema_version: 'payroll-ledgerbridge-test-projection/v1'
+  data_scope: 'TEST_ONLY'
+  test_batch_id: string
+  company_id: string
+  cutoff_date: '2026-08-31'
+  workspace_revision: number
+  projection_revision: string
+  etag: string
+  generated_at: string
+  auto_test_ready: boolean
+  payment_submission_supported: false
+  payable: false
+  submission_supported: false
+  routing_counts: {
+    auto_test: number
+    review_required: number
+    date_unknown: number
+  }
+  materials: PayrollTestWorkspaceMaterial[]
+}
+
+export type PayrollTestWorkspaceReadResponse = {
+  contract_version: 'ledgerbridge.payroll-test-workspace-read.v1'
+  entity_ref: string
+  company_id: string
+  data: PayrollTestWorkspaceProjection
+}
+
 export type PayrollStatusData = {
   schema_version: 'ledgerbridge.payroll-status.v1'
   projection_revision: string

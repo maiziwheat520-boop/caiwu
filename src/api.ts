@@ -25,6 +25,7 @@ import type {
   PayrollReadResponse,
   PayrollStatusData,
   PayrollVerificationListData,
+  PayrollTestWorkspaceReadResponse,
   Problem,
   Reconciliation,
   ReviewEvent,
@@ -404,6 +405,9 @@ export const api = {
 
   getPayrollStatus: () =>
     requestJson<PayrollReadResponse<PayrollStatusData>>('/api/v1/payroll/status'),
+
+  getPayrollTestWorkspace: () =>
+    requestJson<PayrollTestWorkspaceReadResponse>('/api/v1/payroll/test-workspace'),
 
   getPayrollDashboard: () =>
     requestJson<PayrollReadResponse<PayrollDashboardData>>('/api/v1/payroll/dashboard'),

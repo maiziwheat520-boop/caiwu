@@ -11,6 +11,7 @@ import time
 import uuid
 from contextlib import closing
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -29,10 +30,24 @@ SAFE_HEADER_VALUE = re.compile(r"^[\x21-\x7e]+$")
 EVIDENCE_UNLOCK_CORE_PATH = "/internal/v1/evidence/unlocks"
 EVIDENCE_UNLOCK_STATUSES = {"NOT_REQUIRED", "PASSWORD_REQUIRED", "UNLOCKED"}
 PAYROLL_STATUS_CORE_PATH = "/internal/v1/payroll/status"
+PAYROLL_TEST_WORKSPACES_CORE_PATH = "/internal/v1/payroll/test-workspaces"
 PAYROLL_USER_ASSERTION_VERSION = "ledgerbridge.payroll-bff-user-assertion.v1"
 PAYROLL_RESOURCE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PAYROLL_PROJECTION_REVISION = re.compile(r"^[0-9a-f]{64}$")
 PAYROLL_PERIOD = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+PAYROLL_TEST_PROJECTION_FACT_KEYS = (
+    "data_scope",
+    "test_batch_id",
+    "company_id",
+    "cutoff_date",
+    "workspace_revision",
+    "auto_test_ready",
+    "payment_submission_supported",
+    "payable",
+    "submission_supported",
+    "routing_counts",
+    "materials",
+)
 PAYROLL_BLOCKING_REASON_ORDER = (
     "UNASSIGNED_MATERIALS",
     "MATERIAL_REVIEW_REQUIRED",
@@ -236,6 +251,10 @@ class CoreBackedState:
         evidence_unlock_path: str | None = None,
         payroll_commands_enabled: bool = False,
         payroll_role_bindings: dict[str, frozenset[str]] | None = None,
+        payroll_test_workspace_enabled: bool = False,
+        payroll_test_batch_id: str | None = None,
+        payroll_test_workspace_autocreate: bool = False,
+        payroll_test_workspace_expected_store_revision: int = 0,
     ) -> None:
         if not 32 <= len(assertion_key) <= 256:
             raise ValueError("CORE_USER_ASSERTION_KEY must contain 32 to 256 bytes")
@@ -252,6 +271,25 @@ class CoreBackedState:
         self.entity_ref = str(uuid.UUID(entity_ref))
         self.business_unit_ref = _bounded(business_unit_ref, maximum=100)
         self.payroll_commands_enabled = payroll_commands_enabled
+        self.payroll_test_workspace_enabled = payroll_test_workspace_enabled
+        if payroll_test_workspace_enabled and (
+            not isinstance(payroll_test_batch_id, str)
+            or PAYROLL_RESOURCE_REF.fullmatch(payroll_test_batch_id) is None
+        ):
+            raise ValueError("PAYROLL_TEST_BATCH_ID is required when test workspaces are enabled")
+        self.payroll_test_batch_id = payroll_test_batch_id if payroll_test_workspace_enabled else None
+        if (
+            payroll_test_workspace_autocreate
+            and not payroll_test_workspace_enabled
+        ) or (
+            type(payroll_test_workspace_expected_store_revision) is not int
+            or payroll_test_workspace_expected_store_revision < 0
+        ):
+            raise ValueError("invalid payroll test workspace bootstrap configuration")
+        self.payroll_test_workspace_autocreate = payroll_test_workspace_autocreate
+        self.payroll_test_workspace_expected_store_revision = (
+            payroll_test_workspace_expected_store_revision
+        )
         supplied_bindings = payroll_role_bindings or {}
         self.payroll_role_bindings: dict[str, frozenset[str]] = {}
         for subject, roles in supplied_bindings.items():
@@ -776,6 +814,99 @@ class CoreBackedState:
             resource_ref="payroll-dashboard",
         )
 
+    def payroll_test_workspace(
+        self,
+        session_token: str,
+        session_subject: str,
+    ) -> dict[str, object]:
+        if not self.payroll_test_workspace_enabled or self.payroll_test_batch_id is None:
+            raise CoreBackendError(404, _problem(404, "PAYROLL_TEST_WORKSPACE_DISABLED"))
+        try:
+            return self._read_payroll_test_workspace(session_token, session_subject)
+        except CoreBackendError as error:
+            if (
+                error.status != 404
+                or error.payload.get("code") != "PAYROLL_TEST_WORKSPACE_NOT_FOUND"
+                or not self.payroll_test_workspace_autocreate
+            ):
+                raise
+        return self._create_payroll_test_workspace(session_token, session_subject)
+
+    def _read_payroll_test_workspace(
+        self,
+        session_token: str,
+        session_subject: str,
+    ) -> dict[str, object]:
+        assert self.payroll_test_batch_id is not None
+        path = f"{PAYROLL_TEST_WORKSPACES_CORE_PATH}/{self.payroll_test_batch_id}"
+        assertion = self._payroll_user_assertion(
+            session_token=session_token,
+            session_subject=session_subject,
+            action="payroll.test_workspace.read",
+            method="GET",
+            path=path,
+            body=b"",
+            resource_ref=self.payroll_test_batch_id,
+        )
+        payload = self.client.json(
+            "GET",
+            path,
+            headers={"X-LedgerBridge-User-Assertion": assertion},
+        )
+        _validate_payroll_test_workspace_payload(
+            payload,
+            expected_entity_ref=self.entity_ref,
+            expected_batch_id=self.payroll_test_batch_id,
+        )
+        return payload
+
+    def _create_payroll_test_workspace(
+        self,
+        session_token: str,
+        session_subject: str,
+    ) -> dict[str, object]:
+        assert self.payroll_test_batch_id is not None
+        operation_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"ledgerbridge-test-workspace:{self.entity_ref}:{self.payroll_test_batch_id}",
+            )
+        )
+        request = {
+            "schema_version": "payroll-test-workspace-create-request/v1",
+            "test_batch_id": self.payroll_test_batch_id,
+            "expected_store_revision": self.payroll_test_workspace_expected_store_revision,
+            "cutoff_date": "2026-08-31",
+            "idempotency_key": operation_id,
+        }
+        body = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        assertion = self._payroll_user_assertion(
+            session_token=session_token,
+            session_subject=session_subject,
+            action="payroll.test_workspace.create",
+            method="POST",
+            path=PAYROLL_TEST_WORKSPACES_CORE_PATH,
+            body=body,
+            resource_ref=self.payroll_test_batch_id,
+            expected_revision=self.payroll_test_workspace_expected_store_revision,
+            operation_id=operation_id,
+        )
+        payload = self.client.json(
+            "POST",
+            PAYROLL_TEST_WORKSPACES_CORE_PATH,
+            body=body,
+            headers={
+                "Content-Type": "application/json",
+                "Idempotency-Key": operation_id,
+                "X-LedgerBridge-User-Assertion": assertion,
+            },
+        )
+        return _payroll_test_workspace_read_from_create(
+            payload,
+            expected_entity_ref=self.entity_ref,
+            expected_batch_id=self.payroll_test_batch_id,
+        )
+
     def payroll_materials(self, session_token: str, session_subject: str) -> dict[str, object]:
         return self._payroll_read(
             session_token=session_token,
@@ -1242,6 +1373,7 @@ def _classification_groups_from_core(
         one_click_count = sum(
             member.get("one_click_eligible") is True for member in mapped_members
         )
+
         terminal_statuses = raw_group.get("terminal_statuses")
         terminal_classifications = raw_group.get("terminal_classifications")
         blocks = raw_group.get("rule_learning_blocks")
@@ -2483,6 +2615,191 @@ def _validate_payroll_payload(
                 pending.append(nested)
         elif isinstance(value, list):
             pending.extend(value)
+
+
+def _validate_payroll_test_workspace_payload(
+    payload: dict[str, object],
+    *,
+    expected_entity_ref: str,
+    expected_batch_id: str,
+) -> None:
+    envelope_fields = {"contract_version", "entity_ref", "company_id", "data"}
+    if (
+        set(payload) != envelope_fields
+        or payload.get("contract_version")
+        != "ledgerbridge.payroll-test-workspace-read.v1"
+        or payload.get("entity_ref") != expected_entity_ref
+        or not _payroll_identifier(payload.get("company_id"))
+        or not isinstance(payload.get("data"), dict)
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    company_id = str(payload["company_id"])
+    data = payload["data"]
+    assert isinstance(data, dict)
+    fields = {
+        "schema_version",
+        "contract_version",
+        "data_scope",
+        "test_batch_id",
+        "company_id",
+        "cutoff_date",
+        "workspace_revision",
+        "projection_revision",
+        "etag",
+        "generated_at",
+        "auto_test_ready",
+        "payment_submission_supported",
+        "payable",
+        "submission_supported",
+        "routing_counts",
+        "materials",
+    }
+    revision = data.get("projection_revision")
+    generated_at = data.get("generated_at")
+    try:
+        parsed_generated_at = datetime.fromisoformat(
+            str(generated_at)[:-1] + "+00:00"
+        ) if isinstance(generated_at, str) and generated_at.endswith("Z") else None
+    except ValueError:
+        parsed_generated_at = None
+    if (
+        set(data) != fields
+        or data.get("schema_version") != "payroll-ledgerbridge-test-projection/v1"
+        or data.get("contract_version") != "1.0.0"
+        or data.get("data_scope") != "TEST_ONLY"
+        or data.get("test_batch_id") != expected_batch_id
+        or data.get("company_id") != company_id
+        or data.get("cutoff_date") != "2026-08-31"
+        or type(data.get("workspace_revision")) is not int
+        or int(data["workspace_revision"]) < 1
+        or int(data["workspace_revision"]) > 9_007_199_254_740_991
+        or not isinstance(revision, str)
+        or PAYROLL_PROJECTION_REVISION.fullmatch(revision) is None
+        or data.get("etag") != f'"{revision}"'
+        or parsed_generated_at is None
+        or type(data.get("auto_test_ready")) is not bool
+        or data.get("payment_submission_supported") is not False
+        or data.get("payable") is not False
+        or data.get("submission_supported") is not False
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    counts = data.get("routing_counts")
+    materials = data.get("materials")
+    if (
+        not isinstance(counts, dict)
+        or set(counts) != {"auto_test", "review_required", "date_unknown"}
+        or any(type(value) is not int or value < 0 for value in counts.values())
+        or not isinstance(materials, list)
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    actual = {"auto_test": 0, "review_required": 0, "date_unknown": 0}
+    material_fields = {
+        "company_id",
+        "material_id",
+        "routing_status",
+        "period",
+        "material_type",
+        "payable",
+        "submission_supported",
+    }
+    seen: set[str] = set()
+    for material in materials:
+        if not isinstance(material, dict) or set(material) != material_fields:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        material_id = material.get("material_id")
+        period = material.get("period")
+        material_type = material.get("material_type")
+        if (
+            material.get("company_id") != company_id
+            or not _payroll_identifier(material_id)
+            or material_id in seen
+            or material_type is not None and not _payroll_identifier(material_type)
+            or material.get("payable") is not False
+            or material.get("submission_supported") is not False
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        seen.add(str(material_id))
+        if period is not None and (
+            not isinstance(period, str) or PAYROLL_PERIOD.fullmatch(period) is None
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        routing_status = material.get("routing_status")
+        if (
+            routing_status not in {"AUTO_TEST", "REVIEW_REQUIRED", "DATE_UNKNOWN"}
+            or (
+                routing_status == "AUTO_TEST"
+                and (period is None or str(period) > "2026-08")
+            )
+            or (
+                routing_status == "REVIEW_REQUIRED"
+                and (period is None or str(period) < "2026-09")
+            )
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        count_key = {
+            "AUTO_TEST": "auto_test",
+            "REVIEW_REQUIRED": "review_required",
+            "DATE_UNKNOWN": "date_unknown",
+        }[str(routing_status)]
+        actual[count_key] += 1
+    if counts != actual or data.get("auto_test_ready") is not (actual["auto_test"] > 0):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    _reject_unsafe_payroll_values(data)
+    try:
+        canonical_facts = json.dumps(
+            {key: data[key] for key in PAYROLL_TEST_PROJECTION_FACT_KEYS},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID")) from exc
+    expected_revision = hashlib.sha256(canonical_facts).hexdigest()
+    if revision != expected_revision:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+
+def _payroll_test_workspace_read_from_create(
+    payload: dict[str, object],
+    *,
+    expected_entity_ref: str,
+    expected_batch_id: str,
+) -> dict[str, object]:
+    fields = {
+        "contract_version",
+        "entity_ref",
+        "company_id",
+        "action",
+        "resource_ref",
+        "replayed",
+        "data",
+    }
+    data = payload.get("data")
+    if (
+        set(payload) != fields
+        or payload.get("contract_version")
+        != "ledgerbridge.payroll-test-workspace-command-result.v1"
+        or payload.get("entity_ref") != expected_entity_ref
+        or not _payroll_identifier(payload.get("company_id"))
+        or payload.get("action") != "payroll.test_workspace.create"
+        or payload.get("resource_ref") != expected_batch_id
+        or type(payload.get("replayed")) is not bool
+        or not isinstance(data, dict)
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    result = {
+        "contract_version": "ledgerbridge.payroll-test-workspace-read.v1",
+        "entity_ref": expected_entity_ref,
+        "company_id": payload["company_id"],
+        "data": data,
+    }
+    _validate_payroll_test_workspace_payload(
+        result,
+        expected_entity_ref=expected_entity_ref,
+        expected_batch_id=expected_batch_id,
+    )
+    return result
 
 
 def _validate_payroll_status_data(data: dict[str, object]) -> None:

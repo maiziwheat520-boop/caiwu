@@ -19,8 +19,35 @@ from server.core_backend import CoreBackedState, CoreBackendError
 ENTITY_ID = "10000000-0000-4000-8000-000000000001"
 ASSERTION_KEY = b"synthetic-web-core-assertion-key-0001"
 MATERIAL_ID = "material_live_2026_08"
+TEST_BATCH_ID = "payroll_history_through_2026_08"
 PROJECTION_REVISION = hashlib.sha256(b"payroll-live-7").hexdigest()
 PROJECTION_ETAG = f'"{PROJECTION_REVISION}"'
+TEST_PROJECTION_FACT_KEYS = (
+    "data_scope",
+    "test_batch_id",
+    "company_id",
+    "cutoff_date",
+    "workspace_revision",
+    "auto_test_ready",
+    "payment_submission_supported",
+    "payable",
+    "submission_supported",
+    "routing_counts",
+    "materials",
+)
+
+
+def set_test_projection_revision(data: dict[str, object]) -> None:
+    canonical = json.dumps(
+        {key: data[key] for key in TEST_PROJECTION_FACT_KEYS},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    revision = hashlib.sha256(canonical).hexdigest()
+    data["projection_revision"] = revision
+    data["etag"] = f'"{revision}"'
 
 
 class FakePayrollCoreClient:
@@ -36,6 +63,62 @@ class FakePayrollCoreClient:
         self.core_commands_enabled = True
         self.status_data_updates: dict[str, object] = {}
         self.verification_evidence_updates: dict[str, object] = {}
+        self.test_workspace_data_updates: dict[str, object] = {}
+
+    def test_workspace_projection(self) -> dict[str, object]:
+        data: dict[str, object] = {
+            "schema_version": "payroll-ledgerbridge-test-projection/v1",
+            "contract_version": "1.0.0",
+            "data_scope": "TEST_ONLY",
+            "test_batch_id": TEST_BATCH_ID,
+            "company_id": "company_live_hotel",
+            "cutoff_date": "2026-08-31",
+            "workspace_revision": 1,
+            "projection_revision": "",
+            "etag": "",
+            "generated_at": "2026-09-01T00:00:00.000Z",
+            "auto_test_ready": True,
+            "payment_submission_supported": False,
+            "payable": False,
+            "submission_supported": False,
+            "routing_counts": {
+                "auto_test": 1,
+                "review_required": 1,
+                "date_unknown": 1,
+            },
+            "materials": [
+                {
+                    "company_id": "company_live_hotel",
+                    "material_id": "material_history_2026_08",
+                    "routing_status": "AUTO_TEST",
+                    "period": "2026-08",
+                    "material_type": "PAYROLL_SHEET",
+                    "payable": False,
+                    "submission_supported": False,
+                },
+                {
+                    "company_id": "company_live_hotel",
+                    "material_id": "material_review_2026_09",
+                    "routing_status": "REVIEW_REQUIRED",
+                    "period": "2026-09",
+                    "material_type": "PAYROLL_SHEET",
+                    "payable": False,
+                    "submission_supported": False,
+                },
+                {
+                    "company_id": "company_live_hotel",
+                    "material_id": "material_date_unknown",
+                    "routing_status": "DATE_UNKNOWN",
+                    "period": None,
+                    "material_type": None,
+                    "payable": False,
+                    "submission_supported": False,
+                },
+            ],
+        }
+        set_test_projection_revision(data)
+        data.update(self.test_workspace_data_updates)
+        return data
 
     def json(
         self,
@@ -48,6 +131,17 @@ class FakePayrollCoreClient:
         self.calls.append((method, path, body, dict(headers or {})))
         if self.failure is not None and self.failure_method in {None, method}:
             raise self.failure
+        if method == "POST" and path == "/internal/v1/payroll/test-workspaces":
+            request = json.loads(body or b"{}")
+            return {
+                "contract_version": "ledgerbridge.payroll-test-workspace-command-result.v1",
+                "entity_ref": ENTITY_ID,
+                "company_id": "company_live_hotel",
+                "action": "payroll.test_workspace.create",
+                "resource_ref": request["test_batch_id"],
+                "replayed": False,
+                "data": self.test_workspace_projection(),
+            }
         if method == "POST" and path.startswith("/internal/v1/payroll/"):
             action = path.rsplit("/", 1)[-1]
             resource_ref = path.split("/")[-2]
@@ -101,6 +195,14 @@ class FakePayrollCoreClient:
             return response
         if method == "GET" and path.startswith("/internal/v1/payroll/"):
             data: dict[str, object]
+            if path == f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}":
+                data = self.test_workspace_projection()
+                return {
+                    "contract_version": "ledgerbridge.payroll-test-workspace-read.v1",
+                    "entity_ref": self.response_entity_ref,
+                    "company_id": "company_live_hotel",
+                    "data": data,
+                }
             if path == "/internal/v1/payroll/status":
                 data = {
                     "schema_version": "ledgerbridge.payroll-status.v1",
@@ -301,6 +403,8 @@ def build_state(
     *,
     payroll_commands_enabled: bool = False,
     payroll_roles: frozenset[str] = frozenset(),
+    payroll_test_workspace_enabled: bool = False,
+    payroll_test_workspace_autocreate: bool = False,
 ) -> CoreBackedState:
     return CoreBackedState(
         client,  # type: ignore[arg-type]
@@ -315,6 +419,9 @@ def build_state(
         business_unit_ref="unit-demo-a",
         payroll_commands_enabled=payroll_commands_enabled,
         payroll_role_bindings={"ledgerbridge-owner": payroll_roles},
+        payroll_test_workspace_enabled=payroll_test_workspace_enabled,
+        payroll_test_batch_id=TEST_BATCH_ID if payroll_test_workspace_enabled else None,
+        payroll_test_workspace_autocreate=payroll_test_workspace_autocreate,
     )
 
 
@@ -328,7 +435,7 @@ class PayrollBffTests(unittest.TestCase):
             "127.0.0.1",
             0,
             self.temp_dir.name,
-            state=build_state(self.client),
+            state=build_state(self.client, payroll_test_workspace_enabled=True),
             auth_manager=self.auth_manager,  # type: ignore[arg-type]
             mode="core-backed",
             trusted_proxy_cidrs="127.0.0.1/32",
@@ -410,6 +517,176 @@ class PayrollBffTests(unittest.TestCase):
         self.assertIsNone(claims["operation_id"])
         self.assertNotIn("session-token", json.dumps(claims))
         self.assertNotIn("required_role", claims)
+
+    def test_authenticated_session_reads_date_routed_test_workspace(self) -> None:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.server.server_port}/api/v1/payroll/test-workspace",
+            headers={"Cookie": f"{COOKIE_NAME}=session-token"},
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            payload = json.load(response)
+
+        self.assertEqual(payload["data"]["data_scope"], "TEST_ONLY")
+        self.assertEqual(
+            payload["data"]["routing_counts"],
+            {"auto_test": 1, "review_required": 1, "date_unknown": 1},
+        )
+        self.assertFalse(payload["data"]["payment_submission_supported"])
+        method, path, body, headers = self.client.calls[-1]
+        self.assertEqual(
+            (method, path, body),
+            (
+                "GET",
+                f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}",
+                None,
+            ),
+        )
+        _, encoded, _ = headers["X-LedgerBridge-User-Assertion"].split(".")
+        claims = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        self.assertEqual(claims["action"], "payroll.test_workspace.read")
+        self.assertEqual(claims["resource_ref"], TEST_BATCH_ID)
+        self.assertEqual(claims["canonical_path"], path)
+
+    def test_test_workspace_is_disabled_by_default(self) -> None:
+        state = build_state(self.client)
+        with self.assertRaises(CoreBackendError) as raised:
+            state.payroll_test_workspace("session-token", "ledgerbridge-owner")
+        self.assertEqual(
+            (raised.exception.status, raised.exception.payload["code"]),
+            (404, "PAYROLL_TEST_WORKSPACE_DISABLED"),
+        )
+        self.assertEqual(self.client.calls, [])
+
+    def test_missing_test_workspace_accepts_core_direct_projection_on_create(self) -> None:
+        self.client.failure = CoreBackendError(
+            404,
+            {"status": 404, "code": "PAYROLL_TEST_WORKSPACE_NOT_FOUND"},
+        )
+        self.client.failure_method = "GET"
+        state = build_state(
+            self.client,
+            payroll_test_workspace_enabled=True,
+            payroll_test_workspace_autocreate=True,
+        )
+
+        payload = state.payroll_test_workspace("session-token", "ledgerbridge-owner")
+
+        self.assertEqual(payload["data"]["data_scope"], "TEST_ONLY")
+        self.assertEqual([call[:2] for call in self.client.calls], [
+            ("GET", f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}"),
+            ("POST", "/internal/v1/payroll/test-workspaces"),
+        ])
+        request = json.loads(self.client.calls[1][2] or b"{}")
+        self.assertEqual(request["test_batch_id"], TEST_BATCH_ID)
+        self.assertEqual(request["cutoff_date"], "2026-08-31")
+        self.assertEqual(request["expected_store_revision"], 0)
+        _, encoded, _ = self.client.calls[1][3][
+            "X-LedgerBridge-User-Assertion"
+        ].split(".")
+        claims = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        self.assertEqual(claims["action"], "payroll.test_workspace.create")
+        self.assertEqual(claims["operation_id"], request["idempotency_key"])
+        self.assertEqual(claims["expected_revision"], 0)
+
+    def test_autocreate_does_not_upgrade_an_unrelated_core_not_found(self) -> None:
+        self.client.failure = CoreBackendError(
+            404,
+            {"status": 404, "code": "PAYROLL_TEST_WORKSPACE_DISABLED"},
+        )
+        self.client.failure_method = "GET"
+        state = build_state(
+            self.client,
+            payroll_test_workspace_enabled=True,
+            payroll_test_workspace_autocreate=True,
+        )
+
+        with self.assertRaises(CoreBackendError) as raised:
+            state.payroll_test_workspace("session-token", "ledgerbridge-owner")
+
+        self.assertEqual(raised.exception.payload["code"], "PAYROLL_TEST_WORKSPACE_DISABLED")
+        self.assertEqual([call[:2] for call in self.client.calls], [
+            ("GET", f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}"),
+        ])
+
+    def test_test_workspace_fails_closed_on_scope_routing_and_safety_drift(self) -> None:
+        state = build_state(self.client, payroll_test_workspace_enabled=True)
+        invalid_updates = [
+            {"company_id": "company_other"},
+            {"payment_submission_supported": True},
+            {"auto_test_ready": False},
+            {"workspace_revision": 0},
+            {"routing_counts": {"auto_test": 3, "review_required": 0, "date_unknown": 0}},
+            {
+                "materials": [
+                    {
+                        "company_id": "company_live_hotel",
+                        "material_id": "material_review_2026_09",
+                        "routing_status": "AUTO_TEST",
+                        "period": "2026-09",
+                        "material_type": "PAYROLL_SHEET",
+                        "payable": False,
+                        "submission_supported": False,
+                    }
+                ],
+                "routing_counts": {"auto_test": 1, "review_required": 0, "date_unknown": 0},
+            },
+        ]
+        for update in invalid_updates:
+            with self.subTest(update=update):
+                self.client.test_workspace_data_updates = update
+                with self.assertRaises(CoreBackendError) as raised:
+                    state.payroll_test_workspace("session-token", "ledgerbridge-owner")
+                self.assertEqual(
+                    (raised.exception.status, raised.exception.payload["code"]),
+                    (503, "CORE_CONTRACT_INVALID"),
+                )
+        self.client.test_workspace_data_updates = {}
+
+    def test_date_unknown_material_may_keep_a_safe_derived_period(self) -> None:
+        projection = self.client.test_workspace_projection()
+        materials = projection["materials"]
+        assert isinstance(materials, list)
+        assert isinstance(materials[2], dict)
+        materials[2]["period"] = "2026-08"
+        set_test_projection_revision(projection)
+        self.client.test_workspace_data_updates = projection
+        state = build_state(self.client, payroll_test_workspace_enabled=True)
+
+        payload = state.payroll_test_workspace("session-token", "ledgerbridge-owner")
+
+        self.assertEqual(payload["data"]["routing_counts"]["date_unknown"], 1)
+
+    def test_test_workspace_rejects_material_tampering_with_a_stale_revision(self) -> None:
+        projection = self.client.test_workspace_projection()
+        materials = projection["materials"]
+        assert isinstance(materials, list)
+        assert isinstance(materials[0], dict)
+        materials[0]["material_id"] = "material_history_tampered"
+        self.client.test_workspace_data_updates = projection
+        state = build_state(self.client, payroll_test_workspace_enabled=True)
+
+        with self.assertRaises(CoreBackendError) as raised:
+            state.payroll_test_workspace("session-token", "ledgerbridge-owner")
+
+        self.assertEqual(
+            (raised.exception.status, raised.exception.payload["code"]),
+            (503, "CORE_CONTRACT_INVALID"),
+        )
+
+    def test_test_workspace_rejects_revision_above_javascript_safe_integer(self) -> None:
+        projection = self.client.test_workspace_projection()
+        projection["workspace_revision"] = 9_007_199_254_740_992
+        set_test_projection_revision(projection)
+        self.client.test_workspace_data_updates = projection
+        state = build_state(self.client, payroll_test_workspace_enabled=True)
+
+        with self.assertRaises(CoreBackendError) as raised:
+            state.payroll_test_workspace("session-token", "ledgerbridge-owner")
+
+        self.assertEqual(
+            (raised.exception.status, raised.exception.payload["code"]),
+            (503, "CORE_CONTRACT_INVALID"),
+        )
 
     def test_status_exposes_only_safe_setup_summary_when_live_data_is_not_ready(self) -> None:
         self.client.live_data_ready = False

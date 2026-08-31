@@ -798,6 +798,23 @@ paths:
           $ref: "#/components/responses/PayrollEntitySelectionRequired"
         "503":
           $ref: "#/components/responses/PayrollUnavailable"
+  /api/v1/payroll/test-workspace:
+    get:
+      operationId: getPayrollTestWorkspace
+      description: Read the configured company's removable TEST_ONLY payroll workspace. Historical materials through 2026-08 are routed automatically; 2026-09 onward requires review.
+      responses:
+        "200":
+          description: Session- and entity-scoped payroll test workspace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PayrollTestWorkspaceEnvelope"
+        "404":
+          $ref: "#/components/responses/PayrollUnavailable"
+        "409":
+          $ref: "#/components/responses/PayrollEntitySelectionRequired"
+        "503":
+          $ref: "#/components/responses/PayrollUnavailable"
   /api/v1/payroll/dashboard:
     get:
       operationId: getPayrollDashboard
@@ -1022,6 +1039,96 @@ components:
           $ref: "#/components/schemas/PayrollResourceRef"
         data:
           $ref: "#/components/schemas/PayrollStatusData"
+    PayrollTestWorkspaceEnvelope:
+      type: object
+      additionalProperties: false
+      required: [contract_version, entity_ref, company_id, data]
+      properties:
+        contract_version:
+          const: ledgerbridge.payroll-test-workspace-read.v1
+        entity_ref:
+          type: string
+          format: uuid
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        data:
+          $ref: "#/components/schemas/PayrollTestWorkspaceData"
+    PayrollTestWorkspaceData:
+      type: object
+      additionalProperties: false
+      required: [schema_version, contract_version, data_scope, test_batch_id, company_id, cutoff_date, workspace_revision, projection_revision, etag, generated_at, auto_test_ready, payment_submission_supported, payable, submission_supported, routing_counts, materials]
+      properties:
+        schema_version:
+          const: payroll-ledgerbridge-test-projection/v1
+        contract_version:
+          const: "1.0.0"
+        data_scope:
+          const: TEST_ONLY
+        test_batch_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        cutoff_date:
+          const: "2026-08-31"
+        workspace_revision:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        projection_revision:
+          $ref: "#/components/schemas/PayrollProjectionRevision"
+        etag:
+          $ref: "#/components/schemas/PayrollProjectionEtag"
+        generated_at:
+          $ref: "#/components/schemas/PayrollGeneratedAt"
+        auto_test_ready:
+          type: boolean
+        payment_submission_supported:
+          const: false
+        payable:
+          const: false
+        submission_supported:
+          const: false
+        routing_counts:
+          $ref: "#/components/schemas/PayrollTestRoutingCounts"
+        materials:
+          type: array
+          items:
+            $ref: "#/components/schemas/PayrollTestWorkspaceMaterial"
+    PayrollTestRoutingCounts:
+      type: object
+      additionalProperties: false
+      required: [auto_test, review_required, date_unknown]
+      properties:
+        auto_test:
+          type: integer
+          minimum: 0
+        review_required:
+          type: integer
+          minimum: 0
+        date_unknown:
+          type: integer
+          minimum: 0
+    PayrollTestWorkspaceMaterial:
+      type: object
+      additionalProperties: false
+      required: [company_id, material_id, routing_status, period, material_type, payable, submission_supported]
+      properties:
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        material_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        routing_status:
+          type: string
+          enum: [AUTO_TEST, REVIEW_REQUIRED, DATE_UNKNOWN]
+        period:
+          type: [string, "null"]
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        material_type:
+          type: [string, "null"]
+        payable:
+          const: false
+        submission_supported:
+          const: false
     PayrollDashboardEnvelope:
       type: object
       additionalProperties: false

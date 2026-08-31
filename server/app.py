@@ -967,6 +967,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             return
         payroll_reads = {
             "/api/v1/payroll/status": "payroll_status",
+            "/api/v1/payroll/test-workspace": "payroll_test_workspace",
             "/api/v1/payroll/dashboard": "payroll_dashboard",
             "/api/v1/payroll/materials": "payroll_materials",
             "/api/v1/payroll/batches": "payroll_batches",
@@ -1720,6 +1721,13 @@ def run() -> None:
             "true",
             "True",
         }
+        payroll_test_workspace_enabled = os.environ.get(
+            "PAYROLL_TEST_WORKSPACE_ENABLED", "0"
+        ) in {"1", "true", "True"}
+        payroll_test_batch_id = os.environ.get("PAYROLL_TEST_BATCH_ID", "").strip() or None
+        payroll_test_workspace_autocreate = os.environ.get(
+            "PAYROLL_TEST_WORKSPACE_AUTOCREATE", "0"
+        ) in {"1", "true", "True"}
         payroll_role_bindings: dict[str, frozenset[str]] = {}
         raw_payroll_bindings = os.environ.get("PAYROLL_ROLE_BINDINGS_JSON", "").strip()
         if payroll_commands_enabled and not raw_payroll_bindings:
@@ -1764,6 +1772,12 @@ def run() -> None:
                 evidence_unlock_path=os.environ.get("CORE_EVIDENCE_UNLOCK_PATH", "").strip() or None,
                 payroll_commands_enabled=payroll_commands_enabled,
                 payroll_role_bindings=payroll_role_bindings,
+                payroll_test_workspace_enabled=payroll_test_workspace_enabled,
+                payroll_test_batch_id=payroll_test_batch_id,
+                payroll_test_workspace_autocreate=payroll_test_workspace_autocreate,
+                payroll_test_workspace_expected_store_revision=int(
+                    os.environ.get("PAYROLL_TEST_WORKSPACE_EXPECTED_STORE_REVISION", "0")
+                ),
             )
         except (OSError, ValueError) as error:
             raise SystemExit("Refusing core-backed mode: invalid Core settings") from error

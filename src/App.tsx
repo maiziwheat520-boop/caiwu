@@ -75,6 +75,7 @@ import type {
   PayrollMaterialListData,
   PayrollReadResponse,
   PayrollStatusData,
+  PayrollTestWorkspaceReadResponse,
   PayrollVerificationListData,
   Reconciliation as ReconciliationData,
   ReviewEvent,
@@ -1840,8 +1841,40 @@ function OriginalReconciliation({ data, error, loading, selectedMonth, onMonthCh
   )
 }
 
+function PayrollTestWorkspacePanel({ workspace }: { workspace: PayrollTestWorkspaceReadResponse }) {
+  return (
+    <section className="panel payroll-live-section" aria-labelledby="payroll-test-workspace-heading">
+      <div className="section-heading payroll-live-heading">
+        <div><span>测试数据</span><h2 id="payroll-test-workspace-heading">历史材料接入</h2></div>
+        <Badge color="blue">可整批清除</Badge>
+      </div>
+      <div className="payroll-metric-grid">
+        <div><strong>已自动接入 {workspace.data.routing_counts.auto_test} 份</strong><span>2026 年 8 月及以前</span></div>
+        <div><strong>待审核 {workspace.data.routing_counts.review_required} 份</strong><span>2026 年 9 月及以后</span></div>
+        <div><strong>日期待确认 {workspace.data.routing_counts.date_unknown} 份</strong><span>已接入，不阻挡历史材料</span></div>
+      </div>
+      {workspace.data.materials.length > 0 ? (
+        <div className="payroll-record-list" aria-label="工资测试材料">
+          {workspace.data.materials.map((material) => (
+            <article key={material.material_id}>
+              <div>
+                <strong>{material.period ?? '日期待确认'}</strong>
+                <span>{material.material_type === 'PAYROLL_SHEET' ? '工资表' : '工资材料'}</span>
+              </div>
+              <Badge color={material.routing_status === 'AUTO_TEST' ? 'green' : 'amber'}>
+                {material.routing_status === 'AUTO_TEST' ? '已接入测试账本' : material.routing_status === 'REVIEW_REQUIRED' ? '9 月后待审核' : '日期待确认'}
+              </Badge>
+            </article>
+          ))}
+        </div>
+      ) : <p className="payroll-empty-state">测试账本暂无材料</p>}
+    </section>
+  )
+}
+
 function PayrollVerificationStatus() {
   const [status, setStatus] = useState<PayrollReadResponse<PayrollStatusData> | null>(null)
+  const [testWorkspace, setTestWorkspace] = useState<PayrollTestWorkspaceReadResponse | null>(null)
   const [views, setViews] = useState<PayrollLiveViews | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -1856,13 +1889,19 @@ function PayrollVerificationStatus() {
     setLoading(true)
     setError(null)
     setViews(null)
+    setTestWorkspace(null)
     try {
-      const [sessionResponse, statusResponse] = await Promise.all([
+      const [sessionResponse, statusResponse, testWorkspaceResponse] = await Promise.all([
         api.getSession(),
         api.getPayrollStatus(),
+        api.getPayrollTestWorkspace().catch((workspaceError) => {
+          if (workspaceError instanceof ApiError && workspaceError.status === 404) return null
+          throw workspaceError
+        }),
       ])
       setCsrfToken(sessionResponse.csrf_token)
       setStatus(statusResponse)
+      setTestWorkspace(testWorkspaceResponse)
       if (!statusResponse.data.live_data_ready) return
 
       let nextViews = await readPayrollViews()
@@ -1900,6 +1939,7 @@ function PayrollVerificationStatus() {
   const evidenceForBatch = selectedBatch
     ? verification?.available_evidence.filter((evidence) => evidence.period === selectedBatch.pay_period) ?? []
     : []
+  const testWorkspaceReady = testWorkspace?.data.auto_test_ready === true
 
   const togglePayrollEvidence = (artifactId: string) => {
     setSelectedEvidence((current) => current.includes(artifactId)
@@ -1962,9 +2002,13 @@ function PayrollVerificationStatus() {
         <>
           <div className="payroll-status-banner" role="status">
             <Info size={20} weight="fill" />
-            <div><strong>工资服务已连通，但正式数据投影尚未就绪</strong><span>只报告服务端真实状态，不用空值代替尚未生成的正式数据。</span></div>
-            <Badge color="amber">未就绪</Badge>
+            <div>
+              <strong>{testWorkspaceReady ? '历史工资材料已进入测试账本' : testWorkspace ? '测试账本已创建，暂无可自动接入材料' : '历史工资材料测试账本尚未就绪'}</strong>
+              <span>{testWorkspaceReady ? '截至 2026 年 8 月 31 日自动接入；9 月起才需要审核。测试数据不会发薪或提交银行。' : testWorkspace ? '工作区已就绪，但当前没有 2026 年 8 月及以前的可自动接入材料。' : '材料仍保留在来源库中；测试账本接通后会自动显示，当前不会虚报已入账。'}</span>
+            </div>
+            <Badge color={testWorkspace ? 'blue' : 'amber'}>{testWorkspaceReady ? '测试账本' : testWorkspace ? '暂无历史材料' : '待接通'}</Badge>
           </div>
+          {testWorkspace ? <PayrollTestWorkspacePanel workspace={testWorkspace} /> : null}
           {status.data.setup_summary?.provider_connected ? (
             <section className="panel payroll-setup-progress" aria-label="工资材料接入进度">
               <Database size={28} weight="light" />
@@ -1990,6 +2034,10 @@ function PayrollVerificationStatus() {
             </article>
           </section>
         </>
+      ) : null}
+
+      {!loading && !error && status?.data.live_data_ready && testWorkspace ? (
+        <PayrollTestWorkspacePanel workspace={testWorkspace} />
       ) : null}
 
       {!loading && !error && dashboard && verification ? (

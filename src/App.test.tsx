@@ -109,6 +109,37 @@ const livePayrollResponses: Record<string, unknown> = {
       allowed_actions: ['VERIFY_RECEIPTS'],
     },
   }),
+  '/api/v1/payroll/test-workspace': {
+    contract_version: 'ledgerbridge.payroll-test-workspace-read.v1',
+    entity_ref: payrollEntityRef,
+    company_id: payrollCompanyId,
+    data: {
+      contract_version: '1.0.0',
+      schema_version: 'payroll-ledgerbridge-test-projection/v1',
+      data_scope: 'TEST_ONLY',
+      test_batch_id: 'payroll_history_20260831',
+      company_id: payrollCompanyId,
+      cutoff_date: '2026-08-31',
+      workspace_revision: 1,
+      projection_revision: 'b'.repeat(64),
+      etag: `"${'b'.repeat(64)}"`,
+      generated_at: '2026-09-01T02:00:00.000Z',
+      auto_test_ready: true,
+      payment_submission_supported: false,
+      payable: false,
+      submission_supported: false,
+      routing_counts: { auto_test: 1, review_required: 0, date_unknown: 0 },
+      materials: [{
+        company_id: payrollCompanyId,
+        material_id: 'material_history_001',
+        routing_status: 'AUTO_TEST',
+        period: '2026-08',
+        material_type: 'PAYROLL_SHEET',
+        payable: false,
+        submission_supported: false,
+      }],
+    },
+  },
   '/api/v1/payroll/dashboard': payrollRead({
     schema_version: 'ledgerbridge.payroll-dashboard.v1',
     projection_revision: 'a'.repeat(64),
@@ -236,6 +267,37 @@ const notReadyPayrollResponses: Record<string, unknown> = {
       ],
     },
   }),
+  '/api/v1/payroll/test-workspace': {
+    contract_version: 'ledgerbridge.payroll-test-workspace-read.v1',
+    entity_ref: payrollEntityRef,
+    company_id: payrollCompanyId,
+    data: {
+      contract_version: '1.0.0',
+      schema_version: 'payroll-ledgerbridge-test-projection/v1',
+      data_scope: 'TEST_ONLY',
+      test_batch_id: 'payroll_history_20260831',
+      company_id: payrollCompanyId,
+      cutoff_date: '2026-08-31',
+      workspace_revision: 1,
+      projection_revision: 'b'.repeat(64),
+      etag: `"${'b'.repeat(64)}"`,
+      generated_at: '2026-09-01T02:00:00.000Z',
+      auto_test_ready: true,
+      payment_submission_supported: false,
+      payable: false,
+      submission_supported: false,
+      routing_counts: { auto_test: 1, review_required: 0, date_unknown: 0 },
+      materials: [{
+        company_id: payrollCompanyId,
+        material_id: 'material_history_001',
+        routing_status: 'AUTO_TEST',
+        period: '2026-08',
+        material_type: 'PAYROLL_SHEET',
+        payable: false,
+        submission_supported: false,
+      }],
+    },
+  },
 }
 
 const reportBases = ['CONFIRMED_CANDIDATE', 'ACCOUNT_STATEMENT', 'POSTED_LEDGER'] as const
@@ -2177,7 +2239,11 @@ describe('LedgerBridge Web API client', () => {
 
     expect(await screen.findByRole('heading', { name: '工资与发放验证' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: '工资与发放验证' })).toHaveLength(2)
-    expect(await screen.findByText('工资服务已连通，但正式数据投影尚未就绪')).toBeInTheDocument()
+    expect(await screen.findByText('历史工资材料已进入测试账本')).toBeInTheDocument()
+    expect(screen.getByText('已自动接入 1 份')).toBeInTheDocument()
+    expect(screen.getByText('待审核 0 份')).toBeInTheDocument()
+    expect(screen.getByText('日期待确认 0 份')).toBeInTheDocument()
+    expect(screen.getByText('已接入测试账本')).toBeInTheDocument()
     expect(screen.getByText('只读工资发布契约已部署')).toBeInTheDocument()
     expect(screen.getByText('服务已接通，待归属材料 3 份')).toBeInTheDocument()
     expect(screen.getByText('工资材料仍有待归属项')).toBeInTheDocument()
@@ -2185,7 +2251,32 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.queryByText(/127\.0\.0\.1/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /付款|发薪|银行提交/ })).not.toBeInTheDocument()
     expect(fetchMock.mock.calls.map(([input]) => String(input)).filter((url) => url.startsWith('/api/v1/payroll/')))
-      .toEqual(['/api/v1/payroll/status'])
+      .toEqual(['/api/v1/payroll/status', '/api/v1/payroll/test-workspace'])
+  })
+
+  it('does not claim historical auto-import when the test workspace has no eligible material', async () => {
+    window.history.replaceState({}, '', '/payroll')
+    const emptyWorkspace = structuredClone(notReadyPayrollResponses['/api/v1/payroll/test-workspace']) as {
+      data: {
+        auto_test_ready: boolean
+        routing_counts: { auto_test: number; review_required: number; date_unknown: number }
+        materials: unknown[]
+      }
+    }
+    emptyWorkspace.data.auto_test_ready = false
+    emptyWorkspace.data.routing_counts = { auto_test: 0, review_required: 0, date_unknown: 0 }
+    emptyWorkspace.data.materials = []
+    installFetch({
+      runtimeMode: 'core-backed',
+      payrollResponses: {
+        ...notReadyPayrollResponses,
+        '/api/v1/payroll/test-workspace': emptyWorkspace,
+      },
+    })
+    renderApp()
+
+    expect(await screen.findByText('测试账本已创建，暂无可自动接入材料')).toBeInTheDocument()
+    expect(screen.queryByText('历史工资材料已进入测试账本')).not.toBeInTheDocument()
   })
 
   it('reads the live payroll projection only through the same-origin BFF and renders its real summaries', async () => {
@@ -2216,6 +2307,7 @@ describe('LedgerBridge Web API client', () => {
         .filter((url) => url.startsWith('/api/v1/payroll/'))
       expect(payrollCalls).toEqual([
         '/api/v1/payroll/status',
+        '/api/v1/payroll/test-workspace',
         '/api/v1/payroll/dashboard',
         '/api/v1/payroll/materials',
         '/api/v1/payroll/batches',

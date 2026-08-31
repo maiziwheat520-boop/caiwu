@@ -83,6 +83,10 @@ CORE_ENTITY_REF=<authorized entity UUID>
 CORE_BUSINESS_UNIT_REF=<authorized business-unit ref>
 PAYROLL_COMMANDS_ENABLED=0
 PAYROLL_ROLE_BINDINGS_JSON=<server-controlled subject to maker/checker/approver JSON mapping>
+PAYROLL_TEST_WORKSPACE_ENABLED=0
+PAYROLL_TEST_BATCH_ID=<server-controlled stable test batch id>
+PAYROLL_TEST_WORKSPACE_AUTOCREATE=0
+PAYROLL_TEST_WORKSPACE_EXPECTED_STORE_REVISION=0
 ```
 
 VM103 injects the non-secret identity context through those variables: entity
@@ -103,6 +107,13 @@ advertise the trusted command capability for that exact session and entity.
 The initial public command surface contains only receipt verification. Material
 review and batch submit-review/review/approve are not Web routes until a later
 version advertises those actions explicitly.
+
+The removable payroll test workspace is a separate, default-off projection.
+When enabled for product testing, the BFF fixes the batch id and company scope
+from server configuration, routes material periods through 2026-08 to
+`AUTO_TEST`, keeps 2026-09 onward in `REVIEW_REQUIRED`, and connects missing
+dates as `DATE_UNKNOWN`. Optional autocreation is idempotent and never enables
+payment or submission capability.
 
 The Core origin must be HTTPS and origin-only. The client requires TLS 1.3,
 validates the configured CA, presents the configured client certificate, rejects
