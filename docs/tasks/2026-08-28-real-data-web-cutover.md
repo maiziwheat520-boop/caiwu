@@ -139,3 +139,19 @@ as evidence-bound candidates that remain pending human review.
   disposable PostgreSQL runtime, so that gate must run in the PostgreSQL 15
   CI/service before merge. No production data was modified and no deployment is
   authorized by this handoff.
+
+## MYbank reviewed one-shot runner checkpoint (2026-08-31)
+
+- The runner accepts private values only through one strict operator-confirmed
+  mode-`0600` JSON plan; its tracked example contains synthetic fields only.
+- `--preflight-only` requires an isolated database target and executes the exact
+  statement import, idempotent replay, overlapping-fact rejection, and full
+  cutover-inventory acceptance inside one outer transaction before rollback.
+- Production execution requires the unchanged plan, its bound private preflight
+  receipt, the exact reviewed/deployed revision, a production database target,
+  and the explicit `execute-reviewed-cutover-v1` switch. A failed acceptance
+  rolls back database facts and aborts unpublished encrypted evidence.
+- No owner, entity, business-unit, account, source, credential, private plan,
+  deployment, or production write was added. The next gate is user confirmation
+  of the exact owner/entity/business-unit/account mapping through the website or
+  private plan, followed by the isolated preflight.

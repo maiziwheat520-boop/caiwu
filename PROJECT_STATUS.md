@@ -2,6 +2,24 @@
 
 Updated: 2026-08-30
 
+## MYbank reviewed one-shot runner checkpoint (2026-08-31)
+
+The integrated Core branch now contains a fail-closed one-shot MYbank statement
+runner. It loads an operator-confirmed private plan from a regular mode-`0600`
+file, supports an isolated `--preflight-only` import/replay/conflict rehearsal,
+binds the resulting private receipt to the canonical plan and reviewed revision,
+and requires a separate explicit production switch before the same transaction
+can commit. Database facts and encrypted evidence remain under one outer rollback
+boundary until inventory, candidate-zero, idempotent replay, and overlapping-fact
+conflict checks all pass.
+
+Only a synthetic field template and operating instructions are tracked. No real
+owner, entity, business-unit, account, statement path, credential, private plan,
+production write, deployment, or enablement was added. The remaining operating
+gate is for the user to confirm the exact owner/entity/business-unit/account
+mapping through the website/private plan, then run the isolated preflight before
+any separately authorized production execution.
+
 ## Controlled evidence unlock checkpoint (2026-08-30)
 
 The real-data cutover branch now contains the default-disabled Core and sidecar boundaries needed

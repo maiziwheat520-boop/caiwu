@@ -43,7 +43,7 @@ from ledgerbridge.mybank_statement_cutover import (
     MyBankStatementCutoverRunner,
     ProductionCounts,
     _require_import_identity,
-    run_database_mybank_statement_cutover,
+    run_transactional_database_mybank_statement_cutover,
     verify_mybank_cutover_safety_proof,
 )
 
@@ -957,7 +957,7 @@ def test_database_cutover_persists_encrypted_evidence_and_replays_atomically(
             audit_events=0,
         )
 
-        receipt = run_database_mybank_statement_cutover(
+        preflight = run_transactional_database_mybank_statement_cutover(
             engine,
             _plan(source, digest, len(raw)),
             gates=replace(_gates(before), verify_fact_conflict=True),
@@ -965,6 +965,25 @@ def test_database_cutover_persists_encrypted_evidence_and_replays_atomically(
             registry_principal=_registry_principal(),
             key_file=key_file,
             artifact_root=artifact_root,
+            commit=False,
+        )
+        assert preflight.created is True
+        assert preflight.fact_conflict_rejected is True
+        assert not [
+            path
+            for path in artifact_root.rglob("*")
+            if path.is_file() and path.name != ".quota.lock"
+        ]
+
+        receipt = run_transactional_database_mybank_statement_cutover(
+            engine,
+            _plan(source, digest, len(raw)),
+            gates=replace(_gates(before), verify_fact_conflict=True),
+            safety_proof=_safety_proof(tmp_path, before),
+            registry_principal=_registry_principal(),
+            key_file=key_file,
+            artifact_root=artifact_root,
+            commit=True,
         )
 
         assert receipt.created is True

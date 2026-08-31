@@ -14,7 +14,7 @@ from typing import Protocol
 from uuid import UUID, uuid5
 
 from sqlalchemy import text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
 from ledgerbridge.account_registry import (
@@ -577,6 +577,22 @@ def _counts_from_cutover_inventory(
     )
 
 
+def production_counts_from_cutover_inventory(
+    value: object,
+    *,
+    expected_schema_revision: str,
+) -> ProductionCounts:
+    """Convert a verified backup inventory into the cutover count gate."""
+
+    try:
+        return _counts_from_cutover_inventory(
+            value,
+            expected_schema_revision=expected_schema_revision,
+        )
+    except (TypeError, ValueError):
+        raise MyBankStatementCutoverError("cutover inventory is invalid") from None
+
+
 def _expected_after(
     before: ProductionCounts,
     plan: MyBankStatementCutoverPlan,
@@ -678,20 +694,96 @@ def run_database_mybank_statement_cutover(
         key_file=key_file,
         artifact_root=artifact_root,
     )
+    return _run_database_cutover(
+        engine,
+        plan,
+        gates=gates,
+        registry_principal=registry_principal,
+        boundary=boundary,
+        logger=logger,
+    )
+
+
+def run_transactional_database_mybank_statement_cutover(
+    engine: Engine,
+    plan: MyBankStatementCutoverPlan,
+    *,
+    gates: MyBankStatementCutoverGates,
+    safety_proof: MyBankCutoverSafetyProof,
+    registry_principal: WorkloadPrincipal,
+    key_file: Path,
+    artifact_root: Path,
+    commit: bool,
+    acceptance: Callable[[MyBankStatementCutoverReceipt, Connection], None] | None = None,
+    logger: logging.Logger | None = None,
+) -> MyBankStatementCutoverReceipt:
+    """Run import, replay, and conflict acceptance under one outer transaction."""
+
+    if type(commit) is not bool:
+        raise MyBankStatementCutoverError("transactional cutover mode is invalid")
+    verify_mybank_cutover_safety_proof(safety_proof, gates=gates)
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        boundary = _DatabaseEvidenceBoundary(
+            connection,
+            plan=plan,
+            key_file=key_file,
+            artifact_root=artifact_root,
+        )
+        try:
+            receipt = _run_database_cutover(
+                connection,
+                plan,
+                gates=gates,
+                registry_principal=registry_principal,
+                boundary=boundary,
+                defer_publication_commit=True,
+                logger=logger,
+            )
+            if acceptance is not None:
+                acceptance(receipt, connection)
+            if commit:
+                transaction.commit()
+                boundary.commit_publication()
+            else:
+                transaction.rollback()
+                boundary.abort_publication()
+            return receipt
+        except BaseException:
+            if transaction.is_active:
+                transaction.rollback()
+            boundary.abort_publication()
+            raise
+
+
+def _run_database_cutover(
+    bind: Engine | Connection,
+    plan: MyBankStatementCutoverPlan,
+    *,
+    gates: MyBankStatementCutoverGates,
+    registry_principal: WorkloadPrincipal,
+    boundary: _DatabaseEvidenceBoundary,
+    defer_publication_commit: bool = False,
+    logger: logging.Logger | None = None,
+) -> MyBankStatementCutoverReceipt:
     runner = MyBankStatementCutoverRunner(
         parser=parse_mybank_xlsx,
         evidence_writer=boundary.write,
         account_registrar=_DatabaseAccountRegistrar(boundary, registry_principal),
-        statement_importer=_DatabaseStatementImporter(boundary, plan),
-        counts_reader=lambda: _read_production_counts(engine),
-        schema_reader=lambda: _read_schema_revision(engine),
+        statement_importer=_DatabaseStatementImporter(
+            boundary,
+            plan,
+            commit_publication=not defer_publication_commit,
+        ),
+        counts_reader=lambda: _read_production_counts(bind),
+        schema_reader=lambda: _read_schema_revision(bind),
         logger=logger,
     )
     receipt = runner.run(plan, gates=replace(gates, verify_fact_conflict=False))
     if not gates.verify_fact_conflict:
         return receipt
     _run_database_fact_conflict_probe(
-        engine,
+        bind,
         plan=plan,
         statement=parse_mybank_xlsx(
             plan.source_path,
@@ -699,7 +791,7 @@ def run_database_mybank_statement_cutover(
             managed_account_suffix=plan.account_suffix,
         ),
     )
-    if _read_production_counts(engine) != receipt.after_counts:
+    if _read_production_counts(bind) != receipt.after_counts:
         raise MyBankStatementCutoverError("fact conflict changed database counts")
     return replace(receipt, fact_conflict_rejected=True)
 
@@ -709,9 +801,12 @@ class _DatabaseStatementImporter:
         self,
         boundary: _DatabaseEvidenceBoundary,
         plan: MyBankStatementCutoverPlan,
+        *,
+        commit_publication: bool = True,
     ) -> None:
         self._boundary = boundary
         self._plan = plan
+        self._commit_publication = commit_publication
 
     def import_statement(
         self,
@@ -733,7 +828,8 @@ class _DatabaseStatementImporter:
             ):
                 raise MyBankStatementCutoverError("statement import receipt conflicts")
             session.commit()
-            self._boundary.commit_publication()
+            if self._commit_publication:
+                self._boundary.commit_publication()
             return result
         except BaseException:
             try:
@@ -793,7 +889,7 @@ class _DatabaseEvidenceBoundary:
 
     def __init__(
         self,
-        engine: Engine,
+        engine: Engine | Connection,
         *,
         plan: MyBankStatementCutoverPlan,
         key_file: Path,
@@ -841,7 +937,7 @@ class _DatabaseEvidenceBoundary:
             ):
                 raise MyBankStatementCutoverError("encrypted evidence source identity conflicts")
 
-            session = Session(self._engine)
+            session = _new_session(self._engine)
             _require_unique_scope(session, evidence, owner_kind=self._plan.owner_kind)
             _require_new_evidence(session, evidence)
             evidence_audit = _append_audit(
@@ -960,12 +1056,12 @@ class _DatabaseEvidenceBoundary:
             self._pending_session = None
             self._evidence_staged = False
             return pending
-        return Session(self._engine)
+        return _new_session(self._engine)
 
     def ensure_session(self) -> Session:
         pending = self._pending_session
         if pending is None:
-            pending = Session(self._engine)
+            pending = _new_session(self._engine)
             self._pending_session = pending
         return pending
 
@@ -987,6 +1083,9 @@ class _DatabaseEvidenceBoundary:
         if publication is not None:
             publication.abort()
             self._pending_publication = None
+
+    def abort_publication(self) -> None:
+        self._abort_publication()
 
     @property
     def evidence_staged(self) -> bool:
@@ -1103,7 +1202,7 @@ def _require_import_identity(
 
 
 def _run_database_fact_conflict_probe(
-    engine: Engine,
+    engine: Engine | Connection,
     *,
     plan: MyBankStatementCutoverPlan,
     statement: MyBankStatement,
@@ -1131,61 +1230,65 @@ def _run_database_fact_conflict_probe(
             ),
         ),
     )
-    session = Session(engine)
+    session = _new_session(engine)
     try:
-        audit_ref = _append_audit(
-            session,
-            actor=plan.actor,
-            action="evidence.object.create",
-            reason=plan.reason,
-            payload={
-                "evidence_ref": str(probe_evidence_ref),
-                "entity_id": str(plan.entity_ref),
-                "business_unit_id": str(plan.business_unit_ref),
-                "probe": "overlap-fact-conflict-v1",
-            },
-        )
-        session.execute(
-            text(
-                "INSERT INTO public.evidence_object "
-                "(evidence_ref, entity_id, business_unit_id, media_type, display_name, "
-                "plaintext_sha256, plaintext_size, audit_event_id) VALUES "
-                "(:evidence, :entity, :unit, :media_type, :display_name, "
-                ":digest, :size, :audit)"
-            ),
-            {
-                "evidence": probe_evidence_ref,
-                "entity": plan.entity_ref,
-                "unit": plan.business_unit_ref,
-                "media_type": statement.declared_media_type,
-                "display_name": f"mybank-conflict-probe-{probe_statement.statement_ref}.xlsx",
-                "digest": bytes.fromhex(probe_source_digest),
-                "size": probe_statement.source_size,
-                "audit": audit_ref,
-            },
-        )
-        context = BankStatementImportContext(
-            owner_entity_ref=plan.entity_ref,
-            managed_account_ref=plan.managed_account_ref,
-            evidence_ref=probe_evidence_ref,
-            actor=plan.actor,
-            reason=plan.reason,
-        )
         try:
-            BankStatementImportService(lambda: session).import_statement(
-                probe_statement,
-                context=context,
-                session=session,
-            )
+            with session.begin_nested():
+                audit_ref = _append_audit(
+                    session,
+                    actor=plan.actor,
+                    action="evidence.object.create",
+                    reason=plan.reason,
+                    payload={
+                        "evidence_ref": str(probe_evidence_ref),
+                        "entity_id": str(plan.entity_ref),
+                        "business_unit_id": str(plan.business_unit_ref),
+                        "probe": "overlap-fact-conflict-v1",
+                    },
+                )
+                session.execute(
+                    text(
+                        "INSERT INTO public.evidence_object "
+                        "(evidence_ref, entity_id, business_unit_id, media_type, display_name, "
+                        "plaintext_sha256, plaintext_size, audit_event_id) VALUES "
+                        "(:evidence, :entity, :unit, :media_type, :display_name, "
+                        ":digest, :size, :audit)"
+                    ),
+                    {
+                        "evidence": probe_evidence_ref,
+                        "entity": plan.entity_ref,
+                        "unit": plan.business_unit_ref,
+                        "media_type": statement.declared_media_type,
+                        "display_name": (
+                            f"mybank-conflict-probe-{probe_statement.statement_ref}.xlsx"
+                        ),
+                        "digest": bytes.fromhex(probe_source_digest),
+                        "size": probe_statement.source_size,
+                        "audit": audit_ref,
+                    },
+                )
+                context = BankStatementImportContext(
+                    owner_entity_ref=plan.entity_ref,
+                    managed_account_ref=plan.managed_account_ref,
+                    evidence_ref=probe_evidence_ref,
+                    actor=plan.actor,
+                    reason=plan.reason,
+                )
+                BankStatementImportService(lambda: session).import_statement(
+                    probe_statement,
+                    context=context,
+                    session=session,
+                )
+                raise MyBankStatementCutoverError("overlapping fact conflict was accepted")
+        except MyBankStatementCutoverError:
+            raise
         except BankStatementPersistenceError as exc:
             database_error = exc.__cause__
             rendered = str(getattr(database_error, "orig", database_error))
-            if "overlapping bank statement transaction conflicts with fact" in rendered:
-                return
-            raise MyBankStatementCutoverError(
-                "overlapping fact probe failed for an unexpected reason"
-            ) from exc
-        raise MyBankStatementCutoverError("overlapping fact conflict was accepted")
+            if "overlapping bank statement transaction conflicts with fact" not in rendered:
+                raise MyBankStatementCutoverError(
+                    "overlapping fact probe failed for an unexpected reason"
+                ) from exc
     finally:
         session.close()
 
@@ -1266,18 +1369,30 @@ def _append_audit(
     return audit_ref
 
 
-def _read_schema_revision(engine: Engine) -> str:
-    with engine.connect() as connection:
-        revision = connection.execute(
+def _new_session(bind: Engine | Connection) -> Session:
+    if isinstance(bind, Connection):
+        return Session(bind, join_transaction_mode="rollback_only")
+    return Session(bind)
+
+
+def _read_schema_revision(engine: Engine | Connection) -> str:
+    if isinstance(engine, Connection):
+        revision = engine.execute(
             text("SELECT version_num FROM public.alembic_version")
         ).scalar_one()
+    else:
+        with engine.connect() as connection:
+            revision = connection.execute(
+                text("SELECT version_num FROM public.alembic_version")
+            ).scalar_one()
     if not isinstance(revision, str):
         raise MyBankStatementCutoverError("database schema revision is invalid")
     return revision
 
 
-def _read_production_counts(engine: Engine) -> ProductionCounts:
-    with engine.connect() as connection:
+def _read_production_counts(engine: Engine | Connection) -> ProductionCounts:
+    connection = engine if isinstance(engine, Connection) else engine.connect()
+    try:
         row = (
             connection.execute(
                 text(
@@ -1318,4 +1433,7 @@ def _read_production_counts(engine: Engine) -> ProductionCounts:
             .mappings()
             .one()
         )
+    finally:
+        if not isinstance(engine, Connection):
+            connection.close()
     return ProductionCounts(**{name: int(value) for name, value in row.items()})

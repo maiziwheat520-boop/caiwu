@@ -1,0 +1,47 @@
+{
+  "schema_version": "ledgerbridge.mybank-cutover-plan.v1",
+  "target_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source": {
+    "path": "/srv/ledgerbridge-secure/mybank-cutover/source/synthetic-statement.xlsx",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "size": 1234,
+    "account_suffix": "1357",
+    "transaction_count": 2
+  },
+  "scope": {
+    "evidence_ref": "84000000-0000-4000-8000-000000000003",
+    "owner_entity_ref": "84000000-0000-4000-8000-000000000001",
+    "business_unit_ref": "84000000-0000-4000-8000-000000000002",
+    "owner_kind": "PERSON"
+  },
+  "account": {
+    "operation_id": "84000000-0000-4000-8000-000000000005",
+    "expected_registry_revision": 0,
+    "managed_account_ref": "84000000-0000-4000-8000-000000000004",
+    "account_key": "managed-account:synthetic-personal",
+    "account_kind": "BANK_CHECKING",
+    "aliases": [
+      {
+        "alias_ref": "84000000-0000-4000-8000-000000000006",
+        "alias_kind": "ACCOUNT_NUMBER",
+        "alias_value": "0000 0000 0000 1357"
+      }
+    ],
+    "business_unit_assignment": null
+  },
+  "principal": {
+    "principal_ref": "workload:synthetic-cutover",
+    "san_uri": "spiffe://ledgerbridge.test/synthetic-cutover",
+    "policy_generation": 1
+  },
+  "audit": {
+    "actor": "worker:synthetic-cutover",
+    "reason": "operator-confirmed synthetic whole-statement import"
+  },
+  "safety": {
+    "backup_directory": "/srv/ai-center/backups/ledgerbridge/synthetic-backup",
+    "restore_report": "/srv/ai-center/backups/ledgerbridge/synthetic-backup/restore-rehearsal-synthetic.json",
+    "key_file": "/srv/ledgerbridge-secure/mybank-cutover/key/evidence-key.json",
+    "artifact_root": "/var/lib/ledgerbridge/artifacts"
+  }
+}
