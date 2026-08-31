@@ -685,6 +685,29 @@ class CoreBackedAdapterTests(unittest.TestCase):
         self.assertEqual(claims["expected_revision"], 1)
         self.assertEqual(claims["body_sha256"], hashlib.sha256(body).hexdigest())
 
+    def test_classification_group_preserves_core_created_at_order_when_uuid_order_differs(
+        self,
+    ) -> None:
+        client = ClassificationCoreClient()
+        original_json = client.json
+
+        def core_created_at_order(*args: object, **kwargs: object) -> dict[str, object]:
+            payload = original_json(*args, **kwargs)
+            if args[0] == "GET":
+                # Core orders by created_at first; that timestamp is not repeated on members.
+                payload["items"][0]["members"].reverse()  # type: ignore[index]
+            return payload
+
+        client.json = core_created_at_order  # type: ignore[method-assign]
+        state = build_state(client)
+
+        page = state.candidate_classification_groups()
+
+        self.assertEqual(
+            [member["candidate_ref"] for member in page["items"][0]["members"]],  # type: ignore[index]
+            [SECOND_CANDIDATE_ID, CANDIDATE_ID],
+        )
+
     def test_classification_batch_accepts_a_self_contained_idempotent_replay(self) -> None:
         client = ClassificationCoreClient()
         original_json = client.json
@@ -733,6 +756,7 @@ class CoreBackedAdapterTests(unittest.TestCase):
             "unknown-risk",
             "non-string-risk",
             "mismatched-member-risk",
+            "duplicate-member-within-group",
             "duplicate-member-across-groups",
             "missing-acknowledgements",
             "wrong-operation",
@@ -773,6 +797,8 @@ class CoreBackedAdapterTests(unittest.TestCase):
                             member["review_risk_codes"] = [[]]
                     elif _mutation == "mismatched-member-risk" and args[0] == "GET":
                         payload["items"][0]["members"][1]["review_risk_codes"] = []  # type: ignore[index]
+                    elif _mutation == "duplicate-member-within-group" and args[0] == "GET":
+                        payload["items"][0]["members"][1]["candidate_ref"] = CANDIDATE_ID  # type: ignore[index]
                     elif _mutation == "duplicate-member-across-groups" and args[0] == "GET":
                         duplicate = deepcopy(payload["items"][0])  # type: ignore[index]
                         duplicate["group_ref"] = f"cg_{'b' * 32}"
@@ -806,6 +832,7 @@ class CoreBackedAdapterTests(unittest.TestCase):
                     "unknown-risk",
                         "non-string-risk",
                         "mismatched-member-risk",
+                        "duplicate-member-within-group",
                         "duplicate-member-across-groups",
                 }:
                     with self.assertRaises(CoreBackendError) as raised:

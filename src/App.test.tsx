@@ -349,6 +349,9 @@ function installFetch(options: {
   candidateDetails?: Record<string, ApiCandidate>
   accountingDimensions?: AccountingDimensions
   classificationGroups?: ClassificationGroup[]
+  failClassificationGroupsOnce?: boolean
+  failClassificationGroupsAfterFirst?: boolean
+  failCandidatesAfterFirstOnce?: boolean
   batchFailureStatus?: number
   companyReportResponse?: unknown
   failCompanyReportsOnce?: boolean
@@ -410,6 +413,9 @@ function installFetch(options: {
     candidateDetails = {},
     accountingDimensions,
     classificationGroups = [],
+    failClassificationGroupsOnce = false,
+    failClassificationGroupsAfterFirst = false,
+    failCandidatesAfterFirstOnce = false,
     batchFailureStatus,
     companyReportResponse = companyReports(),
     failCompanyReportsOnce = false,
@@ -418,6 +424,10 @@ function installFetch(options: {
     originalReconciliationGate,
   } = options
   let shouldFailSession = failSessionOnce
+  let shouldFailClassificationGroups = failClassificationGroupsOnce
+  let shouldFailCandidatesAfterFirst = failCandidatesAfterFirstOnce
+  let candidateListRequestCount = 0
+  let classificationGroupRequestCount = 0
   let decisionSaved = false
   let shouldFailCompanyReports = failCompanyReportsOnce
   const unlockedSources = new Set<string>()
@@ -473,6 +483,11 @@ function installFetch(options: {
       return response(companyReportResponse)
     }
     if (url === '/api/v1/candidates' || url.startsWith('/api/v1/candidates?')) {
+      candidateListRequestCount += 1
+      if (shouldFailCandidatesAfterFirst && candidateListRequestCount > 1) {
+        shouldFailCandidatesAfterFirst = false
+        return response({ title: '候选刷新暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
+      }
       if (failCandidateRefreshAfterUnlock && unlockedSources.size > 0) {
         return response({ title: '候选刷新暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
       }
@@ -529,6 +544,18 @@ function installFetch(options: {
       })
     }
     if (url === '/api/v1/candidate-classification-groups') {
+      classificationGroupRequestCount += 1
+      if (
+        shouldFailClassificationGroups
+        || (failClassificationGroupsAfterFirst && classificationGroupRequestCount > 1)
+      ) {
+        shouldFailClassificationGroups = false
+        return response({
+          title: 'LedgerBridge Core request failed',
+          status: 503,
+          code: 'CORE_CONTRACT_INVALID',
+        }, 503)
+      }
       return response({
         contract_version: 'ledgerbridge.classification-groups.v1',
         items: classificationGroups,
@@ -882,6 +909,50 @@ describe('LedgerBridge Web API client', () => {
     fireEvent.click(screen.getByRole('button', { name: /重试/ }))
     expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
     expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/session')).toHaveLength(2)
+  })
+
+  it('keeps the Core-backed overview available when similar groups are temporarily unavailable', async () => {
+    installFetch({
+      runtimeMode: 'core-backed',
+      failClassificationGroupsOnce: true,
+    })
+    renderApp()
+
+    expect(await screen.findByText('正式环境 · Core 实时业务数据')).toBeInTheDocument()
+    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(screen.getByText('同类批量归类暂不可用，可继续逐笔审核')).toBeInTheDocument()
+    expect(screen.queryByText('数据读取失败')).not.toBeInTheDocument()
+    expect(screen.queryByText('演示环境 · 登录已启用 · 合成业务数据')).not.toBeInTheDocument()
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    expect(screen.getByRole('button', { name: '一键审批 0 条' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '可一键审批 0' })).toBeInTheDocument()
+  })
+
+  it('invalidates a loaded similar group before a refresh that also fails another projection', async () => {
+    const { source, peer, group } = similarClassificationFixture()
+    const fetchMock = installFetch({
+      items: [source, peer],
+      classificationGroups: [group],
+      runtimeMode: 'core-backed',
+      failClassificationGroupsAfterFirst: true,
+      failCandidatesAfterFirstOnce: true,
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    const refreshButton = screen.getByRole('button', { name: '刷新' })
+    fireEvent.click(screen.getByText(source.summary))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByLabelText(/同时处理本组其余 1 笔/)).toBeInTheDocument()
+    fireEvent.click(refreshButton)
+
+    expect(await screen.findByText('数据读取失败')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(([input]) => (
+      String(input).includes('/candidate-classification-groups/')
+      && String(input).endsWith('/decisions')
+    ))).toHaveLength(0)
   })
 
   it('posts a confirmed decision with CSRF, idempotency and revision', async () => {

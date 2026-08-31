@@ -82,6 +82,7 @@ import type {
 } from './types'
 
 const CURRENT_MONTH = '2026-08'
+const CLASSIFICATION_GROUPS_UNAVAILABLE_NOTICE = '同类批量归类暂不可用，可继续逐笔审核'
 
 const navigation: Array<{ id: Page; label: string; icon: typeof House }> = [
   { id: 'overview', label: '概览', icon: House },
@@ -243,6 +244,7 @@ function App() {
   const [page, setPage] = useState<Page>(() => pageFromPath(window.location.pathname))
   const [candidates, setCandidates] = useState<Candidate[]>([])
   const [classificationGroups, setClassificationGroups] = useState<ClassificationGroup[]>([])
+  const [classificationGroupsAvailable, setClassificationGroupsAvailable] = useState(false)
   const [session, setSession] = useState<Session | null>(null)
   const [reconciliation, setReconciliation] = useState<ReconciliationData | null>(null)
   const [selectedMonth, setSelectedMonth] = useState(CURRENT_MONTH)
@@ -314,26 +316,42 @@ function App() {
   const loadData = useCallback(async () => {
     setLoading(true)
     setLoadError(null)
+    setClassificationGroups([])
+    setClassificationGroupsAvailable(false)
+    setSelectedCandidate(null)
     try {
+      const sessionData = await api.getSession()
+      setSession(sessionData)
+      const classificationGroupRequest = api.listClassificationGroups().then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        () => ({ status: 'rejected' as const }),
+      )
       const [
-        sessionData,
         candidateData,
-        classificationGroupData,
         reconciliationData,
         connectionData,
+        classificationGroupResult,
       ] = await Promise.all([
-        api.getSession(),
         api.listCandidates(),
-        api.listClassificationGroups(),
         api.getReconciliation(selectedMonth),
         api.listConnections(),
+        classificationGroupRequest,
       ])
-      setSession(sessionData)
       const remainingCandidates = candidateData.next_cursor
         ? await listRemainingCandidatePages(candidateData.next_cursor)
         : []
       setCandidates([...candidateData.items, ...remainingCandidates].map(toCandidate))
-      setClassificationGroups(classificationGroupData.items)
+      if (classificationGroupResult.status === 'fulfilled') {
+        setClassificationGroups(classificationGroupResult.value.items)
+        setClassificationGroupsAvailable(true)
+        setNotice((current) => (
+          current?.message === CLASSIFICATION_GROUPS_UNAVAILABLE_NOTICE ? null : current
+        ))
+      } else {
+        setClassificationGroups([])
+        setClassificationGroupsAvailable(false)
+        setNotice({ tone: 'info', message: CLASSIFICATION_GROUPS_UNAVAILABLE_NOTICE })
+      }
       setAuditCandidates([])
       candidateCursorRef.current = null
       setReconciliation(reconciliationData)
@@ -476,7 +494,7 @@ function App() {
   }
 
   const bulkConfirmCandidates = async (eligible: Candidate[]) => {
-    if (!session || batchBusy || eligible.length === 0) return
+    if (!session || !classificationGroupsAvailable || batchBusy || eligible.length === 0) return
     if (!window.confirm(`将一次确认 ${eligible.length} 条置信度不低于 90% 且无风险提示的账单。确认继续？`)) return
     setBatchBusy(true)
     let confirmed = 0
@@ -510,7 +528,7 @@ function App() {
     group: ClassificationGroup,
     target: ClassificationTarget,
   ) => {
-    if (!session || decisionBusyId) return
+    if (!session || !classificationGroupsAvailable || decisionBusyId) return
     setDecisionBusyId(candidate.id)
     try {
       const receipt = await api.applyClassificationBatch({
@@ -536,6 +554,10 @@ function App() {
       ])
       if (groupResult.status === 'fulfilled') {
         setClassificationGroups(groupResult.value.items)
+        setClassificationGroupsAvailable(true)
+      } else {
+        setClassificationGroups([])
+        setClassificationGroupsAvailable(false)
       }
       if (reconciliationResult.status === 'fulfilled') {
         setReconciliation(reconciliationResult.value)
@@ -638,6 +660,7 @@ function App() {
       setSession(null)
       setCandidates([])
       setClassificationGroups([])
+      setClassificationGroupsAvailable(false)
       setReconciliation(null)
       setOriginalReconciliation(null)
       setOriginalReconciliationError(null)
@@ -702,6 +725,7 @@ function App() {
         <ReviewQueue
           candidates={pendingCandidates}
           classificationGroups={classificationGroups}
+          classificationGroupsAvailable={classificationGroupsAvailable}
           onOpenCandidate={openCandidate}
           onUpdate={updateCandidate}
           onRefresh={loadData}
@@ -885,10 +909,12 @@ function App() {
         <CandidateDialog
           key={`${selectedCandidate.id}:${selectedCandidate.revision}:${selectedCandidate.businessUnitRef}:${selectedCandidate.categoryCode}:${selectedCandidate.amountMinor}:${selectedCandidate.accountingMonth ?? ''}`}
           candidate={selectedCandidate}
-          classificationGroup={classificationGroups.find((group) => (
-            group.accounting_month === selectedCandidate.accountingMonth
-            && group.members.some((member) => member.candidate_ref === selectedCandidate.id)
-          )) ?? null}
+          classificationGroup={classificationGroupsAvailable
+            ? classificationGroups.find((group) => (
+                group.accounting_month === selectedCandidate.accountingMonth
+                && group.members.some((member) => member.candidate_ref === selectedCandidate.id)
+              )) ?? null
+            : null}
           onClose={() => setSelectedCandidate(null)}
           onUpdate={updateCandidate}
           onApplyGroup={applyClassificationGroup}
@@ -2293,9 +2319,10 @@ function CompanyReportMonthCard({ month, currencyCode, candidate, statement, pos
   )
 }
 
-function ReviewQueue({ candidates, classificationGroups, onOpenCandidate, onUpdate, onRefresh, busyId, batchBusy, onBatchConfirm }: {
+function ReviewQueue({ candidates, classificationGroups, classificationGroupsAvailable, onOpenCandidate, onUpdate, onRefresh, busyId, batchBusy, onBatchConfirm }: {
   candidates: Candidate[]
   classificationGroups: ClassificationGroup[]
+  classificationGroupsAvailable: boolean
   onOpenCandidate: (candidate: Candidate) => void
   onUpdate: (candidate: Candidate, intent: CandidateUpdateIntent, corrections?: CandidateCorrections, conflictResolution?: string) => void
   onRefresh: () => void
@@ -2308,7 +2335,9 @@ function ReviewQueue({ candidates, classificationGroups, onOpenCandidate, onUpda
   const [transferObjectFilter, setTransferObjectFilter] = useState('all')
   const [query, setQuery] = useState('')
   const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN')
-  const bulkEligible = candidates.filter((candidate) => isBulkEligible(candidate, classificationGroups))
+  const bulkEligible = classificationGroupsAvailable
+    ? candidates.filter((candidate) => isBulkEligible(candidate, classificationGroups))
+    : []
   const evidenceReminderCount = candidates.filter((candidate) => candidate.reviewRisks.some((risk) => materialNameFor(candidate, risk.code) !== null)).length
   const statusCounts = {
     all: candidates.length,
@@ -2348,7 +2377,7 @@ function ReviewQueue({ candidates, classificationGroups, onOpenCandidate, onUpda
     const matchesStatus = statusFilter === 'all'
       || (statusFilter === 'conflict' && candidate.conflict)
       || (statusFilter === 'incomplete' && (candidate.incomplete || candidate.reviewRisks.length > 0) && !candidate.conflict)
-      || (statusFilter === 'ready' && isBulkEligible(candidate, classificationGroups))
+      || (statusFilter === 'ready' && classificationGroupsAvailable && isBulkEligible(candidate, classificationGroups))
     const matchesQuery = !normalizedQuery || [
       candidate.shortId,
       candidate.businessUnit,

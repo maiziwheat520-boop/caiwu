@@ -1238,8 +1238,6 @@ def _classification_groups_from_core(
             member_refs.add(canonical_candidate_ref)
             mapped_members.append(deepcopy(raw_member))
         all_member_refs.update(member_refs)
-        if [member["candidate_ref"] for member in mapped_members] != sorted(member_refs):
-            raise invalid
         batch_count = sum(member.get("batch_eligible") is True for member in mapped_members)
         one_click_count = sum(
             member.get("one_click_eligible") is True for member in mapped_members
