@@ -345,6 +345,7 @@ function installFetch(options: {
   payrollResponses?: Record<string, unknown>
   payrollVerifyResult?: unknown
   failAccountingDimensions?: boolean
+  failAccountingDimensionsAfterFirst?: boolean
   failCandidateDetail?: boolean
   candidateDetails?: Record<string, ApiCandidate>
   accountingDimensions?: AccountingDimensions
@@ -409,6 +410,7 @@ function installFetch(options: {
       },
     },
     failAccountingDimensions = false,
+    failAccountingDimensionsAfterFirst = false,
     failCandidateDetail = false,
     candidateDetails = {},
     accountingDimensions,
@@ -428,6 +430,7 @@ function installFetch(options: {
   let shouldFailCandidatesAfterFirst = failCandidatesAfterFirstOnce
   let candidateListRequestCount = 0
   let classificationGroupRequestCount = 0
+  let accountingDimensionsRequestCount = 0
   let decisionSaved = false
   let shouldFailCompanyReports = failCompanyReportsOnce
   const unlockedSources = new Set<string>()
@@ -522,7 +525,8 @@ function installFetch(options: {
     }
     if (url === '/api/v1/connections') return response({ items: [] })
     if (url === '/api/v1/accounting-dimensions') {
-      if (failAccountingDimensions) {
+      accountingDimensionsRequestCount += 1
+      if (failAccountingDimensions || (failAccountingDimensionsAfterFirst && accountingDimensionsRequestCount > 1)) {
         return response({ title: '会计维度暂不可用', status: 503, code: 'ACCOUNTING_DIMENSIONS_UNAVAILABLE' }, 503)
       }
       return response(accountingDimensions ?? {
@@ -1216,12 +1220,12 @@ describe('LedgerBridge Web API client', () => {
     expect(JSON.parse(String(decisionCall?.[1]?.body))).not.toHaveProperty('corrections')
   })
 
-  it('keeps similar-group propagation closed when the dimension catalog is temporarily unavailable', async () => {
+  it('keeps similar-group propagation closed when a cached dimension catalog becomes unavailable', async () => {
     const { source, peer, group } = similarClassificationFixture()
     const fetchMock = installFetch({
       items: [source, peer],
       classificationGroups: [group],
-      failAccountingDimensions: true,
+      failAccountingDimensionsAfterFirst: true,
       runtimeMode: 'core-backed',
     })
     renderApp()
@@ -1229,7 +1233,15 @@ describe('LedgerBridge Web API client', () => {
     fireEvent.click(screen.getAllByText('待审核')[0])
     fireEvent.click(screen.getByText(source.summary))
 
-    const dialog = await screen.findByRole('dialog')
+    let dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('combobox', { name: '营业单元' })).toBeEnabled()
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+    fireEvent.click(screen.getByText(source.summary))
+
+    dialog = await screen.findByRole('dialog')
+    await within(dialog).findByText(/可按现有分类继续确认/)
+    expect(within(dialog).getByRole('combobox', { name: '营业单元' })).toBeDisabled()
+    expect(within(dialog).getByRole('combobox', { name: '科目' })).toBeDisabled()
     fireEvent.click(within(dialog).getByLabelText(/同时处理本组其余 1 笔/))
     fireEvent.click(within(dialog).getByLabelText(/我已逐项核对并确认风险条件/))
     const submit = within(dialog).getByRole('button', { name: '确认本组 2 笔' })

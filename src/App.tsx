@@ -2782,6 +2782,7 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
   const groupFieldDrift = parsedAmountMinor !== candidate.amountMinor
     || accountingMonth !== candidate.accountingMonth
   const groupConfirmBlocked = confirmBlocked
+    || Boolean(accountingDimensionsError)
     || !dimensionsContainSelection
     || !canApplyGroup
     || groupFieldDrift
@@ -2848,7 +2849,7 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
                 {readOnly ? (
                   <TextField.Root id="candidate-business-unit" readOnly value={candidate.businessUnit} />
                 ) : (
-                  <select aria-describedby={dimensionsStatusId} id="candidate-business-unit" disabled={!accountingDimensions} value={businessUnitRef} onChange={(event) => setBusinessUnitRef(event.target.value)}>
+                  <select aria-describedby={dimensionsStatusId} id="candidate-business-unit" disabled={detailLoading || !accountingDimensions || Boolean(accountingDimensionsError)} value={businessUnitRef} onChange={(event) => setBusinessUnitRef(event.target.value)}>
                     {!accountingDimensions?.business_units.some((unit) => unit.ref === businessUnitRef) ? <option value={businessUnitRef}>{accountingDimensions ? `当前（目录外）：${candidate.businessUnit}` : `当前：${candidate.businessUnit}`}</option> : null}
                     {accountingDimensions?.business_units.map((unit) => <option key={unit.ref} value={unit.ref}>{unit.label}</option>)}
                   </select>
@@ -2859,7 +2860,7 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
                 {readOnly ? (
                   <TextField.Root id="candidate-category" readOnly value={candidate.category} />
                 ) : (
-                  <select aria-describedby={dimensionsStatusId} id="candidate-category" disabled={!accountingDimensions} value={categoryCode} onChange={(event) => setCategoryCode(event.target.value)}>
+                  <select aria-describedby={dimensionsStatusId} id="candidate-category" disabled={detailLoading || !accountingDimensions || Boolean(accountingDimensionsError)} value={categoryCode} onChange={(event) => setCategoryCode(event.target.value)}>
                     {!accountingDimensions?.categories.some((item) => item.code === categoryCode) ? <option value={categoryCode}>{accountingDimensions ? `当前（目录外）：${candidate.category}` : `当前：${candidate.category}`}</option> : null}
                     {accountingDimensions?.categories.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
                   </select>
@@ -3029,7 +3030,7 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
             <div className={`dialog-submit-context ${classificationSelectionAllowed ? '' : 'invalid'}`}>
               <span>本次分类</span>
               <strong>{selectedBusinessUnitLabel && selectedCategoryLabel ? `${selectedBusinessUnitLabel} · ${selectedCategoryLabel}` : '尚未选择营业单元和科目'}</strong>
-              {accountingDimensions
+              {accountingDimensions && !accountingDimensionsError
                 ? <button type="button" onClick={focusClassification}>选择或修改分类</button>
                 : <span className="dialog-submit-context-hint">目录恢复后可修改</span>}
             </div>
