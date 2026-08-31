@@ -8,6 +8,10 @@ import type {
   CandidateDecision,
   CandidateDetail,
   CandidateListResponse,
+  ClassificationBatchReceipt,
+  ClassificationGroup,
+  ClassificationGroupPage,
+  ClassificationTarget,
   CompanyReportsResponse,
   ConnectionStatus,
   EvidenceUnlockResult,
@@ -278,6 +282,39 @@ export const api = {
   getAccountingDimensions: () =>
     requestJson<AccountingDimensions>('/api/v1/accounting-dimensions'),
 
+  listClassificationGroups: () =>
+    requestJson<ClassificationGroupPage>('/api/v1/candidate-classification-groups'),
+
+  applyClassificationBatch: ({ group, sourceCandidate, target, reason, csrfToken }: {
+    group: ClassificationGroup
+    sourceCandidate: ApiCandidate
+    target: ClassificationTarget
+    reason: string
+    csrfToken: string
+  }) => requestJson<ClassificationBatchReceipt>(
+    `/api/v1/candidate-classification-groups/${encodeURIComponent(group.group_ref)}/decisions`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': createOperationId(),
+        'X-CSRF-Token': csrfToken,
+      },
+      body: JSON.stringify({
+        source_candidate_ref: sourceCandidate.id,
+        accounting_month: group.accounting_month,
+        target,
+        members: eligibleClassificationBatchMembers(group)
+          .map((member) => ({
+            candidate_ref: member.candidate_ref,
+            expected_revision: member.revision,
+          })),
+        reason,
+        acknowledged_risk_codes: group.conditions.risk_signature,
+      }),
+    },
+  ),
+
   getEvidencePreview: (evidenceId: string, reference: string) => {
     const query = new URLSearchParams({ reference })
     return requestJson<EvidencePreview>(
@@ -422,4 +459,10 @@ export function majorInputToMinor(amount: string): number | null {
   const signed = match[1] === '-' ? -cents : cents
   const limit = BigInt(Number.MAX_SAFE_INTEGER)
   return signed < -limit || signed > limit ? null : Number(signed)
+}
+
+export function eligibleClassificationBatchMembers(group: ClassificationGroup) {
+  return group.members.filter(
+    (member) => member.status === 'PENDING' && member.batch_eligible,
+  )
 }

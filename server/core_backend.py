@@ -54,6 +54,18 @@ PAYROLL_COMMAND_ROLES = {
     "verify-receipts": "checker",
 }
 ACCOUNTING_DIMENSIONS_CORE_PATH = "/internal/v1/accounting-dimensions"
+CLASSIFICATION_GROUPS_CORE_PATH = "/internal/v1/candidate-classification-groups"
+CLASSIFICATION_GROUP_REF = re.compile(r"^cg_[0-9a-f]{32}$")
+CLASSIFICATION_RISK_CODES = frozenset(
+    {
+        "FUNDING_STATEMENT_REQUIRED",
+        "HOTEL_PAYOUT_STATEMENT_REQUIRED",
+        "RELATED_ACCOUNT_STATEMENT_REQUIRED",
+        "REVERSAL_MATCH_REQUIRED",
+        "TRANSFER_REVIEW_REQUIRED",
+        "UNSETTLED_TRANSACTION",
+    }
+)
 
 
 class CoreBackendError(RuntimeError):
@@ -378,6 +390,93 @@ class CoreBackedState:
                 raise invalid_contract()
             mapped[collection] = items
         return mapped
+
+    def candidate_classification_groups(self) -> dict[str, object]:
+        payload = self.client.json("GET", CLASSIFICATION_GROUPS_CORE_PATH)
+        return _classification_groups_from_core(payload, entity_ref=self.entity_ref)
+
+    def apply_candidate_classification_batch(
+        self,
+        group_ref: str,
+        idempotency_key: str,
+        request: dict[str, object],
+    ) -> tuple[int, dict[str, object]]:
+        if CLASSIFICATION_GROUP_REF.fullmatch(group_ref) is None:
+            return 422, _problem(422, "INVALID_CLASSIFICATION_GROUP")
+        try:
+            operation_id = str(uuid.UUID(idempotency_key))
+            source_candidate_ref = str(uuid.UUID(str(request.get("source_candidate_ref"))))
+        except (TypeError, ValueError):
+            return 422, _problem(422, "INVALID_CLASSIFICATION_BATCH")
+        members = request.get("members")
+        if not isinstance(members, list) or not 2 <= len(members) <= 100:
+            return 422, _problem(422, "INVALID_CLASSIFICATION_BATCH")
+        member_refs: list[str] = []
+        for member in members:
+            if not isinstance(member, dict) or set(member) != {
+                "candidate_ref",
+                "expected_revision",
+            }:
+                return 422, _problem(422, "INVALID_CLASSIFICATION_BATCH")
+            try:
+                candidate_ref = str(uuid.UUID(str(member.get("candidate_ref"))))
+            except (TypeError, ValueError):
+                return 422, _problem(422, "INVALID_CLASSIFICATION_BATCH")
+            revision = member.get("expected_revision")
+            if (
+                member.get("candidate_ref") != candidate_ref
+                or type(revision) is not int
+                or int(revision) < 1
+            ):
+                return 422, _problem(422, "INVALID_CLASSIFICATION_BATCH")
+            member_refs.append(candidate_ref)
+        if len(member_refs) != len(set(member_refs)) or source_candidate_ref not in member_refs:
+            return 422, _problem(422, "INVALID_CLASSIFICATION_BATCH")
+        source_members = [
+            member
+            for member in members
+            if isinstance(member, dict)
+            and member.get("candidate_ref") == source_candidate_ref
+        ]
+        if len(source_members) != 1 or type(source_members[0].get("expected_revision")) is not int:
+            return 422, _problem(422, "INVALID_CLASSIFICATION_BATCH")
+        expected_revision = int(source_members[0]["expected_revision"])
+        path = f"{CLASSIFICATION_GROUPS_CORE_PATH}/{group_ref}/decisions"
+        body = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        assertion = self._user_assertion(
+            path=path,
+            body=body,
+            candidate_ref=source_candidate_ref,
+            expected_revision=expected_revision,
+            operation_id=operation_id,
+        )
+        try:
+            payload = self.client.json(
+                "POST",
+                path,
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": operation_id,
+                    "X-LedgerBridge-User-Assertion": assertion,
+                },
+            )
+        except CoreBackendError as error:
+            return error.status, error.payload
+        try:
+            mapped = _classification_batch_receipt_from_core(
+                payload,
+                operation_id=operation_id,
+                group_ref=group_ref,
+                source_candidate_ref=source_candidate_ref,
+                accounting_month=request.get("accounting_month"),
+                target=request.get("target"),
+                acknowledged_risk_codes=request.get("acknowledged_risk_codes"),
+                member_refs=member_refs,
+            )
+        except CoreBackendError as error:
+            return error.status, error.payload
+        return 200, mapped
 
     def list_review_events(self, *, cursor: str | None) -> dict[str, object]:
         if cursor is not None:
@@ -979,6 +1078,345 @@ class CoreBackedState:
         signed = f"v1.{encoded}".encode("ascii")
         signature = hmac.new(self.assertion_key, signed, hashlib.sha256).digest()
         return f"v1.{encoded}.{_b64url(signature)}"
+
+
+def _classification_groups_from_core(
+    payload: dict[str, object],
+    *,
+    entity_ref: str,
+) -> dict[str, object]:
+    invalid = CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    if (
+        set(payload) != {"contract_version", "items", "next_cursor"}
+        or payload.get("contract_version") != "ledgerbridge.classification-groups.v1"
+        or payload.get("next_cursor") is not None
+        or not isinstance(payload.get("items"), list)
+        or len(payload["items"]) > 10_000  # type: ignore[arg-type]
+    ):
+        raise invalid
+    condition_fields = {
+        "key_version",
+        "entity_ref",
+        "source_system",
+        "source_kind",
+        "platform",
+        "direction",
+        "transaction_type",
+        "counterparty_key",
+        "counterparty_label",
+        "counterparty_basis",
+        "funding_instrument",
+        "transaction_status",
+        "currency",
+        "risk_signature",
+    }
+    member_fields = {
+        "candidate_ref",
+        "short_id",
+        "revision",
+        "status",
+        "amount_minor",
+        "accounting_month",
+        "confidence_basis_points",
+        "review_risk_codes",
+        "amount_outlier",
+        "batch_eligible",
+        "one_click_eligible",
+        "exclusion_codes",
+    }
+    group_fields = {
+        "contract_version",
+        "group_ref",
+        "accounting_month",
+        "conditions",
+        "members",
+        "batch_member_count",
+        "one_click_member_count",
+        "terminal_statuses",
+        "terminal_classifications",
+        "rule_learning_eligible",
+        "rule_learning_blocks",
+        "active_rule",
+    }
+    statuses = {"INCOMPLETE", "CONFLICTED", "PENDING", "CONFIRMED", "IGNORED", "SUPERSEDED"}
+    exclusion_codes = {
+        "NOT_PENDING",
+        "LOW_CONFIDENCE",
+        "BLOCKED",
+        "STRUCTURAL_RISK",
+        "AMOUNT_OUTLIER",
+    }
+    rule_blocks = {
+        "PROVISIONAL_BASIS",
+        "TERMINAL_DECISION_CONFLICT",
+        "REVIEW_RISK_PRESENT",
+        "AMOUNT_OUTLIER",
+        "NO_CONFIRMED_SOURCE",
+    }
+    groups: list[dict[str, object]] = []
+    group_keys: list[tuple[str, str]] = []
+    all_member_refs: set[str] = set()
+    for raw_group in payload["items"]:  # type: ignore[index]
+        if not isinstance(raw_group, dict) or set(raw_group) != group_fields:
+            raise invalid
+        group_ref = raw_group.get("group_ref")
+        month = raw_group.get("accounting_month")
+        conditions = raw_group.get("conditions")
+        members = raw_group.get("members")
+        if (
+            raw_group.get("contract_version") != "ledgerbridge.classification-group.v1"
+            or not isinstance(group_ref, str)
+            or CLASSIFICATION_GROUP_REF.fullmatch(group_ref) is None
+            or not isinstance(month, str)
+            or PAYROLL_PERIOD.fullmatch(month) is None
+            or not isinstance(conditions, dict)
+            or set(conditions) != condition_fields
+            or conditions.get("key_version") != "ledgerbridge.classification-key.v1"
+            or conditions.get("entity_ref") != entity_ref
+            or conditions.get("direction") not in {"INFLOW", "OUTFLOW", "NEUTRAL"}
+            or conditions.get("counterparty_basis")
+            not in {"REGISTRY_COUNTERPARTY", "EXACT_PLATFORM_SUMMARY_V1"}
+            or conditions.get("currency") != "CNY"
+            or not isinstance(members, list)
+            or not members
+        ):
+            raise invalid
+        text_fields = condition_fields - {
+            "key_version",
+            "entity_ref",
+            "direction",
+            "counterparty_basis",
+            "currency",
+            "risk_signature",
+        }
+        if any(
+            not isinstance(conditions.get(field), str)
+            or not str(conditions[field]).strip()
+            for field in text_fields
+        ):
+            raise invalid
+        risk_signature = conditions.get("risk_signature")
+        if not _ordered_unique_codes(risk_signature):
+            raise invalid
+        mapped_members: list[dict[str, object]] = []
+        member_refs: set[str] = set()
+        for raw_member in members:
+            if not isinstance(raw_member, dict) or set(raw_member) != member_fields:
+                raise invalid
+            candidate_ref = raw_member.get("candidate_ref")
+            try:
+                canonical_candidate_ref = str(uuid.UUID(str(candidate_ref)))
+            except (TypeError, ValueError):
+                raise invalid from None
+            review_risks = raw_member.get("review_risk_codes")
+            exclusions = raw_member.get("exclusion_codes")
+            if (
+                candidate_ref != canonical_candidate_ref
+                or canonical_candidate_ref in member_refs
+                or canonical_candidate_ref in all_member_refs
+                or not isinstance(raw_member.get("short_id"), str)
+                or type(raw_member.get("revision")) is not int
+                or int(raw_member["revision"]) < 1
+                or raw_member.get("status") not in statuses
+                or type(raw_member.get("amount_minor")) is not int
+                or abs(int(raw_member["amount_minor"])) > 9_007_199_254_740_991
+                or raw_member.get("accounting_month") != month
+                or type(raw_member.get("confidence_basis_points")) is not int
+                or not 0 <= int(raw_member["confidence_basis_points"]) <= 10_000
+                or not _ordered_unique_codes(review_risks)
+                or review_risks != risk_signature
+                or type(raw_member.get("amount_outlier")) is not bool
+                or type(raw_member.get("batch_eligible")) is not bool
+                or type(raw_member.get("one_click_eligible")) is not bool
+                or not isinstance(exclusions, list)
+                or any(code not in exclusion_codes for code in exclusions)
+                or len(exclusions) != len(set(exclusions))
+                or raw_member.get("one_click_eligible") is True
+                and raw_member.get("batch_eligible") is not True
+            ):
+                raise invalid
+            member_refs.add(canonical_candidate_ref)
+            mapped_members.append(deepcopy(raw_member))
+        all_member_refs.update(member_refs)
+        if [member["candidate_ref"] for member in mapped_members] != sorted(member_refs):
+            raise invalid
+        batch_count = sum(member.get("batch_eligible") is True for member in mapped_members)
+        one_click_count = sum(
+            member.get("one_click_eligible") is True for member in mapped_members
+        )
+        terminal_statuses = raw_group.get("terminal_statuses")
+        terminal_classifications = raw_group.get("terminal_classifications")
+        blocks = raw_group.get("rule_learning_blocks")
+        active_rule = raw_group.get("active_rule")
+        if (
+            raw_group.get("batch_member_count") != batch_count
+            or raw_group.get("one_click_member_count") != one_click_count
+            or not isinstance(terminal_statuses, list)
+            or any(status not in statuses for status in terminal_statuses)
+            or len(terminal_statuses) != len(set(terminal_statuses))
+            or not isinstance(terminal_classifications, list)
+            or any(not isinstance(value, str) for value in terminal_classifications)
+            or terminal_classifications != sorted(set(terminal_classifications))
+            or type(raw_group.get("rule_learning_eligible")) is not bool
+            or not isinstance(blocks, list)
+            or any(block not in rule_blocks for block in blocks)
+            or len(blocks) != len(set(blocks))
+            or (raw_group.get("rule_learning_eligible") is True) != (not blocks)
+            or active_rule is not None
+        ):
+            raise invalid
+        groups.append(deepcopy(raw_group))
+        group_keys.append((month, group_ref))
+    if group_keys != sorted(group_keys) or len(group_keys) != len(set(group_keys)):
+        raise invalid
+    return {
+        "contract_version": "ledgerbridge.classification-groups.v1",
+        "items": groups,
+        "next_cursor": None,
+    }
+
+
+def _classification_batch_receipt_from_core(
+    payload: dict[str, object],
+    *,
+    operation_id: str,
+    group_ref: str,
+    source_candidate_ref: str,
+    accounting_month: object,
+    target: object,
+    acknowledged_risk_codes: object,
+    member_refs: list[str],
+) -> dict[str, object]:
+    invalid = CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    expected = {
+        "contract_version",
+        "operation_id",
+        "replayed",
+        "group_ref",
+        "accounting_month",
+        "source_candidate_ref",
+        "target",
+        "acknowledged_risk_codes",
+        "results",
+    }
+    results = payload.get("results")
+    try:
+        uuid.UUID(str(payload.get("operation_id")))
+    except (TypeError, ValueError):
+        raise invalid from None
+    if (
+        set(payload) != expected
+        or payload.get("contract_version") != "ledgerbridge.classification-batch.v1"
+        or payload.get("operation_id") != operation_id
+        or type(payload.get("replayed")) is not bool
+        or payload.get("group_ref") != group_ref
+        or payload.get("accounting_month") != accounting_month
+        or payload.get("source_candidate_ref") != source_candidate_ref
+        or payload.get("target") != target
+        or payload.get("acknowledged_risk_codes") != acknowledged_risk_codes
+        or not _ordered_unique_codes(payload.get("acknowledged_risk_codes"), maximum=6)
+        or not isinstance(results, list)
+        or not 2 <= len(results) <= 100
+    ):
+        raise invalid
+    mapped_results: list[dict[str, object]] = []
+    candidate_refs: set[str] = set()
+    operations: set[str] = set()
+    for result in results:
+        if not isinstance(result, dict) or set(result) != {
+            "candidate_ref",
+            "operation_id",
+            "status",
+            "candidate",
+            "events",
+        }:
+            raise invalid
+        try:
+            candidate_ref = str(uuid.UUID(str(result.get("candidate_ref"))))
+            operation_id = str(uuid.UUID(str(result.get("operation_id"))))
+        except (TypeError, ValueError):
+            raise invalid from None
+        candidate = result.get("candidate")
+        events = result.get("events")
+        target_business_unit = target.get("business_unit_ref") if isinstance(target, dict) else None
+        target_category = target.get("category_code") if isinstance(target, dict) else None
+        if (
+            result.get("candidate_ref") != candidate_ref
+            or result.get("operation_id") != operation_id
+            or candidate_ref in candidate_refs
+            or operation_id in operations
+            or result.get("status") not in {"APPLIED", "REPLAYED"}
+            or not isinstance(candidate, dict)
+            or candidate.get("candidate_ref") != candidate_ref
+            or candidate.get("business_unit_ref") != target_business_unit
+            or candidate.get("category_code") != target_category
+            or not isinstance(events, list)
+            or not 1 <= len(events) <= 2
+            or any(not isinstance(event, dict) for event in events)
+            or any(
+                event.get("candidate_ref") != candidate_ref
+                or event.get("operation_id") != operation_id
+                for event in events
+                if isinstance(event, dict)
+            )
+            or result.get("status")
+            != ("REPLAYED" if payload.get("replayed") is True else "APPLIED")
+        ):
+            raise invalid
+        candidate_revision = candidate.get("revision")
+        if (
+            type(candidate_revision) is not int
+            or any(
+                type(event.get("from_revision")) is not int
+                or type(event.get("to_revision")) is not int
+                or event.get("to_revision") != event.get("from_revision") + 1
+                for event in events
+                if isinstance(event, dict)
+            )
+            or any(
+                events[index].get("from_revision")
+                != events[index - 1].get("to_revision")
+                for index in range(1, len(events))
+            )
+            or events[-1].get("to_revision") != candidate_revision
+        ):
+            raise invalid
+        candidate_refs.add(candidate_ref)
+        operations.add(operation_id)
+        mapped_results.append(
+            {
+                "candidate_ref": candidate_ref,
+                "operation_id": operation_id,
+                "status": result["status"],
+                "candidate": _candidate_from_core(candidate),
+                "events": [_event_from_core(event) for event in events],
+            }
+        )
+    if candidate_refs != set(member_refs):
+        raise invalid
+    return {
+        "contract_version": "ledgerbridge.classification-batch.v1",
+        "operation_id": payload["operation_id"],
+        "replayed": payload["replayed"],
+        "group_ref": group_ref,
+        "accounting_month": accounting_month,
+        "source_candidate_ref": source_candidate_ref,
+        "target": deepcopy(target),
+        "acknowledged_risk_codes": list(payload["acknowledged_risk_codes"]),
+        "results": mapped_results,
+    }
+
+
+def _ordered_unique_codes(value: object, *, maximum: int = 6) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) <= maximum
+        and all(
+            isinstance(code, str) and code in CLASSIFICATION_RISK_CODES
+            for code in value
+        )
+        and value == sorted(set(value))
+    )
 
 
 def sqlite_contains_business_facts(path: str | Path) -> bool:

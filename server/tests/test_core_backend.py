@@ -12,11 +12,11 @@ import threading
 import unittest
 import urllib.request
 import uuid
+from collections.abc import Callable
 from contextlib import closing
 from contextlib import redirect_stdout
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
 
 from server.app import COOKIE_NAME, create_server
 from server.core_backend import (
@@ -28,9 +28,11 @@ from server.core_backend import (
 
 
 CANDIDATE_ID = "30000000-0000-4000-8000-000000000003"
+SECOND_CANDIDATE_ID = "30000000-0000-4000-8000-000000000004"
 EVIDENCE_ID = "20000000-0000-4000-8000-000000000003"
 ENTITY_ID = "10000000-0000-4000-8000-000000000001"
 ASSERTION_KEY = b"synthetic-web-core-assertion-key-0001"
+CLASSIFICATION_GROUP_REF = "cg_0123456789abcdef0123456789abcdef"
 
 
 def core_candidate(*, status: str = "PENDING", revision: int = 1) -> dict[str, object]:
@@ -106,6 +108,94 @@ def core_event() -> dict[str, object]:
         "prior_projection": prior,
         "result_projection": result,
         "result_derived_candidate": None,
+    }
+
+
+def core_classification_group() -> dict[str, object]:
+    return {
+        "contract_version": "ledgerbridge.classification-group.v1",
+        "group_ref": CLASSIFICATION_GROUP_REF,
+        "accounting_month": "2026-08",
+        "conditions": {
+            "key_version": "ledgerbridge.classification-key.v1",
+            "entity_ref": ENTITY_ID,
+            "source_system": "alipay",
+            "source_kind": "TRANSFER",
+            "platform": "余额宝",
+            "direction": "INFLOW",
+            "transaction_type": "TRANSFER",
+            "counterparty_key": "余额宝",
+            "counterparty_label": "余额宝",
+            "counterparty_basis": "EXACT_PLATFORM_SUMMARY_V1",
+            "funding_instrument": "余额",
+            "transaction_status": "SUCCESS",
+            "currency": "CNY",
+            "risk_signature": ["TRANSFER_REVIEW_REQUIRED"],
+        },
+        "members": [
+            {
+                "candidate_ref": candidate_ref,
+                "short_id": f"C-{ordinal}",
+                "revision": 1,
+                "status": "PENDING",
+                "amount_minor": amount_minor,
+                "accounting_month": "2026-08",
+                "confidence_basis_points": 9800,
+                "review_risk_codes": ["TRANSFER_REVIEW_REQUIRED"],
+                "amount_outlier": False,
+                "batch_eligible": True,
+                "one_click_eligible": False,
+                "exclusion_codes": [],
+            }
+            for ordinal, (candidate_ref, amount_minor) in enumerate(
+                ((CANDIDATE_ID, 12345), (SECOND_CANDIDATE_ID, 67890)),
+                start=1,
+            )
+        ],
+        "batch_member_count": 2,
+        "one_click_member_count": 0,
+        "terminal_statuses": [],
+        "terminal_classifications": [],
+        "rule_learning_eligible": False,
+        "rule_learning_blocks": ["PROVISIONAL_BASIS", "REVIEW_RISK_PRESENT"],
+        "active_rule": None,
+    }
+
+
+def core_classification_batch_receipt(operation_id: str) -> dict[str, object]:
+    results: list[dict[str, object]] = []
+    for ordinal, candidate_ref in enumerate((CANDIDATE_ID, SECOND_CANDIDATE_ID), start=3):
+        candidate = core_candidate(status="CONFIRMED", revision=2)
+        candidate["candidate_ref"] = candidate_ref
+        candidate["short_id"] = f"C-R0A00{ordinal}"
+        event = core_event()
+        event["candidate_ref"] = candidate_ref
+        event["prior_projection"] = deepcopy(candidate) | {"revision": 1, "status": "PENDING"}
+        event["result_projection"] = deepcopy(candidate)
+        member_operation_id = f"60000000-0000-4000-8000-00000000000{ordinal}"
+        event["operation_id"] = member_operation_id
+        results.append(
+            {
+                "candidate_ref": candidate_ref,
+                "operation_id": member_operation_id,
+                "status": "APPLIED",
+                "candidate": candidate,
+                "events": [event],
+            }
+        )
+    return {
+        "contract_version": "ledgerbridge.classification-batch.v1",
+        "operation_id": operation_id,
+        "replayed": False,
+        "group_ref": CLASSIFICATION_GROUP_REF,
+        "accounting_month": "2026-08",
+        "source_candidate_ref": CANDIDATE_ID,
+        "target": {
+            "business_unit_ref": "unit-demo-a",
+            "category_code": "SETTLEMENT",
+        },
+        "acknowledged_risk_codes": ["TRANSFER_REVIEW_REQUIRED"],
+        "results": results,
     }
 
 
@@ -375,6 +465,32 @@ class FakeCoreClient:
         }
 
 
+class ClassificationCoreClient(FakeCoreClient):
+    def json(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        if method == "GET" and path == "/internal/v1/candidate-classification-groups":
+            self.calls.append((method, path, body, dict(headers or {})))
+            return {
+                "contract_version": "ledgerbridge.classification-groups.v1",
+                "items": [core_classification_group()],
+                "next_cursor": None,
+            }
+        if method == "POST" and path == (
+            f"/internal/v1/candidate-classification-groups/{CLASSIFICATION_GROUP_REF}/decisions"
+        ):
+            assert body is not None
+            assert headers is not None
+            self.calls.append((method, path, body, dict(headers or {})))
+            return core_classification_batch_receipt(str(headers["Idempotency-Key"]))
+        return super().json(method, path, body=body, headers=headers)
+
+
 class StableReferenceCoreClient(FakeCoreClient):
     """Model Core's fail-closed ref/code lookup for correction commands."""
 
@@ -515,6 +631,211 @@ def build_state(
 
 
 class CoreBackedAdapterTests(unittest.TestCase):
+    def test_classification_group_scope_and_atomic_batch_cross_the_core_boundary(self) -> None:
+        client = ClassificationCoreClient()
+        state = build_state(client)
+
+        page = state.candidate_classification_groups()
+
+        self.assertEqual(client.calls[-1][:2], ("GET", "/internal/v1/candidate-classification-groups"))
+        self.assertEqual(page["items"][0]["group_ref"], CLASSIFICATION_GROUP_REF)  # type: ignore[index]
+        self.assertEqual(page["items"][0]["batch_member_count"], 2)  # type: ignore[index]
+        operation_id = str(uuid.uuid4())
+        request: dict[str, object] = {
+            "source_candidate_ref": CANDIDATE_ID,
+            "accounting_month": "2026-08",
+            "target": {
+                "business_unit_ref": "unit-demo-a",
+                "category_code": "SETTLEMENT",
+            },
+            "members": [
+                {"candidate_ref": CANDIDATE_ID, "expected_revision": 1},
+                {"candidate_ref": SECOND_CANDIDATE_ID, "expected_revision": 1},
+            ],
+            "reason": "逐笔核对相似交易后整组确认",
+            "acknowledged_risk_codes": ["TRANSFER_REVIEW_REQUIRED"],
+        }
+
+        status, receipt = state.apply_candidate_classification_batch(
+            CLASSIFICATION_GROUP_REF,
+            operation_id,
+            request,
+        )
+
+        self.assertEqual(status, 200, receipt)
+        self.assertEqual(receipt["acknowledged_risk_codes"], ["TRANSFER_REVIEW_REQUIRED"])
+        self.assertEqual(len(receipt["results"]), 2)
+        method, path, body, headers = client.calls[-1]
+        self.assertEqual(method, "POST")
+        self.assertEqual(
+            path,
+            f"/internal/v1/candidate-classification-groups/{CLASSIFICATION_GROUP_REF}/decisions",
+        )
+        self.assertEqual(json.loads(body), request)
+        self.assertEqual(headers["Idempotency-Key"], operation_id)
+        version, encoded, signature = headers["X-LedgerBridge-User-Assertion"].split(".")
+        self.assertEqual(version, "v1")
+        signed = f"v1.{encoded}".encode("ascii")
+        expected = hmac.new(ASSERTION_KEY, signed, hashlib.sha256).digest()
+        supplied = base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))
+        self.assertTrue(hmac.compare_digest(expected, supplied))
+        claims = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        self.assertEqual(claims["canonical_path"], path)
+        self.assertEqual(claims["resource_ref"], CANDIDATE_ID)
+        self.assertEqual(claims["expected_revision"], 1)
+        self.assertEqual(claims["body_sha256"], hashlib.sha256(body).hexdigest())
+
+    def test_classification_batch_accepts_a_self_contained_idempotent_replay(self) -> None:
+        client = ClassificationCoreClient()
+        original_json = client.json
+
+        def replayed_contract(*args: object, **kwargs: object) -> dict[str, object]:
+            payload = original_json(*args, **kwargs)
+            if args[0] == "POST":
+                payload["replayed"] = True
+                for result in payload["results"]:  # type: ignore[index]
+                    result["status"] = "REPLAYED"
+            return payload
+
+        client.json = replayed_contract  # type: ignore[method-assign]
+        state = build_state(client)
+        status, receipt = state.apply_candidate_classification_batch(
+            CLASSIFICATION_GROUP_REF,
+            str(uuid.uuid4()),
+            {
+                "source_candidate_ref": CANDIDATE_ID,
+                "accounting_month": "2026-08",
+                "target": {
+                    "business_unit_ref": "unit-demo-a",
+                    "category_code": "SETTLEMENT",
+                },
+                "members": [
+                    {"candidate_ref": CANDIDATE_ID, "expected_revision": 1},
+                    {"candidate_ref": SECOND_CANDIDATE_ID, "expected_revision": 1},
+                ],
+                "reason": "逐笔核对相似交易后整组确认",
+                "acknowledged_risk_codes": ["TRANSFER_REVIEW_REQUIRED"],
+            },
+        )
+
+        self.assertEqual(status, 200, receipt)
+        self.assertIs(receipt["replayed"], True)
+        self.assertEqual(receipt["acknowledged_risk_codes"], ["TRANSFER_REVIEW_REQUIRED"])
+        self.assertEqual(
+            [result["status"] for result in receipt["results"]],  # type: ignore[index]
+            ["REPLAYED", "REPLAYED"],
+        )
+
+    def test_classification_group_adapter_rejects_malformed_scope_and_receipt(self) -> None:
+        for mutation in (
+            "wrong-entity",
+            "active-rule",
+            "unknown-risk",
+            "non-string-risk",
+            "mismatched-member-risk",
+            "duplicate-member-across-groups",
+            "missing-acknowledgements",
+            "wrong-operation",
+            "wrong-result-member",
+            "wrong-event-binding",
+            "wrong-result-target",
+            "broken-event-revision-chain",
+        ):
+            with self.subTest(mutation=mutation):
+                client = ClassificationCoreClient()
+                original_json = client.json
+
+                def invalid_contract(
+                    *args: object,
+                    _mutation: str = mutation,
+                    _original_json: Callable[..., dict[str, object]] = original_json,
+                    **kwargs: object,
+                ) -> dict[str, object]:
+                    payload = _original_json(*args, **kwargs)
+                    if _mutation == "wrong-entity" and args[0] == "GET":
+                        payload["items"][0]["conditions"]["entity_ref"] = (  # type: ignore[index]
+                            "10000000-0000-4000-8000-000000000099"
+                        )
+                    elif _mutation == "active-rule" and args[0] == "GET":
+                        payload["items"][0]["active_rule"] = {  # type: ignore[index]
+                            "contract_version": "ledgerbridge.classification-rule.v1",
+                            "group_ref": CLASSIFICATION_GROUP_REF,
+                        }
+                    elif _mutation == "unknown-risk" and args[0] == "GET":
+                        payload["items"][0]["conditions"]["risk_signature"] = [  # type: ignore[index]
+                            "UNVERSIONED_FUTURE_RISK"
+                        ]
+                        for member in payload["items"][0]["members"]:  # type: ignore[index]
+                            member["review_risk_codes"] = ["UNVERSIONED_FUTURE_RISK"]
+                    elif _mutation == "non-string-risk" and args[0] == "GET":
+                        payload["items"][0]["conditions"]["risk_signature"] = [[]]  # type: ignore[index]
+                        for member in payload["items"][0]["members"]:  # type: ignore[index]
+                            member["review_risk_codes"] = [[]]
+                    elif _mutation == "mismatched-member-risk" and args[0] == "GET":
+                        payload["items"][0]["members"][1]["review_risk_codes"] = []  # type: ignore[index]
+                    elif _mutation == "duplicate-member-across-groups" and args[0] == "GET":
+                        duplicate = deepcopy(payload["items"][0])  # type: ignore[index]
+                        duplicate["group_ref"] = f"cg_{'b' * 32}"
+                        payload["items"].append(duplicate)  # type: ignore[union-attr]
+                    elif _mutation == "missing-acknowledgements" and args[0] == "POST":
+                        del payload["acknowledged_risk_codes"]
+                    elif _mutation == "wrong-operation" and args[0] == "POST":
+                        payload["operation_id"] = "70000000-0000-4000-8000-000000000007"
+                    elif _mutation == "wrong-result-member" and args[0] == "POST":
+                        unexpected_ref = "30000000-0000-4000-8000-000000000099"
+                        result = payload["results"][1]  # type: ignore[index]
+                        result["candidate_ref"] = unexpected_ref
+                        result["candidate"]["candidate_ref"] = unexpected_ref
+                        result["events"][0]["candidate_ref"] = unexpected_ref
+                    elif _mutation == "wrong-event-binding" and args[0] == "POST":
+                        first = payload["results"][0]  # type: ignore[index]
+                        second = payload["results"][1]  # type: ignore[index]
+                        first["events"][0]["candidate_ref"] = second["candidate_ref"]
+                        first["events"][0]["operation_id"] = second["operation_id"]
+                    elif _mutation == "wrong-result-target" and args[0] == "POST":
+                        payload["results"][0]["candidate"]["category_code"] = "OTHER"  # type: ignore[index]
+                    elif _mutation == "broken-event-revision-chain" and args[0] == "POST":
+                        payload["results"][0]["events"][0]["to_revision"] = 9  # type: ignore[index]
+                    return payload
+
+                client.json = invalid_contract  # type: ignore[method-assign]
+                state = build_state(client)
+                if mutation in {
+                    "wrong-entity",
+                    "active-rule",
+                    "unknown-risk",
+                        "non-string-risk",
+                        "mismatched-member-risk",
+                        "duplicate-member-across-groups",
+                }:
+                    with self.assertRaises(CoreBackendError) as raised:
+                        state.candidate_classification_groups()
+                    self.assertEqual(raised.exception.status, 503)
+                else:
+                    status, payload = state.apply_candidate_classification_batch(
+                        CLASSIFICATION_GROUP_REF,
+                        str(uuid.uuid4()),
+                        {
+                            "source_candidate_ref": CANDIDATE_ID,
+                            "accounting_month": "2026-08",
+                            "target": {
+                                "business_unit_ref": "unit-demo-a",
+                                "category_code": "SETTLEMENT",
+                            },
+                            "members": [
+                                {"candidate_ref": CANDIDATE_ID, "expected_revision": 1},
+                                {
+                                    "candidate_ref": SECOND_CANDIDATE_ID,
+                                    "expected_revision": 1,
+                                },
+                            ],
+                            "reason": "逐笔核对相似交易后整组确认",
+                            "acknowledged_risk_codes": ["TRANSFER_REVIEW_REQUIRED"],
+                        },
+                    )
+                    self.assertEqual(status, 503)
+                    self.assertEqual(payload["code"], "CORE_CONTRACT_INVALID")
+
     def test_review_event_merges_dimension_identity_and_label_without_exposing_identifiers(self) -> None:
         client = FakeCoreClient()
         event = core_event()

@@ -44,6 +44,7 @@ import {
 import {
   api,
   ApiError,
+  eligibleClassificationBatchMembers,
   majorInputToMinor,
   minorToMajor,
   minorToMajorInput,
@@ -56,6 +57,8 @@ import type {
   Candidate,
   CandidateCorrections,
   CandidateDetail,
+  ClassificationGroup,
+  ClassificationTarget,
   CompanyReportAggregate,
   CompanyReportCompany,
   CompanyReportLayer,
@@ -161,13 +164,17 @@ function toCandidate(candidate: ApiCandidate | CandidateDetail): Candidate {
   }
 }
 
-function isBulkEligible(candidate: Candidate): boolean {
+function isBulkEligible(candidate: Candidate, classificationGroups: ClassificationGroup[]): boolean {
+  const groupedMember = classificationGroups
+    .flatMap((group) => group.members)
+    .find((member) => member.candidate_ref === candidate.id)
   return candidate.status === 'PENDING'
     && candidate.confidence >= 0.9
     && candidate.blockers.length === 0
     && candidate.reviewRisks.length === 0
     && !candidate.incomplete
     && !candidate.conflict
+    && (!groupedMember || (groupedMember.one_click_eligible && !groupedMember.amount_outlier))
 }
 
 const materialRiskCodes = new Set([
@@ -235,6 +242,7 @@ function App() {
   const [authError, setAuthError] = useState<string | null>(null)
   const [page, setPage] = useState<Page>(() => pageFromPath(window.location.pathname))
   const [candidates, setCandidates] = useState<Candidate[]>([])
+  const [classificationGroups, setClassificationGroups] = useState<ClassificationGroup[]>([])
   const [session, setSession] = useState<Session | null>(null)
   const [reconciliation, setReconciliation] = useState<ReconciliationData | null>(null)
   const [selectedMonth, setSelectedMonth] = useState(CURRENT_MONTH)
@@ -307,9 +315,16 @@ function App() {
     setLoading(true)
     setLoadError(null)
     try {
-      const [sessionData, candidateData, reconciliationData, connectionData] = await Promise.all([
+      const [
+        sessionData,
+        candidateData,
+        classificationGroupData,
+        reconciliationData,
+        connectionData,
+      ] = await Promise.all([
         api.getSession(),
         api.listCandidates(),
+        api.listClassificationGroups(),
         api.getReconciliation(selectedMonth),
         api.listConnections(),
       ])
@@ -318,6 +333,7 @@ function App() {
         ? await listRemainingCandidatePages(candidateData.next_cursor)
         : []
       setCandidates([...candidateData.items, ...remainingCandidates].map(toCandidate))
+      setClassificationGroups(classificationGroupData.items)
       setAuditCandidates([])
       candidateCursorRef.current = null
       setReconciliation(reconciliationData)
@@ -489,6 +505,61 @@ function App() {
     }
   }
 
+  const applyClassificationGroup = async (
+    candidate: Candidate,
+    group: ClassificationGroup,
+    target: ClassificationTarget,
+  ) => {
+    if (!session || decisionBusyId) return
+    setDecisionBusyId(candidate.id)
+    try {
+      const receipt = await api.applyClassificationBatch({
+        group,
+        sourceCandidate: candidate.raw,
+        target,
+        reason: 'Web 审核：明确预览并确认相似交易组分类',
+        csrfToken: session.csrf_token,
+      })
+      const updated = new Map(
+        receipt.results.map((result) => [result.candidate_ref, toCandidate(result.candidate)]),
+      )
+      setCandidates((items) => items.map((item) => updated.get(item.id) ?? item))
+      const events = receipt.results.flatMap((result) => result.events)
+      setReviewEvents((items) => [
+        ...events,
+        ...items.filter((item) => !events.some((event) => event.id === item.id)),
+      ])
+      setSelectedCandidate(null)
+      const [groupResult, reconciliationResult] = await Promise.allSettled([
+        api.listClassificationGroups(),
+        api.getReconciliation(selectedMonth),
+      ])
+      if (groupResult.status === 'fulfilled') {
+        setClassificationGroups(groupResult.value.items)
+      }
+      if (reconciliationResult.status === 'fulfilled') {
+        setReconciliation(reconciliationResult.value)
+      }
+      setNotice({
+        tone: groupResult.status === 'fulfilled' && reconciliationResult.status === 'fulfilled'
+          ? 'success'
+          : 'info',
+        message: `已原子确认同组 ${receipt.results.length} 笔交易；全部成员均已写入审核记录`,
+      })
+    } catch (error) {
+      setNotice({
+        tone: 'error',
+        message: error instanceof ApiError && error.status === 409
+          ? '同组成员或版本已变化，本次没有处理任何交易；请刷新后重新预览'
+          : error instanceof Error
+            ? error.message
+            : '相似交易组提交失败，本次没有处理任何交易',
+      })
+    } finally {
+      setDecisionBusyId(null)
+    }
+  }
+
   const openCandidate = async (candidate: Candidate) => {
     const requestId = ++candidateDetailRequestRef.current
     const readOnly = ['CONFIRMED', 'IGNORED', 'SUPERSEDED'].includes(candidate.status)
@@ -566,6 +637,7 @@ function App() {
       setAuthStatus({ authenticated: false, setup_required: false, passkey_registered: true, recovery_setup_required: false, recovery_pending: false })
       setSession(null)
       setCandidates([])
+      setClassificationGroups([])
       setReconciliation(null)
       setOriginalReconciliation(null)
       setOriginalReconciliationError(null)
@@ -629,6 +701,7 @@ function App() {
       return (
         <ReviewQueue
           candidates={pendingCandidates}
+          classificationGroups={classificationGroups}
           onOpenCandidate={openCandidate}
           onUpdate={updateCandidate}
           onRefresh={loadData}
@@ -812,8 +885,13 @@ function App() {
         <CandidateDialog
           key={`${selectedCandidate.id}:${selectedCandidate.revision}:${selectedCandidate.businessUnitRef}:${selectedCandidate.categoryCode}:${selectedCandidate.amountMinor}:${selectedCandidate.accountingMonth ?? ''}`}
           candidate={selectedCandidate}
+          classificationGroup={classificationGroups.find((group) => (
+            group.accounting_month === selectedCandidate.accountingMonth
+            && group.members.some((member) => member.candidate_ref === selectedCandidate.id)
+          )) ?? null}
           onClose={() => setSelectedCandidate(null)}
           onUpdate={updateCandidate}
+          onApplyGroup={applyClassificationGroup}
           busy={selectedCandidate.id === decisionBusyId}
           detailLoading={candidateDetailLoadingId === selectedCandidate.id}
           detailReady={candidateDetailReadyId === selectedCandidate.id}
@@ -2215,8 +2293,9 @@ function CompanyReportMonthCard({ month, currencyCode, candidate, statement, pos
   )
 }
 
-function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId, batchBusy, onBatchConfirm }: {
+function ReviewQueue({ candidates, classificationGroups, onOpenCandidate, onUpdate, onRefresh, busyId, batchBusy, onBatchConfirm }: {
   candidates: Candidate[]
+  classificationGroups: ClassificationGroup[]
   onOpenCandidate: (candidate: Candidate) => void
   onUpdate: (candidate: Candidate, intent: CandidateUpdateIntent, corrections?: CandidateCorrections, conflictResolution?: string) => void
   onRefresh: () => void
@@ -2229,7 +2308,7 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId,
   const [transferObjectFilter, setTransferObjectFilter] = useState('all')
   const [query, setQuery] = useState('')
   const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN')
-  const bulkEligible = candidates.filter(isBulkEligible)
+  const bulkEligible = candidates.filter((candidate) => isBulkEligible(candidate, classificationGroups))
   const evidenceReminderCount = candidates.filter((candidate) => candidate.reviewRisks.some((risk) => materialNameFor(candidate, risk.code) !== null)).length
   const statusCounts = {
     all: candidates.length,
@@ -2269,7 +2348,7 @@ function ReviewQueue({ candidates, onOpenCandidate, onUpdate, onRefresh, busyId,
     const matchesStatus = statusFilter === 'all'
       || (statusFilter === 'conflict' && candidate.conflict)
       || (statusFilter === 'incomplete' && (candidate.incomplete || candidate.reviewRisks.length > 0) && !candidate.conflict)
-      || (statusFilter === 'ready' && isBulkEligible(candidate))
+      || (statusFilter === 'ready' && isBulkEligible(candidate, classificationGroups))
     const matchesQuery = !normalizedQuery || [
       candidate.shortId,
       candidate.businessUnit,
@@ -2545,10 +2624,16 @@ function EvidencePreviewPanel({ evidence, reference }: {
   )
 }
 
-function CandidateDialog({ candidate, onClose, onUpdate, busy, detailLoading, detailReady, accountingDimensions, accountingDimensionsError }: {
+function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, onApplyGroup, busy, detailLoading, detailReady, accountingDimensions, accountingDimensionsError }: {
   candidate: Candidate
+  classificationGroup: ClassificationGroup | null
   onClose: () => void
   onUpdate: (candidate: Candidate, intent: CandidateUpdateIntent, corrections?: CandidateCorrections, conflictResolution?: string) => void
+  onApplyGroup: (
+    candidate: Candidate,
+    group: ClassificationGroup,
+    target: ClassificationTarget,
+  ) => void
   busy: boolean
   detailLoading: boolean
   detailReady: boolean
@@ -2560,6 +2645,8 @@ function CandidateDialog({ candidate, onClose, onUpdate, busy, detailLoading, de
   const [amount, setAmount] = useState(minorToMajorInput(candidate.amountMinor))
   const [accountingMonth, setAccountingMonth] = useState(candidate.accountingMonth ?? '')
   const [conflictResolution, setConflictResolution] = useState('')
+  const [applyToGroup, setApplyToGroup] = useState(false)
+  const [riskAcknowledged, setRiskAcknowledged] = useState(false)
   const readOnly = ['CONFIRMED', 'IGNORED', 'SUPERSEDED'].includes(candidate.status)
 
   const dialogTitle = readOnly
@@ -2616,9 +2703,46 @@ function CandidateDialog({ candidate, onClose, onUpdate, busy, detailLoading, de
     || !dimensionsContainSelection
     || !formComplete
     || (candidate.conflict && conflictResolution.trim().length === 0)
+  const groupMember = classificationGroup?.members.find(
+    (member) => member.candidate_ref === candidate.id,
+  )
+  const groupMembers = classificationGroup
+    ? eligibleClassificationBatchMembers(classificationGroup)
+    : []
+  const canApplyGroup = Boolean(
+    classificationGroup
+    && candidate.status === 'PENDING'
+    && groupMember?.batch_eligible
+    && groupMembers.length >= 2
+    && groupMembers.length <= 100,
+  )
+  const groupUnavailableReason = groupMembers.length > 100
+    ? `本组有 ${groupMembers.length} 笔可处理交易，超过单次 100 笔上限；请缩小范围或分批处理。`
+    : candidate.status !== 'PENDING'
+      ? '当前交易已不在待审核状态，整组处理不可用。'
+      : groupMember && !groupMember.batch_eligible
+        ? '当前交易因终态冲突、风险阻断或异常金额不开放整组处理。'
+        : groupMembers.length < 2
+          ? '本组当前没有足够的可处理成员，仍可单笔确认。'
+          : null
+  const groupRisks = classificationGroup?.conditions.risk_signature ?? []
+  const groupFieldDrift = parsedAmountMinor !== candidate.amountMinor
+    || accountingMonth !== candidate.accountingMonth
+  const groupConfirmBlocked = confirmBlocked
+    || !canApplyGroup
+    || groupFieldDrift
+    || (groupRisks.length > 0 && !riskAcknowledged)
 
   const submitCorrection = () => {
     if (confirmBlocked || parsedAmountMinor === null) return
+    if (applyToGroup && classificationGroup) {
+      if (groupConfirmBlocked) return
+      onApplyGroup(candidate, classificationGroup, {
+        business_unit_ref: businessUnitRef,
+        category_code: categoryCode,
+      })
+      return
+    }
     const corrections: CandidateCorrections = {}
     if (businessUnitRef !== candidate.businessUnitRef) corrections.business_unit_ref = businessUnitRef
     if (categoryCode !== candidate.categoryCode) corrections.category_code = categoryCode
@@ -2699,6 +2823,103 @@ function CandidateDialog({ candidate, onClose, onUpdate, busy, detailLoading, de
           </section>
         </div>
 
+        {classificationGroup && groupMember ? (
+          <section className="classification-scope" aria-labelledby="classification-scope-heading">
+            <div className="classification-scope-heading">
+              <div>
+                <span className="section-label" id="classification-scope-heading">相似交易作用域</span>
+                <strong>{classificationGroup.conditions.counterparty_label} · {classificationGroup.conditions.transaction_type}</strong>
+              </div>
+              <Badge color={classificationGroup.conditions.counterparty_basis === 'REGISTRY_COUNTERPARTY' ? 'green' : 'amber'}>
+                {classificationGroup.conditions.counterparty_basis === 'REGISTRY_COUNTERPARTY' ? '登记身份匹配' : '严格平台摘要匹配'}
+              </Badge>
+            </div>
+            <p>
+              {classificationGroup.conditions.platform} · {classificationGroup.conditions.direction === 'INFLOW' ? '收入' : classificationGroup.conditions.direction === 'OUTFLOW' ? '支出' : '中性'} · {classificationGroup.conditions.transaction_type} · {classificationGroup.conditions.counterparty_label} · {classificationGroup.conditions.funding_instrument} · {accountingMonthLabel(classificationGroup.accounting_month)} · {groupMembers.length} 笔可处理
+            </p>
+            {!readOnly && canApplyGroup ? (
+              <label className="classification-scope-toggle">
+                <input
+                  type="checkbox"
+                  checked={applyToGroup}
+                  onChange={(event) => {
+                    setApplyToGroup(event.target.checked)
+                    if (!event.target.checked) setRiskAcknowledged(false)
+                  }}
+                />
+                <span>
+                  <strong>同时处理本组其余 {groupMembers.length - 1} 笔</strong>
+                  本次将原子确认共 {groupMembers.length} 笔，仅统一营业单元与科目；任一成员变化则全部不处理。
+                </span>
+              </label>
+            ) : groupUnavailableReason ? (
+              <div className="blocking-note amber" role="status">
+                <Info size={18} weight="fill" />
+                <span><strong>当前仅可单笔处理</strong>{groupUnavailableReason}</span>
+              </div>
+            ) : null}
+            {applyToGroup ? (
+              <div className="classification-scope-preview">
+                <details>
+                  <summary>匹配依据详情</summary>
+                  <div className="classification-conditions">
+                    <span>键版本：{classificationGroup.conditions.key_version}</span>
+                    <span>实体：{classificationGroup.conditions.entity_ref}</span>
+                    <span>来源：{classificationGroup.conditions.source_system} / {classificationGroup.conditions.source_kind}</span>
+                    <span>平台：{classificationGroup.conditions.platform}</span>
+                    <span>方向：{classificationGroup.conditions.direction}</span>
+                    <span>交易类型：{classificationGroup.conditions.transaction_type}</span>
+                    <span>对方键：{classificationGroup.conditions.counterparty_key}</span>
+                    <span>对方名称：{classificationGroup.conditions.counterparty_label}</span>
+                    <span>对方依据：{classificationGroup.conditions.counterparty_basis}</span>
+                    <span>资金工具：{classificationGroup.conditions.funding_instrument}</span>
+                    <span>交易状态：{classificationGroup.conditions.transaction_status}</span>
+                    <span>币种：{classificationGroup.conditions.currency}</span>
+                    <span>风险签名：{classificationGroup.conditions.risk_signature.join('、') || '无'}</span>
+                    <span>月份：{accountingMonthLabel(classificationGroup.accounting_month)}</span>
+                  </div>
+                </details>
+                <ul aria-label="本次批量处理成员">
+                  {groupMembers.map((member) => (
+                    <li key={member.candidate_ref}>
+                      <span>{member.short_id}{member.candidate_ref === candidate.id ? '（当前）' : ''}</span>
+                      <strong>{currency.format(minorToMajor(member.amount_minor))}</strong>
+                    </li>
+                  ))}
+                </ul>
+                {classificationGroup.members.length > groupMembers.length ? (
+                  <small>另有 {classificationGroup.members.length - groupMembers.length} 笔因终态、风险、阻断或异常金额不在本次作用域。</small>
+                ) : null}
+                {classificationGroup.conditions.counterparty_basis === 'EXACT_PLATFORM_SUMMARY_V1' ? (
+                  <div className="blocking-note amber">
+                    <Info size={18} weight="fill" />
+                    <span><strong>当前为降级契约依据</strong>仅对严格相同的七段平台摘要开放本次显式批量，不会据此学习自动分类规则。</span>
+                  </div>
+                ) : null}
+                {groupRisks.length > 0 ? (
+                  <label className="classification-risk-ack">
+                    <input
+                      type="checkbox"
+                      checked={riskAcknowledged}
+                      onChange={(event) => setRiskAcknowledged(event.target.checked)}
+                    />
+                    <span>
+                      <strong>我已逐项核对并确认风险条件</strong>
+                      {groupRisks.join('、')}；这仍是一次人工决定，不会形成一键审批或自动规则。
+                    </span>
+                  </label>
+                ) : null}
+                {groupFieldDrift ? (
+                  <div className="blocking-note amber" role="status">
+                    <Info size={18} weight="fill" />
+                    <span><strong>金额或月份有单笔更改</strong>分组操作只传播营业单元与科目；请恢复原值或先单独处理当前交易。</span>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
         <section className="candidate-history" aria-labelledby="candidate-history-heading">
           <div className="candidate-history-heading">
             <span className="section-label" id="candidate-history-heading">审核历史</span>
@@ -2729,7 +2950,9 @@ function CandidateDialog({ candidate, onClose, onUpdate, busy, detailLoading, de
           <Button variant="soft" color="gray" onClick={onClose}>{readOnly ? '关闭' : '取消'}</Button>
           {!readOnly ? <>
             <Button disabled={busy || !detailReady} variant="outline" color="gray" onClick={() => onUpdate(candidate, 'IGNORE')}>忽略候选</Button>
-            <Button aria-describedby={dimensionsStatusId} disabled={confirmBlocked} onClick={submitCorrection}>{candidate.conflict ? '解决冲突并确认' : '保存更正并确认'}</Button>
+            <Button aria-describedby={dimensionsStatusId} disabled={applyToGroup ? groupConfirmBlocked : confirmBlocked} onClick={submitCorrection}>
+              {applyToGroup ? `确认本组 ${groupMembers.length} 笔` : candidate.conflict ? '解决冲突并确认' : '保存更正并确认'}
+            </Button>
           </> : null}
         </div>
       </Dialog.Content>

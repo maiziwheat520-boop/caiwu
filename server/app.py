@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from .auth import AuthError, AuthManager, AuthStore
 from .core_backend import (
+    CLASSIFICATION_RISK_CODES,
     CoreBackedState,
     CoreBackendError,
     CoreHttpClient,
@@ -47,6 +48,9 @@ FLOW_COOKIE_NAME = "__Host-ledgerbridge_auth_flow"
 MONTH_PATTERN = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
 CANDIDATE_PATH = re.compile(r"^/api/v1/candidates/([0-9a-f-]{36})$")
 DECISION_PATH = re.compile(r"^/api/v1/candidates/([0-9a-f-]{36})/decisions$")
+CLASSIFICATION_BATCH_PATH = re.compile(
+    r"^/api/v1/candidate-classification-groups/(cg_[0-9a-f]{32})/decisions$"
+)
 RECONCILIATION_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)$")
 ORIGINAL_RECONCILIATION_PATH = re.compile(r"^/api/v1/original-reconciliations/([^/]+)$")
 DRAFT_CREATE_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)/drafts$")
@@ -223,6 +227,26 @@ class SyntheticState:
             "business_units": [{"ref": ref, "label": label} for ref, label in business_units],
             "categories": [{"code": code, "label": label} for code, label in categories],
         }
+
+    def candidate_classification_groups(self) -> dict[str, object]:
+        return {
+            "contract_version": "ledgerbridge.classification-groups.v1",
+            "items": [],
+            "next_cursor": None,
+        }
+
+    def apply_candidate_classification_batch(
+        self,
+        group_ref: str,
+        idempotency_key: str,
+        request: dict[str, object],
+    ) -> tuple[int, dict[str, object]]:
+        del group_ref, idempotency_key, request
+        return 503, _problem(
+            503,
+            "CLASSIFICATION_BATCH_UNAVAILABLE",
+            "相似交易批量处理仅在 Core 模式可用",
+        )
 
     def list_candidates(self, *, status: str | None, month: str | None, cursor: str | None) -> dict[str, object]:
         offset = int(cursor) if cursor is not None else 0
@@ -768,6 +792,136 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 return None
         return value
 
+    def _validate_classification_batch(
+        self,
+        value: dict[str, object],
+    ) -> dict[str, object] | None:
+        expected = {
+            "source_candidate_ref",
+            "accounting_month",
+            "target",
+            "members",
+            "reason",
+            "acknowledged_risk_codes",
+        }
+        if set(value) != expected:
+            self._invalid_decision(
+                "INVALID_CLASSIFICATION_BATCH",
+                "相似交易批量请求字段不符合合约",
+            )
+            return None
+        source_ref = value.get("source_candidate_ref")
+        try:
+            canonical_source_ref = (
+                str(uuid.UUID(source_ref)) if isinstance(source_ref, str) else ""
+            )
+        except ValueError:
+            canonical_source_ref = ""
+        if source_ref != canonical_source_ref:
+            self._invalid_decision(
+                "INVALID_CLASSIFICATION_SOURCE",
+                "source_candidate_ref 必须是规范 UUID",
+            )
+            return None
+        month = value.get("accounting_month")
+        target = value.get("target")
+        if not isinstance(month, str) or MONTH_PATTERN.fullmatch(month) is None:
+            self._invalid_decision(
+                "INVALID_ACCOUNTING_MONTH",
+                "accounting_month 格式无效",
+            )
+            return None
+        if not isinstance(target, dict) or set(target) != {
+            "business_unit_ref",
+            "category_code",
+        }:
+            self._invalid_decision(
+                "INVALID_CLASSIFICATION_TARGET",
+                "target 必须包含稳定业务单元和分类标识",
+            )
+            return None
+        if any(
+            not isinstance(target.get(field), str)
+            or not 1 <= len(str(target[field])) <= 100
+            for field in ("business_unit_ref", "category_code")
+        ):
+            self._invalid_decision(
+                "INVALID_CLASSIFICATION_TARGET",
+                "target 会计维度标识无效",
+            )
+            return None
+        members = value.get("members")
+        member_refs: list[str] = []
+        if not isinstance(members, list) or not 2 <= len(members) <= 100:
+            self._invalid_decision(
+                "INVALID_CLASSIFICATION_MEMBERS",
+                "members 必须包含 2 到 100 个候选",
+            )
+            return None
+        for member in members:
+            if not isinstance(member, dict) or set(member) != {
+                "candidate_ref",
+                "expected_revision",
+            }:
+                self._invalid_decision(
+                    "INVALID_CLASSIFICATION_MEMBERS",
+                    "member 字段不符合合约",
+                )
+                return None
+            candidate_ref = member.get("candidate_ref")
+            revision = member.get("expected_revision")
+            try:
+                canonical_ref = (
+                    str(uuid.UUID(candidate_ref))
+                    if isinstance(candidate_ref, str)
+                    else ""
+                )
+            except ValueError:
+                canonical_ref = ""
+            if (
+                candidate_ref != canonical_ref
+                or isinstance(revision, bool)
+                or not isinstance(revision, int)
+                or revision < 1
+            ):
+                self._invalid_decision(
+                    "INVALID_CLASSIFICATION_MEMBERS",
+                    "member 候选或版本无效",
+                )
+                return None
+            member_refs.append(canonical_ref)
+        if len(member_refs) != len(set(member_refs)) or canonical_source_ref not in member_refs:
+            self._invalid_decision(
+                "INVALID_CLASSIFICATION_MEMBERS",
+                "members 必须唯一并包含来源候选",
+            )
+            return None
+        reason = value.get("reason")
+        risks = value.get("acknowledged_risk_codes")
+        if not isinstance(reason, str) or not 1 <= len(reason) <= 1000:
+            self._invalid_decision(
+                "INVALID_REASON",
+                "reason 长度必须为 1 到 1000",
+            )
+            return None
+        if (
+            not isinstance(risks, list)
+            or len(risks) > 6
+            or any(
+                not isinstance(risk, str)
+                or re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", risk) is None
+                or risk not in CLASSIFICATION_RISK_CODES
+                for risk in risks
+            )
+            or risks != sorted(set(risks))
+        ):
+            self._invalid_decision(
+                "INVALID_CLASSIFICATION_RISK_ACKNOWLEDGEMENT",
+                "风险确认码无效",
+            )
+            return None
+        return value
+
     def _api_get(self, path: str, query: str) -> None:
         state = self.preview_server.state
         manager = self.preview_server.auth_manager
@@ -840,6 +994,19 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 )
                 return
             self._send_json(200, state.accounting_dimensions())
+            return
+        if path == "/api/v1/candidate-classification-groups":
+            if query:
+                self._send_json(
+                    400,
+                    _problem(
+                        400,
+                        "INVALID_CLASSIFICATION_GROUP_QUERY",
+                        "相似交易分组范围由当前授权会话决定",
+                    ),
+                )
+                return
+            self._send_json(200, state.candidate_classification_groups())
             return
         if path == "/api/v1/company-reports":
             if query:
@@ -1187,11 +1354,13 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         if self._auth_post(path):
             return
         decision_match = DECISION_PATH.fullmatch(path)
+        classification_batch_match = CLASSIFICATION_BATCH_PATH.fullmatch(path)
         draft_match = DRAFT_CREATE_PATH.fullmatch(path)
         evidence_unlock = path == EVIDENCE_UNLOCK_PATH
         payroll_batch_command = PAYROLL_BATCH_COMMAND_PATH.fullmatch(path)
         if (
             decision_match is None
+            and classification_batch_match is None
             and draft_match is None
             and not evidence_unlock
             and payroll_batch_command is None
@@ -1200,6 +1369,16 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             return
         if evidence_unlock and split.query:
             self._send_json(400, _problem(400, "INVALID_EVIDENCE_UNLOCK_REQUEST", "解锁请求不接受查询参数"))
+            return
+        if classification_batch_match is not None and split.query:
+            self._send_json(
+                400,
+                _problem(
+                    400,
+                    "INVALID_CLASSIFICATION_BATCH_QUERY",
+                    "相似交易批量请求不接受查询参数",
+                ),
+            )
             return
         if not self._require_session():
             return
@@ -1311,6 +1490,17 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 if "password" in request:
                     request["password"] = ""
                 password = ""
+            self._send_json(status, payload)
+            return
+        if classification_batch_match is not None:
+            validated_batch = self._validate_classification_batch(request)
+            if validated_batch is None:
+                return
+            status, payload = self.preview_server.state.apply_candidate_classification_batch(
+                classification_batch_match.group(1),
+                idempotency_key.lower(),
+                validated_batch,
+            )
             self._send_json(status, payload)
             return
         if decision_match is not None:

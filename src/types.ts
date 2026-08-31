@@ -168,6 +168,98 @@ export type AccountingDimensions = {
   }>
 }
 
+export type ClassificationRiskCode =
+  | 'FUNDING_STATEMENT_REQUIRED'
+  | 'HOTEL_PAYOUT_STATEMENT_REQUIRED'
+  | 'RELATED_ACCOUNT_STATEMENT_REQUIRED'
+  | 'REVERSAL_MATCH_REQUIRED'
+  | 'TRANSFER_REVIEW_REQUIRED'
+  | 'UNSETTLED_TRANSACTION'
+
+export type SimilarityConditions = {
+  key_version: 'ledgerbridge.classification-key.v1'
+  entity_ref: string
+  source_system: string
+  source_kind: string
+  platform: string
+  direction: 'INFLOW' | 'OUTFLOW' | 'NEUTRAL'
+  transaction_type: string
+  counterparty_key: string
+  counterparty_label: string
+  counterparty_basis: 'REGISTRY_COUNTERPARTY' | 'EXACT_PLATFORM_SUMMARY_V1'
+  funding_instrument: string
+  transaction_status: string
+  currency: 'CNY'
+  risk_signature: ClassificationRiskCode[]
+}
+
+export type ClassificationGroupMember = {
+  candidate_ref: string
+  short_id: string
+  revision: number
+  status: CandidateStatus
+  amount_minor: number
+  accounting_month: string
+  confidence_basis_points: number
+  review_risk_codes: ClassificationRiskCode[]
+  amount_outlier: boolean
+  batch_eligible: boolean
+  one_click_eligible: boolean
+  exclusion_codes: Array<
+    'NOT_PENDING' | 'LOW_CONFIDENCE' | 'BLOCKED' | 'STRUCTURAL_RISK' | 'AMOUNT_OUTLIER'
+  >
+}
+
+export type ClassificationGroup = {
+  contract_version: 'ledgerbridge.classification-group.v1'
+  group_ref: string
+  accounting_month: string
+  conditions: SimilarityConditions
+  members: ClassificationGroupMember[]
+  batch_member_count: number
+  one_click_member_count: number
+  terminal_statuses: CandidateStatus[]
+  terminal_classifications: string[]
+  rule_learning_eligible: boolean
+  rule_learning_blocks: Array<
+    | 'PROVISIONAL_BASIS'
+    | 'TERMINAL_DECISION_CONFLICT'
+    | 'REVIEW_RISK_PRESENT'
+    | 'AMOUNT_OUTLIER'
+    | 'NO_CONFIRMED_SOURCE'
+  >
+  active_rule: null
+}
+
+export type ClassificationGroupPage = {
+  contract_version: 'ledgerbridge.classification-groups.v1'
+  items: ClassificationGroup[]
+  next_cursor: null
+}
+
+export type ClassificationTarget = {
+  business_unit_ref: string
+  category_code: string
+}
+
+export type ClassificationBatchReceipt = {
+  contract_version: 'ledgerbridge.classification-batch.v1'
+  operation_id: string
+  replayed: boolean
+  group_ref: string
+  accounting_month: string
+  source_candidate_ref: string
+  target: ClassificationTarget
+  acknowledged_risk_codes: ClassificationRiskCode[]
+  results: Array<{
+    candidate_ref: string
+    operation_id: string
+    status: 'APPLIED' | 'REPLAYED'
+    candidate: ApiCandidate
+    events: ReviewEvent[]
+  }>
+}
+
 export type ReviewEvent = {
   id: string
   candidate_id: string

@@ -299,6 +299,95 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+  /api/v1/candidate-classification-groups:
+    get:
+      operationId: listCandidateClassificationGroups
+      x-ledgerbridge-reject-unknown-query: true
+      description: >-
+        Return exact, authorization-scoped similar-transaction groups. The browser
+        cannot widen entity or month scope. A group is a review aid, not an
+        automatically learned classification rule.
+      responses:
+        "200":
+          description: Deterministically ordered grouping and scope preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClassificationGroupPage"
+        "400":
+          description: Browser attempted to supply grouping scope
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          description: Core grouping projection is unavailable or invalid
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/candidate-classification-groups/{group_ref}/decisions:
+    post:
+      operationId: applyCandidateClassificationBatch
+      x-ledgerbridge-reject-unknown-query: true
+      description: >-
+        Apply one explicitly previewed classification to every listed member in a
+        single all-or-nothing Core transaction. Every member carries an expected
+        revision; any stale or changed member rejects the complete batch.
+      parameters:
+        - name: group_ref
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^cg_[0-9a-f]{32}$"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClassificationBatchRequest"
+      responses:
+        "200":
+          description: Self-contained atomic batch receipt or idempotent replay
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClassificationBatchReceipt"
+        "400":
+          description: Invalid query, CSRF, or idempotency request metadata
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Stale group/member revision or idempotency-key mismatch; no member is processed
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          description: Batch membership, target, or risk acknowledgement is invalid
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "503":
+          description: Core batch command is unavailable or returned an invalid contract
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/company-reports:
     get:
       operationId: getCompanyReports
@@ -1595,6 +1684,283 @@ components:
     CandidateStatus:
       type: string
       enum: [INCOMPLETE, PENDING, CONFLICTED, CONFIRMED, IGNORED, SUPERSEDED]
+    ClassificationGroupPage:
+      type: object
+      additionalProperties: false
+      required: [contract_version, items, next_cursor]
+      properties:
+        contract_version:
+          const: ledgerbridge.classification-groups.v1
+        items:
+          type: array
+          maxItems: 10000
+          items:
+            $ref: "#/components/schemas/ClassificationGroup"
+        next_cursor:
+          type: "null"
+    ClassificationGroup:
+      type: object
+      additionalProperties: false
+      required: [contract_version, group_ref, accounting_month, conditions, members, batch_member_count, one_click_member_count, terminal_statuses, terminal_classifications, rule_learning_eligible, rule_learning_blocks, active_rule]
+      properties:
+        contract_version:
+          const: ledgerbridge.classification-group.v1
+        group_ref:
+          type: string
+          pattern: "^cg_[0-9a-f]{32}$"
+        accounting_month:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        conditions:
+          $ref: "#/components/schemas/SimilarityConditions"
+        members:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ClassificationGroupMember"
+        batch_member_count:
+          type: integer
+          minimum: 0
+        one_click_member_count:
+          type: integer
+          minimum: 0
+        terminal_statuses:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/CandidateStatus"
+        terminal_classifications:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+        rule_learning_eligible:
+          type: boolean
+          description: Informational Core gate only; Web exposes no rule-learning command.
+        rule_learning_blocks:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum: [PROVISIONAL_BASIS, TERMINAL_DECISION_CONFLICT, REVIEW_RISK_PRESENT, AMOUNT_OUTLIER, NO_CONFIRMED_SOURCE]
+        active_rule:
+          type: "null"
+          description: Rule persistence and mutation are outside this slice and are not exposed by Web.
+    SimilarityConditions:
+      type: object
+      additionalProperties: false
+      required: [key_version, entity_ref, source_system, source_kind, platform, direction, transaction_type, counterparty_key, counterparty_label, counterparty_basis, funding_instrument, transaction_status, currency, risk_signature]
+      properties:
+        key_version:
+          const: ledgerbridge.classification-key.v1
+        entity_ref:
+          type: string
+          format: uuid
+        source_system:
+          type: string
+          minLength: 1
+          maxLength: 100
+        source_kind:
+          type: string
+          minLength: 1
+          maxLength: 64
+        platform:
+          type: string
+          minLength: 1
+          maxLength: 100
+        direction:
+          type: string
+          enum: [INFLOW, OUTFLOW, NEUTRAL]
+        transaction_type:
+          type: string
+          minLength: 1
+          maxLength: 100
+        counterparty_key:
+          type: string
+          minLength: 1
+          maxLength: 200
+        counterparty_label:
+          type: string
+          minLength: 1
+          maxLength: 200
+        counterparty_basis:
+          type: string
+          enum: [REGISTRY_COUNTERPARTY, EXACT_PLATFORM_SUMMARY_V1]
+        funding_instrument:
+          type: string
+          minLength: 1
+          maxLength: 200
+        transaction_status:
+          type: string
+          minLength: 1
+          maxLength: 100
+        currency:
+          type: string
+          const: CNY
+        risk_signature:
+          type: array
+          maxItems: 6
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/ClassificationRiskCode"
+    ClassificationRiskCode:
+      type: string
+      enum: [FUNDING_STATEMENT_REQUIRED, HOTEL_PAYOUT_STATEMENT_REQUIRED, RELATED_ACCOUNT_STATEMENT_REQUIRED, REVERSAL_MATCH_REQUIRED, TRANSFER_REVIEW_REQUIRED, UNSETTLED_TRANSACTION]
+    ClassificationGroupMember:
+      type: object
+      additionalProperties: false
+      required: [candidate_ref, short_id, revision, status, amount_minor, accounting_month, confidence_basis_points, review_risk_codes, amount_outlier, batch_eligible, one_click_eligible, exclusion_codes]
+      properties:
+        candidate_ref:
+          type: string
+          format: uuid
+        short_id:
+          type: string
+          minLength: 1
+          maxLength: 100
+        revision:
+          type: integer
+          minimum: 1
+        status:
+          $ref: "#/components/schemas/CandidateStatus"
+        amount_minor:
+          type: integer
+          minimum: -9007199254740991
+          maximum: 9007199254740991
+        accounting_month:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        confidence_basis_points:
+          type: integer
+          minimum: 0
+          maximum: 10000
+        review_risk_codes:
+          type: array
+          maxItems: 6
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/ClassificationRiskCode"
+        amount_outlier:
+          type: boolean
+        batch_eligible:
+          type: boolean
+        one_click_eligible:
+          type: boolean
+        exclusion_codes:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum: [NOT_PENDING, LOW_CONFIDENCE, BLOCKED, STRUCTURAL_RISK, AMOUNT_OUTLIER]
+    ClassificationTarget:
+      type: object
+      additionalProperties: false
+      required: [business_unit_ref, category_code]
+      properties:
+        business_unit_ref:
+          type: string
+          minLength: 1
+          maxLength: 100
+        category_code:
+          type: string
+          minLength: 1
+          maxLength: 100
+    ClassificationBatchRequest:
+      type: object
+      additionalProperties: false
+      required: [source_candidate_ref, accounting_month, target, members, reason, acknowledged_risk_codes]
+      properties:
+        source_candidate_ref:
+          type: string
+          format: uuid
+        accounting_month:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        target:
+          $ref: "#/components/schemas/ClassificationTarget"
+        members:
+          type: array
+          minItems: 2
+          maxItems: 100
+          uniqueItems: true
+          items:
+            type: object
+            additionalProperties: false
+            required: [candidate_ref, expected_revision]
+            properties:
+              candidate_ref:
+                type: string
+                format: uuid
+              expected_revision:
+                type: integer
+                minimum: 1
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        acknowledged_risk_codes:
+          type: array
+          maxItems: 6
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/ClassificationRiskCode"
+    ClassificationBatchReceipt:
+      type: object
+      additionalProperties: false
+      required: [contract_version, operation_id, replayed, group_ref, accounting_month, source_candidate_ref, target, acknowledged_risk_codes, results]
+      properties:
+        contract_version:
+          const: ledgerbridge.classification-batch.v1
+        operation_id:
+          type: string
+          format: uuid
+        replayed:
+          type: boolean
+        group_ref:
+          type: string
+          pattern: "^cg_[0-9a-f]{32}$"
+        accounting_month:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        source_candidate_ref:
+          type: string
+          format: uuid
+        target:
+          $ref: "#/components/schemas/ClassificationTarget"
+        acknowledged_risk_codes:
+          type: array
+          maxItems: 6
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/ClassificationRiskCode"
+        results:
+          type: array
+          minItems: 2
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/ClassificationBatchMemberResult"
+    ClassificationBatchMemberResult:
+      type: object
+      additionalProperties: false
+      required: [candidate_ref, operation_id, status, candidate, events]
+      properties:
+        candidate_ref:
+          type: string
+          format: uuid
+        operation_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [APPLIED, REPLAYED]
+        candidate:
+          $ref: "#/components/schemas/Candidate"
+        events:
+          type: array
+          minItems: 1
+          maxItems: 2
+          items:
+            $ref: "#/components/schemas/ReviewEvent"
     Candidate:
       allOf:
         - $ref: "#/components/schemas/CandidateFields"

@@ -44,6 +44,18 @@ Core; Core remains the only business-fact Module.
   all three layer calls succeed and Core explicitly returns a complete zero fact.
 - Human decisions are sent to Core with a UUID idempotency key, expected revision,
   and a request-bound user assertion. The request body cannot set the actor.
+- Similar transactions are shown as deterministic groups with the complete Core
+  matching scope and an exact member preview. Single-candidate review remains the
+  default; the reviewer must explicitly opt into the group action and acknowledge
+  every risk code before Web submits one batch request.
+- Group classification changes only stable business-unit and category identifiers.
+  Core rechecks the versioned group key, risk signature, member set, status, and
+  every expected revision inside the same database transaction. A stale or changed
+  member rejects the whole batch, so Web never loops over single-candidate writes.
+- The receipt repeats the acknowledged risk codes and every member result so an
+  idempotent replay is self-contained. Learned-rule creation, mutation, and
+  automatic application are not exposed in this slice; `active_rule` remains null
+  and the projection's learning fields are explanatory only.
 - A Web SQLite database containing preview candidates, review events, or workbook
   drafts makes `core-backed` startup fail closed.
 - `synthetic-preview`, `authenticated-preview`, and `core-backed` are mutually

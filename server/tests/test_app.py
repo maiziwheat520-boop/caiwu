@@ -138,6 +138,65 @@ class SyntheticBffTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(problem["code"], "INVALID_CURSOR")
 
+    def test_classification_groups_are_session_scoped_and_batch_risks_are_canonical(self) -> None:
+        status, groups, _ = self.request("/api/v1/candidate-classification-groups")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            groups,
+            {
+                "contract_version": "ledgerbridge.classification-groups.v1",
+                "items": [],
+                "next_cursor": None,
+            },
+        )
+        status, problem, _ = self.request(
+            "/api/v1/candidate-classification-groups?entity_ref=10000000-0000-4000-8000-000000000099"
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(problem["code"], "INVALID_CLASSIFICATION_GROUP_QUERY")
+
+        body: dict[str, object] = {
+            "source_candidate_ref": "2d0d0cb9-d4ab-4e3f-9879-7812882b8f21",
+            "accounting_month": "2026-08",
+            "target": {
+                "business_unit_ref": "unit-demo-a",
+                "category_code": "SETTLEMENT",
+            },
+            "members": [
+                {
+                    "candidate_ref": "2d0d0cb9-d4ab-4e3f-9879-7812882b8f21",
+                    "expected_revision": 1,
+                },
+                {
+                    "candidate_ref": "430d322d-461d-41e9-89ba-7e8ed04d62d9",
+                    "expected_revision": 1,
+                },
+            ],
+            "reason": "逐笔核对相似交易后整组确认",
+            "acknowledged_risk_codes": [
+                "TRANSFER_REVIEW_REQUIRED",
+                "FUNDING_STATEMENT_REQUIRED",
+            ],
+        }
+        status, problem, _ = self.request(
+            "/api/v1/candidate-classification-groups/cg_0123456789abcdef0123456789abcdef/decisions",
+            method="POST",
+            body=body,
+            headers=self.decision_headers(),
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(problem["code"], "INVALID_CLASSIFICATION_RISK_ACKNOWLEDGEMENT")
+
+        body["acknowledged_risk_codes"] = ["TRANSFER_REVIEW_REQUIRED"]
+        status, problem, _ = self.request(
+            "/api/v1/candidate-classification-groups/cg_0123456789abcdef0123456789abcdef/decisions",
+            method="POST",
+            body=body,
+            headers=self.decision_headers(),
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(problem["code"], "CLASSIFICATION_BATCH_UNAVAILABLE")
+
     def test_company_reports_are_empty_without_authoritative_synthetic_company_scope(self) -> None:
         status, payload, _ = self.request("/api/v1/company-reports")
 

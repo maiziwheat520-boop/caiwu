@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Theme } from '@radix-ui/themes'
 import App from './App'
-import type { AccountingDimensions, ApiCandidate, AuthStatus, EvidencePreview, OriginalReconciliation, ReviewEvent } from './types'
+import type { AccountingDimensions, ApiCandidate, AuthStatus, ClassificationGroup, EvidencePreview, OriginalReconciliation, ReviewEvent } from './types'
 import { originalReconciliationFixture } from './test-fixtures/original-reconciliation'
 
 const session = {
@@ -348,6 +348,8 @@ function installFetch(options: {
   failCandidateDetail?: boolean
   candidateDetails?: Record<string, ApiCandidate>
   accountingDimensions?: AccountingDimensions
+  classificationGroups?: ClassificationGroup[]
+  batchFailureStatus?: number
   companyReportResponse?: unknown
   failCompanyReportsOnce?: boolean
   failOriginalReconciliation?: boolean
@@ -407,6 +409,8 @@ function installFetch(options: {
     failCandidateDetail = false,
     candidateDetails = {},
     accountingDimensions,
+    classificationGroups = [],
+    batchFailureStatus,
     companyReportResponse = companyReports(),
     failCompanyReportsOnce = false,
     failOriginalReconciliation = false,
@@ -524,6 +528,13 @@ function installFetch(options: {
         })).values()],
       })
     }
+    if (url === '/api/v1/candidate-classification-groups') {
+      return response({
+        contract_version: 'ledgerbridge.classification-groups.v1',
+        items: classificationGroups,
+        next_cursor: null,
+      })
+    }
     if (url.includes('/api/v1/evidence/') && url.includes('/preview?')) return response(evidencePreview)
     if (url === '/api/v1/evidence/unlocks' && init?.method === 'POST') {
       if (unlockGate) await unlockGate
@@ -534,10 +545,53 @@ function installFetch(options: {
       unlockedSources.add(submitted.source_ref)
       return response({ unlocked: true })
     }
+    if (url.includes('/candidate-classification-groups/') && url.endsWith('/decisions') && init?.method === 'POST') {
+      decisionSaved = true
+      if (batchFailureStatus) {
+        return response({
+          title: '相似交易组已变化',
+          detail: '成员或版本与预览不一致',
+          status: batchFailureStatus,
+          code: 'CLASSIFICATION_GROUP_STALE',
+        }, batchFailureStatus)
+      }
+      const body = JSON.parse(String(init.body)) as {
+        source_candidate_ref: string
+        target: { business_unit_ref: string; category_code: string }
+        members: Array<{ candidate_ref: string; expected_revision: number }>
+        acknowledged_risk_codes: string[]
+      }
+      return response({
+        contract_version: 'ledgerbridge.classification-batch.v1',
+        operation_id: '11111111-1111-4111-8111-111111111111',
+        replayed: false,
+        group_ref: classificationGroups[0]?.group_ref,
+        accounting_month: classificationGroups[0]?.accounting_month,
+        source_candidate_ref: body.source_candidate_ref,
+        target: body.target,
+        acknowledged_risk_codes: body.acknowledged_risk_codes,
+        results: body.members.map((member, index) => {
+          const original = items.find((candidate) => candidate.id === member.candidate_ref)!
+          return {
+            candidate_ref: member.candidate_ref,
+            operation_id: `11111111-1111-4111-8111-11111111111${index}`,
+            status: 'APPLIED',
+            candidate: { ...original, revision: original.revision + 1, status: 'CONFIRMED' },
+            events: [{
+              id: `group-event-${index}`, candidate_id: original.id, sequence: 1,
+              from_revision: original.revision, to_revision: original.revision + 1,
+              decision: 'CONFIRM', actor: 'finance-admin', reason: 'group review',
+              changes: [{ field: 'status', previous_value: original.status, new_value: 'CONFIRMED', identity_changed: false }],
+              conflict_resolution: null, created_at: '2026-08-24T10:00:00+08:00',
+            }],
+          }
+        }),
+      })
+    }
     if (url.includes('/decisions') && init?.method === 'POST') {
       decisionSaved = true
       const body = JSON.parse(String(init.body)) as { decision: string }
-      const original = candidates.find((candidate) => url.includes(candidate.id))!
+      const original = items.find((candidate) => url.includes(candidate.id))!
       return response({
         candidate: { ...original, revision: original.revision + 1, status: body.decision === 'IGNORE' ? 'IGNORED' : 'CONFIRMED' },
         event: {
@@ -563,6 +617,68 @@ function installFetch(options: {
 
 function renderApp() {
   return render(<Theme><App /></Theme>)
+}
+
+function similarClassificationFixture() {
+  const source = {
+    ...candidates[0],
+    summary: '支付宝 | 2026-08-01 | 收入 | 投资理财 | 余额宝 | 余额宝 | 交易成功',
+    review_risks: [{
+      code: 'TRANSFER_REVIEW_REQUIRED',
+      message: '转账类交易需人工确认收付款方及资金性质',
+    }],
+  } as ApiCandidate
+  const peer = {
+    ...source,
+    id: 'candidate-5',
+    short_id: 'C-8F22',
+    revision: 2,
+    amount_minor: 4288,
+    summary: '支付宝 | 2026-08-02 | 收入 | 投资理财 | 余额宝 | 余额宝 | 交易成功',
+  } as ApiCandidate
+  const group: ClassificationGroup = {
+    contract_version: 'ledgerbridge.classification-group.v1',
+    group_ref: `cg_${'a'.repeat(32)}`,
+    accounting_month: '2026-08',
+    conditions: {
+      key_version: 'ledgerbridge.classification-key.v1',
+      entity_ref: '10000000-0000-4000-8000-000000000001',
+      source_system: 'alipay',
+      source_kind: 'controlled_upload',
+      platform: '支付宝',
+      direction: 'INFLOW',
+      transaction_type: '投资理财',
+      counterparty_key: 'exact:余额宝',
+      counterparty_label: '余额宝',
+      counterparty_basis: 'EXACT_PLATFORM_SUMMARY_V1',
+      funding_instrument: '余额宝',
+      transaction_status: '交易成功',
+      currency: 'CNY',
+      risk_signature: ['TRANSFER_REVIEW_REQUIRED'],
+    },
+    members: [source, peer].map((candidate) => ({
+      candidate_ref: candidate.id,
+      short_id: candidate.short_id,
+      revision: candidate.revision,
+      status: candidate.status,
+      amount_minor: candidate.amount_minor,
+      accounting_month: candidate.accounting_month!,
+      confidence_basis_points: candidate.confidence_basis_points,
+      review_risk_codes: ['TRANSFER_REVIEW_REQUIRED'],
+      amount_outlier: false,
+      batch_eligible: true,
+      one_click_eligible: false,
+      exclusion_codes: [],
+    })),
+    batch_member_count: 2,
+    one_click_member_count: 0,
+    terminal_statuses: [],
+    terminal_classifications: [],
+    rule_learning_eligible: false,
+    rule_learning_blocks: ['PROVISIONAL_BASIS', 'REVIEW_RISK_PRESENT', 'NO_CONFIRMED_SOURCE'],
+    active_rule: null,
+  }
+  return { source, peer, group }
 }
 
 function mockCredentials(method: 'get' | 'create', implementation: (options?: CredentialCreationOptions | CredentialRequestOptions) => Promise<Credential | null>) {
@@ -783,6 +899,116 @@ describe('LedgerBridge Web API client', () => {
     expect((init.headers as Record<string, string>)['Idempotency-Key']).toMatch(/^[0-9a-f-]{36}$/)
     expect(JSON.parse(String(init.body))).toMatchObject({ decision: 'CONFIRM', expected_revision: 3 })
     expect(fetchMock.mock.calls.filter(([input, requestInit]) => String(input) === '/api/v1/reconciliations/2026-08' && requestInit?.method !== 'POST')).toHaveLength(2)
+  })
+
+  it('previews an exact similar group and submits one risk-acknowledged atomic batch', async () => {
+    const { source, peer, group } = similarClassificationFixture()
+    const fetchMock = installFetch({
+      items: [source, peer],
+      classificationGroups: [group],
+      runtimeMode: 'core-backed',
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(screen.getByText(source.summary))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('严格平台摘要匹配')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByLabelText(/同时处理本组其余 1 笔/))
+    const matchingDetails = within(dialog).getByText('匹配依据详情').closest('details')
+    expect(matchingDetails).not.toHaveAttribute('open')
+    fireEvent.click(within(dialog).getByText('匹配依据详情'))
+    expect(within(dialog).getByText('键版本：ledgerbridge.classification-key.v1')).toBeInTheDocument()
+    expect(within(dialog).getByText('实体：10000000-0000-4000-8000-000000000001')).toBeInTheDocument()
+    expect(within(dialog).getByText('来源：alipay / controlled_upload')).toBeInTheDocument()
+    expect(within(dialog).getByText('平台：支付宝')).toBeInTheDocument()
+    expect(within(dialog).getByText('方向：INFLOW')).toBeInTheDocument()
+    expect(within(dialog).getByText('交易类型：投资理财')).toBeInTheDocument()
+    expect(within(dialog).getByText('对方键：exact:余额宝')).toBeInTheDocument()
+    expect(within(dialog).getByText('对方名称：余额宝')).toBeInTheDocument()
+    expect(within(dialog).getByText('对方依据：EXACT_PLATFORM_SUMMARY_V1')).toBeInTheDocument()
+    expect(within(dialog).getByText('币种：CNY')).toBeInTheDocument()
+    expect(within(dialog).getByText('风险签名：TRANSFER_REVIEW_REQUIRED')).toBeInTheDocument()
+    expect(within(dialog).getByText('C-8F22')).toBeInTheDocument()
+    const submit = within(dialog).getByRole('button', { name: '确认本组 2 笔' })
+    expect(submit).toBeDisabled()
+    fireEvent.click(within(dialog).getByLabelText(/我已逐项核对并确认风险条件/))
+    expect(submit).toBeEnabled()
+    fireEvent.click(submit)
+
+    expect(await screen.findByText(/已原子确认同组 2 笔交易/)).toBeInTheDocument()
+    const batchCall = fetchMock.mock.calls.find(([input]) => (
+      String(input).includes('/candidate-classification-groups/')
+      && String(input).endsWith('/decisions')
+    ))
+    expect(batchCall).toBeDefined()
+    expect((batchCall?.[1]?.headers as Record<string, string>)['X-CSRF-Token']).toBe(
+      session.csrf_token,
+    )
+    expect(JSON.parse(String(batchCall?.[1]?.body))).toEqual({
+      source_candidate_ref: source.id,
+      accounting_month: '2026-08',
+      target: {
+        business_unit_ref: source.business_unit_ref,
+        category_code: source.category_code,
+      },
+      members: [
+        { candidate_ref: source.id, expected_revision: source.revision },
+        { candidate_ref: peer.id, expected_revision: peer.revision },
+      ],
+      reason: 'Web 审核：明确预览并确认相似交易组分类',
+      acknowledged_risk_codes: ['TRANSFER_REVIEW_REQUIRED'],
+    })
+    expect(fetchMock.mock.calls.filter(([input]) => (
+      String(input).includes('/candidate-classification-groups/')
+      && String(input).endsWith('/decisions')
+    ))).toHaveLength(1)
+  })
+
+  it('reports a stale similar group as an atomic zero-write conflict', async () => {
+    const { source, peer, group } = similarClassificationFixture()
+    const fetchMock = installFetch({
+      items: [source, peer],
+      classificationGroups: [group],
+      runtimeMode: 'core-backed',
+      batchFailureStatus: 409,
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(screen.getByText(source.summary))
+
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByLabelText(/同时处理本组其余 1 笔/))
+    fireEvent.click(within(dialog).getByLabelText(/我已逐项核对并确认风险条件/))
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认本组 2 笔' }))
+
+    expect(await screen.findByText('同组成员或版本已变化，本次没有处理任何交易；请刷新后重新预览')).toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(([input]) => (
+      String(input).includes('/candidate-classification-groups/')
+      && String(input).endsWith('/decisions')
+    ))).toHaveLength(1)
+  })
+
+  it('shows grouped scope status but blocks batches above the atomic limit', async () => {
+    const { source, group } = similarClassificationFixture()
+    group.members = Array.from({ length: 101 }, (_, index) => ({
+      ...group.members[0],
+      candidate_ref: index === 0 ? source.id : `candidate-limit-${index}`,
+      short_id: `C-L${String(index).padStart(3, '0')}`,
+    }))
+    group.batch_member_count = 101
+    installFetch({ items: [source], classificationGroups: [group], runtimeMode: 'core-backed' })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(screen.getByText(source.summary))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getAllByText(/101 笔可处理/)).toHaveLength(2)
+    expect(within(dialog).getByText(/超过单次 100 笔上限/)).toBeInTheDocument()
+    expect(within(dialog).queryByLabelText(/同时处理本组其余/)).not.toBeInTheDocument()
   })
 
   it('posts only changed amount and month without resubmitting display labels', async () => {
@@ -1276,6 +1502,13 @@ describe('LedgerBridge Web API client', () => {
   })
 
   it('bulk-confirms only high-confidence candidates without Core risk flags', async () => {
+    const { group } = similarClassificationFixture()
+    const safeUngroupedCandidate: ApiCandidate = {
+      ...candidates[0],
+      id: 'candidate-safe-ungrouped',
+      short_id: 'C-SAFE1',
+      summary: '未纳入相似组的高置信度安全账单',
+    }
     const hotelRiskCandidate: ApiCandidate = {
       ...candidates[0],
       id: 'candidate-risk',
@@ -1298,7 +1531,10 @@ describe('LedgerBridge Web API client', () => {
         message: '平台交易使用银行或信用账户支付，需关联资金账户明细后再确认',
       }],
     }
-    const fetchMock = installFetch({ items: [candidates[0], hotelRiskCandidate, fundingRiskCandidate] })
+    const fetchMock = installFetch({
+      items: [candidates[0], safeUngroupedCandidate, hotelRiskCandidate, fundingRiskCandidate],
+      classificationGroups: [group],
+    })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderApp()
     await screen.findByText('早上好，今天有几项需要确认')
@@ -1310,7 +1546,8 @@ describe('LedgerBridge Web API client', () => {
 
     const decisionCalls = fetchMock.mock.calls.filter(([input]) => String(input).includes('/decisions'))
     expect(decisionCalls).toHaveLength(1)
-    expect(String(decisionCalls[0][0])).toContain('/candidate-1/decisions')
+    expect(String(decisionCalls[0][0])).toContain('/candidate-safe-ungrouped/decisions')
+    expect(String(decisionCalls[0][0])).not.toContain('/candidate-1/decisions')
     expect(String(decisionCalls[0][0])).not.toContain('/candidate-risk/decisions')
     expect(String(decisionCalls[0][0])).not.toContain('/candidate-funding-risk/decisions')
   })
