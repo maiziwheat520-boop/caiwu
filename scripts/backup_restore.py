@@ -1876,23 +1876,31 @@ CLASSIFICATION_BATCH_CONSTRAINT_DEFINITION_MARKERS = {
     "candidate_classification_batch_receipt_entity_fk": (
         "foreign key",
         "authorized_entity_id",
-        "public.entity",
+        "references entity",
+        "(id)",
+        "on delete restrict",
     ),
     "candidate_classification_batch_receipt_target_unit_fk": (
         "foreign key",
         "target_business_unit_id",
-        "public.business_unit",
+        "references business_unit",
+        "(id)",
+        "on delete restrict",
     ),
     "candidate_classification_batch_receipt_source_fk": (
         "foreign key",
         "source_candidate_id",
-        "public.candidate",
+        "references candidate",
+        "(id)",
+        "on delete restrict",
     ),
     "candidate_classification_batch_receipt_audit_unique": ("unique", "audit_event_id"),
     "candidate_classification_batch_receipt_audit_fk": (
         "foreign key",
         "audit_event_id",
-        "public.audit_event",
+        "references audit_event",
+        "(id)",
+        "on delete restrict",
     ),
     "candidate_classification_batch_member_pk": ("primary key", "batch_operation_id", "ordinal"),
     "candidate_classification_batch_member_candidate_unique": (
@@ -1905,23 +1913,50 @@ CLASSIFICATION_BATCH_CONSTRAINT_DEFINITION_MARKERS = {
     "candidate_classification_batch_member_batch_fk": (
         "foreign key",
         "batch_operation_id",
-        "candidate_classification_batch_receipt",
+        "references candidate_classification_batch_receipt",
+        "(operation_id)",
+        "on delete restrict",
     ),
     "candidate_classification_batch_member_candidate_fk": (
         "foreign key",
         "candidate_id",
-        "public.candidate",
+        "references candidate",
+        "(id)",
+        "on delete restrict",
     ),
     "candidate_classification_batch_member_operation_unique": ("unique", "member_operation_id"),
     "candidate_classification_batch_member_operation_fk": (
         "foreign key",
         "member_operation_id",
-        "candidate_decision_receipt",
+        "references candidate_decision_receipt",
+        "(operation_id)",
+        "on delete restrict",
     ),
     "candidate_classification_batch_assertion_use_pkey": ("primary key", "assertion_jti"),
     "candidate_classification_batch_assertion_operation_fk": (
         "foreign key",
         "operation_id",
+        "references candidate_classification_batch_receipt",
+        "(operation_id)",
+        "on delete restrict",
+    ),
+}
+CLASSIFICATION_BATCH_FOREIGN_KEY_TARGETS = {
+    "candidate_classification_batch_receipt_entity_fk": ("public", "entity"),
+    "candidate_classification_batch_receipt_target_unit_fk": ("public", "business_unit"),
+    "candidate_classification_batch_receipt_source_fk": ("public", "candidate"),
+    "candidate_classification_batch_receipt_audit_fk": ("public", "audit_event"),
+    "candidate_classification_batch_member_batch_fk": (
+        "internal_command",
+        "candidate_classification_batch_receipt",
+    ),
+    "candidate_classification_batch_member_candidate_fk": ("public", "candidate"),
+    "candidate_classification_batch_member_operation_fk": (
+        "internal_command",
+        "candidate_decision_receipt",
+    ),
+    "candidate_classification_batch_assertion_operation_fk": (
+        "internal_command",
         "candidate_classification_batch_receipt",
     ),
 }
@@ -1963,9 +1998,12 @@ observed_tables AS (
  WHERE n.nspname='internal_command' AND NOT t.tgisinternal AND t.tgname IN (__TRIGGERS__)
 ), observed_constraints AS (
  SELECT c.relname table_name,con.conname constraint_name,con.contype constraint_type,
-  con.convalidated validated,pg_get_constraintdef(con.oid,true) definition
+  con.convalidated validated,pg_get_constraintdef(con.oid,true) definition,
+  refn.nspname reference_schema,refc.relname reference_table
  FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid
  JOIN pg_namespace n ON n.oid=c.relnamespace
+ LEFT JOIN pg_class refc ON refc.oid=con.confrelid
+ LEFT JOIN pg_namespace refn ON refn.oid=refc.relnamespace
  WHERE n.nspname='internal_command' AND c.relname IN (__TABLES__)
 ), observed_columns AS (
  SELECT c.relname table_name,a.attname column_name,
@@ -2012,7 +2050,8 @@ SELECT json_build_object(
   FROM observed_triggers),'[]'::json),
  'classification_batch_constraints',COALESCE((SELECT json_agg(json_build_object(
   'table',table_name,'name',constraint_name,'type',constraint_type,'validated',validated,
-  'definition',definition) ORDER BY table_name,constraint_name) FROM observed_constraints),'[]'::json),
+  'definition',definition,'reference_schema',reference_schema,'reference_table',reference_table)
+  ORDER BY table_name,constraint_name) FROM observed_constraints),'[]'::json),
  'classification_batch_columns',COALESCE((SELECT json_agg(json_build_object(
   'table',table_name,'column',column_name,'data_type',data_type,'not_null',not_null)
   ORDER BY table_name,column_name) FROM observed_columns),'[]'::json),
@@ -5874,10 +5913,27 @@ def _validate_classification_batch_security(metadata: dict[str, Any]) -> None:
         for name in CLASSIFICATION_BATCH_REQUIRED_CONSTRAINTS
         if name in observed_constraints
     )
+    foreign_key_targets_valid = all(
+        (
+            observed_constraints[name].get("type"),
+            observed_constraints[name].get("reference_schema"),
+            observed_constraints[name].get("reference_table"),
+        )
+        == ("f", *target)
+        for name, target in CLASSIFICATION_BATCH_FOREIGN_KEY_TARGETS.items()
+        if name in observed_constraints
+    )
+    non_foreign_key_references_null = all(
+        item.get("reference_schema") is None and item.get("reference_table") is None
+        for name, item in observed_constraints.items()
+        if name not in CLASSIFICATION_BATCH_FOREIGN_KEY_TARGETS
+    )
     if (
         observed_constraint_tables != CLASSIFICATION_BATCH_CONSTRAINT_TABLES
         or set(observed_constraints) != CLASSIFICATION_BATCH_REQUIRED_CONSTRAINTS
         or not definitions_valid
+        or not foreign_key_targets_valid
+        or not non_foreign_key_references_null
         or any(item.get("validated") is not True for item in constraints)
     ):
         raise BackupError("restored classification batch constraints are incomplete")

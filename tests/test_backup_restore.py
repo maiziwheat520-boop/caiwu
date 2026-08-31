@@ -1073,6 +1073,53 @@ def _company_reporting_database_metadata() -> dict[str, object]:
     return metadata
 
 
+_CLASSIFICATION_BATCH_PRETTY_FK_FIXTURES = {
+    "candidate_classification_batch_receipt_entity_fk": (
+        "public",
+        "entity",
+        "FOREIGN KEY (authorized_entity_id) REFERENCES entity(id) ON DELETE RESTRICT",
+    ),
+    "candidate_classification_batch_receipt_target_unit_fk": (
+        "public",
+        "business_unit",
+        "FOREIGN KEY (target_business_unit_id) REFERENCES business_unit(id) ON DELETE RESTRICT",
+    ),
+    "candidate_classification_batch_receipt_source_fk": (
+        "public",
+        "candidate",
+        "FOREIGN KEY (source_candidate_id) REFERENCES candidate(id) ON DELETE RESTRICT",
+    ),
+    "candidate_classification_batch_receipt_audit_fk": (
+        "public",
+        "audit_event",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
+    ),
+    "candidate_classification_batch_member_batch_fk": (
+        "internal_command",
+        "candidate_classification_batch_receipt",
+        "FOREIGN KEY (batch_operation_id) REFERENCES "
+        "candidate_classification_batch_receipt(operation_id) ON DELETE RESTRICT",
+    ),
+    "candidate_classification_batch_member_candidate_fk": (
+        "public",
+        "candidate",
+        "FOREIGN KEY (candidate_id) REFERENCES candidate(id) ON DELETE RESTRICT",
+    ),
+    "candidate_classification_batch_member_operation_fk": (
+        "internal_command",
+        "candidate_decision_receipt",
+        "FOREIGN KEY (member_operation_id) REFERENCES "
+        "candidate_decision_receipt(operation_id) ON DELETE RESTRICT",
+    ),
+    "candidate_classification_batch_assertion_operation_fk": (
+        "internal_command",
+        "candidate_classification_batch_receipt",
+        "FOREIGN KEY (operation_id) REFERENCES "
+        "candidate_classification_batch_receipt(operation_id) ON DELETE RESTRICT",
+    ),
+}
+
+
 def _classification_batch_security_metadata() -> dict[str, object]:
     owner = "ledgerbridge_owner"
     return {
@@ -1110,9 +1157,23 @@ def _classification_batch_security_metadata() -> dict[str, object]:
             {
                 "table": CLASSIFICATION_BATCH_CONSTRAINT_TABLES[name],
                 "name": name,
-                "type": "c",
+                "type": "f" if name in _CLASSIFICATION_BATCH_PRETTY_FK_FIXTURES else "c",
                 "validated": True,
-                "definition": " ".join(CLASSIFICATION_BATCH_CONSTRAINT_DEFINITION_MARKERS[name]),
+                "definition": (
+                    _CLASSIFICATION_BATCH_PRETTY_FK_FIXTURES[name][2]
+                    if name in _CLASSIFICATION_BATCH_PRETTY_FK_FIXTURES
+                    else " ".join(CLASSIFICATION_BATCH_CONSTRAINT_DEFINITION_MARKERS[name])
+                ),
+                "reference_schema": (
+                    _CLASSIFICATION_BATCH_PRETTY_FK_FIXTURES[name][0]
+                    if name in _CLASSIFICATION_BATCH_PRETTY_FK_FIXTURES
+                    else None
+                ),
+                "reference_table": (
+                    _CLASSIFICATION_BATCH_PRETTY_FK_FIXTURES[name][1]
+                    if name in _CLASSIFICATION_BATCH_PRETTY_FK_FIXTURES
+                    else None
+                ),
             }
             for name in CLASSIFICATION_BATCH_REQUIRED_CONSTRAINTS
         ],
@@ -1206,6 +1267,9 @@ def test_classification_batch_restore_metadata_covers_0026_security_boundary() -
         assert f"internal_command.{table}" in CLASSIFICATION_BATCH_SECURITY_SQL
     for name, arguments in CLASSIFICATION_BATCH_FUNCTION_SIGNATURES.items():
         assert f"('{name}', '{arguments}')" in CLASSIFICATION_BATCH_SECURITY_SQL
+    assert "con.confrelid" in CLASSIFICATION_BATCH_SECURITY_SQL
+    assert "'reference_schema',reference_schema" in CLASSIFICATION_BATCH_SECURITY_SQL
+    assert "'reference_table',reference_table" in CLASSIFICATION_BATCH_SECURITY_SQL
 
 
 def test_classification_batch_restore_accepts_implicit_default_owner_table_acls() -> None:
@@ -1270,6 +1334,9 @@ def test_classification_batch_security_query_treats_null_acls_as_no_rows() -> No
         "trigger_disabled",
         "constraint_missing",
         "constraint_semantics",
+        "constraint_reference",
+        "constraint_type",
+        "non_fk_reference",
         "column_contract",
         "api_execute_missing",
         "direct_table_grant",
@@ -1301,6 +1368,30 @@ def test_classification_batch_restore_rejects_security_metadata_drift(
         metadata["classification_batch_constraints"] = [
             {**rows[0], "definition": "CHECK (true)"},
             *rows[1:],
+        ]
+    elif mutation == "constraint_reference":
+        rows = cast(list[dict[str, object]], metadata["classification_batch_constraints"])
+        metadata["classification_batch_constraints"] = [
+            {**item, "reference_table": "audit_event"}
+            if item["name"] == "candidate_classification_batch_receipt_entity_fk"
+            else item
+            for item in rows
+        ]
+    elif mutation == "constraint_type":
+        rows = cast(list[dict[str, object]], metadata["classification_batch_constraints"])
+        metadata["classification_batch_constraints"] = [
+            {**item, "type": "c"}
+            if item["name"] == "candidate_classification_batch_receipt_entity_fk"
+            else item
+            for item in rows
+        ]
+    elif mutation == "non_fk_reference":
+        rows = cast(list[dict[str, object]], metadata["classification_batch_constraints"])
+        metadata["classification_batch_constraints"] = [
+            {**item, "reference_schema": "public", "reference_table": "entity"}
+            if item["name"] == "candidate_classification_batch_receipt_pkey"
+            else item
+            for item in rows
         ]
     elif mutation == "column_contract":
         rows = cast(list[dict[str, object]], metadata["classification_batch_columns"])
