@@ -46,3 +46,17 @@ def test_unlocker_receives_no_password_configuration_channel() -> None:
     serialized = yaml.safe_dump(compose["services"]["evidence-unlocker"])
 
     assert "password" not in serialized.lower()
+
+
+def test_socket_initializer_reclaims_root_ownership_before_chmod() -> None:
+    initializer = cast(dict[str, Any], _compose()["services"]["internal-socket-init"])
+    command = cast(list[str], initializer["command"])[-1]
+
+    assert initializer["user"] == "0:0"
+    assert initializer["cap_add"] == ["CHOWN"]
+    assert command == (
+        "chown 0:0 /run/ledgerbridge-internal /run/ledgerbridge-unlocker; "
+        "chmod 0770 /run/ledgerbridge-internal; "
+        "chmod 0700 /run/ledgerbridge-unlocker; "
+        "chown 10001:10001 /run/ledgerbridge-internal /run/ledgerbridge-unlocker"
+    )
