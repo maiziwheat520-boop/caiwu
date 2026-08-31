@@ -444,3 +444,49 @@ def test_test_workspace_preview_accepts_an_exact_blocking_net_mismatch_for_revie
         provider_headers={},
     )
     assert result.payload_copy()["status"] == "NEEDS_HUMAN_REVIEW"
+
+
+def test_test_workspace_preview_rejects_net_mismatch_exception_for_another_row():
+    payload = preview_payload()
+    payload["status"] = "NEEDS_HUMAN_REVIEW"
+    payload["total_net_pay_cents"] = 512000
+    payload["lines"][0]["net_pay_cents"] = 512000
+    payload["exceptions"] = [
+        {
+            "code": "NET_PAY_MISMATCH",
+            "severity": "BLOCKING",
+            "row": 5,
+            "calculated_cents": 500000,
+            "stated_cents": 512000,
+        }
+    ]
+    entity, adapter = source(payload)
+
+    with pytest.raises(PayrollIntegrationError):
+        adapter.preview_material(
+            entity_ref=entity,
+            test_batch_id="batch_demo",
+            material_id="material_old",
+            provider_headers={},
+        )
+
+
+@pytest.mark.parametrize("unique_field", ["employee_id", "account_id"])
+def test_test_workspace_preview_rejects_duplicate_payroll_identity(unique_field):
+    payload = preview_payload()
+    duplicate = dict(payload["lines"][0])
+    duplicate["employee_id"] = "emp_preview_002"
+    duplicate["account_id"] = "acct_preview_002"
+    duplicate[unique_field] = payload["lines"][0][unique_field]
+    payload["lines"].append(duplicate)
+    payload["line_count"] = 2
+    payload["total_net_pay_cents"] = 1000000
+    entity, adapter = source(payload)
+
+    with pytest.raises(PayrollIntegrationError):
+        adapter.preview_material(
+            entity_ref=entity,
+            test_batch_id="batch_demo",
+            material_id="material_old",
+            provider_headers={},
+        )

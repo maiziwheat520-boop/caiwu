@@ -2962,7 +2962,7 @@ def _validate_test_material_preview(
     exception_fields = frozenset(
         {"code", "severity", "row", "field", "calculated_cents", "stated_cents"}
     )
-    acknowledged_net_mismatches: set[tuple[int, int]] = set()
+    acknowledged_net_mismatches: set[tuple[int, int, int]] = set()
     for exception_value in _require_list(value.get("exceptions"), "preview.exceptions"):
         exception = _require_object(exception_value, "preview.exception")
         if not {"code", "severity", "row"}.issubset(exception) or not set(exception).issubset(
@@ -2990,17 +2990,31 @@ def _validate_test_material_preview(
             and exception.get("severity") == "BLOCKING"
             and set(amounts) == {"calculated_cents", "stated_cents"}
         ):
-            acknowledged_net_mismatches.add((amounts["calculated_cents"], amounts["stated_cents"]))
+            acknowledged_net_mismatches.add(
+                (
+                    _require_non_negative_integer(exception.get("row"), "preview.exception.row"),
+                    amounts["calculated_cents"],
+                    amounts["stated_cents"],
+                )
+            )
 
     lines = _require_list(value.get("lines"), "preview.lines")
     total = 0
-    for line_value in lines:
+    employee_ids: set[str] = set()
+    account_ids: set[str] = set()
+    for source_row, line_value in enumerate(lines, start=4):
         line = _require_object(line_value, "preview.line")
         _require_exact_keys(line, line_fields, "test payroll preview line")
         if line.get("company_id") != expected_company_id:
             _invalid_response("payroll test preview line crosses company scope")
-        _require_stable_identifier(line.get("employee_id"), "preview.employee_id")
-        _require_stable_identifier(line.get("account_id"), "preview.account_id", account=True)
+        employee_id = _require_stable_identifier(line.get("employee_id"), "preview.employee_id")
+        account_id = _require_stable_identifier(
+            line.get("account_id"), "preview.account_id", account=True
+        )
+        if employee_id in employee_ids or account_id in account_ids:
+            _invalid_response("payroll preview identity is duplicated")
+        employee_ids.add(employee_id)
+        account_ids.add(account_id)
         for field, maximum in (
             ("employee_name", 120),
             ("payment_channel", 40),
@@ -3052,7 +3066,8 @@ def _validate_test_material_preview(
             _invalid_response("payroll preview net pay calculation is invalid")
         if calculated_net != line_amounts["net_pay_cents"] and (
             value.get("status") != "NEEDS_HUMAN_REVIEW"
-            or (calculated_net, line_amounts["net_pay_cents"]) not in acknowledged_net_mismatches
+            or (source_row, calculated_net, line_amounts["net_pay_cents"])
+            not in acknowledged_net_mismatches
         ):
             _invalid_response("payroll preview net pay is inconsistent")
     if len(lines) != line_count or total != stated_total:

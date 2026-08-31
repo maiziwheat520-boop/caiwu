@@ -11,7 +11,7 @@ import stat
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import Connection, text
@@ -29,6 +29,11 @@ from ledgerbridge.file_key_provider import FileKeyProvider
 from ledgerbridge.historical_auto_confirmation import (
     HistoricalAutoConfirmationSettings,
     confirm_test_historical_candidates,
+)
+from ledgerbridge.welfare_benefit_split import (
+    WelfareBenefitSplitError,
+    WelfareBenefitSplitStatus,
+    split_welfare_benefit,
 )
 
 SOURCE_MANIFEST_SCHEMA = "ledgerbridge.controlled-review-source.v1"
@@ -134,6 +139,13 @@ class ImportCandidateLink(_FrozenModel):
         return self
 
 
+class ImportWelfareBenefitFact(_FrozenModel):
+    purchase_candidate_ref: UUID
+    funding_statement_evidence_ref: UUID
+    matched_bank_candidate_ref: UUID | None = None
+    bank_debit_absence_proven: bool
+
+
 class SourceManifest(_FrozenModel):
     schema_version: Literal["ledgerbridge.controlled-review-source.v1"]
     batch_ref: UUID
@@ -145,6 +157,7 @@ class SourceManifest(_FrozenModel):
     evidence: tuple[SourceEvidence, ...] = Field(min_length=1)
     candidates: tuple[ImportCandidate, ...] = Field(min_length=1)
     candidate_links: tuple[ImportCandidateLink, ...] = ()
+    welfare_benefit_facts: tuple[ImportWelfareBenefitFact, ...] = ()
 
     @model_validator(mode="after")
     def batch_is_closed(self) -> SourceManifest:
@@ -274,9 +287,81 @@ def load_source_manifest(path: Path) -> tuple[SourceManifest, bytes]:
     raw = _read_bounded_regular_file(path, max_bytes=16 * 1024 * 1024)
     try:
         manifest = SourceManifest.model_validate_json(raw, strict=True)
+        manifest = _expand_welfare_benefit_candidates(manifest)
     except ValueError as exc:
         raise ControlledImportError("source manifest is invalid") from exc
     return manifest, raw
+
+
+def _expand_welfare_benefit_candidates(manifest: SourceManifest) -> SourceManifest:
+    if not manifest.welfare_benefit_facts:
+        return manifest
+    candidates = list(manifest.candidates)
+    candidates_by_ref = {candidate.candidate_ref: candidate for candidate in candidates}
+    evidence_refs = {evidence.evidence_ref for evidence in manifest.evidence}
+    category_codes = {category.code for category in manifest.categories}
+    if "WELFARE_INCOME" not in category_codes:
+        raise ControlledImportError("welfare income category is unavailable")
+    for fact in manifest.welfare_benefit_facts:
+        purchase = candidates_by_ref.get(fact.purchase_candidate_ref)
+        if purchase is None or fact.funding_statement_evidence_ref not in evidence_refs:
+            raise ControlledImportError("welfare benefit fact is not linked to imported evidence")
+        matched_bank_debit_minor: int | None = None
+        if fact.matched_bank_candidate_ref is not None:
+            bank_candidate = candidates_by_ref.get(fact.matched_bank_candidate_ref)
+            if (
+                bank_candidate is None
+                or bank_candidate.candidate_ref == purchase.candidate_ref
+                or fact.funding_statement_evidence_ref not in bank_candidate.evidence_refs
+                or bank_candidate.amount_minor >= 0
+            ):
+                raise ControlledImportError("welfare benefit bank fact is invalid")
+            matched_bank_debit_minor = bank_candidate.amount_minor
+        try:
+            split = split_welfare_benefit(
+                source_record_ref=purchase.candidate_ref,
+                purchase_amount_minor=purchase.amount_minor,
+                summary=purchase.summary,
+                funding_statement_ref=fact.funding_statement_evidence_ref,
+                matched_bank_debit_minor=matched_bank_debit_minor,
+                bank_debit_absence_proven=fact.bank_debit_absence_proven,
+            )
+        except WelfareBenefitSplitError as exc:
+            raise ControlledImportError("welfare benefit fact is invalid") from exc
+        if split.status is not WelfareBenefitSplitStatus.READY or split.welfare_income is None:
+            raise ControlledImportError("welfare benefit amount is not ready")
+        candidate_ref = uuid5(manifest.batch_ref, f"welfare-income:{purchase.candidate_ref}")
+        if candidate_ref in candidates_by_ref:
+            raise ControlledImportError("welfare benefit candidate is duplicated")
+        evidence = tuple(
+            dict.fromkeys((*purchase.evidence_refs, fact.funding_statement_evidence_ref))
+        )
+        derived = ImportCandidate(
+            candidate_ref=candidate_ref,
+            operation_id=uuid5(
+                manifest.batch_ref, f"welfare-income-operation:{purchase.candidate_ref}"
+            ),
+            ingest_channel=purchase.ingest_channel,
+            source_system=purchase.source_system,
+            source_event_ref=uuid5(purchase.source_event_ref, "welfare-income"),
+            display_label="Welfare benefit income",
+            category_code="WELFARE_INCOME",
+            amount_minor=split.welfare_income.amount_minor,
+            accounting_month=purchase.accounting_month,
+            summary="Welfare benefit offset income",
+            confidence_basis_points=purchase.confidence_basis_points,
+            evidence_refs=evidence,
+        )
+        candidates.append(derived)
+        candidates_by_ref[derived.candidate_ref] = derived
+    return SourceManifest.model_validate(
+        {
+            **manifest.model_dump(mode="python"),
+            "candidates": tuple(candidates),
+            "welfare_benefit_facts": (),
+        },
+        strict=True,
+    )
 
 
 def load_prepared_manifest(path: Path) -> tuple[PreparedManifest, bytes]:

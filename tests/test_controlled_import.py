@@ -12,6 +12,7 @@ from ledgerbridge.controlled_import import (
     ControlledImportError,
     PartialRefundMatchBasis,
     load_prepared_manifest,
+    load_source_manifest,
     prepare_source_manifest,
 )
 from ledgerbridge.file_key_provider import bootstrap_file_key
@@ -150,3 +151,59 @@ def test_prepare_rejects_source_digest_drift(tmp_path: Path) -> None:
             artifact_root=(tmp_path / "artifacts").resolve(),
             prepared_manifest_path=(tmp_path / "prepared-manifest.json").resolve(),
         )
+
+
+def test_controlled_source_expands_proven_welfare_offset_into_income_candidate(
+    tmp_path: Path,
+) -> None:
+    evidence = b"synthetic platform and linked bank evidence"
+    source = _source_manifest(
+        tmp_path,
+        digest=hashlib.sha256(evidence).hexdigest(),
+        size=len(evidence),
+    )
+    payload = json.loads(source.read_text(encoding="ascii"))
+    payload["categories"].append(
+        {
+            "category_ref": "70000000-0000-4000-8000-000000000009",
+            "code": "WELFARE_INCOME",
+            "label": "Welfare income",
+        }
+    )
+    payload["candidates"][0]["amount_minor"] = -10000
+    payload["candidates"][0]["summary"] = "平台消费 福利金抵扣 4995 分"
+    payload["candidates"].append(
+        {
+            "candidate_ref": "70000000-0000-4000-8000-000000000010",
+            "operation_id": "70000000-0000-4000-8000-000000000011",
+            "ingest_channel": "CONTROLLED_UPLOAD",
+            "source_system": "synthetic_bank_statement",
+            "source_event_ref": "70000000-0000-4000-8000-000000000012",
+            "display_label": "Linked synthetic bank debit",
+            "category_code": "CONTROLLED_FIXTURE",
+            "amount_minor": -5005,
+            "accounting_month": "2026-08",
+            "summary": "Linked bank debit",
+            "confidence_basis_points": 10000,
+            "evidence_refs": ["70000000-0000-4000-8000-000000000005"],
+        }
+    )
+    payload["welfare_benefit_facts"] = [
+        {
+            "purchase_candidate_ref": "70000000-0000-4000-8000-000000000006",
+            "funding_statement_evidence_ref": "70000000-0000-4000-8000-000000000005",
+            "matched_bank_candidate_ref": "70000000-0000-4000-8000-000000000010",
+            "bank_debit_absence_proven": False,
+        }
+    ]
+    source.write_text(json.dumps(payload), encoding="ascii")
+
+    manifest, _ = load_source_manifest(source)
+
+    assert len(manifest.candidates) == 3
+    purchase, bank_debit, welfare_income = manifest.candidates
+    assert purchase.amount_minor == -10000
+    assert bank_debit.amount_minor == -5005
+    assert welfare_income.amount_minor == 4995
+    assert welfare_income.category_code == "WELFARE_INCOME"
+    assert welfare_income.evidence_refs == (UUID("70000000-0000-4000-8000-000000000005"),)
