@@ -2782,6 +2782,7 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
   const groupFieldDrift = parsedAmountMinor !== candidate.amountMinor
     || accountingMonth !== candidate.accountingMonth
   const groupConfirmBlocked = confirmBlocked
+    || !dimensionsContainSelection
     || !canApplyGroup
     || groupFieldDrift
     || (groupRisks.length > 0 && !riskAcknowledged)

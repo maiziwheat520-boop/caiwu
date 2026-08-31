@@ -1216,7 +1216,7 @@ describe('LedgerBridge Web API client', () => {
     expect(JSON.parse(String(decisionCall?.[1]?.body))).not.toHaveProperty('corrections')
   })
 
-  it('allows an unchanged similar group when the dimension catalog is temporarily unavailable', async () => {
+  it('keeps similar-group propagation closed when the dimension catalog is temporarily unavailable', async () => {
     const { source, peer, group } = similarClassificationFixture()
     const fetchMock = installFetch({
       items: [source, peer],
@@ -1233,18 +1233,13 @@ describe('LedgerBridge Web API client', () => {
     fireEvent.click(within(dialog).getByLabelText(/同时处理本组其余 1 笔/))
     fireEvent.click(within(dialog).getByLabelText(/我已逐项核对并确认风险条件/))
     const submit = within(dialog).getByRole('button', { name: '确认本组 2 笔' })
-    expect(submit).toBeEnabled()
+    expect(submit).toBeDisabled()
     fireEvent.click(submit)
 
-    expect(await screen.findByText(/已原子确认同组 2 笔交易/)).toBeInTheDocument()
-    const batchCall = fetchMock.mock.calls.find(([input]) => (
+    expect(fetchMock.mock.calls.some(([input]) => (
       String(input).includes('/candidate-classification-groups/')
       && String(input).endsWith('/decisions')
-    ))
-    expect(JSON.parse(String(batchCall?.[1]?.body)).target).toEqual({
-      business_unit_ref: source.business_unit_ref,
-      category_code: source.category_code,
-    })
+    ))).toBe(false)
   })
 
   it('does not install accounting dimensions when candidate detail fails', async () => {
