@@ -3446,6 +3446,16 @@ def _validate_legacy_feature_workspace(
             nested = batch.get(field)
             if nested is not None:
                 _require_object(nested, f"legacy {field}")
+        verification = batch.get("verification")
+        if (
+            isinstance(verification, Mapping)
+            and verification.get("schema_version") == "payroll-current-paid-verification/v2"
+        ):
+            _validate_legacy_channel_verification(
+                verification,
+                batch=batch,
+                expected_company_id=expected_company_id,
+            )
     if active_period not in periods:
         _invalid_response("payroll legacy active period has no batch")
 
@@ -3455,6 +3465,206 @@ def _validate_legacy_feature_workspace(
         if event.get("sequence") != expected_sequence:
             _invalid_response("payroll legacy audit sequence is invalid")
     _validate_legacy_feature_tree(value, expected_company_id, expected_batch_id)
+
+
+def _validate_legacy_channel_verification(
+    value: Mapping[str, object],
+    *,
+    batch: Mapping[str, object],
+    expected_company_id: str,
+) -> None:
+    _require_exact_keys(
+        value,
+        frozenset(
+            {
+                "schema_version",
+                "company_id",
+                "batch_id",
+                "period",
+                "evidence_documents",
+                "evidence_summary",
+                "theoretical_total_cents",
+                "actual_total_cents",
+                "difference_cents",
+                "totals_match",
+                "by_payment_channel",
+                "overall_status",
+                "results",
+                "verified_at",
+                "payable",
+                "submission_supported",
+            }
+        ),
+        "legacy channel verification",
+    )
+    if (
+        value.get("company_id") != expected_company_id
+        or value.get("batch_id") != batch.get("batch_id")
+        or value.get("period") != batch.get("period")
+        or value.get("payable") is not False
+        or value.get("submission_supported") is not False
+        or not isinstance(value.get("verified_at"), str)
+        or not value.get("verified_at")
+    ):
+        _invalid_response("payroll legacy channel verification scope is invalid")
+
+    requirements = (
+        ("MYBANK_STATEMENT", 5),
+        ("BOC_RECEIPT", 1),
+        ("WECHAT_RECEIPT", 1),
+    )
+    documents = _require_list(value.get("evidence_documents"), "legacy evidence documents")
+    document_counts = {evidence_type: 0 for evidence_type, _ in requirements}
+    document_refs: set[str] = set()
+    for document_value in documents:
+        document = _require_object(document_value, "legacy evidence document")
+        _require_exact_keys(
+            document,
+            frozenset({"evidence_type", "evidence_ref"}),
+            "legacy evidence document",
+        )
+        evidence_type = document.get("evidence_type")
+        evidence_ref = document.get("evidence_ref")
+        if evidence_type not in document_counts:
+            _invalid_response("payroll legacy evidence type is invalid")
+        _require_stable_identifier(evidence_ref, "evidence_ref")
+        assert isinstance(evidence_ref, str)
+        if evidence_ref in document_refs:
+            _invalid_response("payroll legacy evidence references are duplicated")
+        document_refs.add(evidence_ref)
+        document_counts[str(evidence_type)] += 1
+
+    evidence_summary = _require_list(value.get("evidence_summary"), "legacy evidence summary")
+    if len(evidence_summary) != len(requirements):
+        _invalid_response("payroll legacy evidence summary is incomplete")
+    for summary_value, (evidence_type, required_count) in zip(
+        evidence_summary, requirements, strict=True
+    ):
+        summary = _require_object(summary_value, "legacy evidence summary item")
+        _require_exact_keys(
+            summary,
+            frozenset({"evidence_type", "required_count", "received_count"}),
+            "legacy evidence summary item",
+        )
+        if (
+            summary.get("evidence_type") != evidence_type
+            or summary.get("required_count") != required_count
+            or summary.get("received_count") != required_count
+            or document_counts[evidence_type] != required_count
+        ):
+            _invalid_response("payroll legacy evidence set is incomplete")
+
+    lines = _require_list(batch.get("lines"), "legacy lines")
+    expected_by_employee: dict[str, tuple[str, str, int]] = {}
+    expected_by_channel = {channel: 0 for channel in ("MYBANK", "BOC", "WECHAT")}
+    theoretical_total = 0
+    for line_value in lines:
+        line = _require_object(line_value, "legacy line")
+        employee_id = _require_stable_identifier(line.get("employee_id"), "employee_id")
+        account_id = _require_stable_identifier(line.get("account_id"), "account_id", account=True)
+        channel = line.get("payment_channel")
+        if channel not in expected_by_channel:
+            _invalid_response("payroll legacy payment channel is invalid")
+        amount = _require_non_negative_integer(line.get("net_pay_cents"), "net_pay_cents")
+        expected_by_employee[employee_id] = (account_id, str(channel), amount)
+        expected_by_channel[str(channel)] += amount
+        theoretical_total += amount
+        if theoretical_total > MAX_SAFE_INTEGER:
+            _invalid_response("payroll legacy theoretical total is unsafe")
+
+    results = _require_list(value.get("results"), "legacy verification results")
+    if len(results) != len(expected_by_employee):
+        _invalid_response("payroll legacy verification results are incomplete")
+    actual_by_channel = {channel: 0 for channel in expected_by_channel}
+    actual_total = 0
+    matched_results = True
+    seen_employees: set[str] = set()
+    allowed_statuses = {
+        "MATCHED",
+        "MISSING_RECEIPT",
+        "IDENTITY_MISMATCH",
+        "PAYMENT_FAILED",
+        "UNDERPAID",
+        "OVERPAID",
+    }
+    result_fields = frozenset(
+        {
+            "employee_id",
+            "account_id",
+            "payment_channel",
+            "expected_amount_cents",
+            "actual_amount_cents",
+            "difference_cents",
+            "status",
+        }
+    )
+    for result_value in results:
+        result = _require_object(result_value, "legacy verification result")
+        _require_exact_keys(result, result_fields, "legacy verification result")
+        employee_id = _require_stable_identifier(result.get("employee_id"), "employee_id")
+        expected = expected_by_employee.get(employee_id)
+        if expected is None or employee_id in seen_employees:
+            _invalid_response("payroll legacy verification employee is invalid")
+        seen_employees.add(employee_id)
+        account_id, channel, expected_amount = expected
+        actual_amount = _require_non_negative_integer(
+            result.get("actual_amount_cents"), "actual_amount_cents"
+        )
+        difference = _require_minor_integer(result.get("difference_cents"), "difference_cents")
+        status = result.get("status")
+        if (
+            result.get("account_id") != account_id
+            or result.get("payment_channel") != channel
+            or result.get("expected_amount_cents") != expected_amount
+            or difference != actual_amount - expected_amount
+            or status not in allowed_statuses
+            or (status == "MATCHED" and difference != 0)
+        ):
+            _invalid_response("payroll legacy verification result is inconsistent")
+        matched_results = matched_results and status == "MATCHED"
+        actual_by_channel[channel] += actual_amount
+        actual_total += actual_amount
+        if actual_total > MAX_SAFE_INTEGER:
+            _invalid_response("payroll legacy actual total is unsafe")
+
+    if (
+        value.get("theoretical_total_cents") != theoretical_total
+        or value.get("actual_total_cents") != actual_total
+        or value.get("difference_cents") != actual_total - theoretical_total
+        or value.get("totals_match") is not (actual_total == theoretical_total)
+    ):
+        _invalid_response("payroll legacy verification totals are inconsistent")
+
+    channels = _require_list(value.get("by_payment_channel"), "legacy channel totals")
+    if len(channels) != len(expected_by_channel):
+        _invalid_response("payroll legacy channel totals are incomplete")
+    channel_fields = frozenset(
+        {
+            "payment_channel",
+            "expected_amount_cents",
+            "actual_amount_cents",
+            "difference_cents",
+            "totals_match",
+        }
+    )
+    for channel_value, channel in zip(channels, expected_by_channel, strict=True):
+        item = _require_object(channel_value, "legacy channel total")
+        _require_exact_keys(item, channel_fields, "legacy channel total")
+        expected_amount = expected_by_channel[channel]
+        actual_amount = actual_by_channel[channel]
+        if (
+            item.get("payment_channel") != channel
+            or item.get("expected_amount_cents") != expected_amount
+            or item.get("actual_amount_cents") != actual_amount
+            or item.get("difference_cents") != actual_amount - expected_amount
+            or item.get("totals_match") is not (actual_amount == expected_amount)
+        ):
+            _invalid_response("payroll legacy channel total is inconsistent")
+
+    totals_match = actual_total == theoretical_total
+    expected_status = "MATCHED" if matched_results and totals_match else "ATTENTION_REQUIRED"
+    if value.get("overall_status") != expected_status:
+        _invalid_response("payroll legacy verification status is inconsistent")
 
 
 def _validate_legacy_feature_tree(

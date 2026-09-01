@@ -823,3 +823,14 @@ ingestion require their later explicit gates.
   real evidence was read. Focused audit/database-reader/migration-source tests
   pass **58**; 41 PostgreSQL integration cases remain skipped without the
   disposable database URL.
+
+## Payroll three-channel verification contract (2026-09-01)
+
+- The test-only payroll reader now validates the full disbursement
+  reconciliation contract: five MYBANK statements, one Bank of China receipt,
+  one WeChat receipt, all wage-table employees, per-channel actual totals, the
+  authoritative theoretical total, signed difference, and final match flag.
+- Any missing, duplicate, cross-employee, total, channel, or status drift fails
+  closed before the projection reaches the BFF.
+- This is local feature-parity work only. It does not parse live bank amounts,
+  enable payment, deploy production data, or authorize synchronization.
