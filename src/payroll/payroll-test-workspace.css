@@ -105,10 +105,114 @@
 .payroll-test-validation > div { display: grid; grid-template-columns: 110px 1fr auto; gap: 18px; padding-top: 9px; border-top: 1px solid #e2e8f0; }
 .payroll-test-validation b { color: #047857; }
 
+.payroll-history-summary {
+  display: grid;
+  gap: 14px;
+  padding-top: 18px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.payroll-history-summary > header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.payroll-history-summary > header span {
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.payroll-history-summary > header h3 {
+  margin: 4px 0 5px;
+  color: #12233f;
+}
+
+.payroll-history-summary-controls {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+
+.payroll-history-summary-controls label {
+  display: grid;
+  gap: 4px;
+  color: #475569;
+  font-size: 12px;
+}
+
+.payroll-history-summary-controls select {
+  min-width: 130px;
+  padding: 0 10px;
+}
+
+.payroll-history-summary-results {
+  display: grid;
+  gap: 9px;
+}
+
+.payroll-history-summary-results article {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(360px, 2fr);
+  gap: 20px;
+  align-items: center;
+  padding: 13px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.payroll-history-summary-results article > div {
+  display: grid;
+  gap: 3px;
+}
+
+.payroll-history-summary-results article span,
+.payroll-history-summary-results > small {
+  color: #64748b;
+}
+
+.payroll-history-summary-results dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.payroll-history-summary-results dl > div {
+  display: grid;
+  gap: 3px;
+}
+
+.payroll-history-summary-results dt {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.payroll-history-summary-results dd {
+  margin: 0;
+  font-weight: 700;
+}
+
+.payroll-history-summary-warning {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fff7ed;
+  color: #9a3412 !important;
+}
+
+.payroll-history-summary-error { color: #b91c1c; }
+
 @media (max-width: 900px) {
   .payroll-test-actions > header,
   .payroll-test-materials article,
   .payroll-test-editor { align-items: stretch; flex-direction: column; }
   .payroll-test-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .payroll-test-material-actions { justify-content: space-between; }
+  .payroll-history-summary > header { align-items: stretch; flex-direction: column; }
+  .payroll-history-summary-controls { align-items: stretch; flex-direction: column; }
+  .payroll-history-summary-results article { grid-template-columns: 1fr; }
+  .payroll-history-summary-results dl { grid-template-columns: 1fr; }
 }
