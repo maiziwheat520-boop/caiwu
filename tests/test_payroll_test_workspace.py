@@ -40,25 +40,25 @@ def projection(company_id="company_demo", batch="batch_demo"):
             "material_id": "material_old",
             "routing_status": "AUTO_TEST",
             "period": "2026-08",
-            "material_type": "bank_statement",
+            "material_type": "PAYROLL_SHEET",
             "payable": False,
             "submission_supported": False,
         },
         {
             "company_id": company_id,
-            "material_id": "material_new",
-            "routing_status": "REVIEW_REQUIRED",
-            "period": "2026-09",
-            "material_type": "bank_statement",
+            "material_id": "material_attendance",
+            "routing_status": "AUTO_TEST",
+            "period": "2026-07",
+            "material_type": "ATTENDANCE_SHEET",
             "payable": False,
             "submission_supported": False,
         },
         {
             "company_id": company_id,
-            "material_id": "material_unknown",
-            "routing_status": "DATE_UNKNOWN",
+            "material_id": "material_summary",
+            "routing_status": "AUTO_TEST",
             "period": None,
-            "material_type": None,
+            "material_type": "PAYROLL_SUMMARY",
             "payable": False,
             "submission_supported": False,
         },
@@ -78,7 +78,7 @@ def projection(company_id="company_demo", batch="batch_demo"):
         "payable": False,
         "submission_supported": False,
         "auto_test_ready": True,
-        "routing_counts": {"auto_test": 1, "review_required": 1, "date_unknown": 1},
+        "routing_counts": {"auto_test": 3, "review_required": 0, "date_unknown": 0},
         "materials": materials,
     }
 
@@ -94,26 +94,26 @@ def source(response):
     )
 
 
-def test_read_accepts_cutoff_and_unknown_date_without_blocking():
+def test_read_accepts_only_july_august_payroll_workspace_materials():
     entity, adapter = source(projection())
     result = adapter.read_workspace(
         entity_ref=entity, test_batch_id="batch_demo", provider_headers={}
     )
     assert result.payload_copy()["routing_counts"] == {
-        "auto_test": 1,
-        "review_required": 1,
-        "date_unknown": 1,
+        "auto_test": 3,
+        "review_required": 0,
+        "date_unknown": 0,
     }
 
 
-def test_date_unknown_accepts_a_valid_derived_period_but_keeps_unknown_routing():
+def test_summary_accepts_a_valid_derived_period_and_keeps_auto_test_routing():
     payload = projection()
     payload["materials"][2]["period"] = "2026-08"
     entity, adapter = source(payload)
     result = adapter.read_workspace(
         entity_ref=entity, test_batch_id="batch_demo", provider_headers={}
     )
-    assert result.payload_copy()["routing_counts"]["date_unknown"] == 1
+    assert result.payload_copy()["routing_counts"]["auto_test"] == 3
 
 
 def test_test_workspace_get_maps_only_explicit_provider_404_to_stable_missing():
@@ -393,7 +393,7 @@ def summary_preview_payload():
         "test_batch_id": "batch_demo",
         "company_id": "company_demo",
         "material_id": "material_summary",
-        "routing_status": "DATE_UNKNOWN",
+        "routing_status": "AUTO_TEST",
         "source_of_truth": "PAYROLL_SUMMARY",
         "authoritative": True,
         "period_count": 1,
