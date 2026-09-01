@@ -10,6 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 LABEL org.opencontainers.image.revision="${LEDGERBRIDGE_REVISION}"
 
 WORKDIR /app
+RUN printf '%s\n' "${LEDGERBRIDGE_REVISION}" > /app/DEPLOYED_REVISION
 
 RUN useradd --create-home --uid 10001 ledgerbridge
 RUN install -d -m 0700 -o 10001 -g 10001 /var/lib/ledgerbridge/artifacts
@@ -25,6 +26,7 @@ RUN uv sync --frozen --no-dev --no-editable
 
 COPY alembic.ini ./
 COPY alembic ./alembic
+COPY scripts/__init__.py scripts/run_account_registry_intake.py ./scripts/
 COPY --chmod=0755 docker/run-internal-reader.sh ./docker/run-internal-reader.sh
 
 USER ledgerbridge

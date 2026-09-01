@@ -1,0 +1,52 @@
+{
+  "schema_version": "ledgerbridge.account-registry-intake-plan.v1",
+  "target_revision": "0000000000000000000000000000000000000000",
+  "entity": {
+    "entity_ref": "86000000-0000-4000-8000-000000000001",
+    "entity_type": "COMPANY",
+    "name": "Example Company"
+  },
+  "business_unit": {
+    "business_unit_ref": "86000000-0000-4000-8000-000000000002",
+    "ref": "example-company",
+    "label": "Example Company"
+  },
+  "evidence": {
+    "evidence_ref": "86000000-0000-4000-8000-000000000003",
+    "source_path": "/private/account-intake/example-statement.pdf",
+    "display_name": "example-statement.pdf",
+    "declared_media_type": "application/pdf",
+    "plaintext_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "plaintext_size": 1
+  },
+  "account": {
+    "operation_id": "86000000-0000-4000-8000-000000000004",
+    "expected_registry_revision": 0,
+    "managed_account_ref": "86000000-0000-4000-8000-000000000005",
+    "account_key": "example_bank:company:1234",
+    "institution_code": "example_bank",
+    "account_suffix": "1234",
+    "account_kind": "BANK_CHECKING",
+    "initial_lifecycle": "ACTIVE",
+    "aliases": [
+      {
+        "alias_ref": "86000000-0000-4000-8000-000000000006",
+        "alias_kind": "ACCOUNT_NUMBER",
+        "alias_value": "0000 0000 0000 1234"
+      }
+    ],
+    "business_unit_assignment": {
+      "assignment_ref": "86000000-0000-4000-8000-000000000007",
+      "effective_from": "2025-01-01",
+      "effective_to": null
+    }
+  },
+  "audit": {
+    "actor_ref": "operator:account-registry-intake",
+    "reason": "operator-confirmed statement-backed account admission"
+  },
+  "storage": {
+    "key_file": "/private/ledgerbridge/keyring.json",
+    "artifact_root": "/private/ledgerbridge/artifacts"
+  }
+}
