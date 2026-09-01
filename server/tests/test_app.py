@@ -201,7 +201,7 @@ class SyntheticBffTests(unittest.TestCase):
         status, payload, _ = self.request("/api/v1/company-reports")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["contract_version"], "ledgerbridge.company-reports-bff.v1")
+        self.assertEqual(payload["contract_version"], "ledgerbridge.company-reports-bff.v2")
         self.assertEqual(payload["posted_ledger_status"], "AVAILABLE")
         self.assertRegex(payload["from_month"], r"^[0-9]{4}-01$")
         self.assertRegex(payload["to_month"], r"^[0-9]{4}-(0[1-9]|1[0-2])$")
@@ -222,6 +222,26 @@ class SyntheticBffTests(unittest.TestCase):
                 )
             ],
         )
+        self.assertEqual(
+            payload["compositions"],
+            [
+                {
+                    "contract_version": "ledgerbridge.company-report-composition.v1",
+                    "basis": basis,
+                    "from_month": payload["from_month"],
+                    "to_month": payload["to_month"],
+                    "items": [],
+                }
+                for basis in ("CONFIRMED_CANDIDATE", "POSTED_LEDGER")
+            ],
+        )
+
+        status, filtered, _ = self.request(
+            "/api/v1/company-reports?from_month=2026-03&to_month=2026-08"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(filtered["from_month"], "2026-03")
+        self.assertEqual(filtered["to_month"], "2026-08")
 
         status, problem, _ = self.request(
             "/api/v1/company-reports?company_ref=10000000-0000-4000-8000-000000000001"

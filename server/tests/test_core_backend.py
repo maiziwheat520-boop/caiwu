@@ -282,6 +282,82 @@ def core_company_report_layer(basis: str) -> dict[str, object]:
     }
 
 
+def core_company_report_composition(basis: str) -> dict[str, object]:
+    if basis == "CONFIRMED_CANDIDATE":
+        compositions = {
+            "positive": {
+                "total_minor": 800000,
+                "fact_count": 3,
+                "items": [
+                    {
+                        "category_code": "ROOM",
+                        "category_label": "客房收入",
+                        "amount_minor": 600000,
+                        "fact_count": 2,
+                    },
+                    {
+                        "category_code": "OTHER",
+                        "category_label": "其他收入",
+                        "amount_minor": 200000,
+                        "fact_count": 1,
+                    },
+                ],
+            },
+            "negative": {
+                "total_minor": 235000,
+                "fact_count": 1,
+                "items": [
+                    {
+                        "category_code": "SUPPLY",
+                        "category_label": "经营物料",
+                        "amount_minor": 235000,
+                        "fact_count": 1,
+                    }
+                ],
+            },
+        }
+    else:
+        compositions = {
+            "revenue": {
+                "total_minor": 600000,
+                "fact_count": 1,
+                "items": [
+                    {
+                        "category_code": "ROOM",
+                        "category_label": "客房收入",
+                        "amount_minor": 600000,
+                        "fact_count": 1,
+                    }
+                ],
+            },
+            "expense": {
+                "total_minor": 100000,
+                "fact_count": 1,
+                "items": [
+                    {
+                        "category_code": "SUPPLY",
+                        "category_label": "经营物料",
+                        "amount_minor": 100000,
+                        "fact_count": 1,
+                    }
+                ],
+            },
+        }
+    return {
+        "contract_version": "ledgerbridge.company-report-composition.v1",
+        "basis": basis,
+        "from_month": "2026-01",
+        "to_month": "2026-08",
+        "items": [
+            {
+                "company_ref": ENTITY_ID,
+                "company_name": "演示公司",
+                "currency": "CNY",
+                "basis": basis,
+                **compositions,
+            }
+        ],
+    }
 def core_original_reconciliation() -> dict[str, object]:
     columns = [
         {
@@ -394,11 +470,15 @@ def core_original_reconciliation() -> dict[str, object]:
 
 def company_reports_bff() -> dict[str, object]:
     return {
-        "contract_version": "ledgerbridge.company-reports-bff.v1",
+        "contract_version": "ledgerbridge.company-reports-bff.v2",
         "from_month": "2026-01",
         "to_month": "2026-08",
         "posted_ledger_status": "AVAILABLE",
         "layers": [core_company_report_layer(basis) for basis in REPORT_BASES],
+        "compositions": [
+            core_company_report_composition(basis)
+            for basis in ("CONFIRMED_CANDIDATE", "POSTED_LEDGER")
+        ],
     }
 
 
@@ -410,6 +490,10 @@ class FakeCoreClient:
         self.company_report_payloads = {
             basis: core_company_report_layer(basis)
             for basis in REPORT_BASES
+        }
+        self.company_report_composition_payloads = {
+            basis: core_company_report_composition(basis)
+            for basis in ("CONFIRMED_CANDIDATE", "POSTED_LEDGER")
         }
 
     def json(
@@ -453,6 +537,13 @@ class FakeCoreClient:
                 value for value in REPORT_BASES if f"basis={value}" in path
             )
             return self.company_report_payloads[basis]
+        if path.startswith("/internal/v1/company-report-composition?"):
+            basis = next(
+                value
+                for value in ("CONFIRMED_CANDIDATE", "POSTED_LEDGER")
+                if f"basis={value}" in path
+            )
+            return self.company_report_composition_payloads[basis]
         if path.startswith("/internal/v1/original-reconciliations/"):
             return core_original_reconciliation()
         raise AssertionError(f"unexpected Core path: {path}")
@@ -1179,7 +1270,7 @@ class CoreBackedAdapterTests(unittest.TestCase):
 
         self.assertEqual(report, company_reports_bff())
         self.assertEqual(
-            client.calls[-3:],
+            client.calls[-5:],
             [
                 (
                     "GET",
@@ -1188,6 +1279,15 @@ class CoreBackedAdapterTests(unittest.TestCase):
                     {},
                 )
                 for basis in REPORT_BASES
+            ]
+            + [
+                (
+                    "GET",
+                    f"/internal/v1/company-report-composition?from_month=2026-01&to_month=2026-08&basis={basis}",
+                    None,
+                    {},
+                )
+                for basis in ("CONFIRMED_CANDIDATE", "POSTED_LEDGER")
             ],
         )
 
@@ -1203,6 +1303,40 @@ class CoreBackedAdapterTests(unittest.TestCase):
                     [layer["basis"] for layer in report["layers"]],  # type: ignore[index]
                     ["CONFIRMED_CANDIDATE", "ACCOUNT_STATEMENT"],
                 )
+                self.assertEqual(
+                    [item["basis"] for item in report["compositions"]],  # type: ignore[index]
+                    ["CONFIRMED_CANDIDATE"],
+                )
+
+    def test_company_report_composition_must_reconcile_to_summary_totals(self) -> None:
+        client = FakeCoreClient()
+        candidate = client.company_report_composition_payloads[
+            "CONFIRMED_CANDIDATE"
+        ]["items"][0]  # type: ignore[index]
+        candidate["positive"]["total_minor"] = 799999  # type: ignore[index]
+
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(client).company_reports("2026-01", "2026-08")
+
+        self.assertEqual(raised.exception.status, 503)
+
+    def test_company_report_composition_rejects_private_or_unsorted_categories(self) -> None:
+        for mutation in ("private", "unsorted"):
+            with self.subTest(mutation=mutation):
+                client = FakeCoreClient()
+                candidate = client.company_report_composition_payloads[
+                    "CONFIRMED_CANDIDATE"
+                ]["items"][0]  # type: ignore[index]
+                positive = candidate["positive"]  # type: ignore[index]
+                if mutation == "private":
+                    positive["source_record_ids"] = ["must-not-leak"]  # type: ignore[index]
+                else:
+                    positive["items"].reverse()  # type: ignore[index]
+
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(client).company_reports("2026-01", "2026-08")
+
+                self.assertEqual(raised.exception.status, 503)
 
     def test_company_reports_do_not_mask_non_posted_layer_failures(self) -> None:
         client = UnavailableCompanyReportCoreClient("ACCOUNT_STATEMENT")
@@ -1997,7 +2131,7 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 self.assertEqual(dimensions["business_units"][0]["ref"], "unit-demo-a")
                 self.assertEqual(dimensions["categories"][1]["code"], "SETTLEMENT")
                 request = urllib.request.Request(
-                    f"{base_url}/api/v1/company-reports",
+                    f"{base_url}/api/v1/company-reports?from_month=2026-01&to_month=2026-08",
                     headers={"Cookie": cookie},
                 )
                 with urllib.request.urlopen(request, timeout=2) as response:
@@ -2005,7 +2139,8 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 self.assertEqual(company_reports, company_reports_bff())
                 self.assertEqual(
                     client.calls[-1][1],
-                    "/internal/v1/company-reports?from_month=2026-01&to_month=2026-08&basis=POSTED_LEDGER",
+                    "/internal/v1/company-report-composition?"
+                    "from_month=2026-01&to_month=2026-08&basis=POSTED_LEDGER",
                 )
 
                 forwarded_call_count = len(client.calls)
