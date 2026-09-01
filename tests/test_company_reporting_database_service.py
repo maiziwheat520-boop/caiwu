@@ -144,6 +144,13 @@ class _Session:
         self.calls.append((sql, values))
         if "current_audit_horizon" in sql:
             return _Result([{"sequence": 17, "hash": b"h" * 32}])
+        if "get_company_report_composition_v1_as_of" in sql:
+            entity_ref = values.get("entity_ref", values.get("company_ref"))
+            assert isinstance(entity_ref, UUID)
+            basis = values.get("basis")
+            assert isinstance(basis, str)
+            rows = self.reports.get((entity_ref, basis), self.reports.get(entity_ref, []))
+            return _Result(list(rows))
         if "company_reporting_read.get_company_report_v1_as_of" in sql:
             entity_ref = values.get("entity_ref", values.get("company_ref"))
             assert isinstance(entity_ref, UUID)
@@ -271,6 +278,72 @@ def test_valid_company_without_facts_is_returned_as_zero_not_unknown() -> None:
     assert item.pending_review_count == item.attribution_pending_count == 0
     assert item.balance.model_dump() == _balance()
     assert item.months == ()
+
+
+def test_database_company_composition_reads_categories_at_one_audit_horizon() -> None:
+    composition = {
+        "company_ref": str(COMPANY_A),
+        "company_name": "Company A",
+        "currency": "CNY",
+        "basis": "CONFIRMED_CANDIDATE",
+        "positive": {
+            "total_minor": 7300,
+            "fact_count": 2,
+            "items": [
+                {
+                    "category_code": "ROOM",
+                    "category_label": "Room revenue",
+                    "amount_minor": 7300,
+                    "fact_count": 2,
+                }
+            ],
+        },
+        "negative": {
+            "total_minor": 2100,
+            "fact_count": 1,
+            "items": [
+                {
+                    "category_code": None,
+                    "category_label": None,
+                    "amount_minor": 2100,
+                    "fact_count": 1,
+                }
+            ],
+        },
+    }
+    session = _Session({COMPANY_A: [{"composition": composition}]})
+
+    page = _service(session).composition(
+        _principal((_grant(COMPANY_A, "unit-a", UNIT_A),)),
+        basis=CompanyReportBasis.CONFIRMED_CANDIDATE,
+        from_month="2026-08",
+        to_month="2026-08",
+        company_ref=COMPANY_A,
+    )
+
+    assert page.contract_version == "ledgerbridge.company-report-composition.v1"
+    assert page.items[0].positive.total_minor == 7300
+    assert page.items[0].negative.items[0].category_code is None
+    composition_calls = [
+        call for call in session.calls if "get_company_report_composition_v1_as_of" in call[0]
+    ]
+    assert len(composition_calls) == 1
+    assert composition_calls[0][1]["audit_sequence"] == 17
+    assert composition_calls[0][1]["audit_hash"] == b"h" * 32
+
+
+def test_database_company_composition_rejects_statement_basis_before_query() -> None:
+    session = _Session({})
+
+    with pytest.raises(ValueError, match="do not define"):
+        _service(session).composition(
+            _principal((_grant(COMPANY_A, "unit-a", UNIT_A),)),
+            basis=CompanyReportBasis.ACCOUNT_STATEMENT,
+            from_month="2026-08",
+            to_month="2026-08",
+        )
+
+    assert session.calls == []
 
 
 def test_collection_omits_granted_non_company_entities() -> None:

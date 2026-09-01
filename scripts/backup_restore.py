@@ -2290,6 +2290,7 @@ SELECT jsonb_build_object(
 
 COMPANY_REPORTING_SECURITY_REVISION = "20260830_0024"
 ACCOUNT_REGISTRY_TRIGGER_REPAIR_REVISION = "20260901_0027"
+COMPANY_REPORTING_COMPOSITION_REVISION = "20260901_0028"
 MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
     {
         ACCOUNT_REGISTRY_SECURITY_REVISION,
@@ -2297,6 +2298,7 @@ MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
         EVIDENCE_UNLOCK_SECURITY_REVISION,
         CLASSIFICATION_BATCH_SECURITY_REVISION,
         ACCOUNT_REGISTRY_TRIGGER_REPAIR_REVISION,
+        COMPANY_REPORTING_COMPOSITION_REVISION,
     }
 )
 COMPANY_REPORTING_SCHEMA = "company_reporting_read"
@@ -2319,6 +2321,11 @@ COMPANY_REPORTING_FUNCTION_SIGNATURES = {
         "p_basis character varying, p_from_month date, p_to_month date, "
         "p_audit_sequence bigint, p_audit_hash bytea"
     ),
+    "get_company_report_composition_v1_as_of": (
+        "p_entity_ref uuid, p_business_unit_ids uuid[], p_include_unassigned boolean, "
+        "p_basis character varying, p_from_month date, p_to_month date, "
+        "p_audit_sequence bigint, p_audit_hash bytea"
+    ),
 }
 COMPANY_REPORTING_FUNCTION_RESULTS = {
     "unavailable_balance_v1": "jsonb",
@@ -2326,6 +2333,7 @@ COMPANY_REPORTING_FUNCTION_RESULTS = {
     "statement_report_v1_as_of": "jsonb",
     "posted_report_v1_as_of": "jsonb",
     "get_company_report_v1_as_of": "TABLE(report jsonb)",
+    "get_company_report_composition_v1_as_of": "TABLE(composition jsonb)",
 }
 COMPANY_REPORTING_SECURITY_DEFINER_FUNCTIONS = frozenset(
     {
@@ -2333,9 +2341,16 @@ COMPANY_REPORTING_SECURITY_DEFINER_FUNCTIONS = frozenset(
         "statement_report_v1_as_of",
         "posted_report_v1_as_of",
         "get_company_report_v1_as_of",
+        "get_company_report_composition_v1_as_of",
     }
 )
-COMPANY_REPORTING_REQUIRED_TABLES = (
+COMPANY_REPORTING_READER_FUNCTIONS = frozenset(
+    {
+        "get_company_report_v1_as_of",
+        "get_company_report_composition_v1_as_of",
+    }
+)
+COMPANY_REPORTING_BASE_REQUIRED_TABLES = (
     "account",
     "account_business_unit_assignment",
     "audit_event",
@@ -2355,6 +2370,11 @@ COMPANY_REPORTING_REQUIRED_TABLES = (
     "journal_entry_attribution",
     "managed_account",
     "posting",
+)
+COMPANY_REPORTING_COMPOSITION_REQUIRED_TABLES = ("posting_attribution",)
+COMPANY_REPORTING_REQUIRED_TABLES = (
+    *COMPANY_REPORTING_BASE_REQUIRED_TABLES,
+    *COMPANY_REPORTING_COMPOSITION_REQUIRED_TABLES,
 )
 COMPANY_REPORTING_REQUIRED_COLUMNS = {
     ("journal_entry_attribution", "business_unit_ref_snapshot"): "character varying(100)",
@@ -5643,6 +5663,24 @@ def _validate_company_reporting_security(metadata: dict[str, Any]) -> None:
     owner = metadata.get("database_owner")
     if not isinstance(owner, str):
         raise BackupError("restored company reporting database owner is invalid")
+    revision = metadata.get("alembic_version")
+    if not isinstance(revision, str):
+        raise BackupError("restored company reporting revision is invalid")
+    composition_enabled = revision >= COMPANY_REPORTING_COMPOSITION_REVISION
+    expected_function_signatures = dict(COMPANY_REPORTING_FUNCTION_SIGNATURES)
+    if not composition_enabled:
+        expected_function_signatures.pop(
+            "get_company_report_composition_v1_as_of",
+            None,
+        )
+    expected_reader_functions = set(COMPANY_REPORTING_READER_FUNCTIONS)
+    if not composition_enabled:
+        expected_reader_functions.discard("get_company_report_composition_v1_as_of")
+    expected_required_tables = (
+        COMPANY_REPORTING_REQUIRED_TABLES
+        if composition_enabled
+        else COMPANY_REPORTING_BASE_REQUIRED_TABLES
+    )
     schema = metadata.get("company_reporting_schema")
     if schema != {"schema": COMPANY_REPORTING_SCHEMA, "owner": owner}:
         raise BackupError("restored company reporting schema differs from the required baseline")
@@ -5650,7 +5688,7 @@ def _validate_company_reporting_security(metadata: dict[str, Any]) -> None:
     functions = _list("company_reporting_functions")
     expected_function_keys = {
         (COMPANY_REPORTING_SCHEMA, name, arguments)
-        for name, arguments in COMPANY_REPORTING_FUNCTION_SIGNATURES.items()
+        for name, arguments in expected_function_signatures.items()
     }
     actual_function_keys = {
         (item.get("schema"), item.get("name"), item.get("identity_arguments")) for item in functions
@@ -5674,7 +5712,7 @@ def _validate_company_reporting_security(metadata: dict[str, Any]) -> None:
             raise BackupError("restored company reporting function security boundary is invalid")
 
     tables = _list("company_reporting_required_tables")
-    expected_table_keys = {("public", table) for table in COMPANY_REPORTING_REQUIRED_TABLES}
+    expected_table_keys = {("public", table) for table in expected_required_tables}
     actual_table_keys = {(item.get("schema"), item.get("table")) for item in tables}
     if len(actual_table_keys) != len(tables) or actual_table_keys != expected_table_keys:
         raise BackupError("restored company reporting required tables are incomplete")
@@ -5767,13 +5805,16 @@ def _validate_company_reporting_security(metadata: dict[str, Any]) -> None:
 
     function_acls = _list("company_reporting_function_acls")
     function_acl_keys: set[tuple[Any, ...]] = set()
-    reader_function_key = (
-        COMPANY_REPORTING_SCHEMA,
-        "get_company_report_v1_as_of",
-        COMPANY_REPORTING_FUNCTION_SIGNATURES["get_company_report_v1_as_of"],
-        "ledgerbridge_reader",
-        "EXECUTE",
-    )
+    reader_function_keys = {
+        (
+            COMPANY_REPORTING_SCHEMA,
+            name,
+            expected_function_signatures[name],
+            "ledgerbridge_reader",
+            "EXECUTE",
+        )
+        for name in expected_reader_functions
+    }
     for item in function_acls:
         object_key = (item.get("schema"), item.get("name"), item.get("identity_arguments"))
         function_acl_key = (*object_key, item.get("grantee"), item.get("privilege"))
@@ -5781,7 +5822,7 @@ def _validate_company_reporting_security(metadata: dict[str, Any]) -> None:
             raise BackupError("restored company reporting function ACL has a duplicate entry")
         function_acl_keys.add(function_acl_key)
         allowed_grantees = {owner}
-        if item.get("name") == "get_company_report_v1_as_of":
+        if item.get("name") in expected_reader_functions:
             allowed_grantees.add("ledgerbridge_reader")
         if (
             object_key not in expected_function_keys
@@ -5791,7 +5832,7 @@ def _validate_company_reporting_security(metadata: dict[str, Any]) -> None:
             or (item.get("grantee") != owner and item.get("grantable") not in {False, "NO"})
         ):
             raise BackupError("restored company reporting function ACL contains an excess grant")
-    if reader_function_key not in function_acl_keys:
+    if not reader_function_keys.issubset(function_acl_keys):
         raise BackupError("restored company reporting reader function ACL is missing")
 
     roles = _list("r1_role_matrix")
@@ -5832,7 +5873,7 @@ def _validate_company_reporting_security(metadata: dict[str, Any]) -> None:
     for item in function_privileges:
         expected_execute = (
             item.get("role") == "ledgerbridge_reader"
-            and item.get("name") == "get_company_report_v1_as_of"
+            and item.get("name") in expected_reader_functions
         )
         if item.get("execute") is not expected_execute:
             raise BackupError("restored company reporting function privilege matrix is invalid")

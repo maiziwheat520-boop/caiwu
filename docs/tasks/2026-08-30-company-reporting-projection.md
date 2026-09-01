@@ -131,3 +131,26 @@ querying PostgreSQL or inventing company ownership.
   migration database URL. Before merge, central coordination must integrate the separately owned
   `0022` and `0023` revisions in order and run the PostgreSQL migration suite; `0024` deliberately
   does not copy their uncommitted implementation.
+
+## Dashboard composition extension (2026-09-01)
+
+- User-authorized existing facts may be displayed as TEST data. This authorization does not
+  reclassify, post, migrate, or write any financial fact.
+- `ledgerbridge.company-report-composition.v1` adds a companion read for category shares. It
+  accepts only `CONFIRMED_CANDIDATE` and `POSTED_LEDGER`; account statements remain a cash-flow
+  reconciliation layer and do not invent income/expense categories.
+- Candidate composition exposes positive and negative magnitudes with their immutable category
+  snapshots. Web labels this basis as TEST and never calls it formal ledger income or expense.
+  Posted composition exposes revenue and expense only from account classes on posted entries.
+- Each category list is stable, unique, bounded to 100 rows, and must reconcile exactly to the
+  corresponding existing company-report total. A mismatch fails closed in PostgreSQL, Core, and
+  the Web BFF boundary.
+- Revision `20260901_0028` adds only the private SECURITY DEFINER companion function and an exact
+  reader EXECUTE grant. It creates no financial facts and performs no backfill.
+- The Web vertical slice adds authorized company selection, a bounded month range, TEST/formal
+  basis switching, total income/expense/net cards, and ranked category-percentage bars with
+  textual labels, amounts, counts, and explicit empty/unavailable states.
+- Focused Core verification passed 218 tests; the complete Core suite passed 1,152 tests with 208
+  environment skips. Ruff and strict mypy passed for changed sources. Web verification passed 141
+  backend tests (one environment skip), 81 component tests, ESLint, TypeScript, and the production
+  build. No production migration or deployment was performed.

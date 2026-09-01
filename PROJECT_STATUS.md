@@ -2,6 +2,25 @@
 
 Updated: 2026-09-01
 
+## Company financial dashboard checkpoint (2026-09-01)
+
+Core now exposes a category-composition companion to the existing company-report projection for
+confirmed Candidate TEST data and posted-ledger formal data. Category rows use immutable snapshots,
+remain basis-separated, and must reconcile exactly to the existing company total or fail closed.
+The route retains workload mTLS, `ledger:read`, explicit company/business-unit grants, one audit
+horizon, bounded months/companies/categories, no-store responses, and exact reader-only database
+privileges. Account statements remain a separate cash-flow layer and are not treated as an
+income/expense taxonomy.
+
+LedgerBridge Web consumes the companion contract through its BFF and now provides a company
+selector, bounded month range, TEST/formal basis switch, total income, total expense, net amount,
+and ranked income/expense category shares. Existing facts are display-only TEST input under the
+user's authorization; no data was posted, reclassified, backfilled, migrated, or deployed.
+Focused validation passed 218 Core tests; the complete Core suite passed 1,152 tests with 208
+environment skips. Web passed 141 backend tests (one skip) and 81 component tests. Ruff, strict
+changed-source mypy, ESLint, TypeScript, and the production build also passed. PostgreSQL migration
+replay remains environment-gated because no disposable database is configured on this host.
+
 ## Product-test payroll and statement intake checkpoint (2026-09-01)
 
 Core now exposes the company-scoped TEST_ONLY payroll workspace operations used by Web to read,

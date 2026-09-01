@@ -10,6 +10,9 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from httpx import Response
 
+from ledgerbridge.company_reporting_composition_contract import (
+    CompanyReportCompositionPage,
+)
 from ledgerbridge.company_reporting_contract import CompanyReportBasis, CompanyReportPage
 from ledgerbridge.company_reporting_routes import get_company_reporting_service, router
 from ledgerbridge.config import Settings, get_settings
@@ -64,14 +67,58 @@ def _page() -> CompanyReportPage:
     )
 
 
+def _composition_page() -> CompanyReportCompositionPage:
+    return CompanyReportCompositionPage.model_validate(
+        {
+            "basis": "CONFIRMED_CANDIDATE",
+            "from_month": "2026-08",
+            "to_month": "2026-08",
+            "items": [
+                {
+                    "company_ref": str(COMPANY),
+                    "company_name": "Example Company",
+                    "currency": "CNY",
+                    "basis": "CONFIRMED_CANDIDATE",
+                    "positive": {
+                        "total_minor": 9800,
+                        "fact_count": 2,
+                        "items": [
+                            {
+                                "category_code": "ROOM",
+                                "category_label": "Room revenue",
+                                "amount_minor": 9800,
+                                "fact_count": 2,
+                            }
+                        ],
+                    },
+                    "negative": {
+                        "total_minor": 2500,
+                        "fact_count": 1,
+                        "items": [
+                            {
+                                "category_code": "SUPPLY",
+                                "category_label": "Supplies",
+                                "amount_minor": 2500,
+                                "fact_count": 1,
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+    )
+
+
 class _Service:
     def __init__(
         self,
         page: CompanyReportPage | None = None,
         *,
+        composition_page: CompanyReportCompositionPage | None = None,
         error: Exception | None = None,
     ) -> None:
         self.page = page or _page()
+        self.composition_page = composition_page or _composition_page()
         self.error = error
         self.calls: list[tuple[WorkloadPrincipal, CompanyReportBasis, str, str, UUID | None]] = []
 
@@ -88,6 +135,20 @@ class _Service:
         if self.error is not None:
             raise self.error
         return self.page
+
+    def composition(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        basis: CompanyReportBasis,
+        from_month: str,
+        to_month: str,
+        company_ref: UUID | None = None,
+    ) -> CompanyReportCompositionPage:
+        self.calls.append((principal, basis, from_month, to_month, company_ref))
+        if self.error is not None:
+            raise self.error
+        return self.composition_page
 
 
 def _settings(*, enabled: bool = True) -> Settings:
@@ -157,11 +218,12 @@ def _assert_problem(response: Response, status_code: int, code: str) -> None:
     }
 
 
-def test_company_reporting_router_has_one_read_only_route() -> None:
+def test_company_reporting_router_has_two_read_only_routes() -> None:
     routes = [route for route in router.routes if isinstance(route, APIRoute)]
 
     assert [(route.path, route.methods) for route in routes] == [
-        ("/internal/v1/company-reports", {"GET"})
+        ("/internal/v1/company-reports", {"GET"}),
+        ("/internal/v1/company-report-composition", {"GET"}),
     ]
 
 
@@ -283,6 +345,42 @@ def test_route_returns_real_service_projection_and_ignores_identity_headers() ->
     assert principal == _principal()
     assert basis is CompanyReportBasis.CONFIRMED_CANDIDATE
     assert (from_month, to_month, company_ref) == ("2026-08", "2026-08", COMPANY)
+
+
+def test_composition_route_returns_category_projection() -> None:
+    service = _Service()
+    response = _client(service_factory=lambda: service).get(
+        "/internal/v1/company-report-composition"
+        "?from_month=2026-08&to_month=2026-08&basis=CONFIRMED_CANDIDATE"
+        f"&company_ref={COMPANY}"
+    )
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == _composition_page().model_dump(mode="json")
+    assert service.calls[0][1:] == (
+        CompanyReportBasis.CONFIRMED_CANDIDATE,
+        "2026-08",
+        "2026-08",
+        COMPANY,
+    )
+
+
+def test_composition_route_rejects_statement_basis_before_service_construction() -> None:
+    calls = 0
+
+    def unexpected_service() -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("statement composition must fail before service construction")
+
+    response = _client(service_factory=unexpected_service).get(
+        "/internal/v1/company-report-composition"
+        "?from_month=2026-08&to_month=2026-08&basis=ACCOUNT_STATEMENT"
+    )
+
+    _assert_problem(response, 400, "INVALID_QUERY")
+    assert calls == 0
 
 
 def test_unknown_and_unauthorized_company_filters_share_the_not_found_problem() -> None:

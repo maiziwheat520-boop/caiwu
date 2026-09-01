@@ -8,6 +8,9 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, status
 
+from ledgerbridge.company_reporting_composition_contract import (
+    CompanyReportCompositionPage,
+)
 from ledgerbridge.company_reporting_contract import (
     CompanyReportBasis,
     CompanyReportPage,
@@ -63,6 +66,13 @@ def _parse_company_report_params(request: Request) -> _CompanyReportParams:
     )
 
 
+def _parse_company_report_composition_params(request: Request) -> _CompanyReportParams:
+    params = _parse_company_report_params(request)
+    if params.basis is CompanyReportBasis.ACCOUNT_STATEMENT:
+        raise InternalReadProblem(status.HTTP_400_BAD_REQUEST, "INVALID_QUERY")
+    return params
+
+
 def get_company_reporting_service(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> DatabaseCompanyReportingService:
@@ -93,6 +103,10 @@ CompanyReportPrincipal = Annotated[
     Depends(require_company_report_collection),
 ]
 CompanyReportParams = Annotated[_CompanyReportParams, Depends(_parse_company_report_params)]
+CompanyReportCompositionParams = Annotated[
+    _CompanyReportParams,
+    Depends(_parse_company_report_composition_params),
+]
 CompanyReportingService = Annotated[
     DatabaseCompanyReportingService,
     Depends(get_company_reporting_service),
@@ -110,6 +124,25 @@ def get_company_report(
     service: CompanyReportingService,
 ) -> CompanyReportPage:
     return service.report(
+        principal,
+        basis=params.basis,
+        from_month=params.from_month,
+        to_month=params.to_month,
+        company_ref=params.company_ref,
+    )
+
+
+@router.get(
+    "/company-report-composition",
+    response_model=CompanyReportCompositionPage,
+    response_model_exclude_none=False,
+)
+def get_company_report_composition(
+    principal: CompanyReportPrincipal,
+    params: CompanyReportCompositionParams,
+    service: CompanyReportingService,
+) -> CompanyReportCompositionPage:
+    return service.composition(
         principal,
         basis=params.basis,
         from_month=params.from_month,

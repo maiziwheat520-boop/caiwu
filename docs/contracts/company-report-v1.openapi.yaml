@@ -61,6 +61,60 @@ paths:
           $ref: "#/components/responses/Problem"
         "503":
           $ref: "#/components/responses/Problem"
+  /internal/v1/company-report-composition:
+    get:
+      operationId: getInternalCompanyReportComposition
+      x-ledgerbridge-capability: ledger:read
+      x-ledgerbridge-scope: collection
+      x-ledgerbridge-reject-unknown-query: true
+      description: >-
+        Category composition for dashboard display. Candidate positive/negative
+        magnitudes remain a TEST basis; formal revenue/expense exists only for
+        the posted-ledger basis. Account statements are not accepted.
+      parameters:
+        - name: basis
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/CompositionBasis"
+        - name: from_month
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/MonthKey"
+        - name: to_month
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/MonthKey"
+        - name: company_ref
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: One bounded category composition reconciled to the report totals.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompanyReportCompositionPage"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
 components:
   securitySchemes:
     workloadMtls:
@@ -83,6 +137,9 @@ components:
     Basis:
       type: string
       enum: [CONFIRMED_CANDIDATE, ACCOUNT_STATEMENT, POSTED_LEDGER]
+    CompositionBasis:
+      type: string
+      enum: [CONFIRMED_CANDIDATE, POSTED_LEDGER]
     MonthKey:
       type: string
       pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$'
@@ -231,3 +288,63 @@ components:
           type: array
           maxItems: 50
           items: {$ref: "#/components/schemas/CompanyReport"}
+    CategorySlice:
+      type: object
+      additionalProperties: false
+      required: [category_code, category_label, amount_minor, fact_count]
+      properties:
+        category_code: {type: [string, "null"], minLength: 1, maxLength: 100}
+        category_label: {type: [string, "null"], minLength: 1, maxLength: 200}
+        amount_minor: {type: integer, minimum: 1, maximum: 9007199254740991}
+        fact_count: {type: integer, minimum: 1, maximum: 9007199254740991}
+    CategoryComposition:
+      type: object
+      additionalProperties: false
+      required: [total_minor, fact_count, items]
+      properties:
+        total_minor: {type: integer, minimum: 0, maximum: 9007199254740991}
+        fact_count: {$ref: "#/components/schemas/Count"}
+        items:
+          type: array
+          maxItems: 100
+          items: {$ref: "#/components/schemas/CategorySlice"}
+    CandidateComposition:
+      type: object
+      additionalProperties: false
+      required: [company_ref, company_name, currency, basis, positive, negative]
+      properties:
+        company_ref: {type: string, format: uuid}
+        company_name: {type: string, minLength: 1, maxLength: 200}
+        currency: {type: string, const: CNY}
+        basis: {type: string, const: CONFIRMED_CANDIDATE}
+        positive: {$ref: "#/components/schemas/CategoryComposition"}
+        negative: {$ref: "#/components/schemas/CategoryComposition"}
+    PostedComposition:
+      type: object
+      additionalProperties: false
+      required: [company_ref, company_name, currency, basis, revenue, expense]
+      properties:
+        company_ref: {type: string, format: uuid}
+        company_name: {type: string, minLength: 1, maxLength: 200}
+        currency: {type: string, const: CNY}
+        basis: {type: string, const: POSTED_LEDGER}
+        revenue: {$ref: "#/components/schemas/CategoryComposition"}
+        expense: {$ref: "#/components/schemas/CategoryComposition"}
+    CompanyReportCompositionPage:
+      type: object
+      additionalProperties: false
+      required: [contract_version, basis, from_month, to_month, items]
+      properties:
+        contract_version:
+          type: string
+          const: ledgerbridge.company-report-composition.v1
+        basis: {$ref: "#/components/schemas/CompositionBasis"}
+        from_month: {$ref: "#/components/schemas/MonthKey"}
+        to_month: {$ref: "#/components/schemas/MonthKey"}
+        items:
+          type: array
+          maxItems: 50
+          items:
+            oneOf:
+              - $ref: "#/components/schemas/CandidateComposition"
+              - $ref: "#/components/schemas/PostedComposition"
