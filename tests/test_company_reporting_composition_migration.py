@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import re
+import runpy
 from pathlib import Path
+from typing import Any, cast
+
+import pytest
 
 MIGRATION = Path("alembic/versions/20260901_0028_company_report_composition.py")
 
@@ -71,3 +75,37 @@ def test_composition_reader_has_exact_reader_acl_and_safe_downgrade() -> None:
     )
     assert "drop table" not in downgrade
     assert "drop schema" not in downgrade
+
+
+@pytest.mark.parametrize("backup_role_exists", [False, True])
+def test_composition_migration_handles_optional_backup_role(
+    backup_role_exists: bool,
+) -> None:
+    namespace = runpy.run_path(str(MIGRATION))
+    executed_sql: list[str] = []
+
+    class _RoleResult:
+        def scalar_one(self) -> bool:
+            return backup_role_exists
+
+    class _Connection:
+        def execute(self, statement: object) -> _RoleResult:
+            assert "ledgerbridge_backup" in str(statement)
+            return _RoleResult()
+
+    class _MigrationOp:
+        def get_bind(self) -> _Connection:
+            return _Connection()
+
+        def execute(self, statement: str) -> None:
+            executed_sql.append(statement)
+
+    upgrade = cast(Any, namespace["upgrade"])
+    upgrade.__globals__["op"] = _MigrationOp()
+    upgrade()
+
+    assert len(executed_sql) == 1
+    if backup_role_exists:
+        assert executed_sql[0].count("FROM ledgerbridge_backup;") == 1
+    else:
+        assert "ledgerbridge_backup" not in executed_sql[0]

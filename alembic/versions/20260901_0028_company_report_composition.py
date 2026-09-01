@@ -6,6 +6,8 @@ Revises: 20260901_0027
 
 from __future__ import annotations
 
+import sqlalchemy as sa
+
 from alembic import op
 
 revision = "20260901_0028"
@@ -18,7 +20,11 @@ _SIGNATURE = "uuid, uuid[], boolean, character varying, date, date, bigint, byte
 
 
 def upgrade() -> None:
-    op.execute(
+    connection = op.get_bind()
+    backup_role_exists = connection.execute(
+        sa.text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_backup')")
+    ).scalar_one()
+    upgrade_sql = (
         """
 CREATE FUNCTION company_reporting_read.get_company_report_composition_v1_as_of(
     p_entity_ref uuid,
@@ -356,6 +362,17 @@ GRANT EXECUTE ON FUNCTION company_reporting_read.get_company_report_composition_
 ) TO ledgerbridge_reader;
 """
     )
+    if not backup_role_exists:
+        optional_fragment = (
+            "REVOKE ALL ON FUNCTION "
+            "company_reporting_read.get_company_report_composition_v1_as_of(\n"
+            "    uuid, uuid[], boolean, character varying, date, date, bigint, bytea\n"
+            ") FROM ledgerbridge_backup;\n"
+        )
+        if upgrade_sql.count(optional_fragment) != 1:
+            raise RuntimeError("optional backup-role revocation contract is invalid")
+        upgrade_sql = upgrade_sql.replace(optional_fragment, "")
+    op.execute(upgrade_sql)
 
 
 def downgrade() -> None:
