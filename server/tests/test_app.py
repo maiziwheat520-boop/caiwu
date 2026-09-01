@@ -83,6 +83,28 @@ class SyntheticBffTests(unittest.TestCase):
         self.assertEqual(status, 401)
         self.assertEqual(problem["code"], "AUTHENTICATION_REQUIRED")
 
+    def test_personal_bank_transactions_are_isolated_from_browser_scope(self) -> None:
+        status, payload, _ = self.request(
+            "/api/v1/personal-finance/bank-transactions"
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            payload["contract_version"],
+            "ledgerbridge.personal-bank-transactions-bff.v1",
+        )
+        self.assertEqual(payload["owner_kind"], "PERSON")
+        self.assertIsNone(payload["statement"])
+        self.assertEqual(payload["summary"]["transaction_count"], 0)
+        self.assertEqual(payload["items"], [])
+
+        status, problem, _ = self.request(
+            "/api/v1/personal-finance/bank-transactions?statement_ref="
+            "70000000-0000-4000-8000-000000000007"
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(problem["code"], "INVALID_PERSONAL_BANK_QUERY")
+
     def test_candidate_filters_detail_and_read_projections(self) -> None:
         status, dimensions, _ = self.request("/api/v1/accounting-dimensions")
         self.assertEqual(status, 200)

@@ -25,6 +25,11 @@ Core; Core remains the only business-fact Module.
 - Company and business-unit identity is copied only from Core's structured
   projection. The Web layer does not infer ownership from candidate summaries,
   counterparties, bank names, or other display text.
+- Personal bank facts use a separate read-only route. The browser cannot submit
+  an entity or statement reference; the BFF binds both from protected runtime
+  configuration, asks Core for one audit-horizon snapshot, and rejects extra,
+  unmasked, reordered, truncated, or arithmetically inconsistent transaction
+  data. These rows are labeled as bank cash flow, never as posted revenue or expense.
 - Each month explicitly declares its business-unit breakdown state. Empty means a
   completed empty list. Account-statement attribution gaps and missing historical
   posted-ledger snapshots carry distinct unavailable states with `null` lists.
@@ -81,6 +86,8 @@ CORE_USER_SUBJECT=<fixed single-owner Passkey subject>
 CORE_AUTHENTICATION_GENERATION=<positive integer>
 CORE_ENTITY_REF=<authorized entity UUID>
 CORE_BUSINESS_UNIT_REF=<authorized business-unit ref>
+CORE_PERSONAL_ENTITY_REF=<authorized PERSON entity UUID; configure together with statement ref>
+CORE_PERSONAL_STATEMENT_REF=<reviewed personal bank statement UUID; never browser supplied>
 PAYROLL_COMMANDS_ENABLED=0
 PAYROLL_ROLE_BINDINGS_JSON=<server-controlled subject to maker/checker/approver JSON mapping>
 PAYROLL_TEST_WORKSPACE_ENABLED=0

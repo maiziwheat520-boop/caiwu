@@ -31,8 +31,60 @@ CANDIDATE_ID = "30000000-0000-4000-8000-000000000003"
 SECOND_CANDIDATE_ID = "30000000-0000-4000-8000-000000000004"
 EVIDENCE_ID = "20000000-0000-4000-8000-000000000003"
 ENTITY_ID = "10000000-0000-4000-8000-000000000001"
+STATEMENT_ID = "70000000-0000-4000-8000-000000000007"
+ACCOUNT_ID = "80000000-0000-4000-8000-000000000008"
 ASSERTION_KEY = b"synthetic-web-core-assertion-key-0001"
 CLASSIFICATION_GROUP_REF = "cg_0123456789abcdef0123456789abcdef"
+
+
+def core_personal_finance() -> dict[str, object]:
+    return {
+        "contract_version": "ledgerbridge.personal-finance.v1",
+        "snapshot_revision": "a" * 64,
+        "owner_kind": "PERSON",
+        "statement": {
+            "statement_ref": STATEMENT_ID,
+            "managed_account_ref": ACCOUNT_ID,
+            "institution_code": "mybank",
+            "account_suffix": "7968",
+            "period_start": "2026-07-01",
+            "period_end": "2026-07-02",
+            "transaction_count": 2,
+            "review_status": "CONFIRMED",
+            "review_revision": 1,
+        },
+        "summary": {
+            "currency": "CNY",
+            "transaction_count": 2,
+            "cash_inflow_minor": 10000,
+            "cash_outflow_minor": 2500,
+            "net_cash_flow_minor": 7500,
+        },
+        "items": [
+            {
+                "source_row_number": 2,
+                "occurred_at": "2026-07-01T09:30:00+08:00",
+                "amount_minor": 10000,
+                "balance_minor": 20000,
+                "currency": "CNY",
+                "counterparty_name": "测试对方甲",
+                "counterparty_account_masked": "******1234",
+                "counterparty_institution": "测试银行",
+                "transaction_name": "转入",
+            },
+            {
+                "source_row_number": 3,
+                "occurred_at": "2026-07-02T10:30:00+08:00",
+                "amount_minor": -2500,
+                "balance_minor": 17500,
+                "currency": "CNY",
+                "counterparty_name": "测试对方乙",
+                "counterparty_account_masked": None,
+                "counterparty_institution": None,
+                "transaction_name": "消费",
+            },
+        ],
+    }
 
 
 def core_candidate(*, status: str = "PENDING", revision: int = 1) -> dict[str, object]:
@@ -495,6 +547,7 @@ class FakeCoreClient:
             basis: core_company_report_composition(basis)
             for basis in ("CONFIRMED_CANDIDATE", "POSTED_LEDGER")
         }
+        self.personal_finance_payload = core_personal_finance()
 
     def json(
         self,
@@ -544,6 +597,8 @@ class FakeCoreClient:
                 if f"basis={value}" in path
             )
             return self.company_report_composition_payloads[basis]
+        if path.startswith("/internal/v1/personal-finance?"):
+            return self.personal_finance_payload
         if path.startswith("/internal/v1/original-reconciliations/"):
             return core_original_reconciliation()
         raise AssertionError(f"unexpected Core path: {path}")
@@ -707,6 +762,7 @@ def build_state(
     client: FakeCoreClient,
     *,
     evidence_unlock_path: str | None = None,
+    personal_finance_enabled: bool = True,
 ) -> CoreBackedState:
     return CoreBackedState(
         client,  # type: ignore[arg-type]
@@ -719,6 +775,8 @@ def build_state(
         authentication_generation=4,
         entity_ref=ENTITY_ID,
         business_unit_ref="unit-demo-a",
+        personal_finance_entity_ref=ENTITY_ID if personal_finance_enabled else None,
+        personal_finance_statement_ref=STATEMENT_ID if personal_finance_enabled else None,
         evidence_unlock_path=evidence_unlock_path,
     )
 
@@ -1273,6 +1331,75 @@ class CoreBackedAdapterTests(unittest.TestCase):
         self.assertEqual(status, 422)
         self.assertEqual(payload["code"], "INVALID_CORRECTIONS")
         self.assertFalse(any(call[0] == "POST" for call in client.calls))
+
+    def test_personal_bank_transactions_use_only_server_bound_scope(self) -> None:
+        client = FakeCoreClient()
+
+        result = build_state(client).personal_bank_transactions()
+
+        self.assertEqual(
+            client.calls[-1][:2],
+            (
+                "GET",
+                f"/internal/v1/personal-finance?statement_ref={STATEMENT_ID}&entity_ref={ENTITY_ID}",
+            ),
+        )
+        self.assertEqual(
+            result["contract_version"],
+            "ledgerbridge.personal-bank-transactions-bff.v1",
+        )
+        self.assertEqual(result["statement"], core_personal_finance()["statement"])
+        self.assertEqual(result["summary"], core_personal_finance()["summary"])
+        self.assertEqual(result["items"], core_personal_finance()["items"])
+
+    def test_personal_bank_transactions_fail_closed_without_server_binding(self) -> None:
+        client = FakeCoreClient()
+
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(
+                client,
+                personal_finance_enabled=False,
+            ).personal_bank_transactions()
+
+        self.assertEqual(raised.exception.status, 503)
+        self.assertEqual(
+            raised.exception.payload["code"],
+            "PERSONAL_BANK_FACTS_UNAVAILABLE",
+        )
+        self.assertFalse(any("personal-finance" in call[1] for call in client.calls))
+
+    def test_personal_bank_transactions_reject_incomplete_or_inconsistent_core_facts(self) -> None:
+        mutations: list[tuple[str, Callable[[dict[str, object]], None]]] = [
+            (
+                "private field",
+                lambda payload: payload["items"][0].__setitem__("transaction_serial", "secret"),  # type: ignore[index,union-attr]
+            ),
+            (
+                "total mismatch",
+                lambda payload: payload["summary"].__setitem__("cash_inflow_minor", 9999),  # type: ignore[union-attr]
+            ),
+            (
+                "duplicate row",
+                lambda payload: payload["items"][1].__setitem__("source_row_number", 2),  # type: ignore[index,union-attr]
+            ),
+            (
+                "unmasked account",
+                lambda payload: payload["items"][0].__setitem__("counterparty_account_masked", "62221234"),  # type: ignore[index,union-attr]
+            ),
+            (
+                "invalid statement date",
+                lambda payload: payload["statement"].__setitem__("period_end", "2026-02-31"),  # type: ignore[union-attr]
+            ),
+        ]
+        for label, mutate in mutations:
+            with self.subTest(label=label):
+                client = FakeCoreClient()
+                mutate(client.personal_finance_payload)
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(client).personal_bank_transactions()
+                self.assertEqual(raised.exception.status, 503)
+                self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
     def test_company_reports_preserve_authoritative_company_and_business_unit_scope(self) -> None:
         client = FakeCoreClient()
 

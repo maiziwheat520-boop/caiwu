@@ -69,6 +69,7 @@ import type {
   Session,
 } from './types'
 import { ErrorState, LoadingState, Metric, PageHeader } from './shared/PagePrimitives'
+import { PersonalBankTransactionsPanel } from './personal-finance/PersonalBankTransactionsPanel'
 
 const CompanyReportsPage = lazy(() => import('./company-reports/CompanyReportsPage')
   .then((module) => ({ default: module.CompanyReportsPage })))
@@ -1571,9 +1572,11 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate }: {
       <PageHeader
         eyebrow="个人财务"
         title="完整个人财务对账"
-        description="先把全部已确认且可识别的记录放入测试试算；归属待校准与正式过账仍严格分开。"
+        description="正式银行流水与测试候选分层展示；归属待校准与会计过账仍严格分开。"
         action={<Button onClick={() => onNavigate('review')}><ListChecks size={17} />处理待审核</Button>}
       />
+
+      <PersonalBankTransactionsPanel />
 
       <section className="panel personal-posting-status" aria-label="个人财务入账状态">
         <div>

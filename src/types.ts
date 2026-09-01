@@ -477,6 +477,45 @@ export type CompanyReportsResponse = {
   compositions?: CompanyReportCompositionLayer[]
 }
 
+export type PersonalBankTransaction = {
+  source_row_number: number
+  occurred_at: string
+  amount_minor: number
+  balance_minor: number
+  currency: 'CNY'
+  counterparty_name: string | null
+  counterparty_account_masked: string | null
+  counterparty_institution: string | null
+  transaction_name: string
+}
+
+export type PersonalBankStatement = {
+  statement_ref: string
+  managed_account_ref: string
+  institution_code: string
+  account_suffix: string
+  period_start: string
+  period_end: string
+  transaction_count: number
+  review_status: 'PENDING' | 'CONFIRMED' | 'REJECTED'
+  review_revision: number
+}
+
+export type PersonalBankTransactionsResponse = {
+  contract_version: 'ledgerbridge.personal-bank-transactions-bff.v1'
+  snapshot_revision: string
+  owner_kind: 'PERSON'
+  statement: PersonalBankStatement | null
+  summary: {
+    currency: 'CNY'
+    transaction_count: number
+    cash_inflow_minor: number
+    cash_outflow_minor: number
+    net_cash_flow_minor: number
+  }
+  items: PersonalBankTransaction[]
+}
+
 export type OriginalReconciliationColumn = {
   column: string
   ordinal: number

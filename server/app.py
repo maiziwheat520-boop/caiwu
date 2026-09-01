@@ -332,6 +332,22 @@ class SyntheticState:
             ],
         }
 
+    def personal_bank_transactions(self) -> dict[str, object]:
+        return {
+            "contract_version": "ledgerbridge.personal-bank-transactions-bff.v1",
+            "snapshot_revision": "0" * 64,
+            "owner_kind": "PERSON",
+            "statement": None,
+            "summary": {
+                "currency": "CNY",
+                "transaction_count": 0,
+                "cash_inflow_minor": 0,
+                "cash_outflow_minor": 0,
+                "net_cash_flow_minor": 0,
+            },
+            "items": [],
+        }
+
     def reconciliation(self, month: str) -> dict[str, object]:
         if month != SYNTHETIC_RECONCILIATION["accounting_month"]:
             return {"accounting_month": month, "revision": 1, "ready": True, "blockers": [], "business_units": []}
@@ -1059,6 +1075,19 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 )
                 return
             self._send_json(200, state.candidate_classification_groups())
+            return
+        if path == "/api/v1/personal-finance/bank-transactions":
+            if query:
+                self._send_json(
+                    400,
+                    _problem(
+                        400,
+                        "INVALID_PERSONAL_BANK_QUERY",
+                        "个人正式流水范围由服务端受保护配置决定",
+                    ),
+                )
+                return
+            self._send_json(200, state.personal_bank_transactions())
             return
         if path == "/api/v1/company-reports":
             params = parse_qs(query, keep_blank_values=True)
@@ -1921,6 +1950,14 @@ def run() -> None:
                 authentication_generation=int(required["CORE_AUTHENTICATION_GENERATION"]),
                 entity_ref=required["CORE_ENTITY_REF"],
                 business_unit_ref=required["CORE_BUSINESS_UNIT_REF"],
+                personal_finance_entity_ref=os.environ.get(
+                    "CORE_PERSONAL_ENTITY_REF", ""
+                ).strip()
+                or None,
+                personal_finance_statement_ref=os.environ.get(
+                    "CORE_PERSONAL_STATEMENT_REF", ""
+                ).strip()
+                or None,
                 evidence_unlock_path=os.environ.get("CORE_EVIDENCE_UNLOCK_PATH", "").strip() or None,
                 payroll_commands_enabled=payroll_commands_enabled,
                 payroll_role_bindings=payroll_role_bindings,

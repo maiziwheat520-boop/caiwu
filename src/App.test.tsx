@@ -389,6 +389,71 @@ function response(body: unknown, status = 200) {
   })
 }
 
+function personalBankTransactions() {
+  return {
+    contract_version: 'ledgerbridge.personal-bank-transactions-bff.v1',
+    snapshot_revision: 'a'.repeat(64),
+    owner_kind: 'PERSON',
+    statement: {
+      statement_ref: '70000000-0000-4000-8000-000000000007',
+      managed_account_ref: '80000000-0000-4000-8000-000000000008',
+      institution_code: 'mybank',
+      account_suffix: '7968',
+      period_start: '2026-07-01',
+      period_end: '2026-07-02',
+      transaction_count: 2,
+      review_status: 'CONFIRMED',
+      review_revision: 1,
+    },
+    summary: {
+      currency: 'CNY',
+      transaction_count: 2,
+      cash_inflow_minor: 10000,
+      cash_outflow_minor: 2500,
+      net_cash_flow_minor: 7500,
+    },
+    items: [
+      {
+        source_row_number: 2,
+        occurred_at: '2026-07-01T09:30:00+08:00',
+        amount_minor: 10000,
+        balance_minor: 20000,
+        currency: 'CNY',
+        counterparty_name: '正式对方甲',
+        counterparty_account_masked: '******1234',
+        counterparty_institution: '测试银行',
+        transaction_name: '转入',
+      },
+      {
+        source_row_number: 3,
+        occurred_at: '2026-07-02T10:30:00+08:00',
+        amount_minor: -2500,
+        balance_minor: 17500,
+        currency: 'CNY',
+        counterparty_name: '正式对方乙',
+        counterparty_account_masked: null,
+        counterparty_institution: null,
+        transaction_name: '消费',
+      },
+    ],
+  }
+}
+
+const emptyPersonalBankTransactions = {
+  contract_version: 'ledgerbridge.personal-bank-transactions-bff.v1',
+  snapshot_revision: '0'.repeat(64),
+  owner_kind: 'PERSON',
+  statement: null,
+  summary: {
+    currency: 'CNY',
+    transaction_count: 0,
+    cash_inflow_minor: 0,
+    cash_outflow_minor: 0,
+    net_cash_flow_minor: 0,
+  },
+  items: [],
+}
+
 function installFetch(options: {
   items?: ApiCandidate[]
   failSessionOnce?: boolean
@@ -419,6 +484,8 @@ function installFetch(options: {
   companyReportResponse?: unknown
   failCompanyReportsOnce?: boolean
   failOriginalReconciliation?: boolean
+  personalBankResponse?: unknown
+  failPersonalBank?: boolean
   originalReconciliation?: OriginalReconciliation
   originalReconciliationGate?: Promise<void>
 } = {}) {
@@ -484,6 +551,8 @@ function installFetch(options: {
     companyReportResponse = companyReports(),
     failCompanyReportsOnce = false,
     failOriginalReconciliation = false,
+    personalBankResponse = emptyPersonalBankTransactions,
+    failPersonalBank = false,
     originalReconciliation = originalReconciliationFixture,
     originalReconciliationGate,
   } = options
@@ -546,6 +615,12 @@ function installFetch(options: {
         return response({ title: '公司报表暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
       }
       return response(companyReportResponse)
+    }
+    if (url === '/api/v1/personal-finance/bank-transactions') {
+      if (failPersonalBank) {
+        return response({ title: '个人正式流水暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
+      }
+      return response(personalBankResponse)
     }
     if (url === '/api/v1/candidates' || url.startsWith('/api/v1/candidates?')) {
       candidateListRequestCount += 1
@@ -1988,6 +2063,61 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.queryByText('中国银行借记卡(2061)明细')).not.toBeInTheDocument()
     expect(screen.queryByText('农业银行借记卡(1234)明细')).not.toBeInTheDocument()
     expect(within(screen.getByRole('region', { name: '待补账单清单' })).getByText('1 项')).toBeInTheDocument()
+  })
+
+  it('shows formal bank facts above and separately from Candidate test calculations', async () => {
+    const testCandidate: ApiCandidate = {
+      ...candidates[3],
+      id: 'candidate-test-personal',
+      short_id: 'C-TEST',
+      business_unit: '个人',
+      business_unit_ref: 'personal-main',
+      amount_minor: 8800,
+      accounting_month: '2026-08',
+      category: '测试收入',
+      category_code: 'TEST_INCOME',
+      summary: '支付宝 | 2026-08-01 | 收入 | 测试收入 | 测试对象 | 余额 | 交易成功',
+    }
+    installFetch({
+      items: [testCandidate],
+      personalBankResponse: personalBankTransactions(),
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+
+    const formal = await screen.findByRole('region', { name: '个人正式银行流水' })
+    const testSummary = screen.getByRole('region', { name: '个人财务收支概览' })
+    expect(await within(formal).findByText('2 笔')).toBeInTheDocument()
+    expect(within(formal).getByText('网商银行 · 尾号 7968')).toBeInTheDocument()
+    expect(within(formal).getByText('账单审核：已确认')).toBeInTheDocument()
+    expect(within(formal).getByText('正式对方甲')).toBeInTheDocument()
+    expect(within(formal).getByText('正式对方乙')).toBeInTheDocument()
+    expect(within(formal).getByText('账户现金流，不是营业收入')).toBeInTheDocument()
+    expect(within(testSummary).getByText('测试收入')).toBeInTheDocument()
+    expect(formal.compareDocumentPosition(testSummary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('keeps Candidate test data visible when formal bank facts are unavailable', async () => {
+    const testCandidate: ApiCandidate = {
+      ...candidates[3],
+      id: 'candidate-test-fallback',
+      short_id: 'C-FALL',
+      business_unit: '个人',
+      business_unit_ref: 'personal-main',
+      amount_minor: 9900,
+      accounting_month: '2026-08',
+      category: '测试收入',
+      category_code: 'TEST_INCOME',
+      summary: '支付宝 | 2026-08-01 | 收入 | 测试收入 | 测试对象 | 余额 | 交易成功',
+    }
+    installFetch({ items: [testCandidate], failPersonalBank: true })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('正式银行流水暂不可用')
+    expect(screen.getByRole('region', { name: '个人财务收支概览' })).toHaveTextContent('¥99.00')
   })
 
   it('puts pending review first and summarizes only confirmed personal facts with source-priority deduplication', async () => {

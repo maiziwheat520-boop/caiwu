@@ -410,6 +410,34 @@ paths:
                 $ref: "#/components/schemas/Problem"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /api/v1/personal-finance/bank-transactions:
+    get:
+      operationId: getPersonalBankTransactions
+      description: >-
+        Return the complete, server-bound personal bank statement projection.
+        The browser cannot choose an entity or statement. These immutable bank
+        facts are separate from Candidate test calculations and from posted ledger entries.
+      responses:
+        "200":
+          description: One configured personal statement and all of its masked transaction rows
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonalBankTransactionsResponse"
+        "400":
+          description: Browser attempted to supply personal-finance scope
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          description: The protected statement binding or Core projection is unavailable or invalid
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/candidates:
     get:
       operationId: listCandidates
@@ -2510,6 +2538,118 @@ components:
           description: Exactly one layer for each reporting basis; layers are never added together. All three layers have the same strictly sorted company_ref set and identical company identity.
           items:
             $ref: "#/components/schemas/CompanyReportLayer"
+    PersonalBankTransactionsResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, snapshot_revision, owner_kind, statement, summary, items]
+      properties:
+        contract_version:
+          const: ledgerbridge.personal-bank-transactions-bff.v1
+        snapshot_revision:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        owner_kind:
+          const: PERSON
+        statement:
+          oneOf:
+            - $ref: "#/components/schemas/PersonalBankStatement"
+            - type: "null"
+        summary:
+          $ref: "#/components/schemas/PersonalBankSummary"
+        items:
+          type: array
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/PersonalBankTransaction"
+    PersonalBankStatement:
+      type: object
+      additionalProperties: false
+      required: [statement_ref, managed_account_ref, institution_code, account_suffix, period_start, period_end, transaction_count, review_status, review_revision]
+      properties:
+        statement_ref:
+          type: string
+          format: uuid
+        managed_account_ref:
+          type: string
+          format: uuid
+        institution_code:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9_]{0,31}$"
+        account_suffix:
+          type: string
+          pattern: "^[0-9]{4,8}$"
+        period_start:
+          type: string
+          format: date
+        period_end:
+          type: string
+          format: date
+        transaction_count:
+          type: integer
+          minimum: 1
+          maximum: 200
+        review_status:
+          type: string
+          enum: [PENDING, CONFIRMED, REJECTED]
+        review_revision:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+    PersonalBankSummary:
+      type: object
+      additionalProperties: false
+      required: [currency, transaction_count, cash_inflow_minor, cash_outflow_minor, net_cash_flow_minor]
+      description: >-
+        transaction_count equals the item count; cash totals are recomputed from items,
+        and net_cash_flow_minor equals cash_inflow_minor minus cash_outflow_minor.
+      properties:
+        currency:
+          const: CNY
+        transaction_count:
+          type: integer
+          minimum: 0
+          maximum: 200
+        cash_inflow_minor:
+          $ref: "#/components/schemas/SafeNonnegativeMinor"
+        cash_outflow_minor:
+          $ref: "#/components/schemas/SafeNonnegativeMinor"
+        net_cash_flow_minor:
+          $ref: "#/components/schemas/SafeSignedMinor"
+    PersonalBankTransaction:
+      type: object
+      additionalProperties: false
+      required: [source_row_number, occurred_at, amount_minor, balance_minor, currency, counterparty_name, counterparty_account_masked, counterparty_institution, transaction_name]
+      properties:
+        source_row_number:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        occurred_at:
+          type: string
+          format: date-time
+        amount_minor:
+          $ref: "#/components/schemas/SafeSignedMinor"
+        balance_minor:
+          $ref: "#/components/schemas/SafeSignedMinor"
+        currency:
+          const: CNY
+        counterparty_name:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 300
+        counterparty_account_masked:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 300
+          description: Only a masked value returned by Core; unmasked account numbers are rejected by the BFF.
+        counterparty_institution:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 300
+        transaction_name:
+          type: string
+          minLength: 1
+          maxLength: 300
     CompanyReportLayer:
       type: object
       additionalProperties: false

@@ -83,6 +83,7 @@ PAYROLL_COMMAND_ROLES = {
 }
 ACCOUNTING_DIMENSIONS_CORE_PATH = "/internal/v1/accounting-dimensions"
 CLASSIFICATION_GROUPS_CORE_PATH = "/internal/v1/candidate-classification-groups"
+PERSONAL_FINANCE_CORE_PATH = "/internal/v1/personal-finance"
 CLASSIFICATION_GROUP_REF = re.compile(r"^cg_[0-9a-f]{32}$")
 CLASSIFICATION_RISK_CODES = frozenset(
     {
@@ -261,6 +262,8 @@ class CoreBackedState:
         authentication_generation: int,
         entity_ref: str,
         business_unit_ref: str,
+        personal_finance_entity_ref: str | None = None,
+        personal_finance_statement_ref: str | None = None,
         evidence_unlock_path: str | None = None,
         payroll_commands_enabled: bool = False,
         payroll_role_bindings: dict[str, frozenset[str]] | None = None,
@@ -283,6 +286,20 @@ class CoreBackedState:
         self.authentication_generation = authentication_generation
         self.entity_ref = str(uuid.UUID(entity_ref))
         self.business_unit_ref = _bounded(business_unit_ref, maximum=100)
+        if bool(personal_finance_entity_ref) != bool(personal_finance_statement_ref):
+            raise ValueError(
+                "CORE_PERSONAL_ENTITY_REF and CORE_PERSONAL_STATEMENT_REF must be configured together"
+            )
+        self.personal_finance_entity_ref = (
+            str(uuid.UUID(personal_finance_entity_ref))
+            if personal_finance_entity_ref
+            else None
+        )
+        self.personal_finance_statement_ref = (
+            str(uuid.UUID(personal_finance_statement_ref))
+            if personal_finance_statement_ref
+            else None
+        )
         self.payroll_commands_enabled = payroll_commands_enabled
         self.payroll_test_workspace_enabled = payroll_test_workspace_enabled
         if payroll_test_workspace_enabled and (
@@ -606,6 +623,33 @@ class CoreBackedState:
             "layers": layers,
             "compositions": compositions,
         }
+
+    def personal_bank_transactions(self) -> dict[str, object]:
+        if (
+            self.personal_finance_entity_ref is None
+            or self.personal_finance_statement_ref is None
+        ):
+            raise CoreBackendError(
+                503,
+                _problem(503, "PERSONAL_BANK_FACTS_UNAVAILABLE"),
+            )
+        query = urlencode(
+            {
+                "statement_ref": self.personal_finance_statement_ref,
+                "entity_ref": self.personal_finance_entity_ref,
+            }
+        )
+        try:
+            payload = self.client.json(
+                "GET",
+                f"{PERSONAL_FINANCE_CORE_PATH}?{query}",
+            )
+        except CoreBackendError as error:
+            raise CoreBackendError(
+                503,
+                _problem(503, "PERSONAL_BANK_FACTS_UNAVAILABLE"),
+            ) from error
+        return _personal_bank_transactions_from_core(payload)
 
     def append_decision(
         self,
@@ -1820,6 +1864,252 @@ _COMPANY_REPORT_METRIC_FIELDS = {
 _MAX_SAFE_JSON_INTEGER = 2**53 - 1
 _COMPANY_REPORT_MONTH = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
 _COMPANY_REPORT_CURRENCY = re.compile(r"^[A-Z]{3}$")
+_PERSONAL_BANK_SNAPSHOT = re.compile(r"^[0-9a-f]{64}$")
+_PERSONAL_BANK_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+_PERSONAL_BANK_INSTITUTION = re.compile(r"^[a-z0-9][a-z0-9_]{0,31}$")
+_PERSONAL_BANK_ACCOUNT_SUFFIX = re.compile(r"^[0-9]{4,8}$")
+
+
+def _personal_bank_transactions_from_core(
+    value: dict[str, object],
+) -> dict[str, object]:
+    _company_report_require_exact_keys(
+        value,
+        {
+            "contract_version",
+            "snapshot_revision",
+            "owner_kind",
+            "statement",
+            "summary",
+            "items",
+        },
+    )
+    statement = value.get("statement")
+    summary = value.get("summary")
+    items = value.get("items")
+    if (
+        value.get("contract_version") != "ledgerbridge.personal-finance.v1"
+        or value.get("owner_kind") != "PERSON"
+        or not isinstance(statement, dict)
+        or not isinstance(summary, dict)
+        or not isinstance(items, list)
+        or not 1 <= len(items) <= 200
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    snapshot_revision = _company_report_text(
+        value.get("snapshot_revision"),
+        maximum=64,
+        pattern=_PERSONAL_BANK_SNAPSHOT,
+    )
+    mapped_statement = _personal_bank_statement_from_core(statement)
+    mapped_items = [_personal_bank_transaction_from_core(item) for item in items]
+    source_rows = [int(item["source_row_number"]) for item in mapped_items]
+    if source_rows != sorted(set(source_rows)):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    mapped_summary = _personal_bank_summary_from_core(summary)
+    inflow = sum(max(int(item["amount_minor"]), 0) for item in mapped_items)
+    outflow = sum(max(-int(item["amount_minor"]), 0) for item in mapped_items)
+    if (
+        mapped_statement["transaction_count"] != len(mapped_items)
+        or mapped_summary["transaction_count"] != len(mapped_items)
+        or mapped_summary["cash_inflow_minor"] != inflow
+        or mapped_summary["cash_outflow_minor"] != outflow
+        or mapped_summary["net_cash_flow_minor"] != inflow - outflow
+        or any(item["currency"] != mapped_summary["currency"] for item in mapped_items)
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    return {
+        "contract_version": "ledgerbridge.personal-bank-transactions-bff.v1",
+        "snapshot_revision": snapshot_revision,
+        "owner_kind": "PERSON",
+        "statement": mapped_statement,
+        "summary": mapped_summary,
+        "items": mapped_items,
+    }
+
+
+def _personal_bank_statement_from_core(value: dict[str, object]) -> dict[str, object]:
+    _company_report_require_exact_keys(
+        value,
+        {
+            "statement_ref",
+            "managed_account_ref",
+            "institution_code",
+            "account_suffix",
+            "period_start",
+            "period_end",
+            "transaction_count",
+            "review_status",
+            "review_revision",
+        },
+    )
+    period_start = _company_report_text(
+        value.get("period_start"),
+        maximum=10,
+        pattern=_PERSONAL_BANK_DATE,
+    )
+    period_end = _company_report_text(
+        value.get("period_end"),
+        maximum=10,
+        pattern=_PERSONAL_BANK_DATE,
+    )
+    try:
+        parsed_period_start = datetime.strptime(period_start, "%Y-%m-%d").date()
+        parsed_period_end = datetime.strptime(period_end, "%Y-%m-%d").date()
+    except ValueError as error:
+        raise CoreBackendError(
+            503,
+            _problem(503, "CORE_CONTRACT_INVALID"),
+        ) from error
+    transaction_count = _company_report_integer(
+        value.get("transaction_count"),
+        nonnegative=True,
+    )
+    review_revision = _company_report_integer(
+        value.get("review_revision"),
+        nonnegative=True,
+    )
+    review_status = value.get("review_status")
+    if (
+        parsed_period_start > parsed_period_end
+        or not 1 <= transaction_count <= 200
+        or review_status not in {"PENDING", "CONFIRMED", "REJECTED"}
+        or review_revision < 1
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    return {
+        "statement_ref": _company_report_uuid(value.get("statement_ref")),
+        "managed_account_ref": _company_report_uuid(value.get("managed_account_ref")),
+        "institution_code": _company_report_text(
+            value.get("institution_code"),
+            maximum=32,
+            pattern=_PERSONAL_BANK_INSTITUTION,
+        ),
+        "account_suffix": _company_report_text(
+            value.get("account_suffix"),
+            maximum=8,
+            pattern=_PERSONAL_BANK_ACCOUNT_SUFFIX,
+        ),
+        "period_start": period_start,
+        "period_end": period_end,
+        "transaction_count": transaction_count,
+        "review_status": review_status,
+        "review_revision": review_revision,
+    }
+
+
+def _personal_bank_summary_from_core(value: dict[str, object]) -> dict[str, object]:
+    _company_report_require_exact_keys(
+        value,
+        {
+            "currency",
+            "transaction_count",
+            "cash_inflow_minor",
+            "cash_outflow_minor",
+            "net_cash_flow_minor",
+        },
+    )
+    return {
+        "currency": _company_report_text(
+            value.get("currency"),
+            maximum=3,
+            pattern=re.compile(r"^CNY$"),
+        ),
+        "transaction_count": _company_report_integer(
+            value.get("transaction_count"),
+            nonnegative=True,
+        ),
+        "cash_inflow_minor": _company_report_integer(
+            value.get("cash_inflow_minor"),
+            nonnegative=True,
+        ),
+        "cash_outflow_minor": _company_report_integer(
+            value.get("cash_outflow_minor"),
+            nonnegative=True,
+        ),
+        "net_cash_flow_minor": _company_report_integer(
+            value.get("net_cash_flow_minor"),
+        ),
+    }
+
+
+def _personal_bank_transaction_from_core(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    _company_report_require_exact_keys(
+        value,
+        {
+            "source_row_number",
+            "occurred_at",
+            "amount_minor",
+            "balance_minor",
+            "currency",
+            "counterparty_name",
+            "counterparty_account_masked",
+            "counterparty_institution",
+            "transaction_name",
+        },
+    )
+    source_row_number = _company_report_integer(
+        value.get("source_row_number"),
+        nonnegative=True,
+    )
+    if source_row_number < 1:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    return {
+        "source_row_number": source_row_number,
+        "occurred_at": _personal_bank_datetime(value.get("occurred_at")),
+        "amount_minor": _company_report_integer(value.get("amount_minor")),
+        "balance_minor": _company_report_integer(value.get("balance_minor")),
+        "currency": _company_report_text(
+            value.get("currency"),
+            maximum=3,
+            pattern=re.compile(r"^CNY$"),
+        ),
+        "counterparty_name": _personal_bank_optional_text(value.get("counterparty_name")),
+        "counterparty_account_masked": _personal_bank_masked_account(
+            value.get("counterparty_account_masked")
+        ),
+        "counterparty_institution": _personal_bank_optional_text(
+            value.get("counterparty_institution")
+        ),
+        "transaction_name": _personal_bank_text(value.get("transaction_name")),
+    }
+
+
+def _personal_bank_datetime(value: object) -> str:
+    text = _personal_bank_text(value, maximum=40)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID")) from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    return text
+
+
+def _personal_bank_optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    return _personal_bank_text(value)
+
+
+def _personal_bank_text(value: object, *, maximum: int = 300) -> str:
+    text = _company_report_text(value, maximum=maximum)
+    if not text.strip() or not text.isprintable():
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    return text
+
+
+def _personal_bank_masked_account(value: object) -> str | None:
+    text = _personal_bank_optional_text(value)
+    if text is None:
+        return None
+    if (len(text) <= 4 and set(text) != {"*"}) or (
+        len(text) > 4 and set(text[:-4]) != {"*"}
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    return text
 
 
 def _validate_company_report_layer_identities(

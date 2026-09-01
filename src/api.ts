@@ -18,6 +18,7 @@ import type {
   EvidencePreview,
   OriginalReconciliation,
   PasskeyAdditionResult,
+  PersonalBankTransactionsResponse,
   PayrollBatchListData,
   PayrollCommandResult,
   PayrollDashboardData,
@@ -279,6 +280,9 @@ export const api = {
     const suffix = query.size > 0 ? `?${query.toString()}` : ''
     return requestJson<CompanyReportsResponse>(`/api/v1/company-reports${suffix}`)
   },
+
+  getPersonalBankTransactions: () =>
+    requestJson<PersonalBankTransactionsResponse>('/api/v1/personal-finance/bank-transactions'),
 
   listCandidates: ({ status, cursor }: { status?: string; cursor?: string } = {}) => {
     const query = new URLSearchParams()
