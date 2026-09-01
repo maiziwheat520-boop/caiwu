@@ -386,6 +386,37 @@ def preview_payload():
     }
 
 
+def summary_preview_payload():
+    return {
+        "schema_version": "payroll-summary-authoritative-preview/v1",
+        "data_scope": "TEST_ONLY",
+        "test_batch_id": "batch_demo",
+        "company_id": "company_demo",
+        "material_id": "material_summary",
+        "routing_status": "DATE_UNKNOWN",
+        "source_of_truth": "PAYROLL_SUMMARY",
+        "authoritative": True,
+        "period_count": 1,
+        "latest_period": "2026-07",
+        "periods": [
+            {
+                "period": "2026-07",
+                "store_count": 2,
+                "stores": [
+                    {"store_name": "青居客", "net_pay_cents": 3_242_000},
+                    {"store_name": "同富", "net_pay_cents": 14_019_198},
+                ],
+                "total_net_pay_cents": 17_261_198,
+                "total_source": "SUMMARY_TOTAL_ROW",
+                "total_matches_stores": True,
+            }
+        ],
+        "payment_submission_supported": False,
+        "payable": False,
+        "submission_supported": False,
+    }
+
+
 def legacy_workspace_payload():
     return {
         "schema_version": "payroll-legacy-feature-workspace/v1",
@@ -509,6 +540,47 @@ def test_test_workspace_preview_returns_masked_non_payable_lines():
     assert result.payload_copy()["lines"][0]["account_masked"] == "****0138"
     assert result.payload_copy()["total_net_pay_cents"] == 500000
     assert result.payload_copy()["submission_supported"] is False
+
+
+def test_test_workspace_preview_accepts_authoritative_summary_months_and_store_totals():
+    entity, adapter = source(summary_preview_payload())
+    result = adapter.preview_material(
+        entity_ref=entity,
+        test_batch_id="batch_demo",
+        material_id="material_summary",
+        provider_headers={},
+    )
+    payload = result.payload_copy()
+    assert payload["source_of_truth"] == "PAYROLL_SUMMARY"
+    assert payload["periods"][0]["stores"][1]["net_pay_cents"] == 14_019_198
+    assert payload["periods"][0]["total_net_pay_cents"] == 17_261_198
+    assert payload["submission_supported"] is False
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.update(authoritative=False),
+        lambda payload: payload["periods"][0]["stores"][0].update(
+            store_name="门店 6222000000000138"
+        ),
+        lambda payload: payload["periods"][0]["stores"][0].update(net_pay_cents=3_242_000.0),
+        lambda payload: payload["periods"][0].update(store_count=1),
+        lambda payload: payload["periods"][0].update(total_matches_stores=False),
+        lambda payload: payload.update(payable=True),
+    ],
+)
+def test_test_workspace_summary_preview_fails_closed_on_contract_drift(mutate):
+    payload = summary_preview_payload()
+    mutate(payload)
+    entity, adapter = source(payload)
+    with pytest.raises(PayrollIntegrationError):
+        adapter.preview_material(
+            entity_ref=entity,
+            test_batch_id="batch_demo",
+            material_id="material_summary",
+            provider_headers={},
+        )
 
 
 @pytest.mark.parametrize(

@@ -2958,6 +2958,11 @@ def _validate_test_material_preview(
     expected_batch_id: str,
     expected_material_id: str,
 ) -> None:
+    if value.get("schema_version") == "payroll-summary-authoritative-preview/v1":
+        _validate_test_payroll_summary_preview(
+            value, expected_company_id, expected_batch_id, expected_material_id
+        )
+        return
     _require_exact_keys(
         value,
         frozenset(
@@ -3144,6 +3149,119 @@ def _validate_test_material_preview(
         _invalid_response("payroll test preview totals are inconsistent")
 
 
+def _validate_test_payroll_summary_preview(
+    value: Mapping[str, object],
+    expected_company_id: str,
+    expected_batch_id: str,
+    expected_material_id: str,
+) -> None:
+    _require_exact_keys(
+        value,
+        frozenset(
+            {
+                "schema_version",
+                "data_scope",
+                "test_batch_id",
+                "company_id",
+                "material_id",
+                "routing_status",
+                "source_of_truth",
+                "authoritative",
+                "period_count",
+                "latest_period",
+                "periods",
+                "payment_submission_supported",
+                "payable",
+                "submission_supported",
+            }
+        ),
+        "test payroll summary preview",
+    )
+    if (
+        value.get("schema_version") != "payroll-summary-authoritative-preview/v1"
+        or value.get("data_scope") != "TEST_ONLY"
+        or value.get("test_batch_id") != expected_batch_id
+        or value.get("company_id") != expected_company_id
+        or value.get("material_id") != expected_material_id
+        or value.get("routing_status") not in {"AUTO_TEST", "REVIEW_REQUIRED", "DATE_UNKNOWN"}
+        or value.get("source_of_truth") != "PAYROLL_SUMMARY"
+        or value.get("authoritative") is not True
+    ):
+        _invalid_response("payroll summary preview scope is invalid")
+    _require_disabled_flags(
+        value, ("payment_submission_supported", "payable", "submission_supported")
+    )
+    periods = _require_list(value.get("periods"), "summary.periods")
+    if not periods or _require_non_negative_integer(
+        value.get("period_count"), "summary.period_count"
+    ) != len(periods):
+        _invalid_response("payroll summary period count is inconsistent")
+    latest_period = _require_period(value.get("latest_period"), "summary.latest_period")
+    period_fields = frozenset(
+        {
+            "period",
+            "store_count",
+            "stores",
+            "total_net_pay_cents",
+            "total_source",
+            "total_matches_stores",
+        }
+    )
+    store_fields = frozenset({"store_name", "net_pay_cents"})
+    seen_periods: set[str] = set()
+    previous_period: str | None = None
+    for index, period_value in enumerate(periods):
+        period = _require_object(period_value, "summary.period")
+        _require_exact_keys(period, period_fields, "test payroll summary period")
+        current_period = _require_period(period.get("period"), "summary.period")
+        if current_period in seen_periods or (
+            previous_period is not None and current_period >= previous_period
+        ):
+            _invalid_response("payroll summary periods are duplicated or out of order")
+        seen_periods.add(current_period)
+        previous_period = current_period
+        if index == 0 and current_period != latest_period:
+            _invalid_response("payroll summary latest period is inconsistent")
+        stores = _require_list(period.get("stores"), "summary.stores")
+        if not stores or _require_non_negative_integer(
+            period.get("store_count"), "summary.store_count"
+        ) != len(stores):
+            _invalid_response("payroll summary store count is inconsistent")
+        seen_stores: set[str] = set()
+        calculated_total = 0
+        for store_value in stores:
+            store = _require_object(store_value, "summary.store")
+            _require_exact_keys(store, store_fields, "test payroll summary store")
+            store_name = store.get("store_name")
+            if (
+                not isinstance(store_name, str)
+                or not store_name
+                or store_name != store_name.strip()
+                or len(store_name) > 40
+            ):
+                _invalid_response("payroll summary store name is invalid")
+            _validate_publishable_string(store_name, parent_key="store_name")
+            if store_name in seen_stores:
+                _invalid_response("payroll summary stores are duplicated")
+            seen_stores.add(store_name)
+            calculated_total += _require_non_negative_integer(
+                store.get("net_pay_cents"), "summary.store.net_pay_cents"
+            )
+            if calculated_total > 9_007_199_254_740_991:
+                _invalid_response("payroll summary store total is unsafe")
+        total = _require_non_negative_integer(
+            period.get("total_net_pay_cents"), "summary.total_net_pay_cents"
+        )
+        total_source = period.get("total_source")
+        matches = period.get("total_matches_stores")
+        if total_source not in {"SUMMARY_TOTAL_ROW", "SUM_OF_SUMMARY_STORE_ROWS"}:
+            _invalid_response("payroll summary total source is invalid")
+        if type(matches) is not bool or matches is not (total == calculated_total):
+            _invalid_response("payroll summary reconciliation is inconsistent")
+        if total_source == "SUM_OF_SUMMARY_STORE_ROWS" and total != calculated_total:
+            _invalid_response("payroll summary calculated total is inconsistent")
+
+
 def _validate_legacy_feature_workspace(
     value: Mapping[str, object], expected_company_id: str, expected_batch_id: str
 ) -> None:
@@ -3306,9 +3424,7 @@ def _validate_legacy_feature_workspace(
                 )
             }
             calculated_gross = (
-                amounts["base_salary_cents"]
-                + amounts["allowance_cents"]
-                + amounts["bonus_cents"]
+                amounts["base_salary_cents"] + amounts["allowance_cents"] + amounts["bonus_cents"]
             )
             calculated_net = (
                 calculated_gross
@@ -3378,12 +3494,16 @@ def _validate_legacy_feature_tree(
                     _require_stable_identifier(nested, key, account=True)
                 elif key.endswith(("_minor", "_cents")):
                     _require_minor_integer(nested, key)
-                elif key in {
-                    "payment_submission_supported",
-                    "payment_execution_supported",
-                    "payable",
-                    "submission_supported",
-                } and nested is not False:
+                elif (
+                    key
+                    in {
+                        "payment_submission_supported",
+                        "payment_execution_supported",
+                        "payable",
+                        "submission_supported",
+                    }
+                    and nested is not False
+                ):
                     raise PayrollIntegrationError(
                         "PAYROLL_PAYMENT_MODE_NOT_ALLOWED",
                         "payroll legacy feature workspace exposed payment capability",
