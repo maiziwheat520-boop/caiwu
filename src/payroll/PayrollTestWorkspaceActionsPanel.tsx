@@ -8,7 +8,6 @@ import type {
   PayrollTestWorkspaceMaterial,
   PayrollTestWorkspaceReadResponse,
 } from '../types'
-import { PayrollHistorySummary } from './PayrollHistorySummary'
 import './payroll-test-workspace.css'
 
 const MATERIAL_TYPES: ReadonlyArray<{ value: PayrollTestMaterialType; label: string }> = [
@@ -301,8 +300,6 @@ export function PayrollTestWorkspaceActionsPanel({
           ))}
         </div>
       ) : null}
-
-      <PayrollHistorySummary key={workspace.data.workspace_revision} workspace={workspace} />
     </section>
   )
 }

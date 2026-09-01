@@ -32,6 +32,7 @@ import type {
   PayrollTestBatchValidationResult,
   PayrollTestMaterialType,
   PayrollTestMaterialPreviewResponse,
+  PayrollSummaryAuthoritativePreviewResponse,
   PayrollLegacyAction,
   PayrollLegacyCommandResult,
   PayrollLegacyWorkspaceReadResponse,
@@ -451,6 +452,11 @@ export const api = {
 
   previewPayrollTestMaterial: (materialId: string) =>
     requestJson<PayrollTestMaterialPreviewResponse>(
+      `/api/v1/payroll/test-workspace/materials/${encodeURIComponent(materialId)}/preview`,
+    ),
+
+  previewPayrollSummaryMaterial: (materialId: string) =>
+    requestJson<PayrollSummaryAuthoritativePreviewResponse>(
       `/api/v1/payroll/test-workspace/materials/${encodeURIComponent(materialId)}/preview`,
     ),
 

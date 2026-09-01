@@ -134,13 +134,23 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
   const supportingMaterials = testWorkspace.data.materials.filter(
     (material) => material.material_type !== 'PAYROLL_SHEET' && material.period !== null,
   )
+  const sourcePeriods = [...new Set(payrollSheets.flatMap(
+    (material) => material.period ? [material.period] : [],
+  ))].sort((left, right) => right.localeCompare(left))
+  const [sourcePeriod, setSourcePeriod] = useState(sourcePeriods[0] ?? '')
+  const periodPayrollSheets = payrollSheets.filter((material) => material.period === sourcePeriod)
+  const periodSupportingMaterials = supportingMaterials.filter(
+    (material) => material.period === sourcePeriod,
+  )
   const [workspace, setWorkspace] = useState<PayrollLegacyWorkspace | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null)
   const [task, setTask] = useState<TaskId>('fill')
   const [period, setPeriod] = useState('')
-  const [mainMaterialId, setMainMaterialId] = useState(payrollSheets[0]?.material_id ?? '')
+  const [mainMaterialId, setMainMaterialId] = useState(
+    periodPayrollSheets[0]?.material_id ?? '',
+  )
   const [supporting, setSupporting] = useState<Record<string, string>>({})
   const [adjustments, setAdjustments] = useState<PayrollLegacyAdjustment[]>([])
   const [rules, setRules] = useState<EditableRule[]>([])
@@ -266,6 +276,18 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
   }
 
   const selectedMaterial = payrollSheets.find((material) => material.material_id === mainMaterialId)
+  const selectSourcePeriod = (nextPeriod: string) => {
+    setSourcePeriod(nextPeriod)
+    setMainMaterialId(
+      payrollSheets.find((material) => material.period === nextPeriod)?.material_id ?? '',
+    )
+    setSupporting({})
+    if (workspace?.batches.some((batch) => batch.period === nextPeriod)) {
+      applyWorkspace(workspace, nextPeriod)
+    } else {
+      setAdjustments([])
+    }
+  }
 
   return (
     <section className="payroll-legacy-workbench" aria-labelledby="payroll-legacy-heading">
@@ -313,7 +335,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
             </div>
             {workspace ? (
               <label>
-                <span>当前账期</span>
+                <span>查看已保存月份</span>
                 <select value={period} onChange={(event) => applyWorkspace(workspace, event.target.value)}>
                   {workspace.batches.map((batch) => <option key={batch.period}>{batch.period}</option>)}
                 </select>
@@ -332,11 +354,19 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
               </div>
               <div className="payroll-source-form">
                 <label>
-                  <span>选择原工资表</span>
+                  <span>工资月份</span>
+                  <select value={sourcePeriod} onChange={(event) => selectSourcePeriod(event.target.value)}>
+                    {sourcePeriods.map((candidate) => (
+                      <option key={candidate} value={candidate}>{candidate}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>选择原工资表版本</span>
                   <select value={mainMaterialId} onChange={(event) => setMainMaterialId(event.target.value)}>
-                    {payrollSheets.map((material) => (
+                    {periodPayrollSheets.map((material, index) => (
                       <option key={material.material_id} value={material.material_id}>
-                        {material.period} · {material.material_id}
+                        版本 {index + 1} · {material.routing_status === 'AUTO_TEST' ? '可自动测试' : '需要人工复核'}
                       </option>
                     ))}
                   </select>
@@ -353,10 +383,10 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
                         return next
                       })}
                     >
-                      <option value="">本次未提供</option>
-                      {supportingMaterials.map((material) => (
+                      <option value="">本月未提供</option>
+                      {periodSupportingMaterials.map((material) => (
                         <option key={material.material_id} value={material.material_id}>
-                          {material.period} · {material.material_type}
+                          {material.material_type}
                         </option>
                       ))}
                     </select>
@@ -366,7 +396,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
               {selectedMaterial?.routing_status === 'REVIEW_REQUIRED' ? (
                 <div className="payroll-inline-warning"><Warning size={17} />这份工资表需要人工核对；可进入主表编辑，但阻断异常解决前不能生成代发草稿。</div>
               ) : null}
-              {activeBatch ? (
+              {activeBatch?.period === sourcePeriod ? (
                 <AdjustmentEditor
                   lines={activeBatch.lines}
                   adjustments={adjustments}

@@ -355,6 +355,43 @@ class FakePayrollCoreClient:
             data: dict[str, object]
             if path == (
                 f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/materials/"
+                "material_authoritative_summary/preview"
+            ):
+                return {
+                    "contract_version":
+                        "ledgerbridge.payroll-test-material-preview-read.v1",
+                    "entity_ref": self.response_entity_ref,
+                    "company_id": "company_live_hotel",
+                    "material_id": "material_authoritative_summary",
+                    "data": {
+                        "schema_version": "payroll-summary-authoritative-preview/v1",
+                        "data_scope": "TEST_ONLY",
+                        "test_batch_id": TEST_BATCH_ID,
+                        "company_id": "company_live_hotel",
+                        "material_id": "material_authoritative_summary",
+                        "routing_status": "DATE_UNKNOWN",
+                        "source_of_truth": "PAYROLL_SUMMARY",
+                        "authoritative": True,
+                        "period_count": 1,
+                        "latest_period": "2026-07",
+                        "periods": [{
+                            "period": "2026-07",
+                            "store_count": 2,
+                            "stores": [
+                                {"store_name": "青居客", "net_pay_cents": 3_242_000},
+                                {"store_name": "同富", "net_pay_cents": 14_019_198},
+                            ],
+                            "total_net_pay_cents": 17_261_198,
+                            "total_source": "SUMMARY_TOTAL_ROW",
+                            "total_matches_stores": True,
+                        }],
+                        "payment_submission_supported": False,
+                        "payable": False,
+                        "submission_supported": False,
+                    },
+                }
+            if path == (
+                f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/materials/"
                 "material_history_2026_08/preview"
             ):
                 data = {
@@ -796,6 +833,26 @@ class PayrollBffTests(unittest.TestCase):
         claims = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
         self.assertEqual(claims["action"], "payroll.test_workspace.read")
         self.assertEqual(claims["resource_ref"], material_id)
+
+    def test_authenticated_session_reads_authoritative_monthly_store_summary(self) -> None:
+        material_id = "material_authoritative_summary"
+        request = urllib.request.Request(
+            (
+                f"http://127.0.0.1:{self.server.server_port}"
+                f"/api/v1/payroll/test-workspace/materials/{material_id}/preview"
+            ),
+            headers={"Cookie": f"{COOKIE_NAME}=session-token"},
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            payload = json.load(response)
+
+        self.assertEqual(payload["data"]["source_of_truth"], "PAYROLL_SUMMARY")
+        self.assertEqual(payload["data"]["latest_period"], "2026-07")
+        self.assertEqual(
+            payload["data"]["periods"][0]["total_net_pay_cents"],
+            17_261_198,
+        )
+        self.assertFalse(payload["data"]["submission_supported"])
 
     def test_test_payroll_preview_rejects_full_account_or_float_money(self) -> None:
         state = build_state(self.client, payroll_test_workspace_enabled=True)

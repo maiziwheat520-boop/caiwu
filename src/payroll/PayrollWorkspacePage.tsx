@@ -13,6 +13,7 @@ import type {
 } from '../types'
 import { ErrorState, LoadingState, PageHeader } from '../shared/PagePrimitives'
 import { PayrollLegacyWorkbench } from './PayrollLegacyWorkbench'
+import { PayrollHistorySummary } from './PayrollHistorySummary'
 import { PayrollTestWorkspaceActionsPanel } from './PayrollTestWorkspaceActionsPanel'
 
 const currency = new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY' })
@@ -219,6 +220,10 @@ export function PayrollWorkspacePage() {
       />
 
       {loading ? <LoadingState /> : error ? <ErrorState message={error} onRetry={loadPayroll} /> : null}
+
+      {!loading && !error && testWorkspace ? (
+        <PayrollHistorySummary key={testWorkspace.data.workspace_revision} workspace={testWorkspace} />
+      ) : null}
 
       {!loading && !error && testWorkspace && csrfToken ? (
         <PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken={csrfToken} />
