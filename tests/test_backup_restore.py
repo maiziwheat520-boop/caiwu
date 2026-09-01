@@ -90,6 +90,7 @@ from scripts.backup_restore import (
     _validate_backup_image,
     _validate_classification_batch_security,
     _validate_company_reporting_security,
+    _validate_r1_database_security,
     _validate_restored_database,
     _verify_payload_hashes,
     _write_payload_hashes,
@@ -2909,6 +2910,34 @@ def test_r1_0029_requires_multi_scope_candidate_reader_metadata() -> None:
 
     with pytest.raises(BackupError, match="internal_read functions"):
         _validate_restored_database(metadata, metadata.copy())
+
+
+def test_r1_0030_sibling_does_not_require_0029_multi_scope_reader() -> None:
+    metadata = _r1_database_metadata()
+    metadata["alembic_version"] = "20260902_0030"
+    functions = cast(list[dict[str, object]], metadata["r1_functions"])
+    metadata["r1_functions"] = [
+        item for item in functions if item.get("name") != "list_candidates_for_scopes_as_of"
+    ]
+    function_privileges = cast(
+        list[dict[str, object]], metadata["r1_effective_function_privileges"]
+    )
+    metadata["r1_effective_function_privileges"] = [
+        item
+        for item in function_privileges
+        if item.get("name") != "list_candidates_for_scopes_as_of"
+    ]
+    schema_privileges = cast(
+        list[dict[str, object]], metadata["r1_effective_schema_privileges"]
+    )
+    metadata["r1_effective_schema_privileges"] = [
+        {**item, "usage": True}
+        if item.get("role") == "ledgerbridge_api" and item.get("schema") == "internal_read"
+        else item
+        for item in schema_privileges
+    ]
+
+    _validate_r1_database_security(metadata)
 
 
 @pytest.mark.parametrize("mutation", ["missing", "wrong_signature", "overload"])

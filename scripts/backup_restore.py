@@ -4819,7 +4819,13 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
                 R1_INTERNAL_READ_FUNCTION_SIGNATURES["get_accounting_dimensions"],
             )
         )
-    if revision < R1_MULTI_SCOPE_CANDIDATE_REVISION:
+    # Revision 0030 is a sibling cut directly from the deployed 0028 head; it
+    # does not contain the separate 0029 multi-scope migration.  Revision IDs
+    # are labels, not a reliable ancestry ordering, so require this function
+    # only for the schema revision that actually introduced it.  If a later
+    # merge revision contains the function it is still observed and checked
+    # against the fixed allowlisted signature below.
+    if revision != R1_MULTI_SCOPE_CANDIDATE_REVISION:
         required_internal_function_keys.remove(
             (
                 "internal_read",
