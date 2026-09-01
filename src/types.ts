@@ -894,6 +894,20 @@ export type PayrollLegacyEmployeeRule = {
   location: string
 }
 
+export type PayrollLegacyReviewRuleType =
+  | 'PAYMENT_CHANNEL_REQUIRED'
+  | 'SUPPORTING_MATERIAL_REQUIRED'
+  | 'HISTORY_CHANGE_REVIEW'
+
+export type PayrollLegacyReviewRule = {
+  rule_id: string
+  name: string
+  rule_type: PayrollLegacyReviewRuleType
+  enabled: boolean
+  severity: 'BLOCKING' | 'REVIEW'
+  threshold_cents: number
+}
+
 export type PayrollLegacyWorkspace = {
   schema_version: 'payroll-legacy-feature-workspace/v1'
   data_scope: 'TEST_ONLY'
@@ -901,7 +915,11 @@ export type PayrollLegacyWorkspace = {
   test_batch_id: string
   revision: number
   active_period: string
-  rules: { revision: number; employees: PayrollLegacyEmployeeRule[] }
+  rules: {
+    revision: number
+    employees: PayrollLegacyEmployeeRule[]
+    review_rules?: PayrollLegacyReviewRule[]
+  }
   batches: PayrollLegacyBatch[]
   audit_events: Array<{
     sequence: number

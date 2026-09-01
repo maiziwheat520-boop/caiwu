@@ -202,6 +202,79 @@
 .payroll-rule-row strong small { display: block; margin-top: 3px; color: #7b8999; font-weight: 500; }
 .payroll-rule-row input,
 .payroll-rule-row select { min-width: 0; width: 100%; }
+.payroll-review-rules {
+  display: grid;
+  gap: 9px;
+  padding: 13px;
+  border: 1px solid #d8e2ee;
+  border-radius: 11px;
+  background: #f8fafc;
+}
+.payroll-review-rules-heading,
+.payroll-rule-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.payroll-review-rules-heading > div,
+.payroll-rule-section-title { color: #53677f; font-size: 10px; }
+.payroll-review-rules-heading strong,
+.payroll-rule-section-title strong { color: #243d5b; font-size: 12px; }
+.payroll-review-rules-heading span,
+.payroll-rule-section-title span { margin-left: 8px; }
+.payroll-review-rules-heading button.secondary {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid #c8d5e5;
+  border-radius: 8px;
+  color: #315f96;
+  background: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.payroll-review-rules-heading button:disabled { cursor: not-allowed; opacity: .45; }
+.payroll-review-rule {
+  display: grid;
+  grid-template-columns: minmax(150px, .8fr) minmax(190px, 1.4fr) minmax(110px, .7fr) minmax(145px, .8fr) auto;
+  gap: 9px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid #dde5ef;
+  border-radius: 9px;
+  background: #fff;
+}
+.payroll-review-rule[data-enabled="false"] { background: #f2f4f7; opacity: .78; }
+.payroll-review-rule-title { align-self: center; }
+.payroll-review-rule-title strong,
+.payroll-review-rule-title span { display: block; }
+.payroll-review-rule-title strong { color: #294665; font-size: 11px; }
+.payroll-review-rule-title span { margin-top: 3px; color: #718198; font-size: 9px; }
+.payroll-review-rule label { display: grid; gap: 5px; color: #66768a; font-size: 9px; }
+.payroll-review-rule input,
+.payroll-review-rule select {
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid #ccd7e4;
+  border-radius: 7px;
+  color: #29405b;
+  background: #fff;
+}
+.payroll-review-rule-scope { align-self: center; color: #718198; font-size: 9px; }
+.payroll-review-rule-actions { display: flex; align-items: center; gap: 6px; }
+.payroll-review-rule-actions button {
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid #cbd8e7;
+  border-radius: 7px;
+  color: #315f96;
+  background: #f6f9fc;
+  font-size: 9px;
+  cursor: pointer;
+}
+.payroll-review-rule-actions button.danger { border-color: #e3caca; color: #9a4147; background: #fff7f7; }
 .payroll-main-total { display: flex; align-items: center; justify-content: flex-end; gap: 12px; color: #68778a; font-size: 11px; }
 .payroll-main-total strong { color: #1d3c62; font-size: 16px; }
 
@@ -299,6 +372,9 @@
   .payroll-task-heading p { text-align: left; }
   .payroll-pending-row,
   .payroll-receipt-list > div { grid-template-columns: 1fr; }
+  .payroll-review-rule { grid-template-columns: 1fr; }
+  .payroll-review-rules-heading,
+  .payroll-rule-section-title { align-items: flex-start; flex-direction: column; }
   .payroll-evidence-collection > div:first-child { flex-direction: column; }
   .payroll-evidence-collection ul,
   .payroll-evidence-reference-grid { grid-template-columns: 1fr; }

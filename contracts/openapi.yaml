@@ -1250,6 +1250,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PayrollLegacyEmployeeRule"
+        review_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/PayrollLegacyReviewRule"
     PayrollLegacyEmployeeRule:
       type: object
       additionalProperties: false
@@ -1287,6 +1291,29 @@ components:
           type: string
           minLength: 1
           maxLength: 100
+    PayrollLegacyReviewRule:
+      type: object
+      additionalProperties: false
+      required: [rule_id, name, rule_type, enabled, severity, threshold_cents]
+      properties:
+        rule_id:
+          $ref: "#/components/schemas/PayrollStableIdentifier"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        rule_type:
+          type: string
+          enum: [PAYMENT_CHANNEL_REQUIRED, SUPPORTING_MATERIAL_REQUIRED, HISTORY_CHANGE_REVIEW]
+        enabled:
+          type: boolean
+        severity:
+          type: string
+          enum: [BLOCKING, REVIEW]
+        threshold_cents:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
     PayrollLegacyBatch:
       type: object
       additionalProperties: false
