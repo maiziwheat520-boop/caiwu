@@ -2108,6 +2108,10 @@ components:
         source_channel:
           type: string
           enum: [telegram, dingtalk, weixin]
+        source_system:
+          type: string
+          minLength: 1
+          maxLength: 64
         source_message_id:
           type: string
           minLength: 1

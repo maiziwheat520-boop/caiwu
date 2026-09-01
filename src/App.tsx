@@ -518,7 +518,28 @@ function App() {
         conflictResolution: conflictResolution?.trim(),
         csrfToken: session.csrf_token,
       })
-      const updated = toCandidate(result.candidate)
+      let rereadVerified = false
+      let persistedCandidate = result.candidate
+      try {
+        const reread = await api.getCandidate(candidate.id)
+        if (
+          reread.id !== result.candidate.id
+          || reread.revision !== result.candidate.revision
+          || reread.status !== result.candidate.status
+        ) {
+          throw new Error('Core 返回了未提交的事项版本')
+        }
+        persistedCandidate = reread
+        rereadVerified = true
+      } catch (error) {
+        setNotice({
+          tone: 'info',
+          message: error instanceof Error
+            ? `${candidate.shortId} 已保存，但重读验证失败：${error.message}`
+            : `${candidate.shortId} 已保存，但重读验证失败`,
+        })
+      }
+      const updated = toCandidate(persistedCandidate)
       setCandidates((items) => items.map((item) => (item.id === updated.id ? updated : item)))
       setReviewEvents((items) => [result.event, ...items.filter((item) => item.id !== result.event.id)])
       setSelectedCandidate(null)
@@ -526,15 +547,22 @@ function App() {
         const refreshedReconciliation = await api.getReconciliation(selectedMonth)
         setReconciliation(refreshedReconciliation)
         setNotice({
-          tone: 'success',
-          message: intent === 'IGNORE'
+          tone: rereadVerified ? 'success' : 'info',
+          message: !rereadVerified
+            ? `${candidate.shortId} 已保存，重新打开前请刷新确认`
+            : intent === 'IGNORE'
             ? `${candidate.shortId} 已忽略，原始证据仍保留`
             : intent === 'RESOLVE_CONFLICT'
               ? `${candidate.shortId} 冲突已解决并进入本月草稿数据`
               : `${candidate.shortId} 已确认并进入本月草稿数据`,
         })
       } catch {
-        setNotice({ tone: 'info', message: `${candidate.shortId} 决定已保存，对账状态需刷新` })
+        setNotice({
+          tone: 'info',
+          message: rereadVerified
+            ? `${candidate.shortId} 已保存并重读确认，对账状态需刷新`
+            : `${candidate.shortId} 已保存，事项和对账状态均需刷新确认`,
+        })
       }
     } catch (error) {
       setNotice({ tone: 'error', message: error instanceof Error ? error.message : '提交审核决定失败，请重试' })
@@ -784,7 +812,13 @@ function App() {
       return <Reconciliation data={reconciliation} confirmed={confirmedCandidates} selectedMonth={selectedMonth} onMonthChange={changeMonth} onGenerate={generateDraft} generating={draftBusy} onNavigate={navigate} />
     }
     if (page === 'original-reconciliation') {
-      return <OriginalReconciliationPage onNavigate={navigate} />
+      return (
+        <OriginalReconciliationPage
+          candidates={candidates}
+          onNavigate={navigate}
+          onOpenCandidate={openCandidate}
+        />
+      )
     }
     if (page === 'company-reports') {
       return <CompanyReportsPage />

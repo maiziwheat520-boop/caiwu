@@ -9,12 +9,14 @@
 - `/company-reports`：按公司主体汇总的报表入口。
 - `/payroll`：工资发布契约与连接状态。
 
-Web 不在本地重算旧表业务规则。Core 的 `ledgerbridge.original-reconciliation.v1` 投影是唯一输入，旧表栏位映射和经济分类由 Core 管理。Web 只把投影转换为以下业务窗口：
+Web 不在本地重算旧表业务规则。Core 的 `ledgerbridge.original-reconciliation.v1` 投影负责月度合计和缺口，来源系统为 `original_reconciliation_xlsx` 的 Candidate 负责逐项工作流。旧表栏位映射和经济分类仍由 Core 的私有复核计划管理。Web 只把这两类 Core 事实转换为以下业务窗口：
 
 - 当月收入、支出和利润合计；
 - 已导入的业务事项，可返回原始材料；
 - 待补录、待归属和待审核清单；
 - 跳转到文件、待审核和月度对账的操作入口。
+
+逐项卡片按 Candidate 的稳定 `source_system` 识别，不根据摘要文案或附件文件名猜来源。点击“打开事项”进入现有 Candidate 详情、证据和更正/审核表单。提交决定后，Web 必须再次读取同一 Candidate，并核对 ID、revision 和 status；重读失败时只能提示“已保存、需刷新确认”，不能声称闭环成功。
 
 用户不在网页中面对 A–M 列或 40 行网格；这些只是 Core 与 Web 之间的兼容传输结构。
 
@@ -25,6 +27,8 @@ Web 不在本地重算旧表业务规则。Core 的 `ledgerbridge.original-recon
 浏览器读取 `GET /api/v1/original-reconciliations/{month}`。首次读取可以省略 scope；BFF 使用部署时已授权的 `entity_ref` 和 `business_unit_ref` 调用 Core。浏览器后续回传 scope 时，只允许与该授权范围完全相同，否则返回 `403 SCOPE_NOT_AUTHORIZED`。
 
 BFF 不接受浏览器选择任意公司或门店，也不从候选显示名称推断实体归属。
+
+当前部署仍只有一个固定业务单元授权范围。要完整替代包含多个公司/门店的历史工作簿，后续必须把会话授权扩展为经 Core 验证的范围集合；不能继续把月份切换建立在固定 May 范围上。
 
 ## 金额与完整性
 

@@ -685,8 +685,14 @@ function installFetch(options: {
       decisionSaved = true
       const body = JSON.parse(String(init.body)) as { decision: string }
       const original = items.find((candidate) => url.includes(candidate.id))!
+      const updatedCandidate = {
+        ...original,
+        revision: original.revision + 1,
+        status: body.decision === 'IGNORE' ? 'IGNORED' as const : 'CONFIRMED' as const,
+      }
+      candidateDetails[original.id] = updatedCandidate
       return response({
-        candidate: { ...original, revision: original.revision + 1, status: body.decision === 'IGNORE' ? 'IGNORED' : 'CONFIRMED' },
+        candidate: updatedCandidate,
         event: {
           id: 'event-1', candidate_id: original.id, sequence: 1,
           from_revision: original.revision, to_revision: original.revision + 1,
@@ -1181,6 +1187,9 @@ describe('LedgerBridge Web API client', () => {
     expect(JSON.parse(String(decisionCall?.[1]?.body)).corrections).not.toHaveProperty('business_unit')
     expect(JSON.parse(String(decisionCall?.[1]?.body)).corrections).not.toHaveProperty('category')
     expect(JSON.parse(String(decisionCall?.[1]?.body)).corrections).not.toHaveProperty('accounting_month')
+    expect(fetchMock.mock.calls.filter(([input, init]) => (
+      String(input).endsWith('/api/v1/candidates/candidate-1') && init?.method !== 'POST'
+    ))).toHaveLength(2)
   })
 
   it('blocks amounts outside the JSON safe-integer wire range', async () => {
@@ -1755,7 +1764,7 @@ describe('LedgerBridge Web API client', () => {
     await screen.findByText('早上好，今天有几项需要确认')
     fireEvent.click(screen.getAllByText('待审核')[0])
     fireEvent.click(screen.getAllByRole('button', { name: '确认' })[0])
-    expect(await screen.findByText('C-8F21 决定已保存，对账状态需刷新')).toBeInTheDocument()
+    expect(await screen.findByText('C-8F21 已保存并重读确认，对账状态需刷新')).toBeInTheDocument()
     expect(screen.queryByText(/提交审核决定失败/)).not.toBeInTheDocument()
   })
 
@@ -2419,7 +2428,8 @@ describe('LedgerBridge Web API client', () => {
       },
     })
     renderApp()
-    expect(await screen.findByRole('heading', { name: '本月暂无已导入业务事项' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '本月 Excel 尚未迁入 Core' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Core 也没有本月对账事实' })).toBeInTheDocument()
     expect(within(screen.getByRole('region', { name: '原口径合计' })).getAllByText('¥0.00')).toHaveLength(3)
     expect(screen.queryByRole('table', { name: '原口径固定列对账表' })).not.toBeInTheDocument()
   })
