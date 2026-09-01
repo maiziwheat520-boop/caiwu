@@ -197,14 +197,11 @@ class PayrollTestMaterialOrganize(BaseModel):
     period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
     material_type: Literal[
         "PAYROLL_SHEET",
-        "RELEASE_LIST",
-        "CASH_LIST",
         "ATTENDANCE_SHEET",
+        "AUNT_ATTENDANCE_SHEET",
+        "REVIEW_STATISTICS",
         "ADJUSTMENT_SOURCE",
         "PAYROLL_SUMMARY",
-        "SUPPORTING_SCAN",
-        "BACKUP",
-        "OBSOLETE",
     ]
     idempotency_key: UUID
     explicitly_confirmed: Literal[True]

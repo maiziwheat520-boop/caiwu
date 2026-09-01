@@ -2867,6 +2867,14 @@ def _validate_test_workspace_projection(
         counts, frozenset({"auto_test", "review_required", "date_unknown"}), "routing counts"
     )
     actual = {"auto_test": 0, "review_required": 0, "date_unknown": 0}
+    allowed_types = {
+        "PAYROLL_SHEET",
+        "ATTENDANCE_SHEET",
+        "AUNT_ATTENDANCE_SHEET",
+        "REVIEW_STATISTICS",
+        "ADJUSTMENT_SOURCE",
+        "PAYROLL_SUMMARY",
+    }
     materials = _require_list(value.get("materials"), "materials")
     seen: set[str] = set()
     for item_value in materials:
@@ -2892,23 +2900,15 @@ def _validate_test_workspace_projection(
         seen.add(material_id)
         period = item.get("period")
         routing_status = item.get("routing_status")
-        if routing_status == "AUTO_TEST":
-            if period is None or _require_period(period, "period") > "2026-08":
-                _invalid_response("payroll test workspace date routing is invalid")
-            key = "auto_test"
-        elif routing_status == "REVIEW_REQUIRED":
-            if period is None or _require_period(period, "period") < "2026-09":
-                _invalid_response("payroll test workspace date routing is invalid")
-            key = "review_required"
-        elif routing_status == "DATE_UNKNOWN":
+        material_type = item.get("material_type")
+        if material_type not in allowed_types or routing_status != "AUTO_TEST":
+            _invalid_response("payroll test workspace date routing is invalid")
+        if material_type == "PAYROLL_SUMMARY":
             if period is not None:
                 _require_period(period, "period")
-            key = "date_unknown"
-        else:
+        elif period not in {"2026-07", "2026-08"}:
             _invalid_response("payroll test workspace date routing is invalid")
-        material_type = item.get("material_type")
-        if material_type is not None:
-            _require_stable_identifier(material_type, "material_type")
+        key = "auto_test"
         _require_disabled_flags(item, ("payable", "submission_supported"))
         actual[key] += 1
     for key, expected in actual.items():
