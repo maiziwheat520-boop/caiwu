@@ -65,6 +65,8 @@ describe('PayrollHistorySummary', () => {
           company_id: workspace.company_id,
           material_id: workspace.data.materials[0].material_id,
           period: '2026-08',
+          routing_status: 'AUTO_TEST',
+          auto_batch_eligible: true,
           status: 'READY_FOR_REVIEW',
           line_count: 2,
           total_net_pay_cents: 820000,

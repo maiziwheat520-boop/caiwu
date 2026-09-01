@@ -843,6 +843,45 @@ paths:
           $ref: "#/components/responses/PayrollEntitySelectionRequired"
         "503":
           $ref: "#/components/responses/PayrollUnavailable"
+  /api/v1/payroll/legacy-workspace:
+    get:
+      operationId: getPayrollLegacyWorkspace
+      description: Read the company- and TEST_ONLY-batch-scoped persistent workspace that replaces the original payroll application's main table and supporting workflows.
+      responses:
+        "200":
+          description: Saved payroll feature workspace; all payment and submission capabilities remain disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PayrollLegacyWorkspaceEnvelope"
+        "404":
+          $ref: "#/components/responses/PayrollUnavailable"
+        "409":
+          $ref: "#/components/responses/PayrollEntitySelectionRequired"
+        "503":
+          $ref: "#/components/responses/PayrollUnavailable"
+  /api/v1/payroll/legacy-workspace/commands:
+    post:
+      operationId: executePayrollLegacyWorkspaceCommand
+      description: Fill or recalculate the persistent payroll main table and execute one of the migrated non-payment payroll workflows.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PayrollLegacyCommandRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/PayrollLegacyCommandSucceeded"
+        "409":
+          $ref: "#/components/responses/PayrollCommandConflict"
+        "422":
+          $ref: "#/components/responses/PayrollCommandRejected"
+        "503":
+          $ref: "#/components/responses/PayrollUnavailable"
   /api/v1/payroll/dashboard:
     get:
       operationId: getPayrollDashboard
@@ -1046,6 +1085,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/PayrollCommandResult"
+    PayrollLegacyCommandSucceeded:
+      description: The migrated payroll workflow was saved or its original idempotent result was replayed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PayrollLegacyCommandResult"
   schemas:
     PayrollResourceRef:
       type: string
@@ -1122,6 +1167,379 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PayrollTestWorkspaceMaterial"
+    PayrollLegacyWorkspaceEnvelope:
+      type: object
+      additionalProperties: false
+      required: [contract_version, entity_ref, company_id, data]
+      properties:
+        contract_version:
+          const: ledgerbridge.payroll-legacy-feature-read.v1
+        entity_ref:
+          type: string
+          format: uuid
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        data:
+          $ref: "#/components/schemas/PayrollLegacyWorkspaceData"
+    PayrollLegacyCommandRequest:
+      type: object
+      additionalProperties: false
+      required: [action, expected_revision, payload]
+      properties:
+        action:
+          type: string
+          enum: [FILL_MAIN, GENERATE_NORMAL_DRAFT, GENERATE_SUPPLEMENTAL_DRAFT, UPDATE_SUMMARY, SAVE_RULES, CHECK_RULES_AND_HISTORY, VERIFY_CURRENT_PAID, CHECK_PREVIOUS_PENDING]
+        expected_revision:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+        payload:
+          type: object
+    PayrollLegacyCommandResult:
+      type: object
+      additionalProperties: false
+      required: [contract_version, entity_ref, company_id, action, resource_ref, replayed, data]
+      properties:
+        contract_version:
+          const: ledgerbridge.payroll-legacy-feature-command-result.v1
+        entity_ref:
+          type: string
+          format: uuid
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        action:
+          const: payroll.test_workspace.legacy.command
+        resource_ref:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        replayed:
+          type: boolean
+        data:
+          $ref: "#/components/schemas/PayrollLegacyCommandData"
+    PayrollLegacyCommandData:
+      type: object
+      additionalProperties: false
+      required: [action, replayed, workspace]
+      properties:
+        action:
+          type: string
+          enum: [FILL_MAIN, GENERATE_NORMAL_DRAFT, GENERATE_SUPPLEMENTAL_DRAFT, UPDATE_SUMMARY, SAVE_RULES, CHECK_RULES_AND_HISTORY, VERIFY_CURRENT_PAID, CHECK_PREVIOUS_PENDING]
+        replayed:
+          type: boolean
+        workspace:
+          $ref: "#/components/schemas/PayrollLegacyWorkspaceData"
+    PayrollLegacyWorkspaceData:
+      type: object
+      additionalProperties: false
+      required: [schema_version, data_scope, company_id, test_batch_id, revision, active_period, rules, batches, audit_events, payment_submission_supported, payable, submission_supported]
+      properties:
+        schema_version:
+          const: payroll-legacy-feature-workspace/v1
+        data_scope:
+          const: TEST_ONLY
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        test_batch_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        revision:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        active_period:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        rules:
+          $ref: "#/components/schemas/PayrollLegacyRules"
+        batches:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/PayrollLegacyBatch"
+        audit_events:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/PayrollLegacyAuditEvent"
+        payment_submission_supported:
+          const: false
+        payable:
+          const: false
+        submission_supported:
+          const: false
+    PayrollLegacyRules:
+      type: object
+      additionalProperties: false
+      required: [revision, employees]
+      properties:
+        revision:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+        employees:
+          type: array
+          items:
+            $ref: "#/components/schemas/PayrollLegacyEmployeeRule"
+    PayrollLegacyEmployeeRule:
+      type: object
+      additionalProperties: false
+      required: [employee_id, fixed_base_salary_cents, fixed_allowance_cents, night_shift_rate_cents, rest_days, payment_channel, payment_kind, job_group, location]
+      properties:
+        employee_id:
+          $ref: "#/components/schemas/PayrollStableIdentifier"
+        fixed_base_salary_cents:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+        fixed_allowance_cents:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+        night_shift_rate_cents:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+        rest_days:
+          type: integer
+          minimum: 0
+          maximum: 31
+        payment_channel:
+          type: string
+          enum: [MYBANK, BOC, WECHAT, CASH]
+        payment_kind:
+          type: string
+          enum: [NORMAL, CASH, SUPPLEMENT]
+        job_group:
+          type: string
+          minLength: 1
+          maxLength: 100
+        location:
+          type: string
+          minLength: 1
+          maxLength: 100
+    PayrollLegacyBatch:
+      type: object
+      additionalProperties: false
+      required: [batch_id, period, revision, main_material_id, supporting_material_ids, lines, adjustments, source_exceptions, drafts, summary, verification, pending_items, checks]
+      properties:
+        batch_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        period:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        revision:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        main_material_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        supporting_material_ids:
+          type: object
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/PayrollLegacyLine"
+        adjustments:
+          type: array
+          items:
+            $ref: "#/components/schemas/PayrollLegacyAdjustment"
+        source_exceptions:
+          type: array
+          items:
+            type: object
+        drafts:
+          type: array
+          items:
+            $ref: "#/components/schemas/PayrollLegacyDraft"
+        summary:
+          type: [object, "null"]
+        verification:
+          type: [object, "null"]
+        pending_items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PayrollLegacyPendingItem"
+        checks:
+          type: [object, "null"]
+    PayrollLegacyLine:
+      type: object
+      required: [source_row, company_id, employee_id, employee_name, account_id, account_masked, payment_channel, base_salary_cents, allowance_cents, bonus_cents, deduction_cents, social_insurance_cents, housing_fund_cents, individual_income_tax_cents, gross_pay_cents, net_pay_cents, notes]
+      properties:
+        source_row:
+          type: integer
+          minimum: 1
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        employee_id:
+          $ref: "#/components/schemas/PayrollStableIdentifier"
+        employee_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        account_id:
+          $ref: "#/components/schemas/PayrollStableIdentifier"
+        account_masked:
+          type: string
+          pattern: "^\\*{4}([0-9]{4}|\\?{4})$"
+        payment_channel:
+          type: string
+          minLength: 1
+          maxLength: 32
+        base_salary_cents:
+          $ref: "#/components/schemas/PayrollLegacySafeCents"
+        allowance_cents:
+          $ref: "#/components/schemas/PayrollLegacySafeCents"
+        bonus_cents:
+          $ref: "#/components/schemas/PayrollLegacySafeCents"
+        deduction_cents:
+          $ref: "#/components/schemas/PayrollLegacySafeCents"
+        social_insurance_cents:
+          $ref: "#/components/schemas/PayrollLegacySafeCents"
+        housing_fund_cents:
+          $ref: "#/components/schemas/PayrollLegacySafeCents"
+        individual_income_tax_cents:
+          $ref: "#/components/schemas/PayrollLegacySafeCents"
+        gross_pay_cents:
+          $ref: "#/components/schemas/PayrollLegacySafeCents"
+        net_pay_cents:
+          $ref: "#/components/schemas/PayrollLegacySafeCents"
+        notes:
+          type: string
+          maxLength: 500
+    PayrollLegacySafeCents:
+      type: integer
+      minimum: -9007199254740991
+      maximum: 9007199254740991
+    PayrollLegacyAdjustment:
+      type: object
+      additionalProperties: false
+      required: [employee_id, item_code, kind, amount_cents, reason, disposition]
+      properties:
+        employee_id:
+          $ref: "#/components/schemas/PayrollStableIdentifier"
+        item_code:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        kind:
+          type: string
+          enum: [PERFORMANCE, SPECIAL]
+        amount_cents:
+          $ref: "#/components/schemas/PayrollLegacySafeCents"
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+        disposition:
+          type: string
+          enum: [MAIN, SUPPLEMENT]
+        source_pending_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+    PayrollLegacyDraft:
+      type: object
+      additionalProperties: false
+      required: [schema_version, draft_id, draft_type, company_id, batch_id, pay_period, version, lines, total_amount_cents, warning, payable, submission_supported]
+      properties:
+        schema_version:
+          const: payroll-bank-draft/v1
+        draft_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        draft_type:
+          type: string
+          enum: [normal_bank_payroll, supplemental_bank_payroll]
+        company_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        batch_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        pay_period:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        version:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/PayrollLegacyDraftLine"
+        total_amount_cents:
+          $ref: "#/components/schemas/PayrollLegacySafeCents"
+        warning:
+          type: string
+          minLength: 1
+          maxLength: 500
+        payable:
+          const: false
+        submission_supported:
+          const: false
+    PayrollLegacyDraftLine:
+      type: object
+      additionalProperties: false
+      required: [employee_id, account_id, account_masked, amount_cents, payment_channel, memo]
+      properties:
+        employee_id:
+          $ref: "#/components/schemas/PayrollStableIdentifier"
+        account_id:
+          $ref: "#/components/schemas/PayrollStableIdentifier"
+        account_masked:
+          type: string
+          pattern: "^\\*{4}([0-9]{4}|\\?{4})$"
+        amount_cents:
+          $ref: "#/components/schemas/PayrollLegacySafeCents"
+        payment_channel:
+          type: string
+          minLength: 1
+          maxLength: 32
+        memo:
+          type: string
+          maxLength: 500
+    PayrollLegacyPendingItem:
+      type: object
+      required: [pending_id, source_batch_id, source_period, employee_id, account_id, amount_cents, direction, reason, status]
+      properties:
+        pending_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        source_batch_id:
+          $ref: "#/components/schemas/PayrollResourceRef"
+        source_period:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        employee_id:
+          $ref: "#/components/schemas/PayrollStableIdentifier"
+        account_id:
+          $ref: "#/components/schemas/PayrollStableIdentifier"
+        amount_cents:
+          $ref: "#/components/schemas/PayrollLegacySafeCents"
+        direction:
+          type: string
+          enum: [ADD, DEDUCT]
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+        status:
+          type: string
+          enum: [OPEN, RESOLVED, IGNORED]
+    PayrollLegacyAuditEvent:
+      type: object
+      additionalProperties: false
+      required: [sequence, action, period, occurred_at, reason]
+      properties:
+        sequence:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        action:
+          type: string
+          minLength: 1
+          maxLength: 128
+        period:
+          type: string
+          pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        occurred_at:
+          type: string
+          format: date-time
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
     PayrollTestRoutingCounts:
       type: object
       additionalProperties: false
