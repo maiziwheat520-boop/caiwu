@@ -72,7 +72,7 @@ const tasks: Array<{
   icon: typeof Table
 }> = [
   { id: 'fill', label: '填入主表', description: '读取原工资表，合并人工调整并保存计算结果。', icon: Table },
-  { id: 'normal', label: '生成正常代发草稿', description: '按网商银行渠道生成不可付款草稿。', icon: FileArrowDown },
+  { id: 'normal', label: '生成网商银行代发表', description: '按五家公司准备不可付款的测试代发表。', icon: FileArrowDown },
   { id: 'supplemental', label: '生成补发代发草稿', description: '只包含明确标记为补发的正向调整。', icon: FilePlus },
   { id: 'summary', label: '更新工资汇总', description: '保存人数、应发、实发和渠道汇总。', icon: Calculator },
   { id: 'pending', label: '检查上月待办', description: '逐项决定并入主表、另行补发或忽略。', icon: ClockCounterClockwise },
@@ -119,10 +119,10 @@ const reviewRuleDefinitions: ReadonlyArray<{
 const evidenceSlotDefinitions: Array<{ evidence_type: PayrollLegacyEvidenceType; label: string }> = [
   ...Array.from({ length: 5 }, (_, index) => ({
     evidence_type: 'MYBANK_STATEMENT' as const,
-    label: `网商银行代发表${index + 1}`,
+    label: `网商银行发放流水${index + 1}`,
   })),
-  { evidence_type: 'BOC_RECEIPT', label: '中国银行现金发放账单' },
-  { evidence_type: 'WECHAT_RECEIPT', label: '微信单独发放账单' },
+  { evidence_type: 'BOC_RECEIPT', label: '中国银行实际发放流水' },
+  { evidence_type: 'WECHAT_RECEIPT', label: '李勇微信实际转账记录' },
 ]
 
 const emptyEvidenceSlots = (): EvidenceSlot[] => evidenceSlotDefinitions.map((item) => ({
@@ -580,9 +580,9 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
 
           {task === 'normal' && activeBatch ? (
             <SimpleAction
-              title="生成正常代发草稿"
-              detail="仅收集发放渠道为 MYBANK 的当前主表金额。草稿没有付款或提交能力。"
-              button="生成不可付款正常草稿"
+              title="生成网商银行代发表"
+              detail="以工资主表为准，按公司整理网商银行代发数据。当前仅生成不可付款、不可提交银行的测试草稿。"
+              button="生成五份测试代发表"
               busy={busy}
               onRun={() => void execute('GENERATE_NORMAL_DRAFT', { period: activeBatch.period })}
             />
@@ -643,16 +643,16 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
 
           {task === 'verify' && activeBatch ? (
             <div className="payroll-task-panel">
-              <div className="payroll-task-heading"><div><span>06</span><h3>按三类账单核对本月已发</h3></div><p>工资表全体员工是理论应发基准；网商银行、中行和微信实际到账合计必须与它相等。</p></div>
+              <div className="payroll-task-heading"><div><span>06</span><h3>按三类发放流水核对本月已发</h3></div><p>工资主表是理论应发基准；五份网商银行流水、中国银行实际发放流水和李勇微信转账记录的实际到账合计必须与它相等。</p></div>
               <div className="payroll-evidence-collection">
                 <div>
                   <strong>账单收集完整度</strong>
                   <span>工资表理论总额：{money(activeBatch.lines.reduce((sum, line) => sum + line.net_pay_cents, 0))}</span>
                 </div>
                 <ul>
-                  <li>网商银行代发表 {evidenceSlots.filter((item) => item.evidence_type === 'MYBANK_STATEMENT' && item.evidence_ref.trim()).length}/5</li>
-                  <li>中国银行现金发放账单 {evidenceSlots.some((item) => item.evidence_type === 'BOC_RECEIPT' && item.evidence_ref.trim()) ? 1 : 0}/1</li>
-                  <li>微信单独发放账单 {evidenceSlots.some((item) => item.evidence_type === 'WECHAT_RECEIPT' && item.evidence_ref.trim()) ? 1 : 0}/1</li>
+                  <li>网商银行实际发放流水 {evidenceSlots.filter((item) => item.evidence_type === 'MYBANK_STATEMENT' && item.evidence_ref.trim()).length}/5</li>
+                  <li>中国银行实际发放流水 {evidenceSlots.some((item) => item.evidence_type === 'BOC_RECEIPT' && item.evidence_ref.trim()) ? 1 : 0}/1</li>
+                  <li>李勇微信实际转账记录 {evidenceSlots.some((item) => item.evidence_type === 'WECHAT_RECEIPT' && item.evidence_ref.trim()) ? 1 : 0}/1</li>
                 </ul>
                 <div className="payroll-evidence-reference-grid">
                   {evidenceSlots.map((slot, index) => (
