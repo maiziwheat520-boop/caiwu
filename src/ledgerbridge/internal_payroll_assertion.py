@@ -40,6 +40,8 @@ PayrollAction = Literal[
     "payroll.test_workspace.organize",
     "payroll.test_workspace.validate",
     "payroll.test_workspace.clear",
+    "payroll.test_workspace.legacy.read",
+    "payroll.test_workspace.legacy.command",
 ]
 
 
