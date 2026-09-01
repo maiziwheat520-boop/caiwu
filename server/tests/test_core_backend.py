@@ -55,7 +55,6 @@ def core_personal_finance() -> dict[str, object]:
         },
         "summary": {
             "currency": "CNY",
-            "transaction_count": 2,
             "cash_inflow_minor": 10000,
             "cash_outflow_minor": 2500,
             "net_cash_flow_minor": 7500,
@@ -1349,7 +1348,13 @@ class CoreBackedAdapterTests(unittest.TestCase):
             "ledgerbridge.personal-bank-transactions-bff.v1",
         )
         self.assertEqual(result["statement"], core_personal_finance()["statement"])
-        self.assertEqual(result["summary"], core_personal_finance()["summary"])
+        self.assertEqual(
+            result["summary"],
+            {
+                **core_personal_finance()["summary"],
+                "transaction_count": 2,
+            },
+        )
         self.assertEqual(result["items"], core_personal_finance()["items"])
 
     def test_personal_bank_transactions_fail_closed_without_server_binding(self) -> None:
@@ -1377,6 +1382,10 @@ class CoreBackedAdapterTests(unittest.TestCase):
             (
                 "total mismatch",
                 lambda payload: payload["summary"].__setitem__("cash_inflow_minor", 9999),  # type: ignore[union-attr]
+            ),
+            (
+                "unexpected duplicate count",
+                lambda payload: payload["summary"].__setitem__("transaction_count", 2),  # type: ignore[union-attr]
             ),
             (
                 "duplicate row",

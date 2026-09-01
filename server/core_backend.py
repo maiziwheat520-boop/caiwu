@@ -1906,7 +1906,10 @@ def _personal_bank_transactions_from_core(
     source_rows = [int(item["source_row_number"]) for item in mapped_items]
     if source_rows != sorted(set(source_rows)):
         raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
-    mapped_summary = _personal_bank_summary_from_core(summary)
+    mapped_summary = _personal_bank_summary_from_core(
+        summary,
+        transaction_count=len(mapped_items),
+    )
     inflow = sum(max(int(item["amount_minor"]), 0) for item in mapped_items)
     outflow = sum(max(-int(item["amount_minor"]), 0) for item in mapped_items)
     if (
@@ -1998,12 +2001,15 @@ def _personal_bank_statement_from_core(value: dict[str, object]) -> dict[str, ob
     }
 
 
-def _personal_bank_summary_from_core(value: dict[str, object]) -> dict[str, object]:
+def _personal_bank_summary_from_core(
+    value: dict[str, object],
+    *,
+    transaction_count: int,
+) -> dict[str, object]:
     _company_report_require_exact_keys(
         value,
         {
             "currency",
-            "transaction_count",
             "cash_inflow_minor",
             "cash_outflow_minor",
             "net_cash_flow_minor",
@@ -2015,10 +2021,7 @@ def _personal_bank_summary_from_core(value: dict[str, object]) -> dict[str, obje
             maximum=3,
             pattern=re.compile(r"^CNY$"),
         ),
-        "transaction_count": _company_report_integer(
-            value.get("transaction_count"),
-            nonnegative=True,
-        ),
+        "transaction_count": transaction_count,
         "cash_inflow_minor": _company_report_integer(
             value.get("cash_inflow_minor"),
             nonnegative=True,
