@@ -76,6 +76,7 @@ class BankStatementExistingAccountPlan:
             in {
                 BankStatementParserProfile.CCB_PERSONAL_XLS_V1,
                 BankStatementParserProfile.BOC_PERSONAL_PDF_V1,
+                BankStatementParserProfile.ABC_PERSONAL_PDF_V1,
             }
             and self.expected_owner_kind is not EntityType.PERSON
         ):
