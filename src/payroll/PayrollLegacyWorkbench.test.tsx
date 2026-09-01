@@ -191,6 +191,72 @@ describe('PayrollLegacyWorkbench', () => {
     }
   })
 
+  it('requires five MYBANK, one BOC, and one WeChat bill before reconciling to payroll', async () => {
+    vi.spyOn(api, 'getPayrollLegacyWorkspace').mockResolvedValue({
+      contract_version: 'ledgerbridge.payroll-legacy-feature-read.v1',
+      entity_ref: testWorkspace.entity_ref,
+      company_id: testWorkspace.company_id,
+      data: legacyWorkspace,
+    })
+    vi.spyOn(api, 'runPayrollLegacyCommand').mockResolvedValue({
+      ...fillResult,
+      data: { action: 'VERIFY_CURRENT_PAID', replayed: false, workspace: legacyWorkspace },
+    })
+
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
+
+    await screen.findByText('工资主表已保存 · 版本 1')
+    fireEvent.click(screen.getByRole('button', { name: '核对本月已发' }))
+    expect(screen.getByText('账单收集完整度')).toBeInTheDocument()
+    expect(screen.getByText('网商银行代发表 0/5')).toBeInTheDocument()
+    expect(screen.getByText('中国银行现金发放账单 0/1')).toBeInTheDocument()
+    expect(screen.getByText('微信单独发放账单 0/1')).toBeInTheDocument()
+    expect(screen.getByText('工资表理论总额：¥5,000.00')).toBeInTheDocument()
+
+    for (let index = 1; index <= 5; index += 1) {
+      fireEvent.change(screen.getByLabelText(`网商银行代发表${index}`), {
+        target: { value: `mybank_company_${index}_2026_08` },
+      })
+    }
+    fireEvent.change(screen.getByLabelText('中国银行现金发放账单'), {
+      target: { value: 'boc_cash_2026_08' },
+    })
+    fireEvent.change(screen.getByLabelText('微信单独发放账单'), {
+      target: { value: 'wechat_separate_2026_08' },
+    })
+    fireEvent.change(screen.getByLabelText('emp_preview_001实际到账金额'), {
+      target: { value: '5000.00' },
+    })
+    fireEvent.change(screen.getByLabelText('emp_preview_001回单状态'), {
+      target: { value: 'SUCCEEDED' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '保存本月已发核对' }))
+
+    await waitFor(() => expect(api.runPayrollLegacyCommand).toHaveBeenCalledWith({
+      action: 'VERIFY_CURRENT_PAID',
+      expectedRevision: 1,
+      payload: {
+        period: '2026-08',
+        evidence_documents: [
+          ...Array.from({ length: 5 }, (_, index) => ({
+            evidence_type: 'MYBANK_STATEMENT',
+            evidence_ref: `mybank_company_${index + 1}_2026_08`,
+          })),
+          { evidence_type: 'BOC_RECEIPT', evidence_ref: 'boc_cash_2026_08' },
+          { evidence_type: 'WECHAT_RECEIPT', evidence_ref: 'wechat_separate_2026_08' },
+        ],
+        receipts: [{
+          employee_id: 'emp_preview_001',
+          account_id: 'acct_preview_001',
+          payment_channel: 'MYBANK',
+          amount_cents: 500000,
+          status: 'SUCCEEDED',
+        }],
+      },
+      csrfToken: 'csrf-test',
+    }))
+  })
+
   it('edits rules, recalculates, saves, and reloads the new workspace revision', async () => {
     vi.spyOn(api, 'getPayrollLegacyWorkspace').mockResolvedValue({
       contract_version: 'ledgerbridge.payroll-legacy-feature-read.v1',

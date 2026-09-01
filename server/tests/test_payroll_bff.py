@@ -26,6 +26,21 @@ MATERIAL_ID = "material_live_2026_08"
 TEST_BATCH_ID = "payroll_history_through_2026_08"
 PROJECTION_REVISION = hashlib.sha256(b"payroll-live-7").hexdigest()
 PROJECTION_ETAG = f'"{PROJECTION_REVISION}"'
+VERIFICATION_EVIDENCE = (
+    *(
+        {
+            "artifact_id": f"artifact_live_mybank_{index}_2026_08",
+            "evidence_type": "MYBANK_STATEMENT",
+        }
+        for index in range(1, 6)
+    ),
+    {"artifact_id": "artifact_live_boc_2026_08", "evidence_type": "BOC_RECEIPT"},
+    {
+        "artifact_id": "artifact_live_wechat_2026_08",
+        "evidence_type": "WECHAT_RECEIPT",
+    },
+)
+VERIFICATION_EVIDENCE_IDS = [item["artifact_id"] for item in VERIFICATION_EVIDENCE]
 TEST_PROJECTION_FACT_KEYS = (
     "data_scope",
     "test_batch_id",
@@ -574,7 +589,7 @@ class FakePayrollCoreClient:
                             "verification_id": "verification_live_001",
                             "batch_id": "batch_live_2026_08",
                             "status": "MATCHED",
-                            "source_artifact_ids": ["artifact_live_statement_2026_08"],
+                            "source_artifact_ids": list(VERIFICATION_EVIDENCE_IDS),
                             "results": [
                                 {
                                     "company_id": "company_live_hotel",
@@ -592,16 +607,18 @@ class FakePayrollCoreClient:
                     ],
                 }
                 if path == "/internal/v1/payroll/verification":
-                    evidence = {
-                        "company_id": "company_live_hotel",
-                        "artifact_id": "artifact_live_statement_2026_08",
-                        "period": "2026-08",
-                        "evidence_type": "BANK_RECEIPT",
-                        "status": "READY_FOR_MATCHING",
-                        "display_label": "BANK_RECEIPT · 2026-08",
-                    }
-                    evidence.update(self.verification_evidence_updates)
-                    data["available_evidence"] = [evidence]
+                    available_evidence = [
+                        {
+                            "company_id": "company_live_hotel",
+                            **evidence,
+                            "period": "2026-08",
+                            "status": "READY_FOR_MATCHING",
+                            "display_label": f"{evidence['evidence_type']} · 2026-08",
+                        }
+                        for evidence in VERIFICATION_EVIDENCE
+                    ]
+                    available_evidence[0].update(self.verification_evidence_updates)
+                    data["available_evidence"] = available_evidence
             else:
                 raise AssertionError(f"unexpected Core payroll read: {path}")
             return {
@@ -1337,12 +1354,12 @@ class PayrollBffTests(unittest.TestCase):
                         [
                             {
                                 "company_id": "company_live_hotel",
-                                "artifact_id": "artifact_live_statement_2026_08",
+                                **evidence,
                                 "period": "2026-08",
-                                "evidence_type": "BANK_RECEIPT",
                                 "status": "READY_FOR_MATCHING",
-                                "display_label": "BANK_RECEIPT · 2026-08",
+                                "display_label": f"{evidence['evidence_type']} · 2026-08",
                             }
+                            for evidence in VERIFICATION_EVIDENCE
                         ],
                     )
 
@@ -1369,7 +1386,7 @@ class PayrollBffTests(unittest.TestCase):
             {
                 "expected_revision": 7,
                 "reason_code": "MANUAL_DISBURSEMENT_VERIFICATION",
-                "source_artifact_ids": ["artifact_live_statement_2026_08"],
+                "source_artifact_ids": list(VERIFICATION_EVIDENCE_IDS),
             },
         )
 
@@ -1535,7 +1552,7 @@ class EnabledPayrollCommandBffTests(unittest.TestCase):
             {
                 "expected_revision": 7,
                 "reason_code": "MANUAL_DISBURSEMENT_VERIFICATION",
-                "source_artifact_ids": ["artifact_live_statement_2026_08"],
+                "source_artifact_ids": list(VERIFICATION_EVIDENCE_IDS),
             },
         )
         self.assertEqual((status, problem["code"]), (403, "PAYROLL_ACTION_NOT_AUTHORIZED"))
@@ -1564,7 +1581,7 @@ class EnabledPayrollCommandBffTests(unittest.TestCase):
             {
                 "expected_revision": 7,
                 "reason_code": "MANUAL_DISBURSEMENT_VERIFICATION",
-                "source_artifact_ids": ["artifact_live_statement_2026_08"],
+                "source_artifact_ids": list(VERIFICATION_EVIDENCE_IDS),
                 "receipts": [{"receipt_id": "receipt_demo_fake"}],
             },
         )
@@ -1597,6 +1614,26 @@ class EnabledPayrollCommandBffTests(unittest.TestCase):
             {
                 "expected_revision": 7,
                 "reason_code": "MANUAL_DISBURSEMENT_VERIFICATION",
+                "source_artifact_ids": [VERIFICATION_EVIDENCE_IDS[0]],
+            },
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(problem["code"], "VERIFICATION_EVIDENCE_SET_INCOMPLETE")
+        self.assertEqual(
+            [(method, core_path) for method, core_path, _, _ in self.client.calls],
+            [
+                ("GET", "/internal/v1/payroll/status"),
+                ("GET", "/internal/v1/payroll/verification"),
+            ],
+        )
+        self.assertFalse(any(call[0] == "POST" for call in self.client.calls))
+        self.client.calls.clear()
+
+        status, problem = self.post(
+            path,
+            {
+                "expected_revision": 7,
+                "reason_code": "MANUAL_DISBURSEMENT_VERIFICATION",
                 "source_artifact_ids": ["artifact_demo_2026_08"],
             },
         )
@@ -1612,7 +1649,7 @@ class EnabledPayrollCommandBffTests(unittest.TestCase):
             {
                 "expected_revision": 7,
                 "reason_code": "MANUAL_DISBURSEMENT_VERIFICATION",
-                "source_artifact_ids": ["artifact_live_statement_2026_08"],
+                "source_artifact_ids": list(VERIFICATION_EVIDENCE_IDS),
             },
         )
         self.assertEqual(status, 503)
@@ -1627,7 +1664,7 @@ class EnabledPayrollCommandBffTests(unittest.TestCase):
             {
                 "expected_revision": 7,
                 "reason_code": "MANUAL_DISBURSEMENT_VERIFICATION",
-                "source_artifact_ids": ["artifact_live_statement_2026_08"],
+                "source_artifact_ids": list(VERIFICATION_EVIDENCE_IDS),
             },
         )
         self.assertEqual(status, 200)
@@ -1650,7 +1687,7 @@ class EnabledPayrollCommandBffTests(unittest.TestCase):
                 "expected_revision": 7,
                 "explicitly_confirmed": True,
                 "reason_code": "MANUAL_DISBURSEMENT_VERIFICATION",
-                "source_artifact_ids": ["artifact_live_statement_2026_08"],
+                "source_artifact_ids": list(VERIFICATION_EVIDENCE_IDS),
             },
         )
         _, encoded, _ = headers["X-LedgerBridge-User-Assertion"].split(".")
@@ -1663,7 +1700,7 @@ class EnabledPayrollCommandBffTests(unittest.TestCase):
         request = {
             "expected_revision": 7,
             "reason_code": "MANUAL_DISBURSEMENT_VERIFICATION",
-            "source_artifact_ids": ["artifact_live_statement_2026_08"],
+                "source_artifact_ids": list(VERIFICATION_EVIDENCE_IDS),
         }
         status, problem = self.post(
             "/api/v1/payroll/batches/batch_live_2026_08/verify-receipts",
@@ -1703,7 +1740,7 @@ class EnabledPayrollCommandBffTests(unittest.TestCase):
                     {
                         "expected_revision": 7,
                         "reason_code": "MANUAL_DISBURSEMENT_VERIFICATION",
-                        "source_artifact_ids": ["artifact_live_statement_2026_08"],
+                "source_artifact_ids": list(VERIFICATION_EVIDENCE_IDS),
                         field: value,
                     },
                 )
@@ -1715,7 +1752,7 @@ class EnabledPayrollCommandBffTests(unittest.TestCase):
         body = {
             "expected_revision": 7,
             "reason_code": "MANUAL_DISBURSEMENT_VERIFICATION",
-            "source_artifact_ids": ["artifact_live_statement_2026_08"],
+                "source_artifact_ids": list(VERIFICATION_EVIDENCE_IDS),
         }
         path = "/api/v1/payroll/batches/batch_live_2026_08/verify-receipts"
         status, problem = self.post(path, body, authenticated=False)
@@ -1731,7 +1768,7 @@ class EnabledPayrollCommandBffTests(unittest.TestCase):
         body = {
             "expected_revision": 7,
             "reason_code": "MANUAL_DISBURSEMENT_VERIFICATION",
-            "source_artifact_ids": ["artifact_live_statement_2026_08"],
+                "source_artifact_ids": list(VERIFICATION_EVIDENCE_IDS),
         }
         first_status, first = self.post(path, body)
         replay_status, replay = self.post(path, body)
