@@ -174,6 +174,12 @@ class _TestWorkspaceSource:
     def clear_workspace(self, **kwargs: object) -> PayrollTestWorkspaceResult:
         return self._result("clear", **kwargs)
 
+    def read_legacy_features(self, **kwargs: object) -> PayrollTestWorkspaceResult:
+        return self._result("legacy_read", **kwargs)
+
+    def execute_legacy_feature(self, **kwargs: object) -> PayrollTestWorkspaceResult:
+        return self._result("legacy_command", **kwargs)
+
 
 def _settings(*, commands: bool = True) -> Settings:
     return Settings(
@@ -642,6 +648,67 @@ def test_test_workspace_material_preview_is_request_bound_read_only_and_nonpayab
     assert response.json()["material_id"] == material_id
     assert [name for name, _ in source.calls] == ["preview"]
     assert source.calls[0][1]["material_id"] == material_id
+
+
+def test_legacy_feature_workspace_read_and_command_are_request_bound_and_nonpayable() -> None:
+    client, source = _test_workspace_client()
+    batch_id = "batch_test_2026_08"
+    read_path = f"/internal/v1/payroll/test-workspaces/{batch_id}/legacy-features"
+    read = client.get(
+        read_path,
+        headers={
+            "X-LedgerBridge-User-Assertion": _assertion(
+                path=read_path,
+                action="payroll.test_workspace.legacy.read",
+                resource_ref=batch_id,
+            )
+        },
+    )
+    assert read.status_code == 200, read.text
+    assert read.json()["contract_version"] == "ledgerbridge.payroll-legacy-feature-read.v1"
+
+    operation_id = uuid4()
+    command_path = f"{read_path}/commands"
+    command_body = json.dumps(
+        {
+            "schema_version": "payroll-legacy-feature-command-request/v1",
+            "action": "FILL_MAIN",
+            "expected_revision": 0,
+            "idempotency_key": str(operation_id),
+            "explicitly_confirmed": True,
+            "payload": {
+                "main_material_id": "material_payroll_001",
+                "supporting_material_ids": {},
+                "adjustments": [],
+            },
+        },
+        separators=(",", ":"),
+    ).encode()
+    command = client.post(
+        command_path,
+        content=command_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-LedgerBridge-User-Assertion": _assertion(
+                path=command_path,
+                action="payroll.test_workspace.legacy.command",
+                resource_ref=batch_id,
+                body=command_body,
+                operation_id=operation_id,
+                expected_revision=0,
+            ),
+        },
+    )
+    assert command.status_code == 200, command.text
+    assert (
+        command.json()["contract_version"]
+        == "ledgerbridge.payroll-legacy-feature-command-result.v1"
+    )
+    assert command.json()["action"] == "payroll.test_workspace.legacy.command"
+    assert [name for name, _ in source.calls] == ["legacy_read", "legacy_command"]
+    headers = source.calls[-1][1]["provider_headers"]
+    assert isinstance(headers, Mapping)
+    assert headers["X-Payroll-Test-Intent"] == "manage-legacy-payroll-features"
 
 
 def test_test_workspace_assertions_reject_wrong_action_path_and_resource() -> None:

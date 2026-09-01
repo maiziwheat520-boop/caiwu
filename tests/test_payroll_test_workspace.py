@@ -353,11 +353,14 @@ def preview_payload():
         "company_id": "company_demo",
         "material_id": "material_old",
         "period": "2026-08",
+        "routing_status": "AUTO_TEST",
+        "auto_batch_eligible": True,
         "status": "READY_FOR_REVIEW",
         "line_count": 1,
         "total_net_pay_cents": 500000,
         "lines": [
             {
+                "source_row": 4,
                 "company_id": "company_demo",
                 "employee_id": "emp_preview_001",
                 "employee_name": "示例员工甲",
@@ -381,6 +384,118 @@ def preview_payload():
         "payable": False,
         "submission_supported": False,
     }
+
+
+def legacy_workspace_payload():
+    return {
+        "schema_version": "payroll-legacy-feature-workspace/v1",
+        "data_scope": "TEST_ONLY",
+        "company_id": "company_demo",
+        "test_batch_id": "batch_demo",
+        "revision": 1,
+        "active_period": "2026-08",
+        "rules": {"revision": 0, "employees": []},
+        "batches": [
+            {
+                "batch_id": "batch_demo_2026_08",
+                "period": "2026-08",
+                "revision": 1,
+                "main_material_id": "material_old",
+                "supporting_material_ids": {},
+                "lines": [
+                    {
+                        "source_row": 4,
+                        "company_id": "company_demo",
+                        "employee_id": "emp_preview_001",
+                        "employee_name": "示例员工甲",
+                        "account_id": "acct_preview_001",
+                        "account_masked": "****0138",
+                        "payment_channel": "MYBANK",
+                        "base_salary_cents": 500000,
+                        "allowance_cents": 30000,
+                        "bonus_cents": 20000,
+                        "deduction_cents": 5000,
+                        "social_insurance_cents": 18000,
+                        "housing_fund_cents": 12000,
+                        "individual_income_tax_cents": 15000,
+                        "gross_pay_cents": 550000,
+                        "net_pay_cents": 500000,
+                        "notes": "脱敏测试材料",
+                    }
+                ],
+                "adjustments": [],
+                "source_exceptions": [],
+                "drafts": [],
+                "summary": None,
+                "verification": None,
+                "pending_items": [],
+                "checks": None,
+            }
+        ],
+        "audit_events": [
+            {
+                "sequence": 1,
+                "action": "payroll.main_filled",
+                "period": "2026-08",
+                "occurred_at": "2026-09-01T02:00:00.000Z",
+                "reason": "受信工资表已进入网页测试主表",
+            }
+        ],
+        "payment_submission_supported": False,
+        "payable": False,
+        "submission_supported": False,
+    }
+
+
+def test_legacy_feature_workspace_read_and_command_preserve_safe_provider_state():
+    entity, adapter = source(legacy_workspace_payload())
+    read = adapter.read_legacy_features(
+        entity_ref=entity,
+        test_batch_id="batch_demo",
+        provider_headers={},
+    )
+    assert read.payload_copy()["batches"][0]["lines"][0]["net_pay_cents"] == 500000
+
+    command_payload = {
+        "action": "FILL_MAIN",
+        "replayed": False,
+        "workspace": legacy_workspace_payload(),
+    }
+    entity, adapter = source(command_payload)
+    command = adapter.execute_legacy_feature(
+        entity_ref=entity,
+        test_batch_id="batch_demo",
+        expected_workspace_revision=0,
+        expected_action="FILL_MAIN",
+        provider_headers={},
+        body=b"{}",
+    )
+    assert command.replayed is False
+    assert command.payload_copy()["workspace"]["revision"] == 1
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.update(company_id="company_other"),
+        lambda payload: payload.update(payable=True),
+        lambda payload: payload["batches"][0]["lines"][0].update(
+            account_id="acct_6222000000000138"
+        ),
+        lambda payload: payload["batches"][0]["lines"][0].update(net_pay_cents=500000.0),
+        lambda payload: payload["batches"][0].update(bank_account="6222000000000138"),
+    ],
+)
+def test_legacy_feature_workspace_rejects_scope_payment_money_or_sensitive_drift(mutate):
+    payload = legacy_workspace_payload()
+    mutate(payload)
+    entity, adapter = source(payload)
+    with pytest.raises(PayrollIntegrationError):
+        adapter.read_legacy_features(
+            entity_ref=entity,
+            test_batch_id="batch_demo",
+            provider_headers={},
+        )
 
 
 def test_test_workspace_preview_returns_masked_non_payable_lines():
@@ -425,6 +540,7 @@ def test_test_workspace_preview_fails_closed_on_scope_money_or_payment_drift(mut
 def test_test_workspace_preview_accepts_an_exact_blocking_net_mismatch_for_review():
     payload = preview_payload()
     payload["status"] = "NEEDS_HUMAN_REVIEW"
+    payload["auto_batch_eligible"] = False
     payload["total_net_pay_cents"] = 512000
     payload["lines"][0]["net_pay_cents"] = 512000
     payload["exceptions"] = [
@@ -449,6 +565,7 @@ def test_test_workspace_preview_accepts_an_exact_blocking_net_mismatch_for_revie
 def test_test_workspace_preview_rejects_net_mismatch_exception_for_another_row():
     payload = preview_payload()
     payload["status"] = "NEEDS_HUMAN_REVIEW"
+    payload["auto_batch_eligible"] = False
     payload["total_net_pay_cents"] = 512000
     payload["lines"][0]["net_pay_cents"] = 512000
     payload["exceptions"] = [

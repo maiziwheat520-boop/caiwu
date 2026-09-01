@@ -128,6 +128,14 @@ def test_payroll_router_exposes_only_frozen_reads_and_explicit_nonpayment_test_a
             "/internal/v1/payroll/test-workspaces/{test_batch_id}/materials/{material_id}/preview",
             {"GET"},
         ),
+        (
+            "/internal/v1/payroll/test-workspaces/{test_batch_id}/legacy-features",
+            {"GET"},
+        ),
+        (
+            "/internal/v1/payroll/test-workspaces/{test_batch_id}/legacy-features/commands",
+            {"POST"},
+        ),
         ("/internal/v1/payroll/test-workspaces", {"POST"}),
         ("/internal/v1/payroll/test-workspaces/{test_batch_id}/clear", {"POST"}),
         (
