@@ -6381,6 +6381,64 @@ def _restore_artifacts(
             f"/backup/{archive.name}",
         ]
     )
+    # Deterministic archives normalize ownership to root.  A recovered volume
+    # must still be consumable by the fixed application UID, otherwise the
+    # byte-for-byte archive check can pass while every encrypted artifact is
+    # unreadable at runtime.
+    runner.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--user",
+            "0:0",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--cap-add",
+            "CHOWN",
+            "--cap-add",
+            "DAC_OVERRIDE",
+            "--cap-add",
+            "DAC_READ_SEARCH",
+            "--security-opt",
+            "no-new-privileges",
+            "-v",
+            f"{volume}:/target:rw",
+            image,
+            "chown",
+            "-R",
+            "10001:10001",
+            "/target",
+        ]
+    )
+    runner.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--user",
+            "10001:10001",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "-v",
+            f"{volume}:/target:ro",
+            image,
+            "tar",
+            "-C",
+            "/target",
+            "-cf",
+            "/dev/null",
+            ".",
+        ]
+    )
     _deterministic_artifact_tar(
         runner,
         image=image,

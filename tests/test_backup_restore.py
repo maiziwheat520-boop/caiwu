@@ -9,6 +9,7 @@ from typing import cast
 
 import pytest
 
+import scripts.backup_restore as backup_restore_module
 from scripts.backup_restore import (
     ACCOUNT_REGISTRY_FUNCTION_EXECUTORS,
     ACCOUNT_REGISTRY_FUNCTION_RESULTS,
@@ -86,6 +87,7 @@ from scripts.backup_restore import (
     _assert_source_unchanged,
     _normalize_fingerprint,
     _replace_database_host,
+    _restore_artifacts,
     _safe_extract_tar,
     _validate_backup_image,
     _validate_classification_batch_security,
@@ -100,6 +102,54 @@ from scripts.backup_restore import (
 )
 
 FINGERPRINT = "0123456789ABCDEF0123456789ABCDEF01234567"
+
+
+def test_restored_artifacts_are_owned_and_readable_by_runtime_uid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+
+    class RecordingRunner:
+        def run(self, command: list[str], **_: object) -> None:
+            commands.append(command)
+
+    def fake_deterministic_tar(
+        _: object,
+        *,
+        image: str,
+        volume: str,
+        destination_dir: Path,
+        output: str,
+    ) -> None:
+        assert image == "ledgerbridge-app:abcdef0"
+        assert volume == "restored-artifacts"
+        (destination_dir / output).write_bytes(b"restored")
+
+    monkeypatch.setattr(
+        backup_restore_module, "_deterministic_artifact_tar", fake_deterministic_tar
+    )
+    archive = tmp_path / "artifacts.tar"
+    archive.write_bytes(b"archive")
+
+    digest = _restore_artifacts(
+        RecordingRunner(),  # type: ignore[arg-type]
+        image="ledgerbridge-app:abcdef0",
+        volume="restored-artifacts",
+        work_dir=tmp_path,
+        archive=archive,
+    )
+
+    assert digest == hashlib.sha256(b"restored").hexdigest()
+    assert any(
+        command[-4:] == ["chown", "-R", "10001:10001", "/target"]
+        and "CHOWN" in command
+        for command in commands
+    )
+    assert any(
+        "10001:10001" in command
+        and command[-6:] == ["tar", "-C", "/target", "-cf", "/dev/null", "."]
+        for command in commands
+    )
 
 
 def _cutover_inventory(
