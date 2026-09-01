@@ -19,6 +19,7 @@ class BankStatementParserProfile(StrEnum):
 
     MYBANK_XLSX_V1 = "mybank_xlsx_v1"
     CCB_PERSONAL_XLS_V1 = "ccb_personal_xls_v1"
+    BOC_PERSONAL_PDF_V1 = "boc_personal_pdf_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,8 +45,17 @@ CCB_PERSONAL_XLS_V1: Final = BankStatementParserSpec(
     declared_media_type="application/vnd.ms-excel",
     display_extension=".xls",
 )
+BOC_PERSONAL_PDF_V1: Final = BankStatementParserSpec(
+    profile=BankStatementParserProfile.BOC_PERSONAL_PDF_V1,
+    institution_code="boc",
+    source_system="boc_transaction_statement",
+    declared_media_type="application/pdf",
+    display_extension=".pdf",
+)
 
-_SPECS: Final = {spec.profile: spec for spec in (MYBANK_XLSX_V1, CCB_PERSONAL_XLS_V1)}
+_SPECS: Final = {
+    spec.profile: spec for spec in (MYBANK_XLSX_V1, CCB_PERSONAL_XLS_V1, BOC_PERSONAL_PDF_V1)
+}
 _DIGEST: Final = re.compile(r"^[0-9a-f]{64}$")
 _SHANGHAI: Final = ZoneInfo("Asia/Shanghai")
 
@@ -98,8 +108,13 @@ class BankStatement:
             or self.declared_media_type != spec.declared_media_type
         ):
             raise ValueError("bank statement parser identity conflicts")
-        if self.parser_profile is BankStatementParserProfile.CCB_PERSONAL_XLS_V1 and (
-            _DIGEST.fullmatch(self.parser_facts_sha256) is None
+        if (
+            self.parser_profile
+            in {
+                BankStatementParserProfile.CCB_PERSONAL_XLS_V1,
+                BankStatementParserProfile.BOC_PERSONAL_PDF_V1,
+            }
+            and _DIGEST.fullmatch(self.parser_facts_sha256) is None
         ):
             raise ValueError("bank statement parser facts are invalid")
 
