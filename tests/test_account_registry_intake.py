@@ -276,7 +276,7 @@ def test_database_owner_target_is_one_fixed_assertion() -> None:
                 "current_user": "ledgerbridge",
                 "session_user": "ledgerbridge",
                 "database_name": "ledgerbridge",
-                "schema_revision": "20260901_0027",
+                "schema_revision": "20260901_0028",
                 "transaction_read_only": "off",
             }
         ]
@@ -302,7 +302,7 @@ def test_database_owner_target_is_one_fixed_assertion() -> None:
                     "current_user": "ledgerbridge_api",
                     "session_user": "ledgerbridge",
                     "database_name": "ledgerbridge",
-                    "schema_revision": "20260901_0027",
+                    "schema_revision": "20260901_0028",
                     "transaction_read_only": "off",
                 }
             ]
