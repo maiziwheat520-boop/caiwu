@@ -75,7 +75,7 @@ revision.
 
 Both modes additionally assert in one database query that `current_user` and
 `session_user` are `ledgerbridge`, the database is `ledgerbridge`, the schema is
-`20260831_0026`, and the transaction is writable. Any mismatch fails before the
+`20260901_0027`, and the transaction is writable. Any mismatch fails before the
 first write.
 
 ```powershell
