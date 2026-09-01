@@ -20,6 +20,7 @@ class BankStatementParserProfile(StrEnum):
     MYBANK_XLSX_V1 = "mybank_xlsx_v1"
     CCB_PERSONAL_XLS_V1 = "ccb_personal_xls_v1"
     BOC_PERSONAL_PDF_V1 = "boc_personal_pdf_v1"
+    ABC_PERSONAL_PDF_V1 = "abc_personal_pdf_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,9 +53,22 @@ BOC_PERSONAL_PDF_V1: Final = BankStatementParserSpec(
     declared_media_type="application/pdf",
     display_extension=".pdf",
 )
+ABC_PERSONAL_PDF_V1: Final = BankStatementParserSpec(
+    profile=BankStatementParserProfile.ABC_PERSONAL_PDF_V1,
+    institution_code="abc",
+    source_system="abc_personal_pdf_export",
+    declared_media_type="application/pdf",
+    display_extension=".pdf",
+)
 
 _SPECS: Final = {
-    spec.profile: spec for spec in (MYBANK_XLSX_V1, CCB_PERSONAL_XLS_V1, BOC_PERSONAL_PDF_V1)
+    spec.profile: spec
+    for spec in (
+        MYBANK_XLSX_V1,
+        CCB_PERSONAL_XLS_V1,
+        BOC_PERSONAL_PDF_V1,
+        ABC_PERSONAL_PDF_V1,
+    )
 }
 _DIGEST: Final = re.compile(r"^[0-9a-f]{64}$")
 _SHANGHAI: Final = ZoneInfo("Asia/Shanghai")
@@ -113,6 +127,7 @@ class BankStatement:
             in {
                 BankStatementParserProfile.CCB_PERSONAL_XLS_V1,
                 BankStatementParserProfile.BOC_PERSONAL_PDF_V1,
+                BankStatementParserProfile.ABC_PERSONAL_PDF_V1,
             }
             and _DIGEST.fullmatch(self.parser_facts_sha256) is None
         ):
