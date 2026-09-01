@@ -14,15 +14,18 @@ from ledgerbridge.mybank_cutover_command import (
     run_mybank_cutover_command,
 )
 from ledgerbridge.mybank_statement_cutover import (
+    MyBankExistingAccountStatementPlan,
     MyBankStatementCutoverGates,
     MyBankStatementCutoverReceipt,
     production_counts_from_cutover_inventory,
+    run_transactional_database_mybank_existing_account_import,
     run_transactional_database_mybank_statement_cutover,
 )
 from scripts.backup_restore import (
     R1_CUTOVER_INVENTORY_SQL,
     CutoverInventory,
     validate_mybank_cutover_inventory_sequence,
+    validate_mybank_existing_account_inventory_sequence,
 )
 
 _MAX_REPORT_BYTES = 4 * 1024 * 1024
@@ -57,20 +60,42 @@ def _execute(
     ) -> None:
         raw = connection.execute(text(R1_CUTOVER_INVENTORY_SQL)).scalar_one()
         after = CutoverInventory.from_payload(json.loads(raw))
-        report = validate_mybank_cutover_inventory_sequence(
-            before=before,
-            after=after,
-            replay=after,
-            conflict=after,
-            transaction_count=receipt.transaction_count,
-            alias_count=len(loaded.cutover.registry_plan.accounts[0].aliases),
-            assignment_count=len(loaded.cutover.registry_plan.business_unit_assignments),
-        )
+        if isinstance(loaded.cutover, MyBankExistingAccountStatementPlan):
+            report = validate_mybank_existing_account_inventory_sequence(
+                before=before,
+                after=after,
+                replay=after,
+                conflict=after,
+                transaction_count=receipt.transaction_count,
+            )
+        else:
+            report = validate_mybank_cutover_inventory_sequence(
+                before=before,
+                after=after,
+                replay=after,
+                conflict=after,
+                transaction_count=receipt.transaction_count,
+                alias_count=len(loaded.cutover.registry_plan.accounts[0].aliases),
+                assignment_count=len(loaded.cutover.registry_plan.business_unit_assignments),
+            )
         if report.get("replay_delta") != 0 or report.get("conflict_delta") != 0:
             raise RuntimeError("cutover inventory acceptance failed")
 
     engine = create_engine(database_url, pool_pre_ping=True)
     try:
+        if isinstance(loaded.cutover, MyBankExistingAccountStatementPlan):
+            return run_transactional_database_mybank_existing_account_import(
+                engine,
+                loaded.cutover,
+                gates=gates,
+                safety_proof=loaded.safety_proof,
+                key_file=loaded.key_file,
+                artifact_root=loaded.artifact_root,
+                commit=commit,
+                acceptance=accept,
+            )
+        if loaded.principal is None:
+            raise RuntimeError("cutover registry principal is unavailable")
         return run_transactional_database_mybank_statement_cutover(
             engine,
             loaded.cutover,

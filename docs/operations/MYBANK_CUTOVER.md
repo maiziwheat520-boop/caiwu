@@ -27,6 +27,30 @@ digest/size/row count, writes a new mode-`0600` plan, and prints only
 `MYBANK_CUTOVER_PLAN_READY`. It never guesses the Accounting Owner or company;
 those UUID bindings remain explicit operator inputs in the private draft.
 
+## Existing registered account mode
+
+When the company MYbank account is already present in the Managed Account
+registry, start from
+`docs/templates/mybank-existing-account-draft.example.json`. This mode accepts
+only the exact Entity UUID, business-unit UUID, Managed Account UUID, and
+account suffix. It does not accept or rewrite admission evidence, account keys,
+aliases, lifecycle rows, or registry revisions.
+
+The builder derives the source digest, byte size, and non-zero transaction
+count. A structurally valid export with no transaction rows is explicitly
+reported as `MYBANK_CUTOVER_EMPTY_STATEMENT_SKIPPED` and produces no executable
+plan. Before importing, Core requires the Managed Account's latest lifecycle to
+be `ACTIVE` and requires exactly one business-unit assignment that covers the
+whole statement period.
+
+Use the same builder, rollback-only preflight, and separately gated production
+commands documented below. One plan imports one statement; for multiple files,
+generate and execute the plans sequentially so each plan has its own evidence
+UUID, fresh backup/restore inventory, digest-bound preflight receipt, and
+rollback boundary. The acceptance inventory requires zero changes to Managed
+Account registry facts, Candidates,
+Journal Entries, and Postings.
+
 ## Isolated preflight
 
 Mount the protected source, plan, key, and a disposable restored database and

@@ -313,12 +313,14 @@ R1_INTERNAL_READ_FUNCTIONS = (
     "current_audit_horizon",
     "get_accounting_dimensions",
     "list_candidates_as_of",
+    "list_candidates_for_scopes_as_of",
     "get_reconciliation_as_of",
     "resolve_active_evidence_blob",
     "get_ledger_summary_as_of",
     "append_internal_evidence_read_audit",
 )
 R1_ACCOUNTING_DIMENSIONS_REVISION = "20260830_0022"
+R1_MULTI_SCOPE_CANDIDATE_REVISION = "20260901_0029"
 # These are the exact strings emitted by PostgreSQL's
 # pg_get_function_identity_arguments().  Function identity does not include
 # varchar typmods, so the allowlist intentionally uses "character varying"
@@ -330,6 +332,11 @@ R1_INTERNAL_READ_FUNCTION_SIGNATURES = {
     ),
     "list_candidates_as_of": (
         "p_entity_id uuid, p_business_unit_id uuid, p_status character varying, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea, "
+        "p_last_created_at timestamp with time zone, p_last_candidate_id uuid, p_limit integer"
+    ),
+    "list_candidates_for_scopes_as_of": (
+        "p_entity_ids uuid[], p_business_unit_ids uuid[], p_status character varying, "
         "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea, "
         "p_last_created_at timestamp with time zone, p_last_candidate_id uuid, p_limit integer"
     ),
@@ -717,6 +724,7 @@ R1_CUTOVER_INVENTORY_TABLES = tuple(
         | set(COUNTERPARTY_PROTECTED_TABLES)
         | set(BANK_STATEMENT_TABLES)
         | set(ACCOUNT_REGISTRY_TABLES)
+        | {"journal_entry", "posting"}
     )
 )
 _R1_CUTOVER_ROW_COUNTS_SQL = ", ".join(
@@ -2299,6 +2307,7 @@ MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
         CLASSIFICATION_BATCH_SECURITY_REVISION,
         ACCOUNT_REGISTRY_TRIGGER_REPAIR_REVISION,
         COMPANY_REPORTING_COMPOSITION_REVISION,
+        R1_MULTI_SCOPE_CANDIDATE_REVISION,
     }
 )
 COMPANY_REPORTING_SCHEMA = "company_reporting_read"
@@ -3035,6 +3044,60 @@ def validate_mybank_cutover_inventory_sequence(
         "transaction_count": transaction_count,
         "alias_count": alias_count,
         "assignment_count": assignment_count,
+        "replay_delta": 0,
+        "conflict_delta": 0,
+    }
+
+
+def validate_mybank_existing_account_inventory_sequence(
+    *,
+    before: CutoverInventory,
+    after: CutoverInventory,
+    replay: CutoverInventory,
+    conflict: CutoverInventory,
+    transaction_count: int,
+) -> dict[str, int]:
+    """Prove one statement delta without account-registry, Candidate, or posting writes."""
+
+    if type(transaction_count) is not int or transaction_count <= 0:
+        raise BackupError("existing-account statement transaction count is invalid")
+    if any(
+        item.candidate_total != before.candidate_total
+        or item.latest_pending_candidates != before.latest_pending_candidates
+        for item in (after, replay, conflict)
+    ):
+        raise BackupError("existing-account statement candidate inventory changed")
+    expected_deltas = {
+        "evidence_object": 1,
+        "encrypted_object_identity": 1,
+        "encrypted_blob_version": 1,
+        "bank_statement": 1,
+        "bank_statement_transaction": transaction_count,
+        "bank_statement_observation": transaction_count,
+        "bank_statement_review": 1,
+    }
+    before_counts = dict(before.row_counts)
+    after_counts = dict(after.row_counts)
+    for table in R1_CUTOVER_INVENTORY_TABLES:
+        observed = after_counts[table] - before_counts[table]
+        expected = expected_deltas.get(table, 0)
+        if observed != expected:
+            label = "required" if table in expected_deltas else "unrelated"
+            raise BackupError(
+                f"existing-account statement {label} table inventory changed: {table}"
+            )
+    expected_audit_delta = 4 + 2 * transaction_count
+    if after.audit_events - before.audit_events != expected_audit_delta:
+        raise BackupError("existing-account statement audit inventory changed unexpectedly")
+    if replay != after:
+        raise BackupError("existing-account statement replay changed inventory")
+    if conflict != after:
+        raise BackupError("existing-account statement conflict probe changed inventory")
+    return {
+        "candidate_total": after.candidate_total,
+        "latest_pending_candidates": after.latest_pending_candidates,
+        "audit_event_delta": expected_audit_delta,
+        "transaction_count": transaction_count,
         "replay_delta": 0,
         "conflict_delta": 0,
     }
@@ -4724,6 +4787,14 @@ def _validate_r1_database_security(metadata: dict[str, Any]) -> None:
                 "internal_read",
                 "get_accounting_dimensions",
                 R1_INTERNAL_READ_FUNCTION_SIGNATURES["get_accounting_dimensions"],
+            )
+        )
+    if revision < R1_MULTI_SCOPE_CANDIDATE_REVISION:
+        required_internal_function_keys.remove(
+            (
+                "internal_read",
+                "list_candidates_for_scopes_as_of",
+                R1_INTERNAL_READ_FUNCTION_SIGNATURES["list_candidates_for_scopes_as_of"],
             )
         )
     actual_internal_function_keys = {

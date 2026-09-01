@@ -1,0 +1,27 @@
+{
+  "schema_version": "ledgerbridge.mybank-existing-account-draft.v1",
+  "target_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source": {
+    "path": "/srv/ledgerbridge-secure/mybank-cutover/source/synthetic-statement.xlsx",
+    "account_suffix": "7968"
+  },
+  "scope": {
+    "evidence_ref": "84000000-0000-4000-8000-000000000003",
+    "owner_entity_ref": "84000000-0000-4000-8000-000000000001",
+    "business_unit_ref": "84000000-0000-4000-8000-000000000002",
+    "owner_kind": "COMPANY"
+  },
+  "account": {
+    "managed_account_ref": "84000000-0000-4000-8000-000000000004"
+  },
+  "audit": {
+    "actor": "worker:synthetic-mybank-import",
+    "reason": "operator-confirmed existing-account statement import"
+  },
+  "safety": {
+    "backup_directory": "/srv/ledgerbridge-secure/mybank-cutover/backup/synthetic",
+    "restore_report": "/srv/ledgerbridge-secure/mybank-cutover/backup/synthetic/restore-rehearsal.json",
+    "key_file": "/srv/ledgerbridge-secure/mybank-cutover/key/evidence-key.json",
+    "artifact_root": "/srv/ledgerbridge-secure/mybank-cutover/artifacts"
+  }
+}

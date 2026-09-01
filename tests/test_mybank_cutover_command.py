@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from uuid import UUID
 
@@ -10,17 +11,20 @@ import pytest
 from ledgerbridge.models import EntityType
 from ledgerbridge.mybank_cutover_command import (
     MYBANK_CUTOVER_PLAN_SCHEMA,
+    MYBANK_EXISTING_ACCOUNT_PLAN_SCHEMA,
     MyBankCutoverCommandError,
     load_private_mybank_cutover_plan,
     run_mybank_cutover_command,
 )
 from ledgerbridge.mybank_cutover_plan_builder import (
     MYBANK_CUTOVER_DRAFT_SCHEMA,
+    MYBANK_EXISTING_ACCOUNT_DRAFT_SCHEMA,
     MyBankCutoverPlanBuildError,
     finalize_private_mybank_cutover_plan,
     run_mybank_cutover_plan_builder,
 )
 from ledgerbridge.mybank_statement_cutover import (
+    MyBankExistingAccountStatementPlan,
     MyBankStatementCutoverReceipt,
     ProductionCounts,
 )
@@ -91,16 +95,35 @@ def _write_private_plan(path: Path, payload: dict[str, object]) -> None:
         path.chmod(0o600)
 
 
-def _write_synthetic_mybank_xlsx(path: Path) -> bytes:
+def _write_synthetic_mybank_xlsx(path: Path, *, empty: bool = False) -> bytes:
     from tests.test_mybank_statement import _write_synthetic_mybank_xlsx as write_fixture
 
-    return write_fixture(path)
+    return write_fixture(path, empty=empty)
 
 
 def _synthetic_draft(tmp_path: Path) -> dict[str, object]:
     payload = _synthetic_plan(tmp_path)
     payload["schema_version"] = MYBANK_CUTOVER_DRAFT_SCHEMA
     payload["scope"]["owner_kind"] = "COMPANY"  # type: ignore[index]
+    payload["source"] = {
+        "path": str((tmp_path / "synthetic-statement.xlsx").resolve()),
+        "account_suffix": "7968",
+    }
+    return payload
+
+
+def _synthetic_existing_account_plan(tmp_path: Path) -> dict[str, object]:
+    payload = _synthetic_plan(tmp_path)
+    payload["schema_version"] = MYBANK_EXISTING_ACCOUNT_PLAN_SCHEMA
+    payload["scope"]["owner_kind"] = "COMPANY"  # type: ignore[index]
+    payload["account"] = {"managed_account_ref": str(ACCOUNT_REF)}
+    payload.pop("principal")
+    return payload
+
+
+def _synthetic_existing_account_draft(tmp_path: Path) -> dict[str, object]:
+    payload = _synthetic_existing_account_plan(tmp_path)
+    payload["schema_version"] = MYBANK_EXISTING_ACCOUNT_DRAFT_SCHEMA
     payload["source"] = {
         "path": str((tmp_path / "synthetic-statement.xlsx").resolve()),
         "account_suffix": "7968",
@@ -148,6 +171,43 @@ def _receipt() -> MyBankStatementCutoverReceipt:
     )
 
 
+def _existing_account_receipt() -> MyBankStatementCutoverReceipt:
+    before = replace(
+        _counts(imported=False),
+        managed_accounts=5,
+        managed_account_lifecycles=5,
+        account_registry_operations=5,
+        managed_account_aliases=5,
+        account_business_unit_assignments=5,
+    )
+    after = replace(
+        before,
+        evidence_objects=1,
+        encrypted_object_identities=1,
+        encrypted_blob_versions=1,
+        bank_statements=1,
+        bank_statement_transactions=2,
+        bank_statement_observations=2,
+        bank_statement_reviews=1,
+        audit_events=8,
+    )
+    return MyBankStatementCutoverReceipt(
+        statement_ref=UUID("84000000-0000-4000-8000-000000000011"),
+        evidence_ref=EVIDENCE_REF,
+        managed_account_ref=ACCOUNT_REF,
+        registry_created=False,
+        created=True,
+        registry_replay_created=False,
+        replay_created=False,
+        transaction_count=2,
+        review_status="PENDING",
+        before_counts=before,
+        after_counts=after,
+        replay_counts=after,
+        fact_conflict_rejected=True,
+    )
+
+
 def test_private_plan_loads_one_explicit_owner_account_mapping(tmp_path: Path) -> None:
     path = (tmp_path / "cutover-plan.json").resolve()
     _write_private_plan(path, _synthetic_plan(tmp_path))
@@ -163,6 +223,26 @@ def test_private_plan_loads_one_explicit_owner_account_mapping(tmp_path: Path) -
     assert loaded.principal.grants[0].entity_ref == ENTITY_REF
     assert loaded.principal.grants[0].allow_account_registry is True
     assert loaded.safety_proof.restore_report.parent == loaded.safety_proof.backup_directory
+
+
+def test_existing_account_plan_loads_without_account_registration_payload(
+    tmp_path: Path,
+) -> None:
+    path = (tmp_path / "existing-account-plan.json").resolve()
+    _write_private_plan(path, _synthetic_existing_account_plan(tmp_path))
+
+    loaded = load_private_mybank_cutover_plan(path)
+
+    assert isinstance(loaded.cutover, MyBankExistingAccountStatementPlan)
+    assert loaded.cutover.entity_ref == ENTITY_REF
+    assert loaded.cutover.business_unit_ref == BUSINESS_UNIT_REF
+    assert loaded.cutover.managed_account_ref == ACCOUNT_REF
+    assert loaded.cutover.account_suffix == "1357"
+    assert loaded.cutover.expected_transaction_count == 2
+    assert loaded.cutover.owner_kind is EntityType.COMPANY
+    assert loaded.principal is None
+    payload = _synthetic_existing_account_plan(tmp_path)
+    assert set(payload["account"]) == {"managed_account_ref"}  # type: ignore[arg-type]
 
 
 def test_private_draft_is_finalized_from_verified_source_without_guessing_metadata(
@@ -189,6 +269,30 @@ def test_private_draft_is_finalized_from_verified_source_without_guessing_metada
     loaded = load_private_mybank_cutover_plan(plan_path)
     assert loaded.cutover.owner_kind is EntityType.COMPANY
     assert loaded.cutover.registry_plan.owner_entity_ref == ENTITY_REF
+
+
+def test_existing_account_draft_binds_digest_size_and_nonempty_row_count(
+    tmp_path: Path,
+) -> None:
+    source_path = (tmp_path / "synthetic-statement.xlsx").resolve()
+    source = _write_synthetic_mybank_xlsx(source_path)
+    draft_path = (tmp_path / "existing-account-draft.json").resolve()
+    plan_path = (tmp_path / "existing-account-plan.json").resolve()
+    _write_private_plan(draft_path, _synthetic_existing_account_draft(tmp_path))
+
+    finalize_private_mybank_cutover_plan(draft_path, plan_path)
+
+    payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == MYBANK_EXISTING_ACCOUNT_PLAN_SCHEMA
+    assert payload["source"] == {
+        "path": str(source_path),
+        "sha256": __import__("hashlib").sha256(source).hexdigest(),
+        "size": len(source),
+        "account_suffix": "7968",
+        "transaction_count": 2,
+    }
+    assert payload["account"] == {"managed_account_ref": str(ACCOUNT_REF)}
+    assert "principal" not in payload
 
 
 def test_private_draft_wrong_account_mapping_publishes_no_plan(tmp_path: Path) -> None:
@@ -229,6 +333,28 @@ def test_private_plan_builder_command_prints_no_source_or_alias_values(
     assert rendered.strip() == "MYBANK_CUTOVER_PLAN_READY"
     assert str(source_path) not in rendered
     assert draft["account"]["aliases"][0]["alias_value"] not in rendered  # type: ignore[index]
+
+
+def test_existing_account_builder_explicitly_skips_empty_statement(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source_path = (tmp_path / "synthetic-statement.xlsx").resolve()
+    _write_synthetic_mybank_xlsx(source_path, empty=True)
+    draft_path = (tmp_path / "existing-account-draft.json").resolve()
+    plan_path = (tmp_path / "existing-account-plan.json").resolve()
+    _write_private_plan(draft_path, _synthetic_existing_account_draft(tmp_path))
+
+    result = run_mybank_cutover_plan_builder(
+        {
+            "LEDGERBRIDGE_MYBANK_PRIVATE_DRAFT": str(draft_path),
+            "LEDGERBRIDGE_MYBANK_PRIVATE_PLAN": str(plan_path),
+        }
+    )
+
+    assert result == 0
+    assert not plan_path.exists()
+    assert capsys.readouterr().out.strip() == "MYBANK_CUTOVER_EMPTY_STATEMENT_SKIPPED"
 
 
 def test_preflight_writes_private_bound_receipt_without_disclosing_plan_values(
@@ -274,6 +400,35 @@ def test_preflight_writes_private_bound_receipt_without_disclosing_plan_values(
     assert "MYBANK_CUTOVER_PREFLIGHT_OK" in rendered
     assert payload["source"]["path"] not in rendered  # type: ignore[index]
     assert payload["account"]["aliases"][0]["alias_value"] not in rendered  # type: ignore[index]
+
+
+def test_existing_account_plan_uses_same_rollback_only_command_gate(
+    tmp_path: Path,
+) -> None:
+    plan_path = (tmp_path / "existing-account-plan.json").resolve()
+    receipt_path = (tmp_path / "existing-account-preflight.json").resolve()
+    _write_private_plan(plan_path, _synthetic_existing_account_plan(tmp_path))
+    observed: list[tuple[type[object], bool]] = []
+
+    def execute(loaded: object, _database_url: str, *, commit: bool) -> object:
+        observed.append((type(loaded.cutover), commit))  # type: ignore[attr-defined]
+        return _existing_account_receipt()
+
+    result = run_mybank_cutover_command(
+        ["--preflight-only"],
+        environ={
+            "LEDGERBRIDGE_ENV": "test",
+            "LEDGERBRIDGE_MYBANK_DATABASE_TARGET": "isolated",
+            "LEDGERBRIDGE_MYBANK_DATABASE_URL": "postgresql://synthetic-isolated",
+            "LEDGERBRIDGE_MYBANK_PRIVATE_PLAN": str(plan_path),
+            "LEDGERBRIDGE_MYBANK_PREFLIGHT_RECEIPT": str(receipt_path),
+            "LEDGERBRIDGE_DEPLOYED_REVISION": "a" * 40,
+        },
+        executor=execute,
+    )
+
+    assert result == 0
+    assert observed == [(MyBankExistingAccountStatementPlan, False)]
 
 
 def test_production_execution_requires_explicit_gate_and_bound_preflight(

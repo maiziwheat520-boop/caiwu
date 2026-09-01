@@ -50,6 +50,10 @@ class MyBankStatementError(RuntimeError):
     """The source file could not prove a valid MYbank statement."""
 
 
+class MyBankEmptyStatementError(MyBankStatementError):
+    """The source is a valid MYbank export with no transactions to import."""
+
+
 @dataclass(frozen=True, slots=True)
 class MyBankTransaction:
     source_event_ref: UUID
@@ -159,7 +163,7 @@ def parse_mybank_xlsx(
             )
         )
     if not transactions:
-        raise MyBankStatementError("statement contains no transactions")
+        raise MyBankEmptyStatementError("statement contains no transactions")
     return MyBankStatement(
         statement_ref=uuid5(_NAMESPACE, f"mybank-statement:{source_sha256}"),
         source_sha256=source_sha256,

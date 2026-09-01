@@ -14,14 +14,16 @@ from typing import Any, Final
 
 from ledgerbridge.mybank_cutover_command import (
     MYBANK_CUTOVER_PLAN_SCHEMA,
+    MYBANK_EXISTING_ACCOUNT_PLAN_SCHEMA,
     load_private_mybank_cutover_plan,
 )
-from ledgerbridge.mybank_statement import parse_mybank_xlsx
+from ledgerbridge.mybank_statement import MyBankEmptyStatementError, parse_mybank_xlsx
 
 MYBANK_CUTOVER_DRAFT_SCHEMA: Final = "ledgerbridge.mybank-cutover-draft.v1"
+MYBANK_EXISTING_ACCOUNT_DRAFT_SCHEMA: Final = "ledgerbridge.mybank-existing-account-draft.v1"
 _MAX_PLAN_BYTES: Final = 1024 * 1024
 _MAX_SOURCE_BYTES: Final = 50 * 1024 * 1024
-_TOP_LEVEL_KEYS: Final = frozenset(
+_REGISTER_ACCOUNT_TOP_LEVEL_KEYS: Final = frozenset(
     {
         "schema_version",
         "target_revision",
@@ -33,10 +35,25 @@ _TOP_LEVEL_KEYS: Final = frozenset(
         "safety",
     }
 )
+_EXISTING_ACCOUNT_TOP_LEVEL_KEYS: Final = frozenset(
+    {
+        "schema_version",
+        "target_revision",
+        "source",
+        "scope",
+        "account",
+        "audit",
+        "safety",
+    }
+)
 
 
 class MyBankCutoverPlanBuildError(RuntimeError):
     """The private draft could not be bound to one verified statement source."""
+
+
+class MyBankEmptyStatementSkipped(MyBankCutoverPlanBuildError):
+    """A valid empty export was intentionally left without an executable plan."""
 
 
 def finalize_private_mybank_cutover_plan(draft_path: Path, output_path: Path) -> Path:
@@ -44,10 +61,18 @@ def finalize_private_mybank_cutover_plan(draft_path: Path, output_path: Path) ->
 
     created = False
     try:
+        _require_new_private_json_path(output_path)
         draft = _read_private_json(draft_path)
-        if set(draft) != _TOP_LEVEL_KEYS:
+        schema_version = draft.get("schema_version")
+        if schema_version == MYBANK_CUTOVER_DRAFT_SCHEMA:
+            expected_keys = _REGISTER_ACCOUNT_TOP_LEVEL_KEYS
+            plan_schema = MYBANK_CUTOVER_PLAN_SCHEMA
+        elif schema_version == MYBANK_EXISTING_ACCOUNT_DRAFT_SCHEMA:
+            expected_keys = _EXISTING_ACCOUNT_TOP_LEVEL_KEYS
+            plan_schema = MYBANK_EXISTING_ACCOUNT_PLAN_SCHEMA
+        else:
             raise ValueError
-        if draft["schema_version"] != MYBANK_CUTOVER_DRAFT_SCHEMA:
+        if set(draft) != expected_keys:
             raise ValueError
         source = _strict_mapping(draft["source"], {"path", "account_suffix"})
         source_path = _absolute_path(source["path"])
@@ -60,7 +85,7 @@ def finalize_private_mybank_cutover_plan(draft_path: Path, output_path: Path) ->
             managed_account_suffix=account_suffix,
         )
         payload = dict(draft)
-        payload["schema_version"] = MYBANK_CUTOVER_PLAN_SCHEMA
+        payload["schema_version"] = plan_schema
         payload["source"] = {
             "path": str(source_path),
             "sha256": statement.source_sha256,
@@ -72,6 +97,11 @@ def finalize_private_mybank_cutover_plan(draft_path: Path, output_path: Path) ->
         created = True
         load_private_mybank_cutover_plan(output_path)
         return output_path
+    except MyBankEmptyStatementError:
+        if created:
+            with suppress(OSError):
+                output_path.unlink()
+        raise MyBankEmptyStatementSkipped("empty MYbank statement was skipped") from None
     except BaseException as exc:
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
@@ -89,6 +119,9 @@ def run_mybank_cutover_plan_builder(environ: Mapping[str, str] | None = None) ->
         draft = _absolute_path(values.get("LEDGERBRIDGE_MYBANK_PRIVATE_DRAFT"))
         output = _absolute_path(values.get("LEDGERBRIDGE_MYBANK_PRIVATE_PLAN"))
         finalize_private_mybank_cutover_plan(draft, output)
+    except MyBankEmptyStatementSkipped:
+        print("MYBANK_CUTOVER_EMPTY_STATEMENT_SKIPPED")
+        return 0
     except (OSError, TypeError, ValueError, MyBankCutoverPlanBuildError):
         raise MyBankCutoverPlanBuildError("cutover plan builder environment is invalid") from None
     print("MYBANK_CUTOVER_PLAN_READY")
@@ -132,11 +165,8 @@ def _read_regular_file(path: Path, *, maximum: int) -> bytes:
 
 
 def _write_new_private_json(path: Path, payload: dict[str, object]) -> None:
-    if not path.is_absolute() or path.exists() or path.is_symlink():
-        raise ValueError
+    _require_new_private_json_path(path)
     parent = path.parent
-    if not parent.is_dir() or parent.is_symlink():
-        raise ValueError
     descriptor, temporary_name = tempfile.mkstemp(prefix=".mybank-plan-", dir=parent)
     temporary = Path(temporary_name)
     try:
@@ -150,6 +180,14 @@ def _write_new_private_json(path: Path, payload: dict[str, object]) -> None:
     finally:
         with suppress(FileNotFoundError):
             temporary.unlink()
+
+
+def _require_new_private_json_path(path: Path) -> None:
+    if not path.is_absolute() or path.exists() or path.is_symlink():
+        raise ValueError
+    parent = path.parent
+    if not parent.is_dir() or parent.is_symlink():
+        raise ValueError
 
 
 def _strict_mapping(value: object, keys: set[str]) -> dict[str, Any]:

@@ -95,6 +95,7 @@ from scripts.backup_restore import (
     _write_payload_hashes,
     create_backup,
     validate_mybank_cutover_inventory_sequence,
+    validate_mybank_existing_account_inventory_sequence,
 )
 
 FINGERPRINT = "0123456789ABCDEF0123456789ABCDEF01234567"
@@ -138,7 +139,7 @@ def test_account_registry_privilege_probe_uses_catalog_function_oid() -> None:
 
 def test_mybank_restore_inventory_rejects_unreviewed_future_schema_revision() -> None:
     with pytest.raises(BackupError, match="schema revision"):
-        _cutover_inventory(schema_revision="20260901_0029")
+        _cutover_inventory(schema_revision="20260901_0030")
 
 
 def test_mybank_restore_inventory_accepts_exact_import_replay_and_conflict_sequence() -> None:
@@ -206,6 +207,83 @@ def test_mybank_restore_inventory_rejects_unrelated_r1_table_drift() -> None:
             transaction_count=3,
             alias_count=1,
             assignment_count=0,
+        )
+
+
+def test_mybank_existing_account_inventory_preserves_registry_and_posting_facts() -> None:
+    before = _cutover_inventory(
+        schema_revision="20260901_0029",
+        changes={
+            "managed_account": 5,
+            "managed_account_lifecycle": 5,
+            "account_registry_operation": 5,
+            "managed_account_alias": 5,
+            "account_business_unit_assignment": 5,
+            "journal_entry": 3,
+            "posting": 6,
+        },
+    )
+    after = _cutover_inventory(
+        schema_revision="20260901_0029",
+        audit_events=1_010,
+        changes={
+            "managed_account": 5,
+            "managed_account_lifecycle": 5,
+            "account_registry_operation": 5,
+            "managed_account_alias": 5,
+            "account_business_unit_assignment": 5,
+            "journal_entry": 3,
+            "posting": 6,
+            "evidence_object": 1,
+            "encrypted_object_identity": 1,
+            "encrypted_blob_version": 1,
+            "bank_statement": 1,
+            "bank_statement_transaction": 3,
+            "bank_statement_observation": 3,
+            "bank_statement_review": 1,
+        },
+    )
+
+    report = validate_mybank_existing_account_inventory_sequence(
+        before=before,
+        after=after,
+        replay=after,
+        conflict=after,
+        transaction_count=3,
+    )
+
+    assert report["audit_event_delta"] == 10
+    assert report["replay_delta"] == report["conflict_delta"] == 0
+
+
+@pytest.mark.parametrize(
+    "table", ["managed_account", "candidate_event", "journal_entry", "posting"]
+)
+def test_mybank_existing_account_inventory_rejects_unrelated_writes(table: str) -> None:
+    before = _cutover_inventory(schema_revision="20260901_0029")
+    changes = {
+        "evidence_object": 1,
+        "encrypted_object_identity": 1,
+        "encrypted_blob_version": 1,
+        "bank_statement": 1,
+        "bank_statement_transaction": 2,
+        "bank_statement_observation": 2,
+        "bank_statement_review": 1,
+        table: 1,
+    }
+    after = _cutover_inventory(
+        schema_revision="20260901_0029",
+        audit_events=1_008,
+        changes=changes,
+    )
+
+    with pytest.raises(BackupError, match="unrelated"):
+        validate_mybank_existing_account_inventory_sequence(
+            before=before,
+            after=after,
+            replay=after,
+            conflict=after,
+            transaction_count=2,
         )
 
 
@@ -2766,6 +2844,18 @@ def test_r1_security_sql_matches_fixed_function_signatures() -> None:
     assert "p.proname IN" not in R1_SECURITY_SQL
     for name, identity_arguments in R1_INTERNAL_READ_FUNCTION_SIGNATURES.items():
         assert f"('{name}', '{identity_arguments}')" in R1_SECURITY_SQL
+
+
+def test_r1_0029_requires_multi_scope_candidate_reader_metadata() -> None:
+    metadata = _r1_database_metadata()
+    metadata["alembic_version"] = "20260901_0029"
+    functions = cast(list[dict[str, object]], metadata["r1_functions"])
+    metadata["r1_functions"] = [
+        item for item in functions if item.get("name") != "list_candidates_for_scopes_as_of"
+    ]
+
+    with pytest.raises(BackupError, match="internal_read functions"):
+        _validate_restored_database(metadata, metadata.copy())
 
 
 @pytest.mark.parametrize("mutation", ["missing", "wrong_signature", "overload"])

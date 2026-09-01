@@ -29,11 +29,13 @@ from ledgerbridge.internal_read_contract import (
 from ledgerbridge.models import EntityType
 from ledgerbridge.mybank_statement_cutover import (
     MyBankCutoverSafetyProof,
+    MyBankExistingAccountStatementPlan,
     MyBankStatementCutoverPlan,
     MyBankStatementCutoverReceipt,
 )
 
 MYBANK_CUTOVER_PLAN_SCHEMA = "ledgerbridge.mybank-cutover-plan.v1"
+MYBANK_EXISTING_ACCOUNT_PLAN_SCHEMA = "ledgerbridge.mybank-existing-account-plan.v1"
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _MAX_PLAN_BYTES = 1024 * 1024
 
@@ -46,8 +48,8 @@ class MyBankCutoverCommandError(RuntimeError):
 class LoadedMyBankCutoverPlan:
     plan_sha256: str
     target_revision: str
-    cutover: MyBankStatementCutoverPlan
-    principal: WorkloadPrincipal
+    cutover: MyBankStatementCutoverPlan | MyBankExistingAccountStatementPlan
+    principal: WorkloadPrincipal | None
     safety_proof: MyBankCutoverSafetyProof
     key_file: Path
     artifact_root: Path
@@ -58,20 +60,35 @@ def load_private_mybank_cutover_plan(path: Path) -> LoadedMyBankCutoverPlan:
 
     try:
         payload = _read_private_json(path)
-        _require_keys(
-            payload,
-            {
-                "schema_version",
-                "target_revision",
-                "source",
-                "scope",
-                "account",
-                "principal",
-                "audit",
-                "safety",
-            },
-        )
-        if payload["schema_version"] != MYBANK_CUTOVER_PLAN_SCHEMA:
+        schema_version = payload.get("schema_version")
+        if schema_version == MYBANK_CUTOVER_PLAN_SCHEMA:
+            _require_keys(
+                payload,
+                {
+                    "schema_version",
+                    "target_revision",
+                    "source",
+                    "scope",
+                    "account",
+                    "principal",
+                    "audit",
+                    "safety",
+                },
+            )
+        elif schema_version == MYBANK_EXISTING_ACCOUNT_PLAN_SCHEMA:
+            _require_keys(
+                payload,
+                {
+                    "schema_version",
+                    "target_revision",
+                    "source",
+                    "scope",
+                    "account",
+                    "audit",
+                    "safety",
+                },
+            )
+        else:
             raise ValueError
         target_revision = _text(payload["target_revision"])
         if _REVISION.fullmatch(target_revision) is None:
@@ -85,22 +102,6 @@ def load_private_mybank_cutover_plan(path: Path) -> LoadedMyBankCutoverPlan:
             payload["scope"],
             {"evidence_ref", "owner_entity_ref", "business_unit_ref", "owner_kind"},
         )
-        account = _mapping(
-            payload["account"],
-            {
-                "operation_id",
-                "expected_registry_revision",
-                "managed_account_ref",
-                "account_key",
-                "account_kind",
-                "aliases",
-                "business_unit_assignment",
-            },
-        )
-        principal = _mapping(
-            payload["principal"],
-            {"principal_ref", "san_uri", "policy_generation"},
-        )
         audit = _mapping(payload["audit"], {"actor", "reason"})
         safety = _mapping(
             payload["safety"],
@@ -113,51 +114,88 @@ def load_private_mybank_cutover_plan(path: Path) -> LoadedMyBankCutoverPlan:
         account_suffix = _text(source["account_suffix"])
         actor = _text(audit["actor"])
         reason = _text(audit["reason"])
-        aliases_raw = account["aliases"]
-        if not isinstance(aliases_raw, list):
-            raise ValueError
-        aliases = tuple(_alias(value) for value in aliases_raw)
-        if account["business_unit_assignment"] is not None:
-            raise ValueError
-        registry_plan = AccountRegistryPlan(
-            operation_id=_uuid(account["operation_id"]),
-            owner_entity_ref=entity_ref,
-            expected_owner_kind=EntityType(_text(scope["owner_kind"])),
-            expected_registry_revision=_integer(account["expected_registry_revision"]),
-            actor_ref=actor,
-            reason=reason,
-            accounts=(
-                ManagedAccountRegistration(
-                    managed_account_ref=_uuid(account["managed_account_ref"]),
-                    admission_evidence_ref=evidence_ref,
-                    account_key=_text(account["account_key"]),
-                    institution_code="mybank",
-                    account_suffix=account_suffix,
-                    account_kind=_text(account["account_kind"]),
-                    aliases=aliases,
+        owner_kind = EntityType(_text(scope["owner_kind"]))
+        if schema_version == MYBANK_CUTOVER_PLAN_SCHEMA:
+            account = _mapping(
+                payload["account"],
+                {
+                    "operation_id",
+                    "expected_registry_revision",
+                    "managed_account_ref",
+                    "account_key",
+                    "account_kind",
+                    "aliases",
+                    "business_unit_assignment",
+                },
+            )
+            principal = _mapping(
+                payload["principal"],
+                {"principal_ref", "san_uri", "policy_generation"},
+            )
+            aliases_raw = account["aliases"]
+            if not isinstance(aliases_raw, list):
+                raise ValueError
+            aliases = tuple(_alias(value) for value in aliases_raw)
+            if account["business_unit_assignment"] is not None:
+                raise ValueError
+            registry_plan = AccountRegistryPlan(
+                operation_id=_uuid(account["operation_id"]),
+                owner_entity_ref=entity_ref,
+                expected_owner_kind=owner_kind,
+                expected_registry_revision=_integer(account["expected_registry_revision"]),
+                actor_ref=actor,
+                reason=reason,
+                accounts=(
+                    ManagedAccountRegistration(
+                        managed_account_ref=_uuid(account["managed_account_ref"]),
+                        admission_evidence_ref=evidence_ref,
+                        account_key=_text(account["account_key"]),
+                        institution_code="mybank",
+                        account_suffix=account_suffix,
+                        account_kind=_text(account["account_kind"]),
+                        aliases=aliases,
+                    ),
                 ),
-            ),
-        )
-        cutover = MyBankStatementCutoverPlan(
-            source_path=_absolute_path(source["path"]),
-            expected_sha256=_text(source["sha256"]),
-            expected_size=_integer(source["size"]),
-            evidence_ref=evidence_ref,
-            entity_ref=entity_ref,
-            business_unit_ref=business_unit_ref,
-            registry_plan=registry_plan,
-            account_suffix=account_suffix,
-            expected_transaction_count=_integer(source["transaction_count"]),
-            actor=actor,
-            reason=reason,
-        )
-        workload = WorkloadPrincipal(
-            principal_ref=_text(principal["principal_ref"]),
-            san_uri=_text(principal["san_uri"]),
-            policy_generation=_integer(principal["policy_generation"]),
-            capabilities=frozenset({Capability.ACCOUNT_REGISTRY_WRITE}),
-            grants=(EntityGrant(entity_ref=entity_ref, allow_account_registry=True),),
-        )
+            )
+            cutover: MyBankStatementCutoverPlan | MyBankExistingAccountStatementPlan = (
+                MyBankStatementCutoverPlan(
+                    source_path=_absolute_path(source["path"]),
+                    expected_sha256=_text(source["sha256"]),
+                    expected_size=_integer(source["size"]),
+                    evidence_ref=evidence_ref,
+                    entity_ref=entity_ref,
+                    business_unit_ref=business_unit_ref,
+                    registry_plan=registry_plan,
+                    account_suffix=account_suffix,
+                    expected_transaction_count=_integer(source["transaction_count"]),
+                    actor=actor,
+                    reason=reason,
+                )
+            )
+            workload: WorkloadPrincipal | None = WorkloadPrincipal(
+                principal_ref=_text(principal["principal_ref"]),
+                san_uri=_text(principal["san_uri"]),
+                policy_generation=_integer(principal["policy_generation"]),
+                capabilities=frozenset({Capability.ACCOUNT_REGISTRY_WRITE}),
+                grants=(EntityGrant(entity_ref=entity_ref, allow_account_registry=True),),
+            )
+        else:
+            account = _mapping(payload["account"], {"managed_account_ref"})
+            cutover = MyBankExistingAccountStatementPlan(
+                source_path=_absolute_path(source["path"]),
+                expected_sha256=_text(source["sha256"]),
+                expected_size=_integer(source["size"]),
+                evidence_ref=evidence_ref,
+                entity_ref=entity_ref,
+                business_unit_ref=business_unit_ref,
+                managed_account_ref=_uuid(account["managed_account_ref"]),
+                account_suffix=account_suffix,
+                expected_transaction_count=_integer(source["transaction_count"]),
+                expected_owner_kind=owner_kind,
+                actor=actor,
+                reason=reason,
+            )
+            workload = None
         backup_directory = _absolute_path(safety["backup_directory"])
         proof = MyBankCutoverSafetyProof(
             backup_directory=backup_directory,

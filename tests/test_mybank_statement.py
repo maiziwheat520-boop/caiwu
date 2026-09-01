@@ -40,6 +40,7 @@ def _write_synthetic_mybank_xlsx(
     headers: tuple[str, ...] | None = None,
     institution: str = "网商银行账户交易明细",
     account_label: str = "卡号\N{FULLWIDTH COLON}",
+    empty: bool = False,
 ) -> bytes:
     effective_headers = headers or (
         "交易时间",
@@ -51,38 +52,45 @@ def _write_synthetic_mybank_xlsx(
         "交易流水号",
         "交易名称",
     )
-    rows = (
+    metadata_rows = (
         _row(1, (institution,)),
         _row(2, (account_label, "************7968")),
         _row(3, ("币种", "人民币")),
         _row(8, effective_headers),
-        _row(
-            9,
-            (
-                "2026-01-02 03:04:05",
-                amount,
-                "5125.34",
-                "合成商户甲",
-                "0000000000005678",
-                "合成银行",
-                "9000000000000000000000000000001",
-                "转账",
-            ),
-        ),
-        _row(
-            10,
-            (
-                "2026-01-03 06:07:08",
-                "-20.00",
-                "5105.34",
-                "合成商户乙",
-                "0000000000009012",
-                "合成银行",
-                "9000000000000000000000000000002",
-                "消费",
-            ),
-        ),
     )
+    transaction_rows = (
+        ()
+        if empty
+        else (
+            _row(
+                9,
+                (
+                    "2026-01-02 03:04:05",
+                    amount,
+                    "5125.34",
+                    "合成商户甲",
+                    "0000000000005678",
+                    "合成银行",
+                    "9000000000000000000000000000001",
+                    "转账",
+                ),
+            ),
+            _row(
+                10,
+                (
+                    "2026-01-03 06:07:08",
+                    "-20.00",
+                    "5105.34",
+                    "合成商户乙",
+                    "0000000000009012",
+                    "合成银行",
+                    "9000000000000000000000000000002",
+                    "消费",
+                ),
+            ),
+        )
+    )
+    rows = (*metadata_rows, *transaction_rows)
     worksheet = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'

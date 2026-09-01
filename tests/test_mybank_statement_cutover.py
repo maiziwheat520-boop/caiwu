@@ -37,12 +37,18 @@ from ledgerbridge.mybank_statement import MyBankStatement, MyBankTransaction
 from ledgerbridge.mybank_statement_cutover import (
     MyBankCutoverSafetyProof,
     MyBankEvidenceDescriptor,
+    MyBankExistingAccountStatementPlan,
+    MyBankExistingAccountStatementRunner,
     MyBankStatementCutoverError,
     MyBankStatementCutoverGates,
     MyBankStatementCutoverPlan,
     MyBankStatementCutoverRunner,
     ProductionCounts,
+    _expected_after_existing_account,
+    _read_production_counts,
+    _require_existing_account_identity,
     _require_import_identity,
+    run_transactional_database_mybank_existing_account_import,
     run_transactional_database_mybank_statement_cutover,
     verify_mybank_cutover_safety_proof,
 )
@@ -55,6 +61,8 @@ MANAGED_ACCOUNT_REF = UUID("83000000-0000-4000-8000-000000000005")
 OTHER_ENTITY_REF = UUID("83000000-0000-4000-8000-000000000006")
 REGISTRY_OPERATION_REF = UUID("83000000-0000-4000-8000-000000000007")
 ACCOUNT_ALIAS_REF = UUID("83000000-0000-4000-8000-000000000008")
+ADMISSION_EVIDENCE_REF = UUID("83000000-0000-4000-8000-000000000009")
+ASSIGNMENT_REF = UUID("83000000-0000-4000-8000-000000000010")
 MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -184,6 +192,27 @@ def _plan(source_path: Path, digest: str, size: int) -> MyBankStatementCutoverPl
     )
 
 
+def _existing_account_plan(
+    source_path: Path,
+    digest: str,
+    size: int,
+) -> MyBankExistingAccountStatementPlan:
+    return MyBankExistingAccountStatementPlan(
+        source_path=source_path,
+        expected_sha256=digest,
+        expected_size=size,
+        evidence_ref=EVIDENCE_REF,
+        entity_ref=ENTITY_REF,
+        business_unit_ref=BUSINESS_UNIT_REF,
+        managed_account_ref=MANAGED_ACCOUNT_REF,
+        account_suffix="1357",
+        expected_transaction_count=2,
+        expected_owner_kind=EntityType.COMPANY,
+        actor="worker:mybank-existing-account-import",
+        reason="operator-confirmed existing-account statement import",
+    )
+
+
 def _gates(
     before: ProductionCounts | None = None,
     *,
@@ -258,6 +287,8 @@ def _safety_proof(
             "bank_statement_transaction": before.bank_statement_transactions,
             "bank_statement_observation": before.bank_statement_observations,
             "bank_statement_review": before.bank_statement_reviews,
+            "journal_entry": before.journal_entries,
+            "posting": before.postings,
         },
     }
     report = backup / "restore-rehearsal-synthetic.json"
@@ -351,6 +382,21 @@ class _StatementImporter:
         if isinstance(result, BaseException):
             raise result
         return result
+
+
+class _ExistingAccountAuthorizer:
+    def __init__(self, events: list[str] | None = None) -> None:
+        self.calls: list[tuple[MyBankExistingAccountStatementPlan, MyBankStatement]] = []
+        self._events = events
+
+    def authorize(
+        self,
+        plan: MyBankExistingAccountStatementPlan,
+        statement: MyBankStatement,
+    ) -> None:
+        if self._events is not None:
+            self._events.append("account")
+        self.calls.append((plan, statement))
 
 
 class _CountsReader:
@@ -619,11 +665,217 @@ def test_cutover_binds_evidence_to_exact_digest_size_and_explicit_scope(tmp_path
     assert all(context.owner_entity_ref != OTHER_ENTITY_REF for _, context in importer.calls)
 
 
+def test_existing_account_plan_preserves_registry_and_posting_counts(tmp_path: Path) -> None:
+    source, digest = _synthetic_source(tmp_path)
+    before = replace(
+        _before_counts(),
+        managed_accounts=5,
+        managed_account_lifecycles=5,
+        account_registry_operations=5,
+        managed_account_aliases=5,
+        account_business_unit_assignments=5,
+        journal_entries=3,
+        postings=6,
+    )
+
+    after = _expected_after_existing_account(
+        before,
+        _existing_account_plan(source, digest, source.stat().st_size),
+    )
+
+    assert after.managed_accounts == before.managed_accounts
+    assert after.managed_account_lifecycles == before.managed_account_lifecycles
+    assert after.account_registry_operations == before.account_registry_operations
+    assert after.managed_account_aliases == before.managed_account_aliases
+    assert after.account_business_unit_assignments == before.account_business_unit_assignments
+    assert after.bank_statements == before.bank_statements + 1
+    assert after.bank_statement_transactions == before.bank_statement_transactions + 2
+    assert after.bank_statement_observations == before.bank_statement_observations + 2
+    assert after.bank_statement_reviews == before.bank_statement_reviews + 1
+    assert after.candidates == before.candidates
+    assert after.latest_pending_candidates == before.latest_pending_candidates
+    assert after.journal_entries == before.journal_entries
+    assert after.postings == before.postings
+    assert after.audit_events == before.audit_events + 8
+
+
+def test_existing_account_plan_rejects_empty_statement_count(tmp_path: Path) -> None:
+    source, digest = _synthetic_source(tmp_path)
+
+    with pytest.raises(ValueError, match="transaction count"):
+        replace(
+            _existing_account_plan(source, digest, source.stat().st_size),
+            expected_transaction_count=0,
+        )
+
+
+def test_existing_account_runner_writes_evidence_then_imports_and_replays(
+    tmp_path: Path,
+) -> None:
+    source, digest = _synthetic_source(tmp_path)
+    statement = _statement(digest, source.stat().st_size)
+    plan = _existing_account_plan(source, digest, source.stat().st_size)
+    before = replace(
+        _before_counts(),
+        managed_accounts=5,
+        managed_account_lifecycles=5,
+        account_registry_operations=5,
+        managed_account_aliases=5,
+        account_business_unit_assignments=5,
+    )
+    after = _expected_after_existing_account(before, plan)
+    events: list[str] = []
+    evidence_writer = _EvidenceWriter(events)
+    authorizer = _ExistingAccountAuthorizer(events)
+    importer = _StatementImporter(
+        iter((_import_result(created=True), _import_result(created=False))),
+        events,
+    )
+    runner = MyBankExistingAccountStatementRunner(
+        parser=_Parser(statement),
+        evidence_writer=evidence_writer,
+        account_authorizer=authorizer,
+        statement_importer=importer,
+        counts_reader=_CountsReader(iter((before, after, after))),
+    )
+
+    receipt = runner.run(plan, gates=_gates(before))
+
+    assert events == ["evidence", "account", "statement", "account", "statement"]
+    assert len(evidence_writer.calls) == 1
+    assert len(authorizer.calls) == 2
+    assert receipt.registry_created is False
+    assert receipt.registry_replay_created is False
+    assert receipt.created is True
+    assert receipt.replay_created is False
+    assert receipt.candidate_delta == 0
+    assert receipt.after_counts.postings == receipt.before_counts.postings
+
+
+def test_existing_account_completed_replay_writes_no_evidence(tmp_path: Path) -> None:
+    source, digest = _synthetic_source(tmp_path)
+    statement = _statement(digest, source.stat().st_size)
+    plan = _existing_account_plan(source, digest, source.stat().st_size)
+    baseline = replace(
+        _before_counts(),
+        managed_accounts=5,
+        managed_account_lifecycles=5,
+        account_registry_operations=5,
+        managed_account_aliases=5,
+        account_business_unit_assignments=5,
+    )
+    completed = _expected_after_existing_account(baseline, plan)
+    evidence_writer = _EvidenceWriter()
+    authorizer = _ExistingAccountAuthorizer()
+    runner = MyBankExistingAccountStatementRunner(
+        parser=_Parser(statement),
+        evidence_writer=evidence_writer,
+        account_authorizer=authorizer,
+        statement_importer=_StatementImporter(iter((_import_result(created=False),))),
+        counts_reader=_CountsReader(iter((completed, completed))),
+    )
+
+    receipt = runner.run(plan, gates=_gates(baseline))
+
+    assert evidence_writer.calls == []
+    assert len(authorizer.calls) == 1
+    assert receipt.created is False
+    assert receipt.after_counts == receipt.replay_counts == completed
+
+
+@pytest.mark.parametrize(
+    ("lifecycle_status", "assignment_count", "message"),
+    (
+        ("CLOSED", 1, "ACTIVE"),
+        ("ACTIVE", 0, "business-unit assignment"),
+        ("ACTIVE", 2, "business-unit assignment"),
+    ),
+)
+def test_existing_account_identity_requires_active_account_and_one_period_binding(
+    tmp_path: Path,
+    lifecycle_status: str,
+    assignment_count: int,
+    message: str,
+) -> None:
+    source, digest = _synthetic_source(tmp_path)
+    statement = _statement(digest, source.stat().st_size)
+    plan = _existing_account_plan(source, digest, source.stat().st_size)
+    session = _IdentitySession(
+        iter(
+            (
+                _MappingResult(one={"entity_type": EntityType.COMPANY.value}),
+                _MappingResult(
+                    one={
+                        "entity_id": ENTITY_REF,
+                        "business_unit_id": BUSINESS_UNIT_REF,
+                        "media_type": MEDIA_TYPE,
+                        "plaintext_sha256": bytes.fromhex(digest),
+                        "plaintext_size": source.stat().st_size,
+                    }
+                ),
+                _MappingResult(
+                    one={
+                        "managed_account_ref": MANAGED_ACCOUNT_REF,
+                        "entity_id": ENTITY_REF,
+                        "institution_code": "mybank",
+                        "account_suffix": "1357",
+                        "owner_ref": str(ENTITY_REF),
+                        "owner_kind": "COMPANY",
+                        "lifecycle_status": lifecycle_status,
+                        "assignment_count": assignment_count,
+                        "matching_assignment_count": 1 if assignment_count else 0,
+                    }
+                ),
+            )
+        )
+    )
+
+    with pytest.raises(MyBankStatementCutoverError, match=message):
+        _require_existing_account_identity(cast(Session, session), plan, statement)
+
+
+def test_existing_account_identity_accepts_exact_active_period_binding(tmp_path: Path) -> None:
+    source, digest = _synthetic_source(tmp_path)
+    statement = _statement(digest, source.stat().st_size)
+    plan = _existing_account_plan(source, digest, source.stat().st_size)
+    session = _IdentitySession(
+        iter(
+            (
+                _MappingResult(one={"entity_type": EntityType.COMPANY.value}),
+                _MappingResult(
+                    one={
+                        "entity_id": ENTITY_REF,
+                        "business_unit_id": BUSINESS_UNIT_REF,
+                        "media_type": MEDIA_TYPE,
+                        "plaintext_sha256": bytes.fromhex(digest),
+                        "plaintext_size": source.stat().st_size,
+                    }
+                ),
+                _MappingResult(
+                    one={
+                        "managed_account_ref": MANAGED_ACCOUNT_REF,
+                        "entity_id": ENTITY_REF,
+                        "institution_code": "mybank",
+                        "account_suffix": "1357",
+                        "owner_ref": str(ENTITY_REF),
+                        "owner_kind": "COMPANY",
+                        "lifecycle_status": "ACTIVE",
+                        "assignment_count": 1,
+                        "matching_assignment_count": 1,
+                    }
+                ),
+            )
+        )
+    )
+
+    _require_existing_account_identity(cast(Session, session), plan, statement)
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     (
         ("schema_revision", "20260830_0020", "schema"),
-        ("schema_revision", "20260830_0026", "schema"),
+        ("schema_revision", "20260901_0030", "schema"),
         ("backup_verified", False, "backup"),
         ("isolated_restore_verified", False, "isolated restore"),
         ("rollback_ready", False, "rollback"),
@@ -1020,4 +1272,219 @@ def test_database_cutover_persists_encrypted_evidence_and_replays_atomically(
             assert evidence.media_type == MEDIA_TYPE
             assert bytes(evidence.plaintext_sha256).hex() == digest
             assert evidence.plaintext_size == len(raw)
+        engine.dispose()
+
+
+def test_database_existing_account_import_preserves_registry_candidates_and_postings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LEDGERBRIDGE_ENV", raising=False)
+    with _legacy_r1_database(reader=True) as database_url:
+        command.upgrade(_upgrade_config(database_url), "head")
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO public.entity (id, entity_type, name) "
+                    "VALUES (:entity, 'COMPANY', 'Synthetic existing-account entity')"
+                ),
+                {"entity": ENTITY_REF},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.business_unit (id, entity_id, ref, label) "
+                    "VALUES (:unit, :entity, 'synthetic-existing', 'Synthetic Existing')"
+                ),
+                {"unit": BUSINESS_UNIT_REF, "entity": ENTITY_REF},
+            )
+
+            def append_audit(
+                action: str,
+                payload: dict[str, object],
+                *,
+                rule_version: str,
+            ) -> UUID:
+                value = connection.execute(
+                    text(
+                        "SELECT public.append_audit_event("
+                        ":actor, :action, :reason, :rule, CAST(:payload AS jsonb))"
+                    ),
+                    {
+                        "actor": "worker:synthetic-existing-account",
+                        "action": action,
+                        "reason": "synthetic existing-account setup",
+                        "rule": rule_version,
+                        "payload": json.dumps(payload),
+                    },
+                ).scalar_one()
+                assert isinstance(value, UUID)
+                return value
+
+            evidence_audit = append_audit(
+                "evidence.object.create",
+                {
+                    "evidence_ref": str(ADMISSION_EVIDENCE_REF),
+                    "entity_id": str(ENTITY_REF),
+                    "business_unit_id": str(BUSINESS_UNIT_REF),
+                },
+                rule_version="ledgerbridge.mybank-private-cutover.v1",
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.evidence_object "
+                    "(evidence_ref, entity_id, business_unit_id, media_type, display_name, "
+                    "plaintext_sha256, plaintext_size, audit_event_id) VALUES "
+                    "(:evidence, :entity, :unit, 'application/octet-stream', "
+                    "'synthetic-admission.bin', :digest, 1, :audit)"
+                ),
+                {
+                    "evidence": ADMISSION_EVIDENCE_REF,
+                    "entity": ENTITY_REF,
+                    "unit": BUSINESS_UNIT_REF,
+                    "digest": b"a" * 32,
+                    "audit": evidence_audit,
+                },
+            )
+            account_audit = append_audit(
+                "account_registry.account.register",
+                {
+                    "managed_account_ref": str(MANAGED_ACCOUNT_REF),
+                    "owner_entity_ref": str(ENTITY_REF),
+                    "owner_kind": "COMPANY",
+                    "admission_evidence_ref": str(ADMISSION_EVIDENCE_REF),
+                    "account_key": "managed-account:synthetic-existing",
+                    "institution_code": "mybank",
+                    "account_suffix": "7968",
+                    "account_kind": "BANK_CHECKING",
+                },
+                rule_version="ledgerbridge.account-registry.v1",
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.managed_account "
+                    "(managed_account_ref, entity_id, account_key, institution_code, "
+                    "account_suffix, owner_ref, owner_kind, account_kind, "
+                    "admission_evidence_ref, audit_event_id, created_at) VALUES "
+                    "(:account, :entity, 'managed-account:synthetic-existing', 'mybank', "
+                    "'7968', :owner_ref, 'COMPANY', 'BANK_CHECKING', :evidence, :audit, "
+                    "(SELECT occurred_at FROM public.audit_event WHERE id=:audit))"
+                ),
+                {
+                    "account": MANAGED_ACCOUNT_REF,
+                    "entity": ENTITY_REF,
+                    "owner_ref": str(ENTITY_REF),
+                    "evidence": ADMISSION_EVIDENCE_REF,
+                    "audit": account_audit,
+                },
+            )
+            lifecycle_audit = append_audit(
+                "managed_account.lifecycle",
+                {
+                    "managed_account_ref": str(MANAGED_ACCOUNT_REF),
+                    "revision": 1,
+                    "status": "ACTIVE",
+                },
+                rule_version="ledgerbridge.bank-statement.v1",
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.managed_account_lifecycle "
+                    "(managed_account_ref, revision, status, audit_event_id, effective_at) "
+                    "VALUES (:account, 1, 'ACTIVE', :audit, "
+                    "(SELECT occurred_at FROM public.audit_event WHERE id=:audit))"
+                ),
+                {"account": MANAGED_ACCOUNT_REF, "audit": lifecycle_audit},
+            )
+            assignment_audit = append_audit(
+                "account_registry.business_unit.assign",
+                {
+                    "assignment_ref": str(ASSIGNMENT_REF),
+                    "managed_account_ref": str(MANAGED_ACCOUNT_REF),
+                    "business_unit_id": str(BUSINESS_UNIT_REF),
+                    "business_unit_ref_snapshot": "synthetic-existing",
+                    "business_unit_label_snapshot": "Synthetic Existing",
+                    "effective_from": "2026-01-01",
+                    "effective_to": "",
+                },
+                rule_version="ledgerbridge.account-registry.v1",
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.account_business_unit_assignment "
+                    "(assignment_ref, owner_entity_id, managed_account_ref, business_unit_id, "
+                    "business_unit_ref_snapshot, business_unit_label_snapshot, effective_from, "
+                    "effective_to, audit_event_id, created_at) VALUES "
+                    "(:assignment, :entity, :account, :unit, 'synthetic-existing', "
+                    "'Synthetic Existing', DATE '2026-01-01', NULL, :audit, "
+                    "(SELECT occurred_at FROM public.audit_event WHERE id=:audit))"
+                ),
+                {
+                    "assignment": ASSIGNMENT_REF,
+                    "entity": ENTITY_REF,
+                    "account": MANAGED_ACCOUNT_REF,
+                    "unit": BUSINESS_UNIT_REF,
+                    "audit": assignment_audit,
+                },
+            )
+
+        source = (tmp_path / "synthetic-existing-account.xlsx").resolve()
+        raw = _write_synthetic_mybank_xlsx(source)
+        digest = hashlib.sha256(raw).hexdigest()
+        plan = replace(
+            _existing_account_plan(source, digest, len(raw)),
+            account_suffix="7968",
+        )
+        before = _read_production_counts(engine)
+        os.chmod(tmp_path, 0o700)
+        key_file = (tmp_path / "existing-account-evidence-key.json").resolve()
+        bootstrap_file_key(key_file, generation="synthetic-existing-v1")
+        artifact_root = (tmp_path / "existing-account-artifacts").resolve()
+        artifact_root.mkdir(mode=0o700)
+        gates = replace(
+            _gates(before, schema_revision="20260901_0029"),
+            verify_fact_conflict=True,
+        )
+
+        preflight = run_transactional_database_mybank_existing_account_import(
+            engine,
+            plan,
+            gates=gates,
+            safety_proof=_safety_proof(
+                tmp_path,
+                before,
+                schema_revision="20260901_0029",
+            ),
+            key_file=key_file,
+            artifact_root=artifact_root,
+            commit=False,
+        )
+        assert preflight.created is True
+        assert preflight.fact_conflict_rejected is True
+        assert _read_production_counts(engine) == before
+
+        receipt = run_transactional_database_mybank_existing_account_import(
+            engine,
+            plan,
+            gates=gates,
+            safety_proof=_safety_proof(
+                tmp_path,
+                before,
+                schema_revision="20260901_0029",
+            ),
+            key_file=key_file,
+            artifact_root=artifact_root,
+            commit=True,
+        )
+
+        assert receipt.registry_created is False
+        assert receipt.registry_replay_created is False
+        assert receipt.candidate_delta == 0
+        assert receipt.after_counts.managed_accounts == before.managed_accounts
+        assert receipt.after_counts.journal_entries == before.journal_entries
+        assert receipt.after_counts.postings == before.postings
+        assert receipt.after_counts.bank_statements == before.bank_statements + 1
+        assert receipt.after_counts.bank_statement_transactions == (
+            before.bank_statement_transactions + 2
+        )
         engine.dispose()
