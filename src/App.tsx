@@ -200,10 +200,12 @@ type PersonalTransaction = {
   transactionType: string
   counterparty: string
   sourceKind: 'PLATFORM' | 'BANK'
+  scopeStatus: 'PERSONAL' | 'UNASSIGNED'
 }
 
 type PersonalFinanceSelection = {
   entries: PersonalTransaction[]
+  unassignedEntries: PersonalTransaction[]
   excludedCount: number
   deduplicatedCount: number
 }
@@ -220,7 +222,6 @@ function personalTransaction(candidate: Candidate): PersonalTransaction | null {
   if (!sourceKind) return null
 
   const scope = `${candidate.businessUnit} ${candidate.businessUnitRef}`.trim()
-  if (!/(个人|本人|personal)/i.test(scope)) return null
   if (/(公司|酒店|宾馆|门店|company|hotel)/i.test(scope)) return null
 
   return {
@@ -230,6 +231,7 @@ function personalTransaction(candidate: Candidate): PersonalTransaction | null {
     transactionType: fields[3],
     counterparty: fields[4],
     sourceKind,
+    scopeStatus: /(个人|本人|personal)/i.test(scope) ? 'PERSONAL' : 'UNASSIGNED',
   }
 }
 
@@ -249,7 +251,7 @@ function selectPersonalFinanceEntries(candidates: Candidate[]): PersonalFinanceS
     return result
   }, new Map<string, PersonalTransaction[]>())
 
-  const entries = [...groups.values()].flatMap((group) => {
+  const deduplicatedEntries = [...groups.values()].flatMap((group) => {
     const isTransfer = group.some((entry) => /(转账|提现)/.test(entry.transactionType))
     const preferredKind = isTransfer ? 'BANK' : 'PLATFORM'
     const preferred = group.filter((entry) => entry.sourceKind === preferredKind)
@@ -261,7 +263,12 @@ function selectPersonalFinanceEntries(candidates: Candidate[]): PersonalFinanceS
     return [...preferred, ...lowerPriority.slice(pairedCount)]
   })
 
-  return { entries, excludedCount, deduplicatedCount }
+  return {
+    entries: deduplicatedEntries.filter((entry) => entry.scopeStatus === 'PERSONAL'),
+    unassignedEntries: deduplicatedEntries.filter((entry) => entry.scopeStatus === 'UNASSIGNED'),
+    excludedCount,
+    deduplicatedCount,
+  }
 }
 
 function counterpartyFor(candidate: Candidate): string {
@@ -1487,6 +1494,8 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate }: {
   const pending = candidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
   const personalSelection = selectPersonalFinanceEntries(candidates)
   const financialEntries = personalSelection.entries
+  const unassignedEntries = personalSelection.unassignedEntries
+  const confirmedPendingPostingCount = financialEntries.length + unassignedEntries.length
   const financialCandidates = financialEntries.map((entry) => entry.candidate)
   const incomeMinor = financialEntries.reduce((total, entry) => total + Math.max(entry.cashflowMinor, 0), 0)
   const expenseMinor = financialEntries.reduce((total, entry) => total + Math.abs(Math.min(entry.cashflowMinor, 0)), 0)
@@ -1527,9 +1536,18 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate }: {
       <PageHeader
         eyebrow="个人财务"
         title="完整个人财务对账"
-        description="汇总当前已导入的账单、凭证和待审核事项；所有数字均可回到原始材料。"
+        description="区分已确认草稿、归属待校准与正式过账；所有数字均可回到原始材料。"
         action={<Button onClick={() => onNavigate('review')}><ListChecks size={17} />处理待审核</Button>}
       />
+
+      <section className="panel personal-posting-status" aria-label="个人财务入账状态">
+        <div>
+          <span>入账链路</span>
+          <h2>{confirmedPendingPostingCount} 条已确认、尚未过账</h2>
+          <p>“确认”只代表审核完成并进入对账草稿，不等于已生成会计分录。系统会在主体和账户映射校准后生成平衡草稿，再由你明确确认过账。</p>
+        </div>
+        <Badge color="amber">正式过账未启用</Badge>
+      </section>
 
       <section className="panel personal-review-priority" aria-label="个人财务待审核">
         <div className="panel-heading">
@@ -1551,16 +1569,36 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate }: {
       </section>
 
       <section className="metric-grid personal-finance-metrics" aria-label="个人财务收支概览">
-        <Metric primary label="收入" value={currency.format(minorToMajor(incomeMinor))} detail={`${financialEntries.length} 条已确认个人收支`} icon={<CloudArrowUp size={20} />} />
-        <Metric label="支出" value={currency.format(minorToMajor(expenseMinor))} detail={`${financialEntries.filter((entry) => entry.cashflowMinor < 0).length} 条已确认个人支出`} icon={<Bank size={20} />} />
-        <Metric label="净额" value={currency.format(minorToMajor(netMinor))} detail="已确认个人收入减支出" icon={<ArrowsClockwise size={20} />} />
+        <Metric primary label="草稿收入" value={currency.format(minorToMajor(incomeMinor))} detail={`${financialEntries.length} 条已确认个人收支（待入账）`} icon={<CloudArrowUp size={20} />} />
+        <Metric label="草稿支出" value={currency.format(minorToMajor(expenseMinor))} detail={`${financialEntries.filter((entry) => entry.cashflowMinor < 0).length} 条已确认个人支出（待入账）`} icon={<Bank size={20} />} />
+        <Metric label="草稿净额" value={currency.format(minorToMajor(netMinor))} detail="已确认个人收入减支出，尚未过账" icon={<ArrowsClockwise size={20} />} />
         <Metric label="原始材料" value={`${evidenceCount} 份`} detail="只计入本次汇总所依据的材料" icon={<FolderOpen size={20} />} />
       </section>
 
       <div className="personal-finance-boundary" role="status">
-        <span>{personalSelection.excludedCount} 条待来源归属或状态确认，未计入汇总</span>
+        <span>{personalSelection.excludedCount} 条不属于个人范围或状态未确认，未计入汇总</span>
+        <span>{unassignedEntries.length} 条已确认记录归属待校准，单独列示</span>
         <span>{personalSelection.deduplicatedCount} 条跨来源重复记录已合并</span>
       </div>
+
+      {unassignedEntries.length > 0 ? (
+        <section className="panel personal-unassigned-panel" aria-label="个人财务归属待校准">
+          <div className="panel-heading">
+            <div><h2>归属待校准</h2><p>这些记录以前靠营业单元名称识别而被整批隐藏；现在先如实列出，但不混入个人正式汇总。</p></div>
+            <Badge color="amber">{unassignedEntries.length} 条归属待校准</Badge>
+          </div>
+          <div className="personal-review-list">
+            {unassignedEntries.slice(0, 6).map((entry) => (
+              <button key={entry.candidate.id} onClick={() => onOpenCandidate(entry.candidate)} type="button">
+                <span><strong>{entry.candidate.shortId}</strong><small>{entry.candidate.businessUnit || '主体待校准'} · {entry.candidate.category} · {accountingMonthLabel(entry.candidate.accountingMonth)}</small></span>
+                <span>{entry.candidate.summary}</span>
+                <strong>{currency.format(minorToMajor(entry.cashflowMinor))}</strong>
+                <CaretRight size={16} />
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <div className="personal-insight-grid">
         <section className="panel personal-category-panel">
