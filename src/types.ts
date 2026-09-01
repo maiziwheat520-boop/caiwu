@@ -429,12 +429,51 @@ export type CompanyReportLayer = {
   items: CompanyReportCompany[]
 }
 
+export type CompanyReportCategorySlice = {
+  category_code: string | null
+  category_label: string | null
+  amount_minor: number
+  fact_count: number
+}
+
+export type CompanyReportCategoryComposition = {
+  total_minor: number
+  fact_count: number
+  items: CompanyReportCategorySlice[]
+}
+
+export type CompanyReportCompositionItem = {
+  company_ref: string
+  company_name: string
+  currency: string
+} & (
+  | {
+    basis: 'CONFIRMED_CANDIDATE'
+    positive: CompanyReportCategoryComposition
+    negative: CompanyReportCategoryComposition
+  }
+  | {
+    basis: 'POSTED_LEDGER'
+    revenue: CompanyReportCategoryComposition
+    expense: CompanyReportCategoryComposition
+  }
+)
+
+export type CompanyReportCompositionLayer = {
+  contract_version: 'ledgerbridge.company-report-composition.v1'
+  basis: 'CONFIRMED_CANDIDATE' | 'POSTED_LEDGER'
+  from_month: string
+  to_month: string
+  items: CompanyReportCompositionItem[]
+}
+
 export type CompanyReportsResponse = {
-  contract_version: 'ledgerbridge.company-reports-bff.v1'
+  contract_version: 'ledgerbridge.company-reports-bff.v1' | 'ledgerbridge.company-reports-bff.v2'
   from_month: string
   to_month: string
   posted_ledger_status: 'AVAILABLE' | 'UNAVAILABLE'
   layers: CompanyReportLayer[]
+  compositions?: CompanyReportCompositionLayer[]
 }
 
 export type OriginalReconciliationColumn = {

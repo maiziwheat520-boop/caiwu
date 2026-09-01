@@ -302,7 +302,7 @@ class SyntheticState:
 
     def company_reports(self, from_month: str, to_month: str) -> dict[str, object]:
         return {
-            "contract_version": "ledgerbridge.company-reports-bff.v1",
+            "contract_version": "ledgerbridge.company-reports-bff.v2",
             "from_month": from_month,
             "to_month": to_month,
             "posted_ledger_status": "AVAILABLE",
@@ -319,6 +319,16 @@ class SyntheticState:
                     "ACCOUNT_STATEMENT",
                     "POSTED_LEDGER",
                 )
+            ],
+            "compositions": [
+                {
+                    "contract_version": "ledgerbridge.company-report-composition.v1",
+                    "basis": basis,
+                    "from_month": from_month,
+                    "to_month": to_month,
+                    "items": [],
+                }
+                for basis in ("CONFIRMED_CANDIDATE", "POSTED_LEDGER")
             ],
         }
 
@@ -1051,7 +1061,11 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             self._send_json(200, state.candidate_classification_groups())
             return
         if path == "/api/v1/company-reports":
-            if query:
+            params = parse_qs(query, keep_blank_values=True)
+            if (
+                not set(params).issubset({"from_month", "to_month"})
+                or any(len(values) != 1 for values in params.values())
+            ):
                 self._send_json(
                     400,
                     _problem(
@@ -1062,8 +1076,25 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 )
                 return
             now = datetime.now(timezone.utc)
-            to_month = now.strftime("%Y-%m")
-            from_month = f"{now.year:04d}-01"
+            to_month = params.get("to_month", [now.strftime("%Y-%m")])[0]
+            from_month = params.get("from_month", [f"{now.year:04d}-01"])[0]
+            if (
+                MONTH_PATTERN.fullmatch(from_month) is None
+                or MONTH_PATTERN.fullmatch(to_month) is None
+                or from_month > to_month
+                or (int(to_month[:4]) * 12 + int(to_month[5:]))
+                - (int(from_month[:4]) * 12 + int(from_month[5:]))
+                >= 24
+            ):
+                self._send_json(
+                    400,
+                    _problem(
+                        400,
+                        "INVALID_COMPANY_REPORT_QUERY",
+                        "公司报表月份范围无效或超过 24 个月",
+                    ),
+                )
+                return
             self._send_json(200, state.company_reports(from_month, to_month))
             return
         if path == "/api/v1/candidates":
