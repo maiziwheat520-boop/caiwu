@@ -91,6 +91,7 @@ export type ApiCandidate = {
   revision: number
   status: CandidateStatus
   source_channel: SourceChannel
+  source_system?: string
   source_message_id: string
   received_at: string
   business_unit: string

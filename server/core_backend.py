@@ -2225,6 +2225,12 @@ def _candidate_from_core(value: object) -> dict[str, object]:
         ]
     if not isinstance(review_risks, list):
         raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    source_system = source.get("source_system")
+    if not isinstance(source_system, str) or re.fullmatch(
+        r"[a-z0-9][a-z0-9._-]{0,63}",
+        source_system,
+    ) is None:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
     dimension_values: dict[str, str | None] = {}
     for reference_field, label_field in (
         ("business_unit_ref", "business_unit_label"),
@@ -2251,6 +2257,7 @@ def _candidate_from_core(value: object) -> dict[str, object]:
         "revision": value.get("revision"),
         "status": value.get("status"),
         "source_channel": channel,
+        "source_system": source_system,
         "source_message_id": source.get("source_event_ref"),
         "received_at": value.get("created_at"),
         "business_unit": dimension_values["business_unit_label"] or "",

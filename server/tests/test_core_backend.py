@@ -981,6 +981,16 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 self.assertEqual(raised.exception.status, 503)
                 self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
 
+    def test_candidate_rejects_an_invalid_source_system(self) -> None:
+        client = FakeCoreClient()
+        client.candidate_payload["source"]["source_system"] = "../private"  # type: ignore[index]
+
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(client).list_candidates(status=None, month=None, cursor=None)
+
+        self.assertEqual(raised.exception.status, 503)
+        self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
     def test_accounting_dimensions_are_scoped_to_the_configured_entity(self) -> None:
         client = FakeCoreClient()
 
@@ -1910,6 +1920,7 @@ class CoreBackedAdapterTests(unittest.TestCase):
         page = state.list_candidates(status="PENDING", month="2026-08", cursor=None)
         candidate = page["items"][0]  # type: ignore[index]
         self.assertEqual(candidate["source_channel"], "outlook")
+        self.assertEqual(candidate["source_system"], "synthetic_boc_mail")
         self.assertEqual(candidate["business_unit"], "演示门店")
         self.assertEqual(candidate["business_unit_ref"], "unit-demo-a")
         self.assertEqual(candidate["category_code"], "SETTLEMENT")

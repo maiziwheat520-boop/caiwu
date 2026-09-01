@@ -14,7 +14,7 @@ import {
   Warning,
 } from '@phosphor-icons/react'
 import { api, minorToMajor } from '../api'
-import type { OriginalReconciliation, Page } from '../types'
+import type { Candidate, OriginalReconciliation, Page } from '../types'
 import { ErrorState, LoadingState, Metric, PageHeader } from '../shared/PagePrimitives'
 
 const DEFAULT_MONTH = '2026-08'
@@ -25,8 +25,36 @@ function monthLabel(month: string) {
   return `${year} 年 ${Number(value)} 月`
 }
 
-export function OriginalReconciliationPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
-  const [selectedMonth, setSelectedMonth] = useState(DEFAULT_MONTH)
+function isImportedWorkbookItem(candidate: Candidate) {
+  return candidate.raw.source_system === 'original_reconciliation_xlsx'
+}
+
+function initialMonth(candidates: Candidate[]) {
+  return candidates
+    .filter(isImportedWorkbookItem)
+    .map((candidate) => candidate.accountingMonth)
+    .filter((month): month is string => Boolean(month))
+    .sort()
+    .at(-1) ?? DEFAULT_MONTH
+}
+
+function candidateStatus(candidate: Candidate) {
+  switch (candidate.status) {
+    case 'CONFIRMED': return { color: 'green' as const, label: '已确认' }
+    case 'IGNORED': return { color: 'gray' as const, label: '已忽略' }
+    case 'SUPERSEDED': return { color: 'gray' as const, label: '已替代' }
+    case 'CONFLICTED': return { color: 'red' as const, label: '有冲突' }
+    case 'INCOMPLETE': return { color: 'amber' as const, label: '待补录' }
+    default: return { color: 'blue' as const, label: '待审核' }
+  }
+}
+
+export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandidate }: {
+  candidates: Candidate[]
+  onNavigate: (page: Page) => void
+  onOpenCandidate: (candidate: Candidate) => void
+}) {
+  const [selectedMonth, setSelectedMonth] = useState(() => initialMonth(candidates))
   const [data, setData] = useState<OriginalReconciliation | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -81,6 +109,9 @@ export function OriginalReconciliationPage({ onNavigate }: { onNavigate: (page: 
       .filter((cell) => cell.kind === 'GAP')
       .map((cell) => gapLabel(cell.gap_code)))))
     : []
+  const workbookItems = candidates.filter((candidate) => (
+    isImportedWorkbookItem(candidate) && candidate.accountingMonth === selectedMonth
+  ))
   const empty = Boolean(
     data
     && data.totals.mapped_cell_count === 0
@@ -139,6 +170,39 @@ export function OriginalReconciliationPage({ onNavigate }: { onNavigate: (page: 
             </div>
 
             <div className="original-business-item-list">
+              {workbookItems.map((candidate) => {
+                const status = candidateStatus(candidate)
+                return (
+                  <article key={candidate.id} className="original-workbook-item">
+                    <div className="original-business-item-title">
+                      <Badge color={status.color}>{status.label}</Badge>
+                      <strong>{candidate.summary}</strong>
+                      <small>{candidate.shortId} · 第 {candidate.revision} 版</small>
+                    </div>
+                    <dl>
+                      <div><dt>公司 / 门店</dt><dd>{candidate.businessUnit || '待补录'}</dd></div>
+                      <div><dt>种类</dt><dd>{candidate.category || '待补录'}</dd></div>
+                      <div><dt>金额</dt><dd>{currency.format(minorToMajor(candidate.amountMinor))}</dd></div>
+                      <div><dt>关联证据</dt><dd>{candidate.evidence.length} 份</dd></div>
+                    </dl>
+                    <Button
+                      aria-label={`打开事项 ${candidate.shortId}`}
+                      size="1"
+                      variant="soft"
+                      onClick={() => onOpenCandidate(candidate)}
+                    >
+                      打开事项<CaretRight size={14} />
+                    </Button>
+                  </article>
+                )
+              })}
+              {workbookItems.length === 0 ? (
+                <div className="empty-state compact-empty original-reconciliation-empty">
+                  <ListChecks size={30} />
+                  <h3>本月 Excel 尚未迁入 Core</h3>
+                  <p>工作簿里有数据并不等于系统已经导入；完成复核映射和受控导入后，事项才会出现在这里。</p>
+                </div>
+              ) : null}
               {data.sources.map((source) => (
                 <article key={`${source.source_kind}:${source.source_system}`}>
                   <div className="original-business-item-title">
@@ -163,11 +227,11 @@ export function OriginalReconciliationPage({ onNavigate }: { onNavigate: (page: 
                   </Button>
                 </article>
               ))}
-              {empty ? (
+              {empty && workbookItems.length === 0 ? (
                 <div className="empty-state compact-empty original-reconciliation-empty">
                   <ListChecks size={30} />
-                  <h3>本月暂无已导入业务事项</h3>
-                  <p>新导入的平台结算、账户流水与正式入账事实将自动出现在这里。</p>
+                  <h3>Core 也没有本月对账事实</h3>
+                  <p>候选事项、账户流水和正式入账均为空，不能据此生成月度投影。</p>
                 </div>
               ) : null}
             </div>
