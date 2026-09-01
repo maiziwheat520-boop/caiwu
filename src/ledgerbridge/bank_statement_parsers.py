@@ -27,6 +27,10 @@ def parse_bank_statement(
         from ledgerbridge.ccb_statement import parse_ccb_personal_xls
 
         parser = parse_ccb_personal_xls
+    elif profile is BankStatementParserProfile.BOC_PERSONAL_PDF_V1:
+        from ledgerbridge.boc_statement import parse_boc_personal_pdf
+
+        parser = parse_boc_personal_pdf
     else:  # pragma: no cover - StrEnum construction normally rejects this first
         raise ValueError("bank statement parser profile is unsupported")
     statement = parser(
