@@ -7,12 +7,16 @@ from datetime import date
 from typing import Any
 from uuid import UUID
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import text
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from ledgerbridge.company_reporting_composition_contract import (
+    CompanyReportCompositionItem,
+    CompanyReportCompositionPage,
+)
 from ledgerbridge.company_reporting_contract import (
     MAX_REPORT_BUSINESS_UNITS,
     MAX_REPORT_COMPANIES,
@@ -29,6 +33,10 @@ from ledgerbridge.internal_read_contract import (
     require_capability,
 )
 from ledgerbridge.internal_read_service import InternalReadBackendUnavailable
+
+_COMPOSITION_ITEM_ADAPTER: TypeAdapter[CompanyReportCompositionItem] = TypeAdapter(
+    CompanyReportCompositionItem
+)
 
 
 class DatabaseCompanyReportingService:
@@ -124,6 +132,93 @@ class DatabaseCompanyReportingService:
                 "company report page failed contract validation"
             ) from exc
 
+    def composition(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        basis: CompanyReportBasis,
+        from_month: str,
+        to_month: str,
+        company_ref: UUID | None = None,
+    ) -> CompanyReportCompositionPage:
+        require_capability(principal, Capability.LEDGER_READ)
+        validate_report_month_range(from_month, to_month)
+        try:
+            selected_basis = CompanyReportBasis(basis)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("company report composition basis is invalid") from exc
+        if selected_basis is CompanyReportBasis.ACCOUNT_STATEMENT:
+            raise ValueError("account statements do not define income or expense categories")
+
+        grants = self._validated_grants(principal.grants)
+        if company_ref is not None:
+            grants = tuple(grant for grant in grants if grant.entity_ref == company_ref)
+            if not grants:
+                raise ResourceNotVisible("resource was not found")
+        elif not grants:
+            raise ResourceNotVisible("resource was not found")
+
+        start = date.fromisoformat(f"{from_month}-01")
+        end = date.fromisoformat(f"{to_month}-01")
+        items: list[CompanyReportCompositionItem] = []
+        try:
+            with self._session_factory() as session:
+                audit_sequence, audit_hash = self._audit_horizon(session)
+                for grant in grants:
+                    rows = (
+                        session.execute(
+                            text(
+                                "SELECT composition FROM "
+                                "company_reporting_read."
+                                "get_company_report_composition_v1_as_of("
+                                ":entity_ref, :business_unit_ids, :include_unassigned, "
+                                ":basis, :from_month, :to_month, :audit_sequence, :audit_hash)"
+                            ),
+                            {
+                                "entity_ref": grant.entity_ref,
+                                "business_unit_ids": sorted(
+                                    grant.business_unit_ids,
+                                    key=lambda value: value.int,
+                                ),
+                                "include_unassigned": grant.allow_unassigned_candidates,
+                                "basis": selected_basis.value,
+                                "from_month": start,
+                                "to_month": end,
+                                "audit_sequence": audit_sequence,
+                                "audit_hash": audit_hash,
+                            },
+                        )
+                        .mappings()
+                        .all()
+                    )
+                    if not rows:
+                        if company_ref is None:
+                            continue
+                        raise ResourceNotVisible("resource was not found")
+                    if len(rows) != 1:
+                        raise InternalReadBackendUnavailable(
+                            "company report composition returned an invalid row count"
+                        )
+                    items.append(self._validated_composition_item(rows[0], grant, selected_basis))
+        except (ResourceNotVisible, InternalReadBackendUnavailable):
+            raise
+        except SQLAlchemyError as exc:
+            raise InternalReadBackendUnavailable(
+                "company report composition is unavailable"
+            ) from exc
+
+        try:
+            return CompanyReportCompositionPage(
+                basis=selected_basis,
+                from_month=from_month,
+                to_month=to_month,
+                items=tuple(items),
+            )
+        except ValidationError as exc:
+            raise InternalReadBackendUnavailable(
+                "company report composition page failed contract validation"
+            ) from exc
+
     @staticmethod
     def _validated_grants(grants: Sequence[EntityGrant]) -> tuple[EntityGrant, ...]:
         if len(grants) > MAX_REPORT_COMPANIES:
@@ -203,4 +298,25 @@ class DatabaseCompanyReportingService:
                 raise InternalReadBackendUnavailable(
                     "company report business unit escaped its authorized scope"
                 )
+        return item
+
+    @staticmethod
+    def _validated_composition_item(
+        row: Mapping[str, Any] | RowMapping,
+        grant: EntityGrant,
+        basis: CompanyReportBasis,
+    ) -> CompanyReportCompositionItem:
+        composition = row.get("composition")
+        if not isinstance(composition, Mapping):
+            raise InternalReadBackendUnavailable("company report composition payload is malformed")
+        try:
+            item = _COMPOSITION_ITEM_ADAPTER.validate_python(composition)
+        except ValidationError as exc:
+            raise InternalReadBackendUnavailable(
+                "company report composition payload failed contract validation"
+            ) from exc
+        if item.company_ref != grant.entity_ref or item.basis is not basis:
+            raise InternalReadBackendUnavailable(
+                "company report composition escaped its authorized scope"
+            )
         return item

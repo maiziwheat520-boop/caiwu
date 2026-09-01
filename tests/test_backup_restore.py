@@ -39,8 +39,10 @@ from scripts.backup_restore import (
     CLASSIFICATION_BATCH_SECURITY_SQL,
     CLASSIFICATION_BATCH_TABLES,
     CLASSIFICATION_BATCH_TRIGGER_CONTRACT,
+    COMPANY_REPORTING_BASE_REQUIRED_TABLES,
     COMPANY_REPORTING_FUNCTION_RESULTS,
     COMPANY_REPORTING_FUNCTION_SIGNATURES,
+    COMPANY_REPORTING_READER_FUNCTIONS,
     COMPANY_REPORTING_REQUIRED_COLUMNS,
     COMPANY_REPORTING_REQUIRED_TABLES,
     COMPANY_REPORTING_SCHEMA,
@@ -87,6 +89,7 @@ from scripts.backup_restore import (
     _safe_extract_tar,
     _validate_backup_image,
     _validate_classification_batch_security,
+    _validate_company_reporting_security,
     _validate_restored_database,
     _verify_payload_hashes,
     _write_payload_hashes,
@@ -135,7 +138,7 @@ def test_account_registry_privilege_probe_uses_catalog_function_oid() -> None:
 
 def test_mybank_restore_inventory_rejects_unreviewed_future_schema_revision() -> None:
     with pytest.raises(BackupError, match="schema revision"):
-        _cutover_inventory(schema_revision="20260901_0028")
+        _cutover_inventory(schema_revision="20260901_0029")
 
 
 def test_mybank_restore_inventory_accepts_exact_import_replay_and_conflict_sequence() -> None:
@@ -957,9 +960,16 @@ def _account_registry_database_metadata() -> dict[str, object]:
     return metadata
 
 
-def _company_reporting_database_metadata() -> dict[str, object]:
+def _company_reporting_database_metadata(*, composition: bool = False) -> dict[str, object]:
     metadata = _account_registry_database_metadata()
-    metadata["alembic_version"] = "20260830_0024"
+    metadata["alembic_version"] = "20260901_0028" if composition else "20260830_0024"
+    function_signatures = dict(COMPANY_REPORTING_FUNCTION_SIGNATURES)
+    reader_functions = set(COMPANY_REPORTING_READER_FUNCTIONS)
+    required_tables = COMPANY_REPORTING_REQUIRED_TABLES
+    if not composition:
+        function_signatures.pop("get_company_report_composition_v1_as_of")
+        reader_functions.discard("get_company_report_composition_v1_as_of")
+        required_tables = COMPANY_REPORTING_BASE_REQUIRED_TABLES
     metadata["company_reporting_schema"] = {
         "schema": COMPANY_REPORTING_SCHEMA,
         "owner": "ledgerbridge_owner",
@@ -974,11 +984,11 @@ def _company_reporting_database_metadata() -> dict[str, object]:
             "security_definer": name in COMPANY_REPORTING_SECURITY_DEFINER_FUNCTIONS,
             "proconfig": ["search_path=pg_catalog"],
         }
-        for name, arguments in COMPANY_REPORTING_FUNCTION_SIGNATURES.items()
+        for name, arguments in function_signatures.items()
     ]
     metadata["company_reporting_required_tables"] = [
         {"schema": "public", "table": table, "owner": "ledgerbridge_owner", "kind": "r"}
-        for table in COMPANY_REPORTING_REQUIRED_TABLES
+        for table in required_tables
     ]
     metadata["company_reporting_required_columns"] = [
         {
@@ -1043,10 +1053,10 @@ def _company_reporting_database_metadata() -> dict[str, object]:
             "privilege": "EXECUTE",
             "grantable": False,
         }
-        for name, arguments in COMPANY_REPORTING_FUNCTION_SIGNATURES.items()
+        for name, arguments in function_signatures.items()
         for grantee in (
             ("ledgerbridge_owner", "ledgerbridge_reader")
-            if name == "get_company_report_v1_as_of"
+            if name in reader_functions
             else ("ledgerbridge_owner",)
         )
     ]
@@ -1065,10 +1075,10 @@ def _company_reporting_database_metadata() -> dict[str, object]:
             "schema": COMPANY_REPORTING_SCHEMA,
             "name": name,
             "identity_arguments": arguments,
-            "execute": role == "ledgerbridge_reader" and name == "get_company_report_v1_as_of",
+            "execute": role == "ledgerbridge_reader" and name in reader_functions,
         }
         for role in R1_ROLES
-        for name, arguments in COMPANY_REPORTING_FUNCTION_SIGNATURES.items()
+        for name, arguments in function_signatures.items()
     ]
     return metadata
 
@@ -1768,10 +1778,10 @@ def test_r1_restore_requires_accounting_dimensions_function_from_0022() -> None:
         _validate_restored_database(metadata, metadata.copy())
 
 
-def test_company_reporting_restore_metadata_covers_0024_contract() -> None:
-    expected = _company_reporting_database_metadata()
+def test_company_reporting_restore_metadata_covers_0028_contract() -> None:
+    expected = _company_reporting_database_metadata(composition=True)
 
-    _validate_restored_database(expected, expected.copy())
+    _validate_company_reporting_security(expected)
 
     for table in COMPANY_REPORTING_REQUIRED_TABLES:
         assert f"'{table}'" in COMPANY_REPORTING_SECURITY_SQL
