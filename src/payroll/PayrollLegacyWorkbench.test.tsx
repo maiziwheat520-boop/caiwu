@@ -28,12 +28,20 @@ const testWorkspace: PayrollTestWorkspaceReadResponse = {
     payment_submission_supported: false,
     payable: false,
     submission_supported: false,
-    routing_counts: { auto_test: 1, review_required: 0, date_unknown: 0 },
+    routing_counts: { auto_test: 2, review_required: 0, date_unknown: 0 },
     materials: [{
       company_id: 'company_live_hotel',
       material_id: 'material_history_2026_08',
       routing_status: 'AUTO_TEST',
       period: '2026-08',
+      material_type: 'PAYROLL_SHEET',
+      payable: false,
+      submission_supported: false,
+    }, {
+      company_id: 'company_live_hotel',
+      material_id: 'material_history_2026_07',
+      routing_status: 'AUTO_TEST',
+      period: '2026-07',
       material_type: 'PAYROLL_SHEET',
       payable: false,
       submission_supported: false,
@@ -113,8 +121,9 @@ describe('PayrollLegacyWorkbench', () => {
 
     render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
 
-    expect(await screen.findByText('原工资软件工作台')).toBeInTheDocument()
-    expect(screen.getByLabelText('选择原工资表')).toHaveValue('material_history_2026_08')
+    const monthSelect = await screen.findByLabelText('工资月份')
+    expect(monthSelect).toHaveValue('2026-08')
+    expect(screen.getByLabelText('选择原工资表版本')).toHaveValue('material_history_2026_08')
     fireEvent.click(screen.getByRole('button', { name: '导入主表并计算' }))
 
     await waitFor(() => expect(api.runPayrollLegacyCommand).toHaveBeenCalledWith({
@@ -132,6 +141,29 @@ describe('PayrollLegacyWorkbench', () => {
     fireEvent.click(screen.getByRole('button', { name: '管理工资规则' }))
     expect(screen.getByRole('button', { name: '保存规则并重新计算' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /付款|发薪|提交银行/ })).not.toBeInTheDocument()
+  })
+
+  it('selects a source month before choosing that month payroll version', async () => {
+    vi.spyOn(api, 'getPayrollLegacyWorkspace').mockRejectedValue(new ApiError('missing', 404))
+    vi.spyOn(api, 'runPayrollLegacyCommand').mockResolvedValue(fillResult)
+
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
+
+    const monthSelect = await screen.findByLabelText('工资月份')
+    fireEvent.change(monthSelect, { target: { value: '2026-07' } })
+    expect(screen.getByLabelText('选择原工资表版本')).toHaveValue('material_history_2026_07')
+    fireEvent.click(screen.getByRole('button', { name: '导入主表并计算' }))
+
+    await waitFor(() => expect(api.runPayrollLegacyCommand).toHaveBeenCalledWith({
+      action: 'FILL_MAIN',
+      expectedRevision: 0,
+      payload: {
+        main_material_id: 'material_history_2026_07',
+        supporting_material_ids: {},
+        adjustments: [],
+      },
+      csrfToken: 'csrf-test',
+    }))
   })
 
   it('reloads the saved main table and exposes all eight real feature actions', async () => {

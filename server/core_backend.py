@@ -3031,6 +3031,14 @@ def _validate_payroll_test_material_preview_payload(
     ):
         raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
     company_id = str(payload["company_id"])
+    if data.get("schema_version") == "payroll-summary-authoritative-preview/v1":
+        _validate_payroll_summary_preview_data(
+            data,
+            expected_company_id=company_id,
+            expected_batch_id=expected_batch_id,
+            expected_material_id=expected_material_id,
+        )
+        return
     fields = {
         "schema_version", "data_scope", "test_batch_id", "company_id", "material_id",
         "period", "routing_status", "auto_batch_eligible", "status", "line_count",
@@ -3133,6 +3141,105 @@ def _validate_payroll_test_material_preview_payload(
                 or not 0 <= int(exception[field]) <= 9_007_199_254_740_991
             ):
                 raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+
+def _validate_payroll_summary_preview_data(
+    data: dict[str, object],
+    *,
+    expected_company_id: str,
+    expected_batch_id: str,
+    expected_material_id: str,
+) -> None:
+    fields = {
+        "schema_version", "data_scope", "test_batch_id", "company_id", "material_id",
+        "routing_status", "source_of_truth", "authoritative", "period_count",
+        "latest_period", "periods", "payment_submission_supported", "payable",
+        "submission_supported",
+    }
+    periods = data.get("periods")
+    if (
+        set(data) != fields
+        or data.get("schema_version") != "payroll-summary-authoritative-preview/v1"
+        or data.get("data_scope") != "TEST_ONLY"
+        or data.get("test_batch_id") != expected_batch_id
+        or data.get("company_id") != expected_company_id
+        or data.get("material_id") != expected_material_id
+        or data.get("routing_status") not in {"AUTO_TEST", "REVIEW_REQUIRED", "DATE_UNKNOWN"}
+        or data.get("source_of_truth") != "PAYROLL_SUMMARY"
+        or data.get("authoritative") is not True
+        or type(data.get("period_count")) is not int
+        or not isinstance(periods, list)
+        or not periods
+        or int(data["period_count"]) != len(periods)
+        or not isinstance(data.get("latest_period"), str)
+        or PAYROLL_PERIOD.fullmatch(str(data["latest_period"])) is None
+        or data.get("payment_submission_supported") is not False
+        or data.get("payable") is not False
+        or data.get("submission_supported") is not False
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    period_fields = {
+        "period", "store_count", "stores", "total_net_pay_cents", "total_source",
+        "total_matches_stores",
+    }
+    store_fields = {"store_name", "net_pay_cents"}
+    previous_period: str | None = None
+    seen_periods: set[str] = set()
+    for index, item in enumerate(periods):
+        if not isinstance(item, dict) or set(item) != period_fields:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        period = item.get("period")
+        stores = item.get("stores")
+        if (
+            not isinstance(period, str)
+            or PAYROLL_PERIOD.fullmatch(period) is None
+            or period in seen_periods
+            or previous_period is not None and period >= previous_period
+            or index == 0 and period != data.get("latest_period")
+            or type(item.get("store_count")) is not int
+            or not isinstance(stores, list)
+            or not stores
+            or int(item["store_count"]) != len(stores)
+            or type(item.get("total_net_pay_cents")) is not int
+            or not 0 <= int(item["total_net_pay_cents"]) <= JSON_SAFE_INTEGER
+            or item.get("total_source")
+            not in {"SUMMARY_TOTAL_ROW", "SUM_OF_SUMMARY_STORE_ROWS"}
+            or type(item.get("total_matches_stores")) is not bool
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        seen_periods.add(period)
+        previous_period = period
+        seen_stores: set[str] = set()
+        calculated_total = 0
+        for store in stores:
+            if not isinstance(store, dict) or set(store) != store_fields:
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+            name = store.get("store_name")
+            amount = store.get("net_pay_cents")
+            if (
+                not isinstance(name, str)
+                or not name
+                or name != name.strip()
+                or len(name) > 40
+                or name in seen_stores
+                or re.search(r"[\x00-\x1f\x7f]", name)
+                or re.search(r"(?<!\d)\d(?:[\s-]?\d){11,18}(?!\d)", name)
+                or re.search(r"(?:[A-Za-z]:\\|\\\\|/(?:home|Users?)/)", name)
+                or type(amount) is not int
+                or not 0 <= int(amount) <= JSON_SAFE_INTEGER
+            ):
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+            seen_stores.add(name)
+            calculated_total += int(amount)
+            if calculated_total > JSON_SAFE_INTEGER:
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        total = int(item["total_net_pay_cents"])
+        if item["total_matches_stores"] is not (total == calculated_total) or (
+            item["total_source"] == "SUM_OF_SUMMARY_STORE_ROWS"
+            and total != calculated_total
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    _reject_unsafe_payroll_values(data)
 
 
 def _validate_payroll_legacy_workspace_payload(

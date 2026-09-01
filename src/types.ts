@@ -646,6 +646,45 @@ export type PayrollTestMaterialPreviewResponse = {
   data: PayrollTestMaterialPreview
 }
 
+export type PayrollSummaryStoreTotal = {
+  store_name: string
+  net_pay_cents: number
+}
+
+export type PayrollSummaryPeriod = {
+  period: string
+  store_count: number
+  stores: PayrollSummaryStoreTotal[]
+  total_net_pay_cents: number
+  total_source: 'SUMMARY_TOTAL_ROW' | 'SUM_OF_SUMMARY_STORE_ROWS'
+  total_matches_stores: boolean
+}
+
+export type PayrollSummaryAuthoritativePreview = {
+  schema_version: 'payroll-summary-authoritative-preview/v1'
+  data_scope: 'TEST_ONLY'
+  test_batch_id: string
+  company_id: string
+  material_id: string
+  routing_status: PayrollTestRoutingStatus
+  source_of_truth: 'PAYROLL_SUMMARY'
+  authoritative: true
+  period_count: number
+  latest_period: string
+  periods: PayrollSummaryPeriod[]
+  payment_submission_supported: false
+  payable: false
+  submission_supported: false
+}
+
+export type PayrollSummaryAuthoritativePreviewResponse = {
+  contract_version: 'ledgerbridge.payroll-test-material-preview-read.v1'
+  entity_ref: string
+  company_id: string
+  material_id: string
+  data: PayrollSummaryAuthoritativePreview
+}
+
 export type PayrollTestMaterialOrganizeResult = {
   schema_version: 'payroll-test-material-organize-result/v1'
   data_scope: 'TEST_ONLY'

@@ -1,8 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { api } from '../api'
-import type { PayrollTestWorkspaceReadResponse } from '../types'
+import type {
+  PayrollSummaryAuthoritativePreviewResponse,
+  PayrollTestWorkspaceReadResponse,
+} from '../types'
 import { PayrollHistorySummary } from './PayrollHistorySummary'
 
 const workspace: PayrollTestWorkspaceReadResponse = {
@@ -24,20 +27,29 @@ const workspace: PayrollTestWorkspaceReadResponse = {
     payment_submission_supported: false,
     payable: false,
     submission_supported: false,
-    routing_counts: { auto_test: 2, review_required: 0, date_unknown: 0 },
+    routing_counts: { auto_test: 2, review_required: 0, date_unknown: 1 },
     materials: [
       {
         company_id: 'company_live_hotel',
-        material_id: 'material_payroll_version_001',
+        material_id: 'material_authoritative_summary',
+        routing_status: 'DATE_UNKNOWN',
+        period: null,
+        material_type: 'PAYROLL_SUMMARY',
+        payable: false,
+        submission_supported: false,
+      },
+      {
+        company_id: 'company_live_hotel',
+        material_id: 'material_experiment_2026_07',
         routing_status: 'AUTO_TEST',
-        period: '2026-08',
+        period: '2026-07',
         material_type: 'PAYROLL_SHEET',
         payable: false,
         submission_supported: false,
       },
       {
         company_id: 'company_live_hotel',
-        material_id: 'material_payroll_version_002',
+        material_id: 'material_experiment_2026_08',
         routing_status: 'AUTO_TEST',
         period: '2026-08',
         material_type: 'PAYROLL_SHEET',
@@ -48,44 +60,82 @@ const workspace: PayrollTestWorkspaceReadResponse = {
   },
 }
 
+const summaryResponse: PayrollSummaryAuthoritativePreviewResponse = {
+  contract_version: 'ledgerbridge.payroll-test-material-preview-read.v1',
+  entity_ref: workspace.entity_ref,
+  company_id: workspace.company_id,
+  material_id: 'material_authoritative_summary',
+  data: {
+    schema_version: 'payroll-summary-authoritative-preview/v1',
+    data_scope: 'TEST_ONLY',
+    test_batch_id: workspace.data.test_batch_id,
+    company_id: workspace.company_id,
+    material_id: 'material_authoritative_summary',
+    routing_status: 'DATE_UNKNOWN',
+    source_of_truth: 'PAYROLL_SUMMARY',
+    authoritative: true,
+    period_count: 2,
+    latest_period: '2026-07',
+    periods: [
+      {
+        period: '2026-07',
+        store_count: 2,
+        stores: [
+          { store_name: '青居客', net_pay_cents: 3_242_000 },
+          { store_name: '同富', net_pay_cents: 14_019_198 },
+        ],
+        total_net_pay_cents: 17_261_198,
+        total_source: 'SUMMARY_TOTAL_ROW',
+        total_matches_stores: true,
+      },
+      {
+        period: '2026-06',
+        store_count: 2,
+        stores: [
+          { store_name: '青居客', net_pay_cents: 3_401_200 },
+          { store_name: '同富', net_pay_cents: 13_632_798 },
+        ],
+        total_net_pay_cents: 17_033_998,
+        total_source: 'SUMMARY_TOTAL_ROW',
+        total_matches_stores: true,
+      },
+    ],
+    payment_submission_supported: false,
+    payable: false,
+    submission_supported: false,
+  },
+}
+
 afterEach(() => vi.restoreAllMocks())
 
 describe('PayrollHistorySummary', () => {
-  it('lists competing saved payroll sheets separately instead of double counting them', async () => {
-    vi.spyOn(api, 'previewPayrollTestMaterial')
-      .mockResolvedValueOnce({
-        contract_version: 'ledgerbridge.payroll-test-material-preview-read.v1',
-        entity_ref: workspace.entity_ref,
-        company_id: workspace.company_id,
-        material_id: workspace.data.materials[0].material_id,
-        data: {
-          schema_version: 'payroll-test-material-preview/v1',
-          data_scope: 'TEST_ONLY',
-          test_batch_id: workspace.data.test_batch_id,
-          company_id: workspace.company_id,
-          material_id: workspace.data.materials[0].material_id,
-          period: '2026-08',
-          routing_status: 'AUTO_TEST',
-          auto_batch_eligible: true,
-          status: 'READY_FOR_REVIEW',
-          line_count: 2,
-          total_net_pay_cents: 820000,
-          lines: [],
-          exceptions: [],
-          payment_submission_supported: false,
-          payable: false,
-          submission_supported: false,
-        },
-      })
-      .mockRejectedValueOnce(new Error('controlled parse failure'))
+  it('shows authoritative monthly store totals and ignores July/August experiment sheets', async () => {
+    vi.spyOn(api, 'previewPayrollSummaryMaterial').mockResolvedValue(summaryResponse)
 
     render(<PayrollHistorySummary workspace={workspace} />)
-    fireEvent.click(screen.getByRole('button', { name: '生成网页汇总预览' }))
 
-    await waitFor(() => expect(api.previewPayrollTestMaterial).toHaveBeenCalledTimes(2))
-    expect(await screen.findByText('本月存在 2 份不同工资表；为防重复计算，系统没有把它们合并为一个总数。')).toBeInTheDocument()
-    expect(screen.getByText('¥8,200.00')).toBeInTheDocument()
-    expect(screen.getByText('文件无法安全解析')).toBeInTheDocument()
-    expect(screen.getByText('只读汇总 · 测试数据 · 不可付款 · 刷新后可从已保存材料重新生成')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '2026-07 工资汇总' })).toBeInTheDocument()
+    expect(api.previewPayrollSummaryMaterial).toHaveBeenCalledTimes(1)
+    expect(api.previewPayrollSummaryMaterial).toHaveBeenCalledWith('material_authoritative_summary')
+    expect(screen.getByLabelText('对账月份')).toHaveValue('2026-07')
+    expect(screen.getAllByText('¥172,611.98')).toHaveLength(2)
+    const rows = screen.getByRole('table', { name: '各店当月工资汇总' })
+    expect(within(rows).getByText('青居客')).toBeInTheDocument()
+    expect(within(rows).getByText('同富')).toBeInTheDocument()
+    expect(screen.getByText('七、八月工资素材保留在实验区，不参与这里的历史金额计算。')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('对账月份'), { target: { value: '2026-06' } })
+    expect(screen.getByRole('heading', { name: '2026-06 工资汇总' })).toBeInTheDocument()
+    expect(screen.getAllByText('¥170,339.98')).toHaveLength(2)
+  })
+
+  it('reports a controlled empty state when no payroll summary can be read', async () => {
+    vi.spyOn(api, 'previewPayrollSummaryMaterial').mockRejectedValue(new Error('parse failed'))
+
+    render(<PayrollHistorySummary workspace={workspace} />)
+
+    await waitFor(() => expect(api.previewPayrollSummaryMaterial).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText('工资统计总表暂时无法读取')).toBeInTheDocument()
+    expect(screen.queryByText('¥172,611.98')).not.toBeInTheDocument()
   })
 })
