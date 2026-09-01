@@ -250,10 +250,62 @@ def test_mybank_existing_account_inventory_preserves_registry_and_posting_facts(
         replay=after,
         conflict=after,
         transaction_count=3,
+        evidence_mode="CREATE_NEW",
     )
 
     assert report["audit_event_delta"] == 10
     assert report["replay_delta"] == report["conflict_delta"] == 0
+
+
+def test_mybank_existing_account_inventory_reuses_evidence_without_new_blob() -> None:
+    before = _cutover_inventory(
+        schema_revision="20260901_0029",
+        changes={
+            "evidence_object": 1,
+            "encrypted_object_identity": 1,
+            "encrypted_blob_version": 1,
+            "managed_account": 1,
+        },
+    )
+    after = _cutover_inventory(
+        schema_revision="20260901_0029",
+        audit_events=1_006,
+        changes={
+            "evidence_object": 1,
+            "encrypted_object_identity": 1,
+            "encrypted_blob_version": 1,
+            "managed_account": 1,
+            "bank_statement": 1,
+            "bank_statement_transaction": 2,
+            "bank_statement_observation": 2,
+            "bank_statement_review": 1,
+        },
+    )
+
+    report = validate_mybank_existing_account_inventory_sequence(
+        before=before,
+        after=after,
+        replay=after,
+        conflict=after,
+        transaction_count=2,
+        evidence_mode="REUSE_EXISTING",
+    )
+
+    assert report["audit_event_delta"] == 6
+
+
+def test_mybank_existing_account_inventory_rejects_unknown_evidence_mode() -> None:
+    inventory = _cutover_inventory(schema_revision="20260901_0029")
+
+    with pytest.raises(BackupError, match="evidence mode"):
+        validate_mybank_existing_account_inventory_sequence(
+            before=inventory,
+            after=inventory,
+            replay=inventory,
+            conflict=inventory,
+            transaction_count=2,
+            evidence_mode="AUTO",
+        )
 
 
 @pytest.mark.parametrize(
@@ -284,6 +336,7 @@ def test_mybank_existing_account_inventory_rejects_unrelated_writes(table: str) 
             replay=after,
             conflict=after,
             transaction_count=2,
+            evidence_mode="CREATE_NEW",
         )
 
 

@@ -3056,11 +3056,18 @@ def validate_mybank_existing_account_inventory_sequence(
     replay: CutoverInventory,
     conflict: CutoverInventory,
     transaction_count: int,
+    evidence_mode: str,
 ) -> dict[str, int]:
     """Prove one statement delta without account-registry, Candidate, or posting writes."""
 
     if type(transaction_count) is not int or transaction_count <= 0:
         raise BackupError("existing-account statement transaction count is invalid")
+    if evidence_mode == "CREATE_NEW":
+        evidence_delta = 1
+    elif evidence_mode == "REUSE_EXISTING":
+        evidence_delta = 0
+    else:
+        raise BackupError("existing-account statement evidence mode is invalid")
     if any(
         item.candidate_total != before.candidate_total
         or item.latest_pending_candidates != before.latest_pending_candidates
@@ -3068,9 +3075,9 @@ def validate_mybank_existing_account_inventory_sequence(
     ):
         raise BackupError("existing-account statement candidate inventory changed")
     expected_deltas = {
-        "evidence_object": 1,
-        "encrypted_object_identity": 1,
-        "encrypted_blob_version": 1,
+        "evidence_object": evidence_delta,
+        "encrypted_object_identity": evidence_delta,
+        "encrypted_blob_version": evidence_delta,
         "bank_statement": 1,
         "bank_statement_transaction": transaction_count,
         "bank_statement_observation": transaction_count,
@@ -3086,7 +3093,7 @@ def validate_mybank_existing_account_inventory_sequence(
             raise BackupError(
                 f"existing-account statement {label} table inventory changed: {table}"
             )
-    expected_audit_delta = 4 + 2 * transaction_count
+    expected_audit_delta = 2 + 2 * transaction_count + 2 * evidence_delta
     if after.audit_events - before.audit_events != expected_audit_delta:
         raise BackupError("existing-account statement audit inventory changed unexpectedly")
     if replay != after:

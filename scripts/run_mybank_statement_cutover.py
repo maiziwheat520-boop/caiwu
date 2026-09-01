@@ -67,6 +67,7 @@ def _execute(
                 replay=after,
                 conflict=after,
                 transaction_count=receipt.transaction_count,
+                evidence_mode=loaded.cutover.evidence_mode,
             )
         else:
             report = validate_mybank_cutover_inventory_sequence(
