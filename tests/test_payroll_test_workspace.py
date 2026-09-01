@@ -747,9 +747,7 @@ def test_test_workspace_preview_accepts_renamed_wage_input_content_rows():
         lambda payload: payload.update(canonical_name="2026.7_考勤表"),
         lambda payload: payload.update(period="2026-06"),
         lambda payload: payload["preview_rows"][0]["values"].append("多余列"),
-        lambda payload: payload["preview_rows"][0]["values"].__setitem__(
-            2, "6222021234567890123"
-        ),
+        lambda payload: payload["preview_rows"][0]["values"].__setitem__(2, "6222021234567890123"),
     ],
 )
 def test_test_workspace_wage_input_preview_fails_closed_on_contract_drift(mutate):

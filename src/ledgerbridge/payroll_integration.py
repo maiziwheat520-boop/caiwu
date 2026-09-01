@@ -3222,8 +3222,12 @@ def _validate_test_payroll_input_preview(
         value, ("payment_submission_supported", "payable", "submission_supported")
     )
     expected_type = value.get("detected_material_type")
+    if not isinstance(expected_type, str):
+        _invalid_response("payroll input preview scope is invalid")
     if expected_type == "UNRECOGNIZED":
         expected_type = value.get("material_type")
+        if not isinstance(expected_type, str):
+            _invalid_response("payroll input preview scope is invalid")
     label = {
         "ATTENDANCE_SHEET": "考勤表",
         "AUNT_ATTENDANCE_SHEET": "阿姨考勤表",
