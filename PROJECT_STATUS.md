@@ -2,6 +2,28 @@
 
 Updated: 2026-09-01
 
+## Original-reconciliation browser workflow checkpoint (2026-09-01)
+
+The empty June/July browser projection was traced to missing Core history, not empty source
+months: production had no Candidate, statement, posting, or reconciliation-snapshot facts for
+those months, while a private read-only workbook probe confirmed both sheets contain inputs and
+formulas.  The deployed Web scope was also pinned to a May review business unit, and the original
+projection never imported the workbook.
+
+Branch `ai/chatgpt/reconciliation-workflow-core-v1` now adds a fail-closed import Module whose
+small Interface accepts an immutable XLSX and a reviewed private mapping, rejects formula cells,
+converts exact CNY amounts to integer minor units, assigns deterministic source/Candidate IDs,
+binds the workbook evidence digest, and emits the existing controlled-import manifest contract.
+Its CLI previews by default and requires an explicit switch to write private bundles.  Real
+labels, coordinates, IDs, and amounts remain outside Git; tests use a synthetic workbook.  A
+private no-write probe generated three June and three July items from reviewed input cells.
+
+The paired Web branch lists imported workbook Candidates as month-filtered item cards and performs
+read-after-write verification after decisions.  Browser upload, draft-only edit, description
+revision, manual evidence relinking, return/resubmit, formal monthly close, and export remain open
+in `docs/tasks/2026-09-01-original-reconciliation-browser-workflow.md`.  No production import,
+Candidate mutation, migration, deployment, or enablement was performed.
+
 ## Product-test payroll and statement intake checkpoint (2026-09-01)
 
 Core now exposes the company-scoped TEST_ONLY payroll workspace operations used by Web to read,
