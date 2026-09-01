@@ -91,10 +91,11 @@ class SyntheticBffTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(
             payload["contract_version"],
-            "ledgerbridge.personal-bank-transactions-bff.v1",
+            "ledgerbridge.personal-bank-transactions-bff.v2",
         )
         self.assertEqual(payload["owner_kind"], "PERSON")
-        self.assertIsNone(payload["statement"])
+        self.assertEqual(payload["statements"], [])
+        self.assertEqual(payload["summary"]["statement_count"], 0)
         self.assertEqual(payload["summary"]["transaction_count"], 0)
         self.assertEqual(payload["items"], [])
 

@@ -334,12 +334,13 @@ class SyntheticState:
 
     def personal_bank_transactions(self) -> dict[str, object]:
         return {
-            "contract_version": "ledgerbridge.personal-bank-transactions-bff.v1",
+            "contract_version": "ledgerbridge.personal-bank-transactions-bff.v2",
             "snapshot_revision": "0" * 64,
             "owner_kind": "PERSON",
-            "statement": None,
+            "statements": [],
             "summary": {
                 "currency": "CNY",
+                "statement_count": 0,
                 "transaction_count": 0,
                 "cash_inflow_minor": 0,
                 "cash_outflow_minor": 0,
@@ -1931,6 +1932,14 @@ def run() -> None:
                 }
             except (json.JSONDecodeError, ValueError) as error:
                 raise SystemExit("Refusing invalid PAYROLL_ROLE_BINDINGS_JSON") from error
+        raw_personal_statement_refs = os.environ.get(
+            "CORE_PERSONAL_STATEMENT_REFS", ""
+        ).strip()
+        personal_statement_refs = (
+            tuple(part.strip() for part in raw_personal_statement_refs.split(","))
+            if raw_personal_statement_refs
+            else None
+        )
         try:
             client = CoreHttpClient(
                 base_url=required["CORE_BASE_URL"],
@@ -1958,6 +1967,7 @@ def run() -> None:
                     "CORE_PERSONAL_STATEMENT_REF", ""
                 ).strip()
                 or None,
+                personal_finance_statement_refs=personal_statement_refs,
                 evidence_unlock_path=os.environ.get("CORE_EVIDENCE_UNLOCK_PATH", "").strip() or None,
                 payroll_commands_enabled=payroll_commands_enabled,
                 payroll_role_bindings=payroll_role_bindings,

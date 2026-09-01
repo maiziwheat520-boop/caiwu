@@ -88,6 +88,7 @@ CORE_ENTITY_REF=<authorized entity UUID>
 CORE_BUSINESS_UNIT_REF=<authorized business-unit ref>
 CORE_PERSONAL_ENTITY_REF=<authorized PERSON entity UUID; configure together with statement ref>
 CORE_PERSONAL_STATEMENT_REF=<reviewed personal bank statement UUID; never browser supplied>
+CORE_PERSONAL_STATEMENT_REFS=<comma-separated reviewed statement UUIDs; replaces the singular setting>
 PAYROLL_COMMANDS_ENABLED=0
 PAYROLL_ROLE_BINDINGS_JSON=<server-controlled subject to maker/checker/approver JSON mapping>
 PAYROLL_TEST_WORKSPACE_ENABLED=0

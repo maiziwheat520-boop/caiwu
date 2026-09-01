@@ -26,7 +26,14 @@ const institutionLabels: Record<string, string> = {
 
 async function loadAllPersonalBankTransactions() {
   const result = await api.getPersonalBankTransactions()
-  if (result.items.length !== result.summary.transaction_count) {
+  const statementRefs = new Set(result.statements.map((statement) => statement.statement_ref))
+  if (
+    statementRefs.size !== result.statements.length
+    || result.statements.length !== result.summary.statement_count
+    || result.items.length !== result.summary.transaction_count
+    || result.statements.reduce((total, statement) => total + statement.transaction_count, 0) !== result.items.length
+    || result.items.some((item) => !statementRefs.has(item.statement_ref))
+  ) {
     throw new Error('正式流水总数与明细不一致，未展示不完整结果')
   }
   return result
@@ -89,40 +96,50 @@ export function PersonalBankTransactionsPanel() {
 
 function PersonalBankFacts({ data }: { data: PersonalBankTransactionsResponse }) {
   const summary = data.summary
+  const statementsByRef = new Map(data.statements.map((statement) => [statement.statement_ref, statement]))
+  const periodStart = data.statements.reduce((value, statement) => value < statement.period_start ? value : statement.period_start, data.statements[0].period_start)
+  const periodEnd = data.statements.reduce((value, statement) => value > statement.period_end ? value : statement.period_end, data.statements[0].period_end)
   return (
     <>
       <div className="personal-bank-facts-metrics" aria-label="正式银行流水汇总">
-        <FormalMetric icon={<Bank size={19} />} label="正式流水" value={`${summary.transaction_count} 笔`} detail={data.statement ? `${data.statement.period_start} 至 ${data.statement.period_end}` : '银行账单'} />
+        <FormalMetric icon={<Bank size={19} />} label="正式流水" value={`${summary.transaction_count} 笔`} detail={`${summary.statement_count} 份账单 · ${periodStart} 至 ${periodEnd}`} />
         <FormalMetric icon={<CloudArrowDown size={19} />} label="银行流入" value={currency.format(minorToMajor(summary.cash_inflow_minor))} detail="账户现金流，不是营业收入" tone="income" />
         <FormalMetric icon={<CloudArrowUp size={19} />} label="银行流出" value={currency.format(minorToMajor(summary.cash_outflow_minor))} detail="账户现金流，不是会计费用" tone="expense" />
         <FormalMetric icon={<ArrowsClockwise size={19} />} label="净现金流" value={currency.format(minorToMajor(summary.net_cash_flow_minor))} detail="流入减流出" />
       </div>
-      {data.statement ? <StatementStatus statement={data.statement} /> : null}
+      <StatementStatuses statements={data.statements} />
       <div className="personal-bank-transaction-list" aria-label="正式银行流水明细">
-        {data.items.map((item) => (
-          <PersonalBankTransactionRow
-            key={`${data.statement?.statement_ref ?? 'empty'}:${item.source_row_number}`}
-            item={item}
-            statement={data.statement}
-          />
-        ))}
+        {data.items.map((item) => {
+          const statement = statementsByRef.get(item.statement_ref)
+          return statement ? (
+            <PersonalBankTransactionRow
+              key={`${item.statement_ref}:${item.source_row_number}`}
+              item={item}
+              statement={statement}
+            />
+          ) : null
+        })}
       </div>
     </>
   )
 }
 
-function StatementStatus({ statement }: { statement: PersonalBankStatement }) {
-  const statusLabel = {
-    CONFIRMED: '已确认',
-    PENDING: '待复核',
-    REJECTED: '已拒绝',
-  }[statement.review_status]
-  const institution = institutionLabels[statement.institution_code] ?? '银行账户'
+function StatementStatuses({ statements }: { statements: PersonalBankStatement[] }) {
   return (
     <div className="personal-bank-facts-review" role="status">
-      <span>{institution} · 尾号 {statement.account_suffix}</span>
-      <span>账单审核：{statusLabel}</span>
-      <span>审核版本 {statement.review_revision}</span>
+      {statements.map((statement) => {
+        const statusLabel = {
+          CONFIRMED: '已确认',
+          PENDING: '待复核',
+          REJECTED: '已拒绝',
+        }[statement.review_status]
+        const institution = institutionLabels[statement.institution_code] ?? '银行账户'
+        return [
+          <span key={`${statement.statement_ref}:account`}>{institution} · 尾号 {statement.account_suffix}</span>,
+          <span key={`${statement.statement_ref}:status`}>账单审核：{statusLabel}</span>,
+          <span key={`${statement.statement_ref}:revision`}>审核版本 {statement.review_revision}</span>,
+        ]
+      })}
     </div>
   )
 }
@@ -144,9 +161,9 @@ function FormalMetric({ icon, label, value, detail, tone = 'neutral' }: {
 
 function PersonalBankTransactionRow({ item, statement }: {
   item: PersonalBankTransaction
-  statement: PersonalBankStatement | null
+  statement: PersonalBankStatement
 }) {
-  const institution = statement ? institutionLabels[statement.institution_code] ?? '银行账户' : '银行账户'
+  const institution = institutionLabels[statement.institution_code] ?? '银行账户'
   const counterparty = item.counterparty_name ?? item.counterparty_institution ?? '未提供对方名称'
   const detail = [
     item.transaction_name,
@@ -157,7 +174,7 @@ function PersonalBankTransactionRow({ item, statement }: {
   return (
     <article className="personal-bank-transaction-row">
       <time dateTime={item.occurred_at}>{occurredAt.format(new Date(item.occurred_at))}</time>
-      <div className="personal-bank-account"><strong>{institution}</strong><span>{statement ? `尾号 ${statement.account_suffix}` : '账户待识别'}</span></div>
+      <div className="personal-bank-account"><strong>{institution}</strong><span>尾号 {statement.account_suffix}</span></div>
       <div className="personal-bank-counterparty"><strong>{counterparty}</strong><span>{detail}</span></div>
       <div className={`personal-bank-transaction-amount ${direction}`}>
         <strong>{item.amount_minor > 0 ? '+' : ''}{currency.format(minorToMajor(item.amount_minor))}</strong>

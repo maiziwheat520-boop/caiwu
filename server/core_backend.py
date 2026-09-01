@@ -264,6 +264,7 @@ class CoreBackedState:
         business_unit_ref: str,
         personal_finance_entity_ref: str | None = None,
         personal_finance_statement_ref: str | None = None,
+        personal_finance_statement_refs: tuple[str, ...] | None = None,
         evidence_unlock_path: str | None = None,
         payroll_commands_enabled: bool = False,
         payroll_role_bindings: dict[str, frozenset[str]] | None = None,
@@ -286,20 +287,31 @@ class CoreBackedState:
         self.authentication_generation = authentication_generation
         self.entity_ref = str(uuid.UUID(entity_ref))
         self.business_unit_ref = _bounded(business_unit_ref, maximum=100)
-        if bool(personal_finance_entity_ref) != bool(personal_finance_statement_ref):
+        supplied_statement_refs = personal_finance_statement_refs or ()
+        if personal_finance_statement_ref and supplied_statement_refs:
             raise ValueError(
-                "CORE_PERSONAL_ENTITY_REF and CORE_PERSONAL_STATEMENT_REF must be configured together"
+                "CORE_PERSONAL_STATEMENT_REF and CORE_PERSONAL_STATEMENT_REFS cannot both be configured"
             )
+        if personal_finance_statement_ref:
+            supplied_statement_refs = (personal_finance_statement_ref,)
+        if bool(personal_finance_entity_ref) != bool(supplied_statement_refs):
+            raise ValueError(
+                "CORE_PERSONAL_ENTITY_REF and personal statement refs must be configured together"
+            )
+        if len(supplied_statement_refs) > 32:
+            raise ValueError("at most 32 personal statement refs may be configured")
         self.personal_finance_entity_ref = (
             str(uuid.UUID(personal_finance_entity_ref))
             if personal_finance_entity_ref
             else None
         )
-        self.personal_finance_statement_ref = (
-            str(uuid.UUID(personal_finance_statement_ref))
-            if personal_finance_statement_ref
-            else None
+        self.personal_finance_statement_refs = tuple(
+            str(uuid.UUID(statement_ref)) for statement_ref in supplied_statement_refs
         )
+        if len(set(self.personal_finance_statement_refs)) != len(
+            self.personal_finance_statement_refs
+        ):
+            raise ValueError("personal statement refs must be unique")
         self.payroll_commands_enabled = payroll_commands_enabled
         self.payroll_test_workspace_enabled = payroll_test_workspace_enabled
         if payroll_test_workspace_enabled and (
@@ -627,29 +639,42 @@ class CoreBackedState:
     def personal_bank_transactions(self) -> dict[str, object]:
         if (
             self.personal_finance_entity_ref is None
-            or self.personal_finance_statement_ref is None
+            or not self.personal_finance_statement_refs
         ):
             raise CoreBackendError(
                 503,
                 _problem(503, "PERSONAL_BANK_FACTS_UNAVAILABLE"),
             )
-        query = urlencode(
-            {
-                "statement_ref": self.personal_finance_statement_ref,
-                "entity_ref": self.personal_finance_entity_ref,
-            }
-        )
-        try:
-            payload = self.client.json(
-                "GET",
-                f"{PERSONAL_FINANCE_CORE_PATH}?{query}",
+        pages: list[dict[str, object]] = []
+        for statement_ref in self.personal_finance_statement_refs:
+            query = urlencode(
+                {
+                    "statement_ref": statement_ref,
+                    "entity_ref": self.personal_finance_entity_ref,
+                }
             )
-        except CoreBackendError as error:
-            raise CoreBackendError(
-                503,
-                _problem(503, "PERSONAL_BANK_FACTS_UNAVAILABLE"),
-            ) from error
-        return _personal_bank_transactions_from_core(payload)
+            try:
+                payload = self.client.json(
+                    "GET",
+                    f"{PERSONAL_FINANCE_CORE_PATH}?{query}",
+                )
+            except CoreBackendError as error:
+                raise CoreBackendError(
+                    503,
+                    _problem(503, "PERSONAL_BANK_FACTS_UNAVAILABLE"),
+                ) from error
+            page = _personal_bank_transactions_from_core(payload)
+            statement = page["statement"]
+            if (
+                not isinstance(statement, dict)
+                or statement.get("statement_ref") != statement_ref
+            ):
+                raise CoreBackendError(
+                    503,
+                    _problem(503, "CORE_CONTRACT_INVALID"),
+                )
+            pages.append(page)
+        return _merge_personal_bank_transactions(pages)
 
     def append_decision(
         self,
@@ -1893,7 +1918,7 @@ def _personal_bank_transactions_from_core(
         or not isinstance(statement, dict)
         or not isinstance(summary, dict)
         or not isinstance(items, list)
-        or not 1 <= len(items) <= 200
+        or not 1 <= len(items) <= 10_000
     ):
         raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
     snapshot_revision = _company_report_text(
@@ -1975,7 +2000,7 @@ def _personal_bank_statement_from_core(value: dict[str, object]) -> dict[str, ob
     review_status = value.get("review_status")
     if (
         parsed_period_start > parsed_period_end
-        or not 1 <= transaction_count <= 200
+        or not 1 <= transaction_count <= 10_000
         or review_status not in {"PENDING", "CONFIRMED", "REJECTED"}
         or review_revision < 1
     ):
@@ -2170,6 +2195,71 @@ def _company_report_composition_from_core(
         "from_month": from_month,
         "to_month": to_month,
         "items": mapped_items,
+    }
+
+
+def _merge_personal_bank_transactions(
+    pages: list[dict[str, object]],
+) -> dict[str, object]:
+    statements: list[dict[str, object]] = []
+    items: list[dict[str, object]] = []
+    snapshots: list[tuple[str, str]] = []
+    cash_inflow_minor = 0
+    cash_outflow_minor = 0
+    net_cash_flow_minor = 0
+    for page in pages:
+        statement = page.get("statement")
+        summary = page.get("summary")
+        page_items = page.get("items")
+        snapshot_revision = page.get("snapshot_revision")
+        if (
+            not isinstance(statement, dict)
+            or not isinstance(summary, dict)
+            or not isinstance(page_items, list)
+            or not isinstance(snapshot_revision, str)
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        statement_ref = str(statement["statement_ref"])
+        statements.append(statement)
+        snapshots.append((statement_ref, snapshot_revision))
+        cash_inflow_minor += int(summary["cash_inflow_minor"])
+        cash_outflow_minor += int(summary["cash_outflow_minor"])
+        net_cash_flow_minor += int(summary["net_cash_flow_minor"])
+        items.extend({"statement_ref": statement_ref, **item} for item in page_items)
+    if (
+        len({str(statement["statement_ref"]) for statement in statements})
+        != len(statements)
+        or len(items) > 10_000
+        or sum(int(statement["transaction_count"]) for statement in statements)
+        != len(items)
+        or cash_inflow_minor - cash_outflow_minor != net_cash_flow_minor
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    items.sort(
+        key=lambda item: (
+            datetime.fromisoformat(str(item["occurred_at"]).replace("Z", "+00:00")),
+            str(item["statement_ref"]),
+            int(item["source_row_number"]),
+        ),
+        reverse=True,
+    )
+    combined_snapshot = hashlib.sha256(
+        json.dumps(snapshots, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+    ).hexdigest()
+    return {
+        "contract_version": "ledgerbridge.personal-bank-transactions-bff.v2",
+        "snapshot_revision": combined_snapshot,
+        "owner_kind": "PERSON",
+        "statements": statements,
+        "summary": {
+            "currency": "CNY",
+            "statement_count": len(statements),
+            "transaction_count": len(items),
+            "cash_inflow_minor": cash_inflow_minor,
+            "cash_outflow_minor": cash_outflow_minor,
+            "net_cash_flow_minor": net_cash_flow_minor,
+        },
+        "items": items,
     }
 
 

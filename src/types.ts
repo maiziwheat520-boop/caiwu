@@ -478,6 +478,7 @@ export type CompanyReportsResponse = {
 }
 
 export type PersonalBankTransaction = {
+  statement_ref: string
   source_row_number: number
   occurred_at: string
   amount_minor: number
@@ -502,12 +503,13 @@ export type PersonalBankStatement = {
 }
 
 export type PersonalBankTransactionsResponse = {
-  contract_version: 'ledgerbridge.personal-bank-transactions-bff.v1'
+  contract_version: 'ledgerbridge.personal-bank-transactions-bff.v2'
   snapshot_revision: string
   owner_kind: 'PERSON'
-  statement: PersonalBankStatement | null
+  statements: PersonalBankStatement[]
   summary: {
     currency: 'CNY'
+    statement_count: number
     transaction_count: number
     cash_inflow_minor: number
     cash_outflow_minor: number

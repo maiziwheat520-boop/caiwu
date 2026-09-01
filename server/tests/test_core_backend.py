@@ -32,7 +32,9 @@ SECOND_CANDIDATE_ID = "30000000-0000-4000-8000-000000000004"
 EVIDENCE_ID = "20000000-0000-4000-8000-000000000003"
 ENTITY_ID = "10000000-0000-4000-8000-000000000001"
 STATEMENT_ID = "70000000-0000-4000-8000-000000000007"
+SECOND_STATEMENT_ID = "70000000-0000-4000-8000-000000000009"
 ACCOUNT_ID = "80000000-0000-4000-8000-000000000008"
+SECOND_ACCOUNT_ID = "80000000-0000-4000-8000-000000000010"
 ASSERTION_KEY = b"synthetic-web-core-assertion-key-0001"
 CLASSIFICATION_GROUP_REF = "cg_0123456789abcdef0123456789abcdef"
 
@@ -612,6 +614,34 @@ class FakeCoreClient:
         }
 
 
+class MultipleStatementsCoreClient(FakeCoreClient):
+    def json(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        if method == "GET" and path.startswith("/internal/v1/personal-finance?") and (
+            f"statement_ref={SECOND_STATEMENT_ID}" in path
+        ):
+            self.calls.append((method, path, body, dict(headers or {})))
+            payload = deepcopy(core_personal_finance())
+            statement = payload["statement"]
+            assert isinstance(statement, dict)
+            statement.update(
+                {
+                    "statement_ref": SECOND_STATEMENT_ID,
+                    "managed_account_ref": SECOND_ACCOUNT_ID,
+                    "institution_code": "ccb",
+                    "account_suffix": "7564",
+                }
+            )
+            return payload
+        return super().json(method, path, body=body, headers=headers)
+
+
 class ClassificationCoreClient(FakeCoreClient):
     def json(
         self,
@@ -762,6 +792,7 @@ def build_state(
     *,
     evidence_unlock_path: str | None = None,
     personal_finance_enabled: bool = True,
+    personal_finance_statement_refs: tuple[str, ...] | None = None,
 ) -> CoreBackedState:
     return CoreBackedState(
         client,  # type: ignore[arg-type]
@@ -775,7 +806,14 @@ def build_state(
         entity_ref=ENTITY_ID,
         business_unit_ref="unit-demo-a",
         personal_finance_entity_ref=ENTITY_ID if personal_finance_enabled else None,
-        personal_finance_statement_ref=STATEMENT_ID if personal_finance_enabled else None,
+        personal_finance_statement_ref=(
+            STATEMENT_ID
+            if personal_finance_enabled and personal_finance_statement_refs is None
+            else None
+        ),
+        personal_finance_statement_refs=(
+            personal_finance_statement_refs if personal_finance_enabled else None
+        ),
         evidence_unlock_path=evidence_unlock_path,
     )
 
@@ -1345,17 +1383,75 @@ class CoreBackedAdapterTests(unittest.TestCase):
         )
         self.assertEqual(
             result["contract_version"],
-            "ledgerbridge.personal-bank-transactions-bff.v1",
+            "ledgerbridge.personal-bank-transactions-bff.v2",
         )
-        self.assertEqual(result["statement"], core_personal_finance()["statement"])
+        self.assertEqual(result["statements"], [core_personal_finance()["statement"]])
         self.assertEqual(
             result["summary"],
             {
                 **core_personal_finance()["summary"],
+                "statement_count": 1,
                 "transaction_count": 2,
             },
         )
-        self.assertEqual(result["items"], core_personal_finance()["items"])
+        self.assertEqual(
+            result["items"],
+            [
+                {"statement_ref": STATEMENT_ID, **item}
+                for item in reversed(core_personal_finance()["items"])
+            ],
+        )
+
+    def test_personal_bank_transactions_merge_multiple_server_bound_statements(self) -> None:
+        client = MultipleStatementsCoreClient()
+
+        result = build_state(
+            client,
+            personal_finance_statement_refs=(STATEMENT_ID, SECOND_STATEMENT_ID),
+        ).personal_bank_transactions()
+
+        personal_calls = [
+            call for call in client.calls if call[1].startswith("/internal/v1/personal-finance?")
+        ]
+        self.assertEqual(len(personal_calls), 2)
+        self.assertEqual(result["summary"]["statement_count"], 2)  # type: ignore[index]
+        self.assertEqual(result["summary"]["transaction_count"], 4)  # type: ignore[index]
+        self.assertEqual(
+            {statement["statement_ref"] for statement in result["statements"]},  # type: ignore[union-attr]
+            {STATEMENT_ID, SECOND_STATEMENT_ID},
+        )
+        self.assertEqual(
+            {item["statement_ref"] for item in result["items"]},  # type: ignore[union-attr]
+            {STATEMENT_ID, SECOND_STATEMENT_ID},
+        )
+
+    def test_personal_bank_transactions_accept_a_statement_over_200_rows(self) -> None:
+        client = FakeCoreClient()
+        template = client.personal_finance_payload["items"][0]  # type: ignore[index]
+        assert isinstance(template, dict)
+        items = [
+            {
+                **template,
+                "source_row_number": row_number,
+                "amount_minor": 1,
+                "balance_minor": row_number,
+            }
+            for row_number in range(1, 212)
+        ]
+        client.personal_finance_payload["items"] = items
+        client.personal_finance_payload["statement"]["transaction_count"] = len(items)  # type: ignore[index]
+        client.personal_finance_payload["summary"].update(  # type: ignore[union-attr]
+            {
+                "cash_inflow_minor": len(items),
+                "cash_outflow_minor": 0,
+                "net_cash_flow_minor": len(items),
+            }
+        )
+
+        result = build_state(client).personal_bank_transactions()
+
+        self.assertEqual(result["summary"]["transaction_count"], 211)  # type: ignore[index]
+        self.assertEqual(len(result["items"]), 211)  # type: ignore[arg-type]
 
     def test_personal_bank_transactions_fail_closed_without_server_binding(self) -> None:
         client = FakeCoreClient()

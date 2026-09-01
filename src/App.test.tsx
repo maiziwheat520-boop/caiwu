@@ -391,10 +391,10 @@ function response(body: unknown, status = 200) {
 
 function personalBankTransactions() {
   return {
-    contract_version: 'ledgerbridge.personal-bank-transactions-bff.v1',
+    contract_version: 'ledgerbridge.personal-bank-transactions-bff.v2',
     snapshot_revision: 'a'.repeat(64),
     owner_kind: 'PERSON',
-    statement: {
+    statements: [{
       statement_ref: '70000000-0000-4000-8000-000000000007',
       managed_account_ref: '80000000-0000-4000-8000-000000000008',
       institution_code: 'mybank',
@@ -404,9 +404,10 @@ function personalBankTransactions() {
       transaction_count: 2,
       review_status: 'CONFIRMED',
       review_revision: 1,
-    },
+    }],
     summary: {
       currency: 'CNY',
+      statement_count: 1,
       transaction_count: 2,
       cash_inflow_minor: 10000,
       cash_outflow_minor: 2500,
@@ -414,6 +415,7 @@ function personalBankTransactions() {
     },
     items: [
       {
+        statement_ref: '70000000-0000-4000-8000-000000000007',
         source_row_number: 2,
         occurred_at: '2026-07-01T09:30:00+08:00',
         amount_minor: 10000,
@@ -425,6 +427,7 @@ function personalBankTransactions() {
         transaction_name: '转入',
       },
       {
+        statement_ref: '70000000-0000-4000-8000-000000000007',
         source_row_number: 3,
         occurred_at: '2026-07-02T10:30:00+08:00',
         amount_minor: -2500,
@@ -440,12 +443,13 @@ function personalBankTransactions() {
 }
 
 const emptyPersonalBankTransactions = {
-  contract_version: 'ledgerbridge.personal-bank-transactions-bff.v1',
+  contract_version: 'ledgerbridge.personal-bank-transactions-bff.v2',
   snapshot_revision: '0'.repeat(64),
   owner_kind: 'PERSON',
-  statement: null,
+  statements: [],
   summary: {
     currency: 'CNY',
+    statement_count: 0,
     transaction_count: 0,
     cash_inflow_minor: 0,
     cash_outflow_minor: 0,
@@ -2096,6 +2100,46 @@ describe('LedgerBridge Web API client', () => {
     expect(within(formal).getByText('账户现金流，不是营业收入')).toBeInTheDocument()
     expect(within(testSummary).getByText('测试收入')).toBeInTheDocument()
     expect(formal.compareDocumentPosition(testSummary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('shows multiple formal bank statements in one reconciled list', async () => {
+    const formalFacts = structuredClone(personalBankTransactions())
+    const secondStatementRef = '70000000-0000-4000-8000-000000000009'
+    formalFacts.statements.push({
+      ...formalFacts.statements[0],
+      statement_ref: secondStatementRef,
+      managed_account_ref: '80000000-0000-4000-8000-000000000010',
+      institution_code: 'ccb',
+      account_suffix: '7564',
+      transaction_count: 1,
+      review_status: 'PENDING',
+    })
+    formalFacts.items.push({
+      ...formalFacts.items[0],
+      statement_ref: secondStatementRef,
+      source_row_number: 1,
+      occurred_at: '2026-06-01T09:30:00+08:00',
+      amount_minor: 5000,
+      balance_minor: 5000,
+      counterparty_name: '建行正式对方',
+    })
+    Object.assign(formalFacts.summary, {
+      statement_count: 2,
+      transaction_count: 3,
+      cash_inflow_minor: 15000,
+      net_cash_flow_minor: 12500,
+    })
+    installFetch({ personalBankResponse: formalFacts })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+
+    const formal = await screen.findByRole('region', { name: '个人正式银行流水' })
+    expect(await within(formal).findByText('3 笔')).toBeInTheDocument()
+    expect(within(formal).getByText(/2 份账单/)).toBeInTheDocument()
+    expect(within(formal).getByText('网商银行 · 尾号 7968')).toBeInTheDocument()
+    expect(within(formal).getByText('中国建设银行 · 尾号 7564')).toBeInTheDocument()
+    expect(within(formal).getByText('建行正式对方')).toBeInTheDocument()
   })
 
   it('keeps Candidate test data visible when formal bank facts are unavailable', async () => {
