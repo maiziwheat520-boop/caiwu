@@ -2404,7 +2404,7 @@ describe('LedgerBridge Web API client', () => {
     installFetch({ originalReconciliationGate: projectionGate })
     const loadingView = renderApp()
     expect(await screen.findByRole('heading', { name: '收支与往来对账' })).toBeInTheDocument()
-    expect(screen.getByText('正在确认原表投影范围')).toBeInTheDocument()
+    expect(screen.getByText('正在确认公司 / 门店范围')).toBeInTheDocument()
     await act(async () => releaseProjection())
     expect(await screen.findByRole('region', { name: '收支与往来事项' })).toBeInTheDocument()
     loadingView.unmount()
