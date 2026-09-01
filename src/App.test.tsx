@@ -2142,6 +2142,28 @@ describe('LedgerBridge Web API client', () => {
     expect(within(formal).getByText('建行正式对方')).toBeInTheDocument()
   })
 
+  it('repairs fixed-column PDF layout noise without changing formal transaction facts', async () => {
+    const formalFacts = structuredClone(personalBankTransactions())
+    formalFacts.statements[0].institution_code = 'boc'
+    Object.assign(formalFacts.items[0], {
+      counterparty_name: '陈莹 6',
+      counterparty_account_masked: '  ************7442  ',
+      counterparty_institution: '中国工商银行 ---- | --------------- -- | --------',
+      transaction_name: '跨行转账 手机 | 银行 ---- | --------------- -- | --------',
+    })
+    installFetch({ personalBankResponse: formalFacts })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+
+    const formal = await screen.findByRole('region', { name: '个人正式银行流水' })
+    expect(within(formal).getByText('陈莹')).toBeInTheDocument()
+    expect(within(formal).queryByText('陈莹 6')).not.toBeInTheDocument()
+    expect(within(formal).getByText('跨行转账 · 手机银行 · 中国工商银行 · 对方尾号 7442')).toBeInTheDocument()
+    expect(formal).not.toHaveTextContent('----')
+    expect(formal).not.toHaveTextContent('|')
+  })
+
   it('keeps Candidate test data visible when formal bank facts are unavailable', async () => {
     const testCandidate: ApiCandidate = {
       ...candidates[3],

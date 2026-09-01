@@ -4,6 +4,7 @@ import { Badge, Button } from '@radix-ui/themes'
 import { ArrowsClockwise, Bank, CloudArrowDown, CloudArrowUp, Database, Warning } from '@phosphor-icons/react'
 import { api, minorToMajor } from '../api'
 import type { PersonalBankStatement, PersonalBankTransaction, PersonalBankTransactionsResponse } from '../types'
+import { presentPersonalBankTransaction } from './personalBankPresentation'
 
 const currency = new Intl.NumberFormat('zh-CN', {
   style: 'currency',
@@ -164,12 +165,7 @@ function PersonalBankTransactionRow({ item, statement }: {
   statement: PersonalBankStatement
 }) {
   const institution = institutionLabels[statement.institution_code] ?? '银行账户'
-  const counterparty = item.counterparty_name ?? item.counterparty_institution ?? '未提供对方名称'
-  const detail = [
-    item.transaction_name,
-    item.counterparty_institution,
-    item.counterparty_account_masked,
-  ].filter((value, index, values) => value && values.indexOf(value) === index).join(' · ')
+  const { counterparty, detail } = presentPersonalBankTransaction(item, statement)
   const direction = item.amount_minor < 0 ? 'expense' : 'income'
   return (
     <article className="personal-bank-transaction-row">
