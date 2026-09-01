@@ -260,10 +260,10 @@ export function PayrollWorkspacePage() {
           <div className="payroll-status-banner" role="status">
             <Info size={20} weight="fill" />
             <div>
-              <strong>{testWorkspaceReady ? '历史工资材料已进入测试账本' : testWorkspace ? '测试账本已创建，暂无可自动接入材料' : '历史工资材料测试账本尚未就绪'}</strong>
-              <span>{testWorkspaceReady ? '截至 2026 年 8 月 31 日自动接入；9 月起才需要审核。测试数据不会发薪或提交银行。' : testWorkspace ? '工作区已就绪，但当前没有 2026 年 8 月及以前的可自动接入材料。' : '材料仍保留在来源库中；测试账本接通后会自动显示，当前不会虚报已入账。'}</span>
+              <strong>{testWorkspaceReady ? '七、八月工资测试账本已就绪' : testWorkspace ? '测试账本已创建，暂无七、八月工资素材' : '七、八月工资测试账本尚未就绪'}</strong>
+              <span>{testWorkspaceReady ? '只接入 2026 年 7 月和 8 月；素材库只展示考勤表、阿姨考勤表和好评统计，工资主表与代发表不进入素材库。' : testWorkspace ? '工作区已就绪，但当前没有 2026 年 7 月或 8 月的工资表素材。' : '七、八月素材仍保留在来源库中；测试账本接通后会自动显示，当前不会虚报已入账。'}</span>
             </div>
-            <Badge color={testWorkspace ? 'blue' : 'amber'}>{testWorkspaceReady ? '测试账本' : testWorkspace ? '暂无历史材料' : '待接通'}</Badge>
+            <Badge color={testWorkspace ? 'blue' : 'amber'}>{testWorkspaceReady ? '七八月测试账本' : testWorkspace ? '暂无七八月素材' : '待接通'}</Badge>
           </div>
           {testWorkspace && csrfToken ? (
             <PayrollTestWorkspaceActionsPanel

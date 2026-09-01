@@ -39,14 +39,11 @@ PAYROLL_PERIOD = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
 PAYROLL_TEST_MATERIAL_TYPES = frozenset(
     {
         "PAYROLL_SHEET",
-        "RELEASE_LIST",
-        "CASH_LIST",
         "ATTENDANCE_SHEET",
+        "AUNT_ATTENDANCE_SHEET",
+        "REVIEW_STATISTICS",
         "ADJUSTMENT_SOURCE",
         "PAYROLL_SUMMARY",
-        "SUPPORTING_SCAN",
-        "BACKUP",
-        "OBSOLETE",
     }
 )
 PAYROLL_TEST_PROJECTION_FACT_KEYS = (
@@ -3584,27 +3581,20 @@ def _validate_payroll_test_workspace_payload(
             material.get("company_id") != company_id
             or not _payroll_identifier(material_id)
             or material_id in seen
-            or material_type is not None and not _payroll_identifier(material_type)
+            or material_type not in PAYROLL_TEST_MATERIAL_TYPES
             or material.get("payable") is not False
             or material.get("submission_supported") is not False
         ):
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
         seen.add(str(material_id))
-        if period is not None and (
+        if material_type == "PAYROLL_SUMMARY" and period is not None and (
             not isinstance(period, str) or PAYROLL_PERIOD.fullmatch(period) is None
         ):
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
         routing_status = material.get("routing_status")
         if (
-            routing_status not in {"AUTO_TEST", "REVIEW_REQUIRED", "DATE_UNKNOWN"}
-            or (
-                routing_status == "AUTO_TEST"
-                and (period is None or str(period) > "2026-08")
-            )
-            or (
-                routing_status == "REVIEW_REQUIRED"
-                and (period is None or str(period) < "2026-09")
-            )
+            routing_status != "AUTO_TEST"
+            or material_type != "PAYROLL_SUMMARY" and period not in {"2026-07", "2026-08"}
         ):
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
         count_key = {
@@ -3653,6 +3643,14 @@ def _validate_payroll_test_material_preview_payload(
     ):
         raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
     company_id = str(payload["company_id"])
+    if data.get("schema_version") == "payroll-input-material-preview/v1":
+        _validate_payroll_input_preview_data(
+            data,
+            expected_company_id=company_id,
+            expected_batch_id=expected_batch_id,
+            expected_material_id=expected_material_id,
+        )
+        return
     if data.get("schema_version") == "payroll-summary-authoritative-preview/v1":
         _validate_payroll_summary_preview_data(
             data,
@@ -3763,6 +3761,112 @@ def _validate_payroll_test_material_preview_payload(
                 or not 0 <= int(exception[field]) <= 9_007_199_254_740_991
             ):
                 raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+
+def _contains_sensitive_payroll_text(value: str) -> bool:
+    return bool(
+        re.search(r"[\x00-\x1f\x7f]", value)
+        or re.search(r"(?<!\d)\d(?:[\s-]?\d){11,18}(?!\d)", value)
+        or re.search(r"(?:[A-Za-z]:\\|\\\\|/(?:home|Users?)/)", value)
+    )
+
+
+def _validate_payroll_input_preview_data(
+    data: dict[str, object],
+    *,
+    expected_company_id: str,
+    expected_batch_id: str,
+    expected_material_id: str,
+) -> None:
+    fields = {
+        "schema_version", "data_scope", "test_batch_id", "company_id", "material_id",
+        "period", "material_type", "detected_material_type", "canonical_name",
+        "selected_sheet", "sheet_names", "columns", "record_count", "preview_rows",
+        "status", "payment_submission_supported", "payable", "submission_supported",
+    }
+    projected_types = {
+        "ATTENDANCE_SHEET", "AUNT_ATTENDANCE_SHEET", "REVIEW_STATISTICS",
+        "ADJUSTMENT_SOURCE",
+    }
+    detected_types = {
+        "ATTENDANCE_SHEET", "AUNT_ATTENDANCE_SHEET", "REVIEW_STATISTICS",
+        "UNRECOGNIZED",
+    }
+    if (
+        set(data) != fields
+        or data.get("schema_version") != "payroll-input-material-preview/v1"
+        or data.get("data_scope") != "TEST_ONLY"
+        or data.get("test_batch_id") != expected_batch_id
+        or data.get("company_id") != expected_company_id
+        or data.get("material_id") != expected_material_id
+        or data.get("period") not in {"2026-07", "2026-08"}
+        or data.get("material_type") not in projected_types
+        or data.get("detected_material_type") not in detected_types
+        or data.get("status") not in {"READY_FOR_REVIEW", "NEEDS_HUMAN_REVIEW"}
+        or data.get("payment_submission_supported") is not False
+        or data.get("payable") is not False
+        or data.get("submission_supported") is not False
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    detected_type = data.get("detected_material_type")
+    naming_type = data.get("material_type") if detected_type == "UNRECOGNIZED" else detected_type
+    label = {
+        "ATTENDANCE_SHEET": "考勤表",
+        "AUNT_ATTENDANCE_SHEET": "阿姨考勤表",
+        "REVIEW_STATISTICS": "好评统计",
+        "ADJUSTMENT_SOURCE": "好评统计",
+    }.get(naming_type, "工资表素材")
+    period = str(data["period"])
+    if data.get("canonical_name") != f"{period[:4]}.{int(period[5:])}_{label}":
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+    def checked_strings(field: str, maximum_count: int, maximum_length: int) -> list[str]:
+        values = data.get(field)
+        if (
+            not isinstance(values, list)
+            or not 1 <= len(values) <= maximum_count
+            or any(
+                not isinstance(value, str)
+                or not value
+                or len(value) > maximum_length
+                or _contains_sensitive_payroll_text(value)
+                for value in values
+            )
+            or len(set(values)) != len(values)
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        return values
+
+    sheet_names = checked_strings("sheet_names", 20, 60)
+    columns = checked_strings("columns", 16, 80)
+    if data.get("selected_sheet") not in sheet_names:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    rows = data.get("preview_rows")
+    record_count = data.get("record_count")
+    if (
+        type(record_count) is not int
+        or int(record_count) < 0
+        or not isinstance(rows, list)
+        or len(rows) > 8
+        or int(record_count) < len(rows)
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"source_row", "values"}
+            or type(row.get("source_row")) is not int
+            or int(row["source_row"]) < 1
+            or not isinstance(row.get("values"), list)
+            or len(row["values"]) != len(columns)
+            or any(
+                not isinstance(cell, str)
+                or len(cell) > 120
+                or _contains_sensitive_payroll_text(cell)
+                for cell in row["values"]
+            )
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
 
 
 def _validate_payroll_summary_preview_data(
@@ -4204,9 +4308,8 @@ def _validate_payroll_test_workspace_command_payload(
             or not isinstance(period, str)
             or PAYROLL_PERIOD.fullmatch(period) is None
             or material.get("material_type") not in PAYROLL_TEST_MATERIAL_TYPES
-            or routing_status not in {"AUTO_TEST", "REVIEW_REQUIRED"}
-            or (routing_status == "AUTO_TEST" and period > "2026-08")
-            or (routing_status == "REVIEW_REQUIRED" and period < "2026-09")
+            or routing_status != "AUTO_TEST"
+            or period not in {"2026-07", "2026-08"}
             or material.get("payable") is not False
             or material.get("submission_supported") is not False
         ):

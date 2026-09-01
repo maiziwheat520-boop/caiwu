@@ -45,7 +45,7 @@ describe('PayrollWorkspacePage', () => {
     expect(await screen.findByText('服务已接通，待归属材料 3 份')).toBeInTheDocument()
     expect(screen.getByText('工资材料仍有待归属项')).toBeInTheDocument()
     expect(screen.getByText('尚未生成可核对的工资批次')).toBeInTheDocument()
-    expect(screen.getByText('历史工资材料测试账本尚未就绪')).toBeInTheDocument()
+    expect(screen.getByText('七、八月工资测试账本尚未就绪')).toBeInTheDocument()
     expect(screen.queryByText('功能恢复中')).not.toBeInTheDocument()
   })
 })
