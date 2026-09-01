@@ -37,6 +37,14 @@ LIVE_PROJECTION_PATH = "/api/v1/ledgerbridge-projections/current"
 TEST_WORKSPACES_PATH = "/api/v1/test-workspaces"
 TEST_WORKSPACE_SCHEMA = "payroll-ledgerbridge-test-projection/v1"
 LEGACY_FEATURE_WORKSPACE_SCHEMA = "payroll-legacy-feature-workspace/v1"
+LEGACY_REVIEW_RULE_TYPES = frozenset(
+    {
+        "PAYMENT_CHANNEL_REQUIRED",
+        "SUPPORTING_MATERIAL_REQUIRED",
+        "HISTORY_CHANGE_REVIEW",
+    }
+)
+LEGACY_REVIEW_RULE_SEVERITIES = frozenset({"BLOCKING", "REVIEW"})
 LEGACY_FEATURE_ACTIONS = frozenset(
     {
         "FILL_MAIN",
@@ -2958,6 +2966,11 @@ def _validate_test_material_preview(
     expected_batch_id: str,
     expected_material_id: str,
 ) -> None:
+    if value.get("schema_version") == "payroll-input-material-preview/v1":
+        _validate_test_payroll_input_preview(
+            value, expected_company_id, expected_batch_id, expected_material_id
+        )
+        return
     if value.get("schema_version") == "payroll-summary-authoritative-preview/v1":
         _validate_test_payroll_summary_preview(
             value, expected_company_id, expected_batch_id, expected_material_id
@@ -3149,6 +3162,115 @@ def _validate_test_material_preview(
         _invalid_response("payroll test preview totals are inconsistent")
 
 
+def _validate_test_payroll_input_preview(
+    value: Mapping[str, object],
+    expected_company_id: str,
+    expected_batch_id: str,
+    expected_material_id: str,
+) -> None:
+    _require_exact_keys(
+        value,
+        frozenset(
+            {
+                "schema_version",
+                "data_scope",
+                "test_batch_id",
+                "company_id",
+                "material_id",
+                "period",
+                "material_type",
+                "detected_material_type",
+                "canonical_name",
+                "selected_sheet",
+                "sheet_names",
+                "columns",
+                "record_count",
+                "preview_rows",
+                "status",
+                "payment_submission_supported",
+                "payable",
+                "submission_supported",
+            }
+        ),
+        "test payroll input material preview",
+    )
+    projected_types = {
+        "ATTENDANCE_SHEET",
+        "AUNT_ATTENDANCE_SHEET",
+        "REVIEW_STATISTICS",
+        "ADJUSTMENT_SOURCE",
+    }
+    detected_types = {
+        "ATTENDANCE_SHEET",
+        "AUNT_ATTENDANCE_SHEET",
+        "REVIEW_STATISTICS",
+        "UNRECOGNIZED",
+    }
+    if (
+        value.get("schema_version") != "payroll-input-material-preview/v1"
+        or value.get("data_scope") != "TEST_ONLY"
+        or value.get("test_batch_id") != expected_batch_id
+        or value.get("company_id") != expected_company_id
+        or value.get("material_id") != expected_material_id
+        or value.get("period") not in {"2026-07", "2026-08"}
+        or value.get("material_type") not in projected_types
+        or value.get("detected_material_type") not in detected_types
+        or value.get("status") not in {"READY_FOR_REVIEW", "NEEDS_HUMAN_REVIEW"}
+    ):
+        _invalid_response("payroll input preview scope is invalid")
+    _require_disabled_flags(
+        value, ("payment_submission_supported", "payable", "submission_supported")
+    )
+    expected_type = value.get("detected_material_type")
+    if expected_type == "UNRECOGNIZED":
+        expected_type = value.get("material_type")
+    label = {
+        "ATTENDANCE_SHEET": "考勤表",
+        "AUNT_ATTENDANCE_SHEET": "阿姨考勤表",
+        "REVIEW_STATISTICS": "好评统计",
+        "ADJUSTMENT_SOURCE": "好评统计",
+    }.get(expected_type, "工资表素材")
+    period = str(value["period"])
+    expected_name = f"{period[:4]}.{int(period[5:])}_{label}"
+    if value.get("canonical_name") != expected_name:
+        _invalid_response("payroll input preview canonical name is invalid")
+
+    def _strings(field: str, maximum_count: int, maximum_length: int) -> list[str]:
+        items = _require_list(value.get(field), f"preview.{field}")
+        if not 1 <= len(items) <= maximum_count:
+            _invalid_response(f"payroll input preview {field} is invalid")
+        result: list[str] = []
+        for item in items:
+            if not isinstance(item, str) or not item or len(item) > maximum_length:
+                _invalid_response(f"payroll input preview {field} is invalid")
+            _validate_publishable_string(item, parent_key=field)
+            result.append(item)
+        if len(set(result)) != len(result):
+            _invalid_response(f"payroll input preview {field} is duplicated")
+        return result
+
+    sheet_names = _strings("sheet_names", 20, 60)
+    columns = _strings("columns", 16, 80)
+    selected_sheet = value.get("selected_sheet")
+    if not isinstance(selected_sheet, str) or selected_sheet not in sheet_names:
+        _invalid_response("payroll input preview selected sheet is invalid")
+    record_count = _require_non_negative_integer(value.get("record_count"), "record_count")
+    rows = _require_list(value.get("preview_rows"), "preview.preview_rows")
+    if len(rows) > 8 or record_count < len(rows):
+        _invalid_response("payroll input preview row count is invalid")
+    for row_value in rows:
+        row = _require_object(row_value, "preview.row")
+        _require_exact_keys(row, frozenset({"source_row", "values"}), "preview row")
+        _require_positive_integer(row.get("source_row"), "preview.source_row")
+        values = _require_list(row.get("values"), "preview.values")
+        if len(values) != len(columns):
+            _invalid_response("payroll input preview row width is invalid")
+        for cell in values:
+            if not isinstance(cell, str) or len(cell) > 120:
+                _invalid_response("payroll input preview cell is invalid")
+            _validate_publishable_string(cell, parent_key="preview_cell")
+
+
 def _validate_test_payroll_summary_preview(
     value: Mapping[str, object],
     expected_company_id: str,
@@ -3299,9 +3421,59 @@ def _validate_legacy_feature_workspace(
     )
 
     rules = _require_object(value.get("rules"), "legacy rules")
-    _require_exact_keys(rules, frozenset({"revision", "employees"}), "legacy rules")
+    if not {"revision", "employees"}.issubset(rules) or set(rules) - {
+        "revision",
+        "employees",
+        "review_rules",
+    }:
+        _invalid_response("payroll legacy rules fields do not match the v1 allowlist")
     _require_non_negative_integer(rules.get("revision"), "legacy rules revision")
     _require_list(rules.get("employees"), "legacy rules employees")
+    review_rule_ids: set[str] = set()
+    review_rule_types: set[str] = set()
+    review_rules = _require_list(rules.get("review_rules", []), "legacy review rules")
+    if len(review_rules) > len(LEGACY_REVIEW_RULE_TYPES):
+        _invalid_response("payroll legacy review rule count is invalid")
+    for rule_value in review_rules:
+        rule = _require_object(rule_value, "legacy review rule")
+        _require_exact_keys(
+            rule,
+            frozenset(
+                {
+                    "rule_id",
+                    "name",
+                    "rule_type",
+                    "enabled",
+                    "severity",
+                    "threshold_cents",
+                }
+            ),
+            "legacy review rule",
+        )
+        rule_id = _require_stable_identifier(rule.get("rule_id"), "review rule_id")
+        rule_type = rule.get("rule_type")
+        name = rule.get("name")
+        enabled = rule.get("enabled")
+        severity = rule.get("severity")
+        threshold = _require_non_negative_integer(
+            rule.get("threshold_cents"), "review threshold_cents"
+        )
+        if (
+            rule_id in review_rule_ids
+            or rule_type not in LEGACY_REVIEW_RULE_TYPES
+            or rule_type in review_rule_types
+            or not isinstance(name, str)
+            or not name.strip()
+            or len(name) > 120
+            or name != name.strip()
+            or type(enabled) is not bool
+            or severity not in LEGACY_REVIEW_RULE_SEVERITIES
+            or (rule_type != "HISTORY_CHANGE_REVIEW" and threshold != 0)
+        ):
+            _invalid_response("payroll legacy review rule is invalid")
+        _validate_publishable_string(name, parent_key="name")
+        review_rule_ids.add(rule_id)
+        review_rule_types.add(str(rule_type))
 
     periods: set[str] = set()
     batch_ids: set[str] = set()
