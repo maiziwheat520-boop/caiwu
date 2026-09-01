@@ -9,8 +9,9 @@ import os
 import re
 import stat
 import zipfile
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from itertools import pairwise
 from pathlib import Path, PurePosixPath
 from typing import Final, Never
 from uuid import UUID, uuid5
@@ -18,6 +19,7 @@ from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
 from ledgerbridge.bank_statement_contract import (
+    MYBANK_COMPANY_DAILY_XLSX_V2,
     MYBANK_XLSX_V1,
     BankStatementParserProfile,
 )
@@ -27,6 +29,7 @@ from ledgerbridge.bank_statement_contract import (
 from ledgerbridge.bank_statement_contract import (
     BankStatementTransaction as MyBankTransaction,
 )
+from ledgerbridge.text import contains_unstorable_text
 
 _XLSX_MEDIA_TYPE: Final = MYBANK_XLSX_V1.declared_media_type
 _MAIN_NS: Final = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -43,11 +46,32 @@ _EXPECTED_HEADERS: Final = (
     "交易流水号",
     "交易名称",
 )
+_COMPANY_TITLE: Final = "浙江网商银行企业账户交易明细"
+_COMPANY_HEADERS: Final = (
+    "账务流水号",
+    "提交时间",
+    "交易时间",
+    "交易名称",
+    "借方金额(收)",
+    "贷方金额(支)",
+    "余额",
+    "对方户名",
+    "对方账号",
+    "对方机构",
+    "备注",
+)
+_COMPANY_ACCOUNT = re.compile(r"^(?P<account>[0-9]+)\(人民币\)$")
+_COMPANY_COUNT = re.compile(r"^(?P<count>[0-9]+)笔$")
+_COMPANY_SUMMARY_MONEY = re.compile(
+    r"^￥(?P<amount>0|(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)\.[0-9]{2})$"
+)
+_UNSIGNED_MONEY = re.compile(r"^(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]{1,2})?$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _ACCOUNT_SUFFIX = re.compile(r"^[0-9]{4,8}$")
 _CELL_REFERENCE = re.compile(r"^([A-Z]{1,3})([1-9][0-9]*)$")
 _MONEY = re.compile(r"^[+-]?(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]{1,2})?$")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+_COMPANY_NAMESPACE: Final = UUID("18cc4a49-5483-4a07-bdd7-84352d63de34")
 _MAX_FILE_BYTES = 50 * 1024 * 1024
 _MAX_XML_BYTES = 20 * 1024 * 1024
 _MAX_ARCHIVE_ENTRIES = 200
@@ -62,6 +86,163 @@ class MyBankStatementError(RuntimeError):
 
 class MyBankEmptyStatementError(MyBankStatementError):
     """The source is a valid MYbank export with no transactions to import."""
+
+
+def parse_mybank_company_daily_xlsx(
+    source_path: Path,
+    *,
+    expected_sha256: str,
+    managed_account_suffix: str,
+) -> MyBankStatement:
+    """Parse one digest-bound, single-day MYbank company statement."""
+
+    if not _DIGEST.fullmatch(expected_sha256):
+        raise MyBankStatementError("expected source digest is invalid")
+    if not _ACCOUNT_SUFFIX.fullmatch(managed_account_suffix):
+        raise MyBankStatementError("managed account suffix is invalid")
+    raw = _read_source(source_path)
+    source_sha256 = hashlib.sha256(raw).hexdigest()
+    if source_sha256 != expected_sha256:
+        raise MyBankStatementError("source digest changed")
+    rows = _read_workbook_rows(raw, expected_sheet_name="sheet1")
+    if len(rows) < 5 or tuple(number for number, _ in rows[:5]) != (1, 2, 3, 4, 5):
+        raise MyBankStatementError("company statement metadata rows are invalid")
+    title = _company_width(rows[0][1])
+    identity = _company_width(rows[1][1])
+    headers = _company_width(rows[4][1])
+    if title != (_COMPANY_TITLE, *("" for _ in range(10))):
+        raise MyBankStatementError("company statement title is invalid")
+    if (
+        identity[0] != "企业名称"
+        or not identity[1]
+        or identity[4] != "企业账号"
+        or any(identity[index] for index in (2, 3, 6, 7, 8, 9, 10))
+    ):
+        raise MyBankStatementError("company statement identity is invalid")
+    company_name = _company_text(identity[1], field="company name", required=True, maximum=200)
+    account_match = _COMPANY_ACCOUNT.fullmatch(identity[5])
+    if account_match is None or not account_match.group("account").endswith(managed_account_suffix):
+        raise MyBankStatementError("company statement does not belong to the managed account")
+    account_sha256 = hashlib.sha256(account_match.group("account").encode("ascii")).hexdigest()
+    company_sha256 = hashlib.sha256(company_name.encode("utf-8")).hexdigest()
+    debit_count, debit_total = _company_summary(
+        rows[2][1], count_label="借方交易笔数", amount_label="借方交易金额"
+    )
+    credit_count, credit_total = _company_summary(
+        rows[3][1], count_label="贷方交易笔数", amount_label="贷方交易金额"
+    )
+    if headers != _COMPANY_HEADERS:
+        raise MyBankStatementError("company statement header is invalid")
+
+    transactions: list[MyBankTransaction] = []
+    submitted_values: list[str] = []
+    known_serials: set[str] = set()
+    statement_day: date | None = None
+    for expected_row_number, (source_row_number, raw_values) in enumerate(rows[5:], start=6):
+        if source_row_number != expected_row_number:
+            raise MyBankStatementError("company statement transaction rows are not contiguous")
+        values = _company_width(raw_values)
+        if not any(values):
+            raise MyBankStatementError("company statement transaction row is empty")
+        serial = _company_text(values[0], field="transaction serial", required=True)
+        if serial in known_serials:
+            raise MyBankStatementError("company statement transaction serial is duplicated")
+        known_serials.add(serial)
+        submitted_at = _parse_occurred_at(values[1])
+        occurred_at = _parse_occurred_at(values[2])
+        if submitted_at.date() != occurred_at.date():
+            raise MyBankStatementError("company statement transaction dates conflict")
+        if statement_day is None:
+            statement_day = occurred_at.date()
+        elif occurred_at.date() != statement_day:
+            raise MyBankStatementError("company statement contains more than one day")
+        debit = _company_optional_minor(values[4])
+        credit = _company_optional_minor(values[5])
+        if (debit is None) == (credit is None):
+            raise MyBankStatementError("company statement transaction direction is invalid")
+        if debit is not None:
+            amount_minor = debit
+        else:
+            if credit is None:  # pragma: no cover - guarded by direction check
+                raise MyBankStatementError("company statement transaction direction is invalid")
+            amount_minor = -credit
+        if amount_minor == 0:
+            raise MyBankStatementError("company statement transaction amount is invalid")
+        balance_minor = _company_required_minor(values[6], field="balance")
+        transaction_name = _company_text(values[3], field="transaction name", required=True)
+        note = _company_text(values[10], field="note")
+        combined_name = transaction_name if not note else f"{transaction_name} | {note}"
+        if len(combined_name) > 300:
+            raise MyBankStatementError("company statement transaction name is too long")
+        transaction_values = tuple(
+            _company_text(value, field="transaction text") if index not in {4, 5, 6} else value
+            for index, value in enumerate(values)
+        )
+        row_sha256 = hashlib.sha256(
+            json.dumps(transaction_values, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+        ).hexdigest()
+        source_event_ref = uuid5(
+            _COMPANY_NAMESPACE,
+            f"mybank-company-daily-event:{source_sha256}:{source_row_number}:{row_sha256}",
+        )
+        transactions.append(
+            MyBankTransaction(
+                source_event_ref=source_event_ref,
+                source_row_number=source_row_number,
+                source_row_sha256=row_sha256,
+                occurred_at=occurred_at,
+                amount_minor=amount_minor,
+                balance_minor=balance_minor,
+                counterparty_name=_company_text(values[7], field="counterparty name"),
+                counterparty_account=_company_text(values[8], field="counterparty account"),
+                counterparty_institution=_company_text(values[9], field="counterparty institution"),
+                transaction_serial=serial,
+                transaction_name=combined_name,
+            )
+        )
+        submitted_values.append(submitted_at.isoformat())
+
+    _validate_company_transactions(
+        transactions,
+        debit_count=debit_count,
+        debit_total_minor=debit_total,
+        credit_count=credit_count,
+        credit_total_minor=credit_total,
+    )
+    if not transactions:
+        raise MyBankEmptyStatementError("company statement contains no transactions")
+    parser_facts_sha256 = hashlib.sha256(
+        json.dumps(
+            {
+                "account_sha256": account_sha256,
+                "company_sha256": company_sha256,
+                "credit_count": credit_count,
+                "credit_total_minor": credit_total,
+                "debit_count": debit_count,
+                "debit_total_minor": debit_total,
+                "row_sha256": [item.source_row_sha256 for item in transactions],
+                "submitted_at": submitted_values,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    ).hexdigest()
+    return MyBankStatement(
+        statement_ref=uuid5(_COMPANY_NAMESPACE, f"mybank-company-daily-statement:{source_sha256}"),
+        source_sha256=source_sha256,
+        source_size=len(raw),
+        declared_media_type=MYBANK_COMPANY_DAILY_XLSX_V2.declared_media_type,
+        currency="CNY",
+        institution_code=MYBANK_COMPANY_DAILY_XLSX_V2.institution_code,
+        account_suffix=managed_account_suffix,
+        worksheet_index=1,
+        header_row_number=5,
+        transactions=tuple(transactions),
+        parser_profile=BankStatementParserProfile.MYBANK_COMPANY_DAILY_XLSX_V2,
+        source_system=MYBANK_COMPANY_DAILY_XLSX_V2.source_system,
+        parser_facts_sha256=parser_facts_sha256,
+    )
 
 
 def parse_mybank_xlsx(
@@ -159,10 +340,9 @@ def parse_mybank_xlsx(
         parser_profile=BankStatementParserProfile.MYBANK_XLSX_V1,
         source_system=MYBANK_XLSX_V1.source_system,
         parser_facts_sha256=hashlib.sha256(
-            (
-                f"mybank_xlsx_v1:{source_sha256}:{header_row_number}:"
-                f"{len(transactions)}"
-            ).encode("ascii")
+            (f"mybank_xlsx_v1:{source_sha256}:{header_row_number}:{len(transactions)}").encode(
+                "ascii"
+            )
         ).hexdigest(),
     )
 
@@ -179,6 +359,89 @@ def build_mybank_source_manifest(
     raise MyBankStatementError(
         "per-transaction MYbank review manifests are retired; use BankStatementPersistenceService"
     )
+
+
+def _company_width(values: tuple[str, ...]) -> tuple[str, ...]:
+    if len(values) > len(_COMPANY_HEADERS):
+        raise MyBankStatementError("company statement contains unexpected columns")
+    return (*values, *("" for _ in range(len(_COMPANY_HEADERS) - len(values))))
+
+
+def _company_summary(
+    values: tuple[str, ...],
+    *,
+    count_label: str,
+    amount_label: str,
+) -> tuple[int, int]:
+    row = _company_width(values)
+    if (
+        row[0] != count_label
+        or row[4] != amount_label
+        or any(row[index] for index in (2, 3, 6, 7, 8, 9, 10))
+    ):
+        raise MyBankStatementError("company statement summary is invalid")
+    count_match = _COMPANY_COUNT.fullmatch(row[1])
+    amount_match = _COMPANY_SUMMARY_MONEY.fullmatch(row[5])
+    if count_match is None or amount_match is None:
+        raise MyBankStatementError("company statement summary is invalid")
+    amount_text = amount_match.group("amount")
+    amount_minor = 0 if amount_text == "0" else _parse_minor(amount_text, field="summary")
+    return int(count_match.group("count")), amount_minor
+
+
+def _company_optional_minor(value: str) -> int | None:
+    if not value:
+        return None
+    if _UNSIGNED_MONEY.fullmatch(value) is None:
+        raise MyBankStatementError("company statement transaction amount is invalid")
+    return _parse_minor(value, field="transaction amount")
+
+
+def _company_required_minor(value: str, *, field: str) -> int:
+    if not value:
+        raise MyBankStatementError(f"company statement {field} is invalid")
+    return _parse_minor(value, field=field)
+
+
+def _company_text(
+    value: str,
+    *,
+    field: str,
+    required: bool = False,
+    maximum: int = 300,
+) -> str:
+    normalized = " ".join(value.split())
+    if (
+        (required and not normalized)
+        or len(normalized) > maximum
+        or contains_unstorable_text(normalized)
+    ):
+        raise MyBankStatementError(f"company statement {field} is invalid")
+    return normalized
+
+
+def _validate_company_transactions(
+    transactions: list[MyBankTransaction],
+    *,
+    debit_count: int,
+    debit_total_minor: int,
+    credit_count: int,
+    credit_total_minor: int,
+) -> None:
+    previous_occurred_at: datetime | None = None
+    for transaction in transactions:
+        if previous_occurred_at is not None and transaction.occurred_at > previous_occurred_at:
+            raise MyBankStatementError("company statement transaction order is invalid")
+        previous_occurred_at = transaction.occurred_at
+    for current, older in pairwise(transactions):
+        if current.balance_minor - older.balance_minor != current.amount_minor:
+            raise MyBankStatementError("company statement balance chain is invalid")
+    debits = [item.amount_minor for item in transactions if item.amount_minor > 0]
+    credits = [-item.amount_minor for item in transactions if item.amount_minor < 0]
+    if len(debits) != debit_count or sum(debits) != debit_total_minor:
+        raise MyBankStatementError("company statement debit summary is invalid")
+    if len(credits) != credit_count or sum(credits) != credit_total_minor:
+        raise MyBankStatementError("company statement credit summary is invalid")
 
 
 def _read_source(path: Path) -> bytes:
@@ -209,7 +472,11 @@ def _read_source(path: Path) -> bytes:
     return raw
 
 
-def _read_workbook_rows(raw: bytes) -> list[tuple[int, tuple[str, ...]]]:
+def _read_workbook_rows(
+    raw: bytes,
+    *,
+    expected_sheet_name: str | None = None,
+) -> list[tuple[int, tuple[str, ...]]]:
     try:
         archive = zipfile.ZipFile(io.BytesIO(raw))
     except (OSError, zipfile.BadZipFile) as exc:
@@ -233,6 +500,8 @@ def _read_workbook_rows(raw: bytes) -> list[tuple[int, tuple[str, ...]]]:
         sheets = workbook_root.findall(f"{{{_MAIN_NS}}}sheets/{{{_MAIN_NS}}}sheet")
         if len(sheets) != 1:
             raise MyBankStatementError("statement must contain exactly one worksheet")
+        if expected_sheet_name is not None and sheets[0].get("name") != expected_sheet_name:
+            raise MyBankStatementError("statement worksheet name is invalid")
         relationship_id = sheets[0].get(f"{{{_OFFICE_REL_NS}}}id")
         if not relationship_id:
             raise MyBankStatementError("statement worksheet relationship is missing")
@@ -307,19 +576,23 @@ def _worksheet_rows(
     shared_strings: tuple[str, ...],
 ) -> list[tuple[int, tuple[str, ...]]]:
     rows: list[tuple[int, tuple[str, ...]]] = []
+    known_rows: set[int] = set()
+    known_cells: set[str] = set()
     for row in worksheet.findall(f".//{{{_MAIN_NS}}}sheetData/{{{_MAIN_NS}}}row"):
         row_number_raw = row.get("r")
         if not row_number_raw or not row_number_raw.isdigit():
             raise MyBankStatementError("statement row identity is invalid")
         row_number = int(row_number_raw)
-        if row_number <= 0 or row_number > _MAX_ROWS:
+        if row_number <= 0 or row_number > _MAX_ROWS or row_number in known_rows:
             raise MyBankStatementError("statement row count is invalid")
+        known_rows.add(row_number)
         values: list[str] = []
         for cell in row.findall(f"{{{_MAIN_NS}}}c"):
             reference = cell.get("r", "")
             match = _CELL_REFERENCE.fullmatch(reference)
-            if not match or int(match.group(2)) != row_number:
+            if not match or int(match.group(2)) != row_number or reference in known_cells:
                 raise MyBankStatementError("statement cell reference is invalid")
+            known_cells.add(reference)
             column = _column_index(match.group(1))
             if column > _MAX_COLUMNS:
                 raise MyBankStatementError("statement column count is invalid")
