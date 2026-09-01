@@ -36,6 +36,19 @@ LIVE_PROJECTION_CONTRACT_VERSION = "1.0.0"
 LIVE_PROJECTION_PATH = "/api/v1/ledgerbridge-projections/current"
 TEST_WORKSPACES_PATH = "/api/v1/test-workspaces"
 TEST_WORKSPACE_SCHEMA = "payroll-ledgerbridge-test-projection/v1"
+LEGACY_FEATURE_WORKSPACE_SCHEMA = "payroll-legacy-feature-workspace/v1"
+LEGACY_FEATURE_ACTIONS = frozenset(
+    {
+        "FILL_MAIN",
+        "GENERATE_NORMAL_DRAFT",
+        "GENERATE_SUPPLEMENTAL_DRAFT",
+        "UPDATE_SUMMARY",
+        "SAVE_RULES",
+        "CHECK_RULES_AND_HISTORY",
+        "VERIFY_CURRENT_PAID",
+        "CHECK_PREVIOUS_PENDING",
+    }
+)
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_SAFE_INTEGER = (2**53) - 1
 _PUBLICATION_ID = re.compile(r"^publication_[a-f0-9]{24}$")
@@ -586,6 +599,51 @@ class HttpPayrollTestWorkspaceSource:
             f"{TEST_WORKSPACES_PATH}/{quote(batch_id, safe='')}/clear", provider_headers, body
         )
         _validate_test_workspace_clear_receipt(raw, company_id, batch_id)
+        return self._result(entity_ref, company_id, bool(raw["replayed"]), raw)
+
+    def read_legacy_features(
+        self, *, entity_ref: UUID, test_batch_id: str, provider_headers: Mapping[str, str]
+    ) -> PayrollTestWorkspaceResult:
+        company_id = self._companies.company_for_entity(entity_ref)
+        batch_id = _require_stable_identifier(test_batch_id, "test_batch_id")
+        path = f"{TEST_WORKSPACES_PATH}/{quote(batch_id, safe='')}/legacy-features"
+        raw = self._get(path, provider_headers)
+        _validate_legacy_feature_workspace(raw, company_id, batch_id)
+        return self._result(entity_ref, company_id, False, raw)
+
+    def execute_legacy_feature(
+        self,
+        *,
+        entity_ref: UUID,
+        test_batch_id: str,
+        expected_workspace_revision: int,
+        expected_action: str,
+        provider_headers: Mapping[str, str],
+        body: bytes,
+    ) -> PayrollTestWorkspaceResult:
+        company_id = self._companies.company_for_entity(entity_ref)
+        batch_id = _require_stable_identifier(test_batch_id, "test_batch_id")
+        if expected_action not in LEGACY_FEATURE_ACTIONS:
+            raise PayrollIntegrationError(
+                "PAYROLL_PROVIDER_RESPONSE", "payroll legacy feature action is invalid"
+            )
+        raw = self._post(
+            f"{TEST_WORKSPACES_PATH}/{quote(batch_id, safe='')}/legacy-features/commands",
+            provider_headers,
+            body,
+        )
+        _require_exact_keys(
+            raw, frozenset({"action", "replayed", "workspace"}), "legacy feature result"
+        )
+        if raw.get("action") != expected_action or type(raw.get("replayed")) is not bool:
+            _invalid_response("payroll legacy feature result is invalid")
+        workspace = _require_object(raw.get("workspace"), "legacy feature workspace")
+        _validate_legacy_feature_workspace(workspace, company_id, batch_id)
+        if (
+            _require_positive_integer(workspace.get("revision"), "legacy workspace revision")
+            != expected_workspace_revision + 1
+        ):
+            _invalid_response("payroll legacy feature result revision is invalid")
         return self._result(entity_ref, company_id, bool(raw["replayed"]), raw)
 
     def _get(self, path: str, headers: Mapping[str, str]) -> Mapping[str, object]:
@@ -2910,6 +2968,8 @@ def _validate_test_material_preview(
                 "company_id",
                 "material_id",
                 "period",
+                "routing_status",
+                "auto_batch_eligible",
                 "status",
                 "line_count",
                 "total_net_pay_cents",
@@ -2928,9 +2988,17 @@ def _validate_test_material_preview(
         or value.get("test_batch_id") != expected_batch_id
         or value.get("company_id") != expected_company_id
         or value.get("material_id") != expected_material_id
+        or value.get("routing_status") not in {"AUTO_TEST", "REVIEW_REQUIRED"}
         or value.get("status") not in {"READY_FOR_REVIEW", "NEEDS_HUMAN_REVIEW"}
     ):
         _invalid_response("payroll test material preview scope is invalid")
+    expected_auto_eligible = (
+        value.get("routing_status") == "AUTO_TEST" and value.get("status") == "READY_FOR_REVIEW"
+    )
+    if type(value.get("auto_batch_eligible")) is not bool or (
+        value.get("auto_batch_eligible") is not expected_auto_eligible
+    ):
+        _invalid_response("payroll test material preview eligibility is inconsistent")
     _require_period(value.get("period"), "preview.period")
     line_count = _require_non_negative_integer(value.get("line_count"), "preview.line_count")
     stated_total = _require_non_negative_integer(
@@ -2942,6 +3010,7 @@ def _validate_test_material_preview(
     line_fields = frozenset(
         {
             "company_id",
+            "source_row",
             "employee_id",
             "employee_name",
             "account_id",
@@ -3002,9 +3071,10 @@ def _validate_test_material_preview(
     total = 0
     employee_ids: set[str] = set()
     account_ids: set[str] = set()
-    for source_row, line_value in enumerate(lines, start=4):
+    for line_value in lines:
         line = _require_object(line_value, "preview.line")
         _require_exact_keys(line, line_fields, "test payroll preview line")
+        source_row = _require_positive_integer(line.get("source_row"), "preview.source_row")
         if line.get("company_id") != expected_company_id:
             _invalid_response("payroll test preview line crosses company scope")
         employee_id = _require_stable_identifier(line.get("employee_id"), "preview.employee_id")
@@ -3027,7 +3097,7 @@ def _validate_test_material_preview(
         account_masked = line.get("account_masked")
         if (
             not isinstance(account_masked, str)
-            or re.fullmatch(r"\*{4}\d{4}", account_masked) is None
+            or re.fullmatch(r"\*{4}(?:\d{4}|\?{4})", account_masked) is None
         ):
             _invalid_response("payroll preview account is not masked")
         line_amounts: dict[str, int] = {}
@@ -3072,6 +3142,288 @@ def _validate_test_material_preview(
             _invalid_response("payroll preview net pay is inconsistent")
     if len(lines) != line_count or total != stated_total:
         _invalid_response("payroll test preview totals are inconsistent")
+
+
+def _validate_legacy_feature_workspace(
+    value: Mapping[str, object], expected_company_id: str, expected_batch_id: str
+) -> None:
+    _require_exact_keys(
+        value,
+        frozenset(
+            {
+                "schema_version",
+                "data_scope",
+                "company_id",
+                "test_batch_id",
+                "revision",
+                "active_period",
+                "rules",
+                "batches",
+                "audit_events",
+                "payment_submission_supported",
+                "payable",
+                "submission_supported",
+            }
+        ),
+        "legacy feature workspace",
+    )
+    if (
+        value.get("schema_version") != LEGACY_FEATURE_WORKSPACE_SCHEMA
+        or value.get("data_scope") != "TEST_ONLY"
+        or value.get("company_id") != expected_company_id
+        or value.get("test_batch_id") != expected_batch_id
+    ):
+        _invalid_response("payroll legacy feature workspace scope is invalid")
+    _require_positive_integer(value.get("revision"), "legacy workspace revision")
+    active_period = _require_period(value.get("active_period"), "legacy active period")
+    _require_disabled_flags(
+        value, ("payment_submission_supported", "payable", "submission_supported")
+    )
+
+    rules = _require_object(value.get("rules"), "legacy rules")
+    _require_exact_keys(rules, frozenset({"revision", "employees"}), "legacy rules")
+    _require_non_negative_integer(rules.get("revision"), "legacy rules revision")
+    _require_list(rules.get("employees"), "legacy rules employees")
+
+    periods: set[str] = set()
+    batch_ids: set[str] = set()
+    for batch_value in _require_list(value.get("batches"), "legacy batches"):
+        batch = _require_object(batch_value, "legacy batch")
+        _require_exact_keys(
+            batch,
+            frozenset(
+                {
+                    "batch_id",
+                    "period",
+                    "revision",
+                    "main_material_id",
+                    "supporting_material_ids",
+                    "lines",
+                    "adjustments",
+                    "source_exceptions",
+                    "drafts",
+                    "summary",
+                    "verification",
+                    "pending_items",
+                    "checks",
+                }
+            ),
+            "legacy batch",
+        )
+        batch_id = _require_stable_identifier(batch.get("batch_id"), "legacy batch_id")
+        period = _require_period(batch.get("period"), "legacy batch period")
+        if batch_id in batch_ids or period in periods:
+            _invalid_response("payroll legacy feature batch is duplicated")
+        batch_ids.add(batch_id)
+        periods.add(period)
+        _require_positive_integer(batch.get("revision"), "legacy batch revision")
+        _require_stable_identifier(batch.get("main_material_id"), "main_material_id")
+        supporting = _require_object(
+            batch.get("supporting_material_ids"), "supporting material ids"
+        )
+        for material_id in supporting.values():
+            _require_stable_identifier(material_id, "supporting material_id")
+
+        source_exceptions = _require_list(
+            batch.get("source_exceptions"), "legacy source exceptions"
+        )
+        acknowledged_mismatches: set[tuple[int, int, int]] = set()
+        for exception_value in source_exceptions:
+            exception = _require_object(exception_value, "legacy source exception")
+            if (
+                exception.get("code") == "NET_PAY_MISMATCH"
+                and exception.get("severity") == "BLOCKING"
+            ):
+                acknowledged_mismatches.add(
+                    (
+                        _require_positive_integer(exception.get("row"), "exception row"),
+                        _require_minor_integer(
+                            exception.get("calculated_cents"), "exception calculated_cents"
+                        ),
+                        _require_non_negative_integer(
+                            exception.get("stated_cents"), "exception stated_cents"
+                        ),
+                    )
+                )
+
+        employee_ids: set[str] = set()
+        account_ids: set[str] = set()
+        lines = _require_list(batch.get("lines"), "legacy lines")
+        if not lines:
+            _invalid_response("payroll legacy feature batch has no lines")
+        for line_value in lines:
+            line = _require_object(line_value, "legacy line")
+            required_line_fields = {
+                "source_row",
+                "company_id",
+                "employee_id",
+                "employee_name",
+                "account_id",
+                "account_masked",
+                "payment_channel",
+                "base_salary_cents",
+                "allowance_cents",
+                "bonus_cents",
+                "deduction_cents",
+                "social_insurance_cents",
+                "housing_fund_cents",
+                "individual_income_tax_cents",
+                "gross_pay_cents",
+                "net_pay_cents",
+                "notes",
+            }
+            if not required_line_fields.issubset(line):
+                _invalid_response("payroll legacy feature line is incomplete")
+            if line.get("company_id") != expected_company_id:
+                raise PayrollIntegrationError(
+                    "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+                    "payroll legacy feature line crosses company scope",
+                )
+            employee_id = _require_stable_identifier(line.get("employee_id"), "employee_id")
+            account_id = _require_stable_identifier(
+                line.get("account_id"), "account_id", account=True
+            )
+            if employee_id in employee_ids or account_id in account_ids:
+                _invalid_response("payroll legacy feature identity is duplicated")
+            employee_ids.add(employee_id)
+            account_ids.add(account_id)
+            source_row = _require_positive_integer(line.get("source_row"), "source_row")
+            masked = line.get("account_masked")
+            if not isinstance(masked, str) or re.fullmatch(r"\*{4}(?:\d{4}|\?{4})", masked) is None:
+                _invalid_response("payroll legacy feature account is not masked")
+            amounts = {
+                field: _require_non_negative_integer(line.get(field), f"legacy {field}")
+                for field in (
+                    "base_salary_cents",
+                    "allowance_cents",
+                    "bonus_cents",
+                    "deduction_cents",
+                    "social_insurance_cents",
+                    "housing_fund_cents",
+                    "individual_income_tax_cents",
+                    "gross_pay_cents",
+                    "net_pay_cents",
+                )
+            }
+            calculated_gross = (
+                amounts["base_salary_cents"]
+                + amounts["allowance_cents"]
+                + amounts["bonus_cents"]
+            )
+            calculated_net = (
+                calculated_gross
+                - amounts["deduction_cents"]
+                - amounts["social_insurance_cents"]
+                - amounts["housing_fund_cents"]
+                - amounts["individual_income_tax_cents"]
+            )
+            if calculated_gross != amounts["gross_pay_cents"] or (
+                calculated_net != amounts["net_pay_cents"]
+                and (source_row, calculated_net, amounts["net_pay_cents"])
+                not in acknowledged_mismatches
+            ):
+                _invalid_response("payroll legacy feature line totals are inconsistent")
+
+        for field in ("adjustments", "drafts", "pending_items"):
+            _require_list(batch.get(field), f"legacy {field}")
+        for field in ("summary", "verification", "checks"):
+            nested = batch.get(field)
+            if nested is not None:
+                _require_object(nested, f"legacy {field}")
+    if active_period not in periods:
+        _invalid_response("payroll legacy active period has no batch")
+
+    events = _require_list(value.get("audit_events"), "legacy audit events")
+    for expected_sequence, event_value in enumerate(events, start=1):
+        event = _require_object(event_value, "legacy audit event")
+        if event.get("sequence") != expected_sequence:
+            _invalid_response("payroll legacy audit sequence is invalid")
+    _validate_legacy_feature_tree(value, expected_company_id, expected_batch_id)
+
+
+def _validate_legacy_feature_tree(
+    value: object,
+    expected_company_id: str,
+    expected_batch_id: str,
+    *,
+    parent_key: str = "",
+    seen: set[int] | None = None,
+) -> None:
+    active = set() if seen is None else seen
+    if isinstance(value, Mapping):
+        marker = id(value)
+        if marker in active:
+            _invalid_response("payroll legacy feature workspace must be acyclic JSON data")
+        active.add(marker)
+        try:
+            for key, nested in value.items():
+                if not isinstance(key, str):
+                    _invalid_response("payroll legacy feature field is invalid")
+                normalized = re.sub(r"[^a-z0-9]", "", key.lower())
+                if normalized in _SENSITIVE_FIELDS and normalized != "employeename":
+                    raise PayrollIntegrationError(
+                        "PAYROLL_SENSITIVE_FIELD_NOT_ALLOWED",
+                        "payroll legacy feature workspace contains a prohibited field",
+                    )
+                if key == "company_id" and nested != expected_company_id:
+                    raise PayrollIntegrationError(
+                        "PAYROLL_IDENTITY_SCOPE_MISMATCH",
+                        "payroll legacy feature workspace crosses company scope",
+                    )
+                if key == "test_batch_id" and nested != expected_batch_id:
+                    _invalid_response("payroll legacy feature batch scope is invalid")
+                if key == "employee_id":
+                    _require_stable_identifier(nested, key)
+                elif key == "account_id":
+                    _require_stable_identifier(nested, key, account=True)
+                elif key.endswith(("_minor", "_cents")):
+                    _require_minor_integer(nested, key)
+                elif key in {
+                    "payment_submission_supported",
+                    "payment_execution_supported",
+                    "payable",
+                    "submission_supported",
+                } and nested is not False:
+                    raise PayrollIntegrationError(
+                        "PAYROLL_PAYMENT_MODE_NOT_ALLOWED",
+                        "payroll legacy feature workspace exposed payment capability",
+                    )
+                _validate_legacy_feature_tree(
+                    nested,
+                    expected_company_id,
+                    expected_batch_id,
+                    parent_key=key,
+                    seen=active,
+                )
+        finally:
+            active.remove(marker)
+    elif isinstance(value, list):
+        marker = id(value)
+        if marker in active:
+            _invalid_response("payroll legacy feature workspace must be acyclic JSON data")
+        active.add(marker)
+        try:
+            for nested in value:
+                _validate_legacy_feature_tree(
+                    nested,
+                    expected_company_id,
+                    expected_batch_id,
+                    parent_key=parent_key,
+                    seen=active,
+                )
+        finally:
+            active.remove(marker)
+    elif isinstance(value, str):
+        if len(value) > 2_000:
+            _invalid_response("payroll legacy feature text is too long")
+        _validate_publishable_string(value, parent_key=parent_key)
+    elif isinstance(value, bool) or value is None:
+        return
+    elif isinstance(value, int):
+        if not -MAX_SAFE_INTEGER <= value <= MAX_SAFE_INTEGER:
+            _invalid_response("payroll legacy feature integer exceeds the JSON-safe range")
+    else:
+        _invalid_response("payroll legacy feature workspace contains a non-JSON value")
 
 
 def _validate_test_workspace_organize_receipt(

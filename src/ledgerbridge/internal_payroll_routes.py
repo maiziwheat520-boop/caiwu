@@ -150,6 +150,29 @@ class PayrollTestWorkspaceCommandResponse(BaseModel):
     data: dict[str, object]
 
 
+class PayrollLegacyFeatureReadResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    contract_version: Literal["ledgerbridge.payroll-legacy-feature-read.v1"] = (
+        "ledgerbridge.payroll-legacy-feature-read.v1"
+    )
+    entity_ref: UUID
+    company_id: str
+    data: dict[str, object]
+
+
+class PayrollLegacyFeatureCommandResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    contract_version: Literal["ledgerbridge.payroll-legacy-feature-command-result.v1"] = (
+        "ledgerbridge.payroll-legacy-feature-command-result.v1"
+    )
+    entity_ref: UUID
+    company_id: str
+    action: Literal["payroll.test_workspace.legacy.command"]
+    resource_ref: str
+    replayed: bool
+    data: dict[str, object]
+
+
 class PayrollTestWorkspaceCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["payroll-test-workspace-create-request/v1"]
@@ -193,6 +216,25 @@ class PayrollTestBatchValidate(BaseModel):
     expected_workspace_revision: int = Field(strict=True, ge=1)
     idempotency_key: UUID
     explicitly_confirmed: Literal[True]
+
+
+class PayrollLegacyFeatureCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["payroll-legacy-feature-command-request/v1"]
+    action: Literal[
+        "FILL_MAIN",
+        "GENERATE_NORMAL_DRAFT",
+        "GENERATE_SUPPLEMENTAL_DRAFT",
+        "UPDATE_SUMMARY",
+        "SAVE_RULES",
+        "CHECK_RULES_AND_HISTORY",
+        "VERIFY_CURRENT_PAID",
+        "CHECK_PREVIOUS_PENDING",
+    ]
+    expected_revision: int = Field(strict=True, ge=0)
+    idempotency_key: UUID
+    explicitly_confirmed: Literal[True]
+    payload: dict[str, object]
 
 
 class PayrollLiveSource(Protocol):
@@ -250,6 +292,19 @@ class PayrollTestWorkspaceSource(Protocol):
         *,
         entity_ref: UUID,
         test_batch_id: str,
+        provider_headers: Mapping[str, str],
+        body: bytes,
+    ) -> PayrollTestWorkspaceResult: ...
+    def read_legacy_features(
+        self, *, entity_ref: UUID, test_batch_id: str, provider_headers: Mapping[str, str]
+    ) -> PayrollTestWorkspaceResult: ...
+    def execute_legacy_feature(
+        self,
+        *,
+        entity_ref: UUID,
+        test_batch_id: str,
+        expected_workspace_revision: int,
+        expected_action: str,
         provider_headers: Mapping[str, str],
         body: bytes,
     ) -> PayrollTestWorkspaceResult: ...
@@ -1116,6 +1171,131 @@ def get_payroll_test_material_preview(
         entity_ref=result.entity_ref,
         company_id=result.company_id,
         material_id=material_id,
+        data=result.payload_copy(),
+    )
+
+
+@router.get(
+    "/payroll/test-workspaces/{test_batch_id}/legacy-features",
+    response_model=PayrollLegacyFeatureReadResponse,
+    dependencies=[Depends(require_payroll_test_workspaces)],
+)
+def get_payroll_legacy_features(
+    test_batch_id: str,
+    request: Request,
+    assertion: Annotated[str, Header(alias="X-LedgerBridge-User-Assertion")],
+    principal: Annotated[WorkloadPrincipal, Depends(require_payroll_live_read)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    source: Annotated[PayrollTestWorkspaceSource, Depends(get_payroll_test_workspace_source)],
+    signer: Annotated[HmacPayrollProviderAssertionSigner, Depends(get_payroll_provider_signer)],
+    replay_store: Annotated[
+        PayrollAssertionReplayStore, Depends(get_payroll_assertion_replay_store)
+    ],
+) -> PayrollLegacyFeatureReadResponse:
+    if request.url.query:
+        raise InternalPayrollProblem(status.HTTP_400_BAD_REQUEST, "INVALID_QUERY")
+    claims = _verify_user_for_grant(
+        assertion,
+        settings=settings,
+        principal=principal,
+        method="GET",
+        path=request.url.path,
+        body=b"",
+        action="payroll.test_workspace.legacy.read",
+        resource_ref=test_batch_id,
+    )
+    if not replay_store.consume(claims):
+        raise PayrollUserAssertionError("payroll assertion replayed")
+    company_id = _company_for_entity(settings, claims.entity_ref)
+    provider_path = f"{TEST_WORKSPACES_PATH}/{test_batch_id}/legacy-features"
+    headers = signer.headers(
+        user=claims,
+        company_id=company_id,
+        provider_action="payroll.test_workspace.legacy.read",
+        method="GET",
+        path=provider_path,
+        body=b"",
+    )
+    result = source.read_legacy_features(
+        entity_ref=claims.entity_ref,
+        test_batch_id=test_batch_id,
+        provider_headers=headers,
+    )
+    if result.entity_ref != claims.entity_ref or result.company_id != company_id:
+        raise PayrollIntegrationError(
+            "PAYROLL_IDENTITY_SCOPE_MISMATCH", "payroll legacy features cross company scope"
+        )
+    return PayrollLegacyFeatureReadResponse(
+        entity_ref=result.entity_ref,
+        company_id=result.company_id,
+        data=result.payload_copy(),
+    )
+
+
+@router.post(
+    "/payroll/test-workspaces/{test_batch_id}/legacy-features/commands",
+    response_model=PayrollLegacyFeatureCommandResponse,
+    dependencies=[Depends(require_payroll_test_workspaces)],
+)
+async def execute_payroll_legacy_feature(
+    test_batch_id: str,
+    command: PayrollLegacyFeatureCommand,
+    request: Request,
+    assertion: Annotated[str, Header(alias="X-LedgerBridge-User-Assertion")],
+    principal: Annotated[WorkloadPrincipal, Depends(require_payroll_command)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    source: Annotated[PayrollTestWorkspaceSource, Depends(get_payroll_test_workspace_source)],
+    signer: Annotated[HmacPayrollProviderAssertionSigner, Depends(get_payroll_provider_signer)],
+    replay_store: Annotated[
+        PayrollAssertionReplayStore, Depends(get_payroll_assertion_replay_store)
+    ],
+) -> PayrollLegacyFeatureCommandResponse:
+    body = await request.body()
+    claims = _verify_user_for_grant(
+        assertion,
+        settings=settings,
+        principal=principal,
+        method="POST",
+        path=request.url.path,
+        body=body,
+        action="payroll.test_workspace.legacy.command",
+        resource_ref=test_batch_id,
+        expected_revision=command.expected_revision,
+        operation_id=command.idempotency_key,
+    )
+    if not replay_store.consume(claims):
+        raise PayrollUserAssertionError("payroll assertion replayed")
+    company_id = _company_for_entity(settings, claims.entity_ref)
+    provider_path = f"{TEST_WORKSPACES_PATH}/{test_batch_id}/legacy-features/commands"
+    headers = dict(
+        signer.headers(
+            user=claims,
+            company_id=company_id,
+            provider_action="payroll.test_workspace.legacy.command",
+            method="POST",
+            path=provider_path,
+            body=body,
+        )
+    )
+    headers["X-Payroll-Test-Intent"] = "manage-legacy-payroll-features"
+    result = source.execute_legacy_feature(
+        entity_ref=claims.entity_ref,
+        test_batch_id=test_batch_id,
+        expected_workspace_revision=command.expected_revision,
+        expected_action=command.action,
+        provider_headers=headers,
+        body=body,
+    )
+    if result.entity_ref != claims.entity_ref or result.company_id != company_id:
+        raise PayrollIntegrationError(
+            "PAYROLL_IDENTITY_SCOPE_MISMATCH", "payroll legacy command crosses company scope"
+        )
+    return PayrollLegacyFeatureCommandResponse(
+        entity_ref=result.entity_ref,
+        company_id=result.company_id,
+        action="payroll.test_workspace.legacy.command",
+        resource_ref=test_batch_id,
+        replayed=result.replayed,
         data=result.payload_copy(),
     )
 
