@@ -417,6 +417,32 @@ def summary_preview_payload():
     }
 
 
+def wage_input_preview_payload():
+    return {
+        "schema_version": "payroll-input-material-preview/v1",
+        "data_scope": "TEST_ONLY",
+        "test_batch_id": "batch_demo",
+        "company_id": "company_demo",
+        "material_id": "material_attendance",
+        "period": "2026-07",
+        "material_type": "ATTENDANCE_SHEET",
+        "detected_material_type": "AUNT_ATTENDANCE_SHEET",
+        "canonical_name": "2026.7_阿姨考勤表",
+        "selected_sheet": "阿姨考勤",
+        "sheet_names": ["阿姨考勤"],
+        "columns": ["姓名", "考勤天数", "工资合计"],
+        "record_count": 2,
+        "preview_rows": [
+            {"source_row": 2, "values": ["员工甲", "26", "5000"]},
+            {"source_row": 3, "values": ["员工乙", "25", "4800"]},
+        ],
+        "status": "READY_FOR_REVIEW",
+        "payment_submission_supported": False,
+        "payable": False,
+        "submission_supported": False,
+    }
+
+
 def legacy_workspace_payload():
     return {
         "schema_version": "payroll-legacy-feature-workspace/v1",
@@ -425,7 +451,20 @@ def legacy_workspace_payload():
         "test_batch_id": "batch_demo",
         "revision": 1,
         "active_period": "2026-08",
-        "rules": {"revision": 0, "employees": []},
+        "rules": {
+            "revision": 0,
+            "employees": [],
+            "review_rules": [
+                {
+                    "rule_id": "review_supporting_materials",
+                    "name": "三类工资素材必须齐全",
+                    "rule_type": "SUPPORTING_MATERIAL_REQUIRED",
+                    "enabled": True,
+                    "severity": "REVIEW",
+                    "threshold_cents": 0,
+                }
+            ],
+        },
         "batches": [
             {
                 "batch_id": "batch_demo_2026_08",
@@ -584,6 +623,28 @@ def test_legacy_feature_workspace_read_and_command_preserve_safe_provider_state(
     assert command.payload_copy()["workspace"]["revision"] == 1
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda rule: rule.update(enabled="yes"),
+        lambda rule: rule.update(rule_type="UNKNOWN_REVIEW_RULE"),
+        lambda rule: rule.update(threshold_cents=-1),
+        lambda rule: rule.update(payable=True),
+    ],
+)
+def test_legacy_feature_workspace_rejects_malformed_review_rules(mutate):
+    payload = legacy_workspace_payload()
+    mutate(payload["rules"]["review_rules"][0])
+    entity, adapter = source(payload)
+
+    with pytest.raises(PayrollIntegrationError):
+        adapter.read_legacy_features(
+            entity_ref=entity,
+            test_batch_id="batch_demo",
+            provider_headers={},
+        )
+
+
 def test_legacy_feature_workspace_accepts_complete_channel_and_total_reconciliation():
     payload = legacy_workspace_payload()
     payload["batches"][0]["verification"] = legacy_channel_verification_payload()
@@ -663,6 +724,45 @@ def test_test_workspace_preview_returns_masked_non_payable_lines():
     assert result.payload_copy()["lines"][0]["account_masked"] == "****0138"
     assert result.payload_copy()["total_net_pay_cents"] == 500000
     assert result.payload_copy()["submission_supported"] is False
+
+
+def test_test_workspace_preview_accepts_renamed_wage_input_content_rows():
+    entity, adapter = source(wage_input_preview_payload())
+    result = adapter.preview_material(
+        entity_ref=entity,
+        test_batch_id="batch_demo",
+        material_id="material_attendance",
+        provider_headers={},
+    )
+    payload = result.payload_copy()
+    assert payload["canonical_name"] == "2026.7_阿姨考勤表"
+    assert payload["columns"] == ["姓名", "考勤天数", "工资合计"]
+    assert payload["preview_rows"][0]["values"][0] == "员工甲"
+    assert payload["submission_supported"] is False
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.update(canonical_name="2026.7_考勤表"),
+        lambda payload: payload.update(period="2026-06"),
+        lambda payload: payload["preview_rows"][0]["values"].append("多余列"),
+        lambda payload: payload["preview_rows"][0]["values"].__setitem__(
+            2, "6222021234567890123"
+        ),
+    ],
+)
+def test_test_workspace_wage_input_preview_fails_closed_on_contract_drift(mutate):
+    payload = wage_input_preview_payload()
+    mutate(payload)
+    entity, adapter = source(payload)
+    with pytest.raises(PayrollIntegrationError):
+        adapter.preview_material(
+            entity_ref=entity,
+            test_batch_id="batch_demo",
+            material_id="material_attendance",
+            provider_headers={},
+        )
 
 
 def test_test_workspace_preview_accepts_authoritative_summary_months_and_store_totals():
