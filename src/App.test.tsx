@@ -2136,7 +2136,7 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.getByRole('heading', { name: '2026 年 8 月对账草稿' })).toBeInTheDocument()
     fireEvent.click(screen.getAllByRole('button', { name: /原口径对账表/ })[0])
     expect(window.location.pathname).toBe('/original-reconciliation')
-    expect(await screen.findByRole('heading', { name: '原口径对账表' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '收支与往来对账' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: '2026 年 8 月对账草稿' })).not.toBeInTheDocument()
     fireEvent.click(screen.getAllByRole('button', { name: /各公司报表/ })[0])
     expect(await screen.findByRole('heading', { name: '各公司报表' })).toBeInTheDocument()
@@ -2328,69 +2328,66 @@ describe('LedgerBridge Web API client', () => {
     expect(await screen.findByText('当前期间没有可展示的公司报表')).toBeInTheDocument()
   })
 
-  it('renders original-reconciliation as actionable business items instead of an Excel-style grid', async () => {
+  it('renders statement candidates as income, expense and current-account work lanes', async () => {
     window.history.replaceState({}, '', '/original-reconciliation')
     installFetch()
     renderApp()
 
-    expect(await screen.findByRole('heading', { name: '原口径对账表' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '收支与往来对账' })).toBeInTheDocument()
     expect(screen.queryByRole('table', { name: '原口径固定列对账表' })).not.toBeInTheDocument()
-    const workflow = screen.getByRole('region', { name: '原口径事项录入与审核' })
-    expect(within(workflow).getByRole('heading', { name: '已导入业务事项' })).toBeInTheDocument()
-    expect(within(workflow).getByText('已确认候选（脱敏）')).toBeInTheDocument()
-    expect(within(workflow).getByText('待补经济影响')).toBeInTheDocument()
+    const workflow = screen.getByRole('region', { name: '收支与往来事项' })
+    const lanes = within(workflow).getByRole('tablist', { name: '业务性质' })
+    expect(within(lanes).getByRole('tab', { name: /收入/ })).toBeInTheDocument()
+    expect(within(lanes).getByRole('tab', { name: /支出/ })).toBeInTheDocument()
+    expect(within(lanes).getByRole('tab', { name: /往来款/ })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '已确认账单来源' })).toBeInTheDocument()
 
     fireEvent.click(within(workflow).getByRole('button', { name: '前往待审核' }))
     expect(window.location.pathname).toBe('/review')
   })
 
-  it('uses original-reconciliation projection totals without mixing pending review into business items', async () => {
+  it('keeps projection gaps as secondary todos without presenting them as financial totals', async () => {
     window.history.replaceState({}, '', '/original-reconciliation')
     const fetchMock = installFetch()
     renderApp()
 
-    expect(await screen.findByRole('heading', { name: '原口径对账表' })).toBeInTheDocument()
-    const workflow = screen.getByRole('region', { name: '原口径事项录入与审核' })
-    expect(within(workflow).getByText('¥123.45')).toBeInTheDocument()
-    expect(within(workflow).getByText('-¥23.45')).toBeInTheDocument()
-    expect(within(workflow).getByText('待补经济影响')).toBeInTheDocument()
-    expect(within(screen.getByRole('region', { name: '原口径合计' })).getByText('¥100.00')).toBeInTheDocument()
-    expect(screen.getByText('3 条交易待审核')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '收支与往来对账' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '收支与往来事项' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '原口径合计' })).not.toBeInTheDocument()
+    expect(await screen.findByText('3 条交易待审核')).toBeInTheDocument()
     expect(screen.getByText('2 条已确认待入账')).toBeInTheDocument()
-    expect(screen.getByText('1 份关联材料待补')).toBeInTheDocument()
+    expect(screen.getByText('1 份对应账单待补')).toBeInTheDocument()
     expect(screen.getByText('1 条已确认事项待归类')).toBeInTheDocument()
     expect(screen.getByText('月内日期待补')).toBeInTheDocument()
-    expect(screen.getByText('仍有待办')).toBeInTheDocument()
-    expect(screen.getByText('synthetic_confirmed')).toBeInTheDocument()
-    expect(screen.getByText('synthetic_statement')).toBeInTheDocument()
-    expect(screen.getAllByText('待补账户映射')).toHaveLength(2)
+    expect(screen.getByText('待补业务性质')).toBeInTheDocument()
     expect(screen.getByText('规则版本可追溯')).toHaveAttribute(
       'title',
-      `${originalReconciliationFixture.taxonomy_version} · ${originalReconciliationFixture.layout_version} · ${originalReconciliationFixture.mapping_version}`,
+      `${originalReconciliationFixture.taxonomy_version} | ${originalReconciliationFixture.layout_version} | ${originalReconciliationFixture.mapping_version}`,
     )
 
-    fireEvent.change(screen.getByLabelText('选择原口径对账月份'), { target: { value: '2026-07' } })
+    fireEvent.change(screen.getByLabelText('选择对账月份'), { target: { value: '2026-07' } })
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       `/api/v1/original-reconciliations/2026-07?entity_ref=${originalReconciliationFixture.scope.entity_ref}&business_unit=${originalReconciliationFixture.scope.business_unit_ref}`,
       expect.objectContaining({ credentials: 'same-origin' }),
     ))
   })
 
-  it('shows loading, error, and empty states for the original-layout projection', async () => {
+  it('keeps statement browsing usable across loading, error, and empty projection states', async () => {
     window.history.replaceState({}, '', '/original-reconciliation')
     let releaseProjection: () => void = () => undefined
     const projectionGate = new Promise<void>((resolve) => { releaseProjection = resolve })
     installFetch({ originalReconciliationGate: projectionGate })
     const loadingView = renderApp()
-    expect(await screen.findByText('正在读取原口径对账表')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '收支与往来对账' })).toBeInTheDocument()
+    expect(screen.getByText('正在确认公司 / 门店范围')).toBeInTheDocument()
     await act(async () => releaseProjection())
-    expect(await screen.findByRole('region', { name: '原口径事项录入与审核' })).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: '收支与往来事项' })).toBeInTheDocument()
     loadingView.unmount()
 
     vi.restoreAllMocks()
     installFetch({ failOriginalReconciliation: true })
     const errorView = renderApp()
-    expect(await screen.findByRole('alert')).toHaveTextContent('原口径投影暂不可用')
+    expect(await screen.findByRole('alert')).toHaveTextContent('月度对账状态暂不可用')
     expect(screen.getByRole('button', { name: /重试/ })).toBeInTheDocument()
     errorView.unmount()
 
@@ -2408,6 +2405,7 @@ describe('LedgerBridge Web API client', () => {
       })),
     }))
     installFetch({
+      items: [],
       originalReconciliation: {
         ...originalReconciliationFixture,
         rows: blankRows,
@@ -2428,13 +2426,13 @@ describe('LedgerBridge Web API client', () => {
       },
     })
     renderApp()
-    expect(await screen.findByRole('heading', { name: '本月 Excel 尚未迁入 Core' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Core 也没有本月对账事实' })).toBeInTheDocument()
-    expect(within(screen.getByRole('region', { name: '原口径合计' })).getAllByText('¥0.00')).toHaveLength(3)
+    expect(await screen.findByRole('heading', { name: '本月还没有可核对的账单记录' })).toBeInTheDocument()
+    expect(screen.queryByText(/Excel|截图导入|受控导入/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '原口径合计' })).not.toBeInTheDocument()
     expect(screen.queryByRole('table', { name: '原口径固定列对账表' })).not.toBeInTheDocument()
   })
 
-  it('shows unavailable posted-ledger totals as missing instead of zero', async () => {
+  it('does not surface unavailable posted-ledger projections as statement totals', async () => {
     window.history.replaceState({}, '', '/original-reconciliation')
     installFetch({
       originalReconciliation: {
@@ -2451,9 +2449,10 @@ describe('LedgerBridge Web API client', () => {
     })
     renderApp()
 
-    const totals = await screen.findByRole('region', { name: '原口径合计' })
-    expect(within(totals).getAllByText('待接正式账簿')).toHaveLength(3)
-    expect(within(totals).queryByText('¥0.00')).not.toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: '收支与往来事项' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '原口径合计' })).not.toBeInTheDocument()
+    expect(screen.queryByText('正式入账收入')).not.toBeInTheDocument()
+    expect(screen.queryByText('正式入账支出')).not.toBeInTheDocument()
   })
 
   it('keeps the payroll integration status reachable from its route and both navigation surfaces', async () => {
