@@ -17,7 +17,8 @@ import { PageHeader } from '../shared/PagePrimitives'
 import {
   currentAccountCounterpartyNote,
   historicalClassificationCorrection,
-  statementSourceRules,
+  legacyItemSourceRules,
+  ORIGINAL_RECONCILIATION_SOURCE_SYSTEM,
 } from './statementSourceRegistry'
 
 type FlowKind = 'income' | 'expense' | 'current' | 'unclassified'
@@ -40,10 +41,6 @@ const currentAccountCodes = new Set([
   'REPAYMENT',
   'CAPITAL_ADVANCE',
 ])
-const currentAccountTerms = /(内部往来|往来款|关联往来|股东往来|分红|利润分配|转账|余额互转|账户互转|资金调拨|借款|还款|垫付款|充值|提现)/
-const explicitIncomeTerms = /(文杰房租)/
-const payrollTerms = /(工资|薪资|薪酬)/
-const parentTerms = /(陈展武|林素美|老爸|老妈|爸妈)/
 const flowLabels: Record<FlowKind, string> = {
   income: '收入',
   expense: '支出',
@@ -69,54 +66,28 @@ function monthLabel(month: string) {
 
 function initialMonth(candidates: Candidate[]) {
   return candidates
+    .filter(isOriginalReconciliationCandidate)
     .map((candidate) => candidate.accountingMonth)
     .filter((month): month is string => Boolean(month))
     .sort()
     .at(-1) ?? currentMonth()
 }
 
-function summaryFields(candidate: Candidate) {
-  return candidate.summary.split('|').map((value) => value.trim())
+function isOriginalReconciliationCandidate(candidate: Candidate) {
+  return candidate.raw.source_system === ORIGINAL_RECONCILIATION_SOURCE_SYSTEM
 }
 
 // Exported for the finance-rule regression test; the page remains the only runtime consumer.
 // eslint-disable-next-line react-refresh/only-export-components
 export function classifyCandidate(candidate: Candidate): ClassifiedCandidate {
-  const fields = summaryFields(candidate)
-  const direction = fields[2]
-  const transactionType = fields[3] ?? ''
   const categoryCode = candidate.categoryCode.toUpperCase()
-  const classificationText = `${candidate.category} ${categoryCode} ${transactionType} ${candidate.summary}`
-  const riskCodes = new Set(candidate.reviewRisks.map((risk) => risk.code))
-  const isCorrectedDisinfectionExpense = /景怡/.test(classificationText)
-    && /消杀/.test(classificationText)
-    && Math.abs(candidate.amountMinor) === 430_000
-    && candidate.accountingMonth === '2026-06'
-  const isParentPayrollExpense = payrollTerms.test(classificationText)
-    && parentTerms.test(classificationText)
-  const isCurrentAccount = currentAccountCodes.has(categoryCode)
-    || currentAccountTerms.test(classificationText)
-    || riskCodes.has('RELATED_ACCOUNT_STATEMENT_REQUIRED')
-    || riskCodes.has('TRANSFER_REVIEW_REQUIRED')
-
-  if (explicitIncomeTerms.test(classificationText)) {
+  if (currentAccountCodes.has(categoryCode)) {
+    return { candidate, flowKind: 'current', signedAmountMinor: candidate.amountMinor }
+  }
+  if (/(^|_)INCOME($|_)/.test(categoryCode)) {
     return { candidate, flowKind: 'income', signedAmountMinor: Math.abs(candidate.amountMinor) }
   }
-  if (isCorrectedDisinfectionExpense || isParentPayrollExpense) {
-    return { candidate, flowKind: 'expense', signedAmountMinor: -Math.abs(candidate.amountMinor) }
-  }
-  if (isCurrentAccount) {
-    const signedAmountMinor = direction === '收入'
-      ? Math.abs(candidate.amountMinor)
-      : direction === '支出'
-        ? -Math.abs(candidate.amountMinor)
-        : candidate.amountMinor
-    return { candidate, flowKind: 'current', signedAmountMinor }
-  }
-  if (direction === '收入' || /(^|_)INCOME($|_)/.test(categoryCode)) {
-    return { candidate, flowKind: 'income', signedAmountMinor: Math.abs(candidate.amountMinor) }
-  }
-  if (direction === '支出' || /(^|_)EXPENSE($|_)/.test(categoryCode)) {
+  if (/(^|_)EXPENSE($|_)/.test(categoryCode)) {
     return { candidate, flowKind: 'expense', signedAmountMinor: -Math.abs(candidate.amountMinor) }
   }
   return { candidate, flowKind: 'unclassified', signedAmountMinor: candidate.amountMinor }
@@ -132,8 +103,7 @@ function candidateStatus(candidate: Candidate) {
 }
 
 function candidateDate(candidate: Candidate) {
-  const date = summaryFields(candidate)[1]
-  return /^\d{4}-\d{2}-\d{2}$/.test(date ?? '') ? date : candidate.accountingMonth ?? '日期待补'
+  return candidate.accountingMonth ?? '日期待补'
 }
 
 function sourceLabel(candidate: Candidate) {
@@ -202,7 +172,8 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
 
   const selectedMonthLabel = monthLabel(selectedMonth)
   const monthCandidates = candidates.filter((candidate) => (
-    candidate.accountingMonth === selectedMonth
+    isOriginalReconciliationCandidate(candidate)
+    && candidate.accountingMonth === selectedMonth
     && candidate.status !== 'IGNORED'
     && candidate.status !== 'SUPERSEDED'
   ))
@@ -217,6 +188,8 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
     { kind: 'expense' as const, label: '支出', detail: '经营流出', icon: <ArrowUp size={19} /> },
     { kind: 'current' as const, label: '往来款', detail: '不计损益', icon: <ArrowsLeftRight size={19} /> },
   ]
+  const incomeSourceRuleCount = legacyItemSourceRules.filter((rule) => rule.flowKind === 'income').length
+  const expenseSourceRuleCount = legacyItemSourceRules.filter((rule) => rule.flowKind === 'expense').length
   const gapLabels = data
     ? Array.from(new Set(data.rows.flatMap((row) => row.cells
       .filter((cell) => cell.kind === 'GAP')
@@ -236,7 +209,7 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
       <PageHeader
         eyebrow="月度对账"
         title="收支与往来对账"
-        description="按业务性质核对每一笔账单事项。收入、支出影响经营结果，往来款单独核对且不计损益。"
+        description="只核对旧 Excel 原有项目。收入、支出影响经营结果，往来款单独核对且不计损益。"
         action={(
           <div className="original-reconciliation-filters">
             <input
@@ -267,8 +240,8 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
       <section className="statement-source-notice" aria-label="账单数据入口状态">
         <Receipt size={20} />
         <div>
-          <strong>当前数据入口：银行与平台导出的账单</strong>
-          <span>旧截图和历史表格提交已暂停。账单来源与业务性质分开记录。</span>
+          <strong>账单只用于旧表项目取数和复核</strong>
+          <span>普通收支、采购、实际报销和银行工资候选不进入本页；旧截图和历史表格提交仍暂停。</span>
         </div>
       </section>
 
@@ -276,7 +249,7 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
         <div className="panel-heading statement-workbench-heading">
           <div>
             <h2>{selectedMonthLabel}</h2>
-            <p>{monthCandidates.length} 笔有效账单事项，选择业务性质后逐笔核对</p>
+            <p>{monthCandidates.length} 笔已由 Core 确认的旧表事项，选择业务性质后逐笔核对</p>
           </div>
           <Button onClick={() => onNavigate('review')}><ListChecks size={16} />前往待审核</Button>
         </div>
@@ -363,8 +336,8 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
             {selectedItems.length === 0 ? (
               <div className="empty-state compact-empty statement-empty">
                 <Receipt size={30} />
-                <h3>{monthCandidates.length === 0 ? '本月还没有可核对的账单记录' : `本月没有${flowLabels[selectedFlow]}事项`}</h3>
-                <p>{monthCandidates.length === 0 ? '后续接入银行与平台导出的账单后，记录会按业务性质显示在这里。' : '切换上方业务性质查看本月其他事项。'}</p>
+                <h3>{monthCandidates.length === 0 ? '本月还没有已映射的旧表事项' : `本月没有${flowLabels[selectedFlow]}事项`}</h3>
+                <p>{monthCandidates.length === 0 ? '只有 Core 受控旧表导入已确认的项目会显示；整份银行或平台账单不会自动进入。' : '切换上方业务性质查看本月其他事项。'}</p>
               </div>
             ) : null}
           </div>
@@ -379,17 +352,17 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
         </section>
       ) : null}
 
-      <section className="panel statement-source-registry" aria-label="已确认账单来源">
+      <section className="panel statement-source-registry" aria-label="旧表项目取数来源">
         <div className="panel-heading">
-          <div><h2>已确认账单来源</h2><p>账单账户只说明去哪里取数，业务性质仍按每笔交易单独判断</p></div>
-          <Badge color="green">收入 {statementSourceRules.length} 条</Badge>
+          <div><h2>旧表项目取数来源</h2><p>这些来源只给旧表已有项目取数，不代表该账户其他交易也进入本页</p></div>
+          <Badge color="green">收入 {incomeSourceRuleCount} · 支出 {expenseSourceRuleCount}</Badge>
         </div>
         <div className="statement-source-registry-list">
-          <div className="statement-source-registry-labels" aria-hidden="true"><span>主体</span><span>收入来源</span><span>对应账单</span></div>
-          {statementSourceRules.map((rule) => (
+          <div className="statement-source-registry-labels" aria-hidden="true"><span>主体</span><span>旧表项目</span><span>取数或权威来源</span></div>
+          {legacyItemSourceRules.map((rule) => (
             <article key={`${rule.businessUnit}:${rule.businessSource}:${rule.statementAccount}`}>
               <strong>{rule.businessUnit}</strong>
-              <span>{rule.businessSource}</span>
+              <span>{flowLabels[rule.flowKind]} · {rule.businessSource}</span>
               <span>{rule.statementAccount}</span>
             </article>
           ))}
