@@ -500,6 +500,7 @@ class DatabaseInternalReadService:
                 "reconciliations",
                 "ledger-summary",
                 "company-reporting",
+                "personal-finance",
             ),
         )
 

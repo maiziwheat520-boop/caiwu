@@ -69,6 +69,7 @@ READ_ROUTE_CAPABILITIES: Mapping[str, Capability] = {
     "GET /internal/v1/ledger-summary": Capability.LEDGER_READ,
     "GET /internal/v1/company-reports": Capability.LEDGER_READ,
     "GET /internal/v1/company-report-composition": Capability.LEDGER_READ,
+    "GET /internal/v1/personal-finance": Capability.LEDGER_READ,
 }
 
 READ_ROUTE_SCOPE_MODES: Mapping[str, ScopeMode] = {
@@ -81,6 +82,7 @@ READ_ROUTE_SCOPE_MODES: Mapping[str, ScopeMode] = {
     "GET /internal/v1/ledger-summary": ScopeMode.OBJECT,
     "GET /internal/v1/company-reports": ScopeMode.COLLECTION,
     "GET /internal/v1/company-report-composition": ScopeMode.COLLECTION,
+    "GET /internal/v1/personal-finance": ScopeMode.OBJECT,
 }
 
 CANDIDATE_ACTION_CAPABILITIES: Mapping[CandidateAction, Capability] = {
@@ -119,6 +121,7 @@ class CapabilitiesResponse(_FrozenModel):
             "reconciliations",
             "ledger-summary",
             "company-reporting",
+            "personal-finance",
         ],
         ...,
     ]
