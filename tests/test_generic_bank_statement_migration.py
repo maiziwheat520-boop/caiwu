@@ -33,7 +33,7 @@ def test_0030_profile_allowlist_is_closed_and_ccb_is_person_only() -> None:
     ):
         assert value in source
     assert "bank statement parser profile is invalid" in source
-    assert "v_account_row.owner_kind <> 'PERSONAL'" in source
+    assert "v_account_owner_kind <> 'PERSONAL'" in source
     assert "coalesce(p_request->>'institution_code','') ~" not in source
 
 

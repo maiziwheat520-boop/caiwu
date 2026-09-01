@@ -3051,7 +3051,7 @@ def validate_mybank_cutover_inventory_sequence(
     }
 
 
-def validate_mybank_existing_account_inventory_sequence(
+def validate_bank_statement_existing_account_inventory_sequence(
     *,
     before: CutoverInventory,
     after: CutoverInventory,
@@ -3110,6 +3110,27 @@ def validate_mybank_existing_account_inventory_sequence(
         "replay_delta": 0,
         "conflict_delta": 0,
     }
+
+
+def validate_mybank_existing_account_inventory_sequence(
+    *,
+    before: CutoverInventory,
+    after: CutoverInventory,
+    replay: CutoverInventory,
+    conflict: CutoverInventory,
+    transaction_count: int,
+    evidence_mode: str,
+) -> dict[str, int]:
+    """Compatibility wrapper for historical MYbank cutover callers."""
+
+    return validate_bank_statement_existing_account_inventory_sequence(
+        before=before,
+        after=after,
+        replay=replay,
+        conflict=conflict,
+        transaction_count=transaction_count,
+        evidence_mode=evidence_mode,
+    )
 
 
 class Runner:

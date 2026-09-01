@@ -893,7 +893,7 @@ def test_0021_postgresql_replay_overlap_conflict_scope_acl_and_downgrade(
             assert "0000000000005678" not in repr(visible)
 
         engine.dispose()
-        with pytest.raises(RuntimeError, match="discard bank statement facts"):
+        with pytest.raises(RuntimeError, match="generic bank statement imports are forward-only"):
             command.downgrade(config, "20260830_0020")
 
 

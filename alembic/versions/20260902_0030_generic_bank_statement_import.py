@@ -9,8 +9,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "20260902_0030"
-# The integration branch already reserves 0029 for multi-scope Candidate reads.
-# Rebase this parent to 20260901_0029 when that migration is merged.
+# Production Core is still at 0028; 0030 intentionally advances that single head.
 down_revision: str | None = "20260901_0028"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -30,7 +29,6 @@ DECLARE
     v_period_start date; v_period_end date;
     v_source bytea; v_set_digest bytea;
     v_existing public.bank_statement%ROWTYPE;
-    v_account_row public.managed_account%ROWTYPE;
     v_evidence_row public.evidence_object%ROWTYPE;
     v_transaction public.bank_statement_transaction%ROWTYPE;
     v_item jsonb; v_audit uuid; v_count integer := 0; v_review text;
@@ -38,6 +36,7 @@ DECLARE
     v_source_event uuid; v_source_row_number integer;
     v_occurred_at timestamptz; v_amount_minor bigint; v_balance_minor bigint;
     v_profile text; v_lifecycle_status text; v_statement_payload jsonb;
+    v_account_institution text; v_account_suffix text; v_account_owner_kind text;
 BEGIN
     IF jsonb_typeof(p_request) IS DISTINCT FROM 'object'
        OR jsonb_typeof(p_request->'transactions') IS DISTINCT FROM 'array'
@@ -140,7 +139,9 @@ BEGIN
     PERFORM pg_advisory_xact_lock(hashtextextended(
         'managed-account-ref:' || v_account::text, 0
     ));
-    SELECT ma, latest.status INTO v_account_row, v_lifecycle_status
+    SELECT ma.institution_code, ma.account_suffix, ma.owner_kind, latest.status
+      INTO v_account_institution, v_account_suffix, v_account_owner_kind,
+           v_lifecycle_status
       FROM public.managed_account ma
       JOIN LATERAL (
         SELECT status FROM public.managed_account_lifecycle lifecycle
@@ -152,10 +153,10 @@ BEGIN
         RAISE EXCEPTION 'managed account must be registered before statement import'
             USING ERRCODE = 'integrity_constraint_violation';
     END IF;
-    IF v_account_row.institution_code IS DISTINCT FROM p_request->>'institution_code'
-       OR v_account_row.account_suffix IS DISTINCT FROM p_request->>'account_suffix'
+    IF v_account_institution IS DISTINCT FROM p_request->>'institution_code'
+       OR v_account_suffix IS DISTINCT FROM p_request->>'account_suffix'
        OR v_lifecycle_status IS DISTINCT FROM 'ACTIVE'
-       OR (v_profile = 'ccb_personal_xls_v1' AND v_account_row.owner_kind <> 'PERSONAL') THEN
+       OR (v_profile = 'ccb_personal_xls_v1' AND v_account_owner_kind <> 'PERSONAL') THEN
         RAISE EXCEPTION 'managed account conflicts with registered identity'
             USING ERRCODE = 'integrity_constraint_violation';
     END IF;

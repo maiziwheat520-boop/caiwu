@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeGuard
 from uuid import UUID, uuid5
 from zoneinfo import ZoneInfo
 
@@ -25,6 +25,13 @@ from ledgerbridge.account_registry import (
     AccountRegistryPlanResult,
 )
 from ledgerbridge.artifacts import ArtifactStore, PublishedArtifact
+from ledgerbridge.bank_statement_contract import BankStatement, parser_spec
+from ledgerbridge.bank_statement_cutover_plan import (
+    BankStatementExistingAccountPlan,
+    BankStatementPlanError,
+    ExistingStatementEvidenceMode,
+)
+from ledgerbridge.bank_statement_parsers import parse_bank_statement
 from ledgerbridge.bank_statement_persistence import (
     BankStatementImportContext,
     BankStatementImportResult,
@@ -42,7 +49,9 @@ from ledgerbridge.file_key_provider import FileKeyProvider
 from ledgerbridge.internal_read_contract import WorkloadPrincipal
 from ledgerbridge.keyring import WrappedKey
 from ledgerbridge.models import EntityType
-from ledgerbridge.mybank_statement import MyBankStatement, parse_mybank_xlsx
+from ledgerbridge.mybank_statement import parse_mybank_xlsx
+
+type MyBankStatement = BankStatement
 
 _SCHEMA_REVISION = "20260830_0023"
 _SUPPORTED_SCHEMA_REVISIONS = frozenset(
@@ -222,6 +231,63 @@ class MyBankExistingAccountStatementPlan:
         return self.expected_owner_kind
 
 
+ExistingAccountStatementPlan = (
+    MyBankExistingAccountStatementPlan | BankStatementExistingAccountPlan
+)
+
+
+def _is_existing_account_plan(plan: object) -> TypeGuard[ExistingAccountStatementPlan]:
+    return isinstance(
+        plan,
+        (MyBankExistingAccountStatementPlan, BankStatementExistingAccountPlan),
+    )
+
+
+def _reuses_existing_evidence(plan: ExistingAccountStatementPlan) -> bool:
+    if isinstance(plan, BankStatementExistingAccountPlan):
+        return plan.evidence_mode is ExistingStatementEvidenceMode.REUSE_EXISTING
+    return plan.evidence_mode is MyBankEvidenceMode.REUSE_EXISTING
+
+
+def _require_existing_plan_statement(
+    plan: ExistingAccountStatementPlan,
+    statement: BankStatement,
+) -> None:
+    if isinstance(plan, BankStatementExistingAccountPlan):
+        try:
+            plan.require_statement(statement)
+        except BankStatementPlanError:
+            raise MyBankStatementCutoverError(
+                "parsed statement source identity conflicts"
+            ) from None
+        return
+    if (
+        statement.source_sha256 != plan.expected_sha256
+        or statement.source_size != plan.expected_size
+        or statement.institution_code != "mybank"
+        or statement.account_suffix != plan.account_suffix
+        or not statement.transactions
+        or len(statement.transactions) != plan.expected_transaction_count
+    ):
+        raise MyBankStatementCutoverError("parsed statement source identity conflicts")
+
+
+def _statement_display_name(statement: BankStatement) -> str:
+    spec = parser_spec(statement.parser_profile)
+    return (
+        f"{statement.institution_code}-statement-"
+        f"{statement.statement_ref}{spec.display_extension}"
+    )
+
+
+def _conflict_probe_display_name(statement: BankStatement) -> str:
+    spec = parser_spec(statement.parser_profile)
+    return (
+        f"{statement.institution_code}-conflict-probe-"
+        f"{statement.statement_ref}{spec.display_extension}"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class MyBankStatementCutoverGates:
     schema_revision: str
@@ -299,7 +365,7 @@ class _AccountRegistrar(Protocol):
 class _ExistingAccountAuthorizer(Protocol):
     def authorize(
         self,
-        plan: MyBankExistingAccountStatementPlan,
+        plan: ExistingAccountStatementPlan,
         statement: MyBankStatement,
     ) -> None: ...
 
@@ -328,7 +394,7 @@ class MyBankExistingAccountStatementRunner:
 
     def run(
         self,
-        plan: MyBankExistingAccountStatementPlan,
+        plan: ExistingAccountStatementPlan,
         *,
         gates: MyBankStatementCutoverGates,
     ) -> MyBankStatementCutoverReceipt:
@@ -349,17 +415,9 @@ class MyBankExistingAccountStatementRunner:
                 managed_account_suffix=plan.account_suffix,
             )
         except Exception:
-            self._logger.error("MYbank existing-account source validation failed")
+            self._logger.error("bank-statement existing-account source validation failed")
             raise MyBankStatementCutoverError("private statement validation failed") from None
-        if (
-            statement.source_sha256 != plan.expected_sha256
-            or statement.source_size != plan.expected_size
-            or statement.institution_code != "mybank"
-            or statement.account_suffix != plan.account_suffix
-            or not statement.transactions
-            or len(statement.transactions) != plan.expected_transaction_count
-        ):
-            raise MyBankStatementCutoverError("parsed statement source identity conflicts")
+        _require_existing_plan_statement(plan, statement)
 
         descriptor = MyBankEvidenceDescriptor(
             evidence_ref=plan.evidence_ref,
@@ -368,7 +426,7 @@ class MyBankExistingAccountStatementRunner:
             plaintext_sha256=statement.source_sha256,
             plaintext_size=statement.source_size,
             declared_media_type=statement.declared_media_type,
-            display_name=f"mybank-statement-{statement.statement_ref}.xlsx",
+            display_name=_statement_display_name(statement),
         )
         context = BankStatementImportContext(
             owner_entity_ref=plan.entity_ref,
@@ -383,7 +441,7 @@ class MyBankExistingAccountStatementRunner:
                 self._account_authorizer.authorize(plan, statement)
                 replay = self._statement_importer.import_statement(statement, context=context)
             except Exception:
-                self._logger.error("MYbank existing-account completed replay failed")
+                self._logger.error("bank-statement existing-account completed replay failed")
                 raise MyBankStatementCutoverError(
                     "completed existing-account statement replay conflict"
                 ) from None
@@ -417,7 +475,7 @@ class MyBankExistingAccountStatementRunner:
             self._account_authorizer.authorize(plan, statement)
             first = self._statement_importer.import_statement(statement, context=context)
         except Exception:
-            self._logger.error("MYbank existing-account persistence failed")
+            self._logger.error("bank-statement existing-account persistence failed")
             raise MyBankStatementCutoverError(
                 "existing-account statement import conflict"
             ) from None
@@ -433,7 +491,7 @@ class MyBankExistingAccountStatementRunner:
             self._account_authorizer.authorize(plan, statement)
             replay = self._statement_importer.import_statement(statement, context=context)
         except Exception:
-            self._logger.error("MYbank existing-account replay failed")
+            self._logger.error("bank-statement existing-account replay failed")
             raise MyBankStatementCutoverError(
                 "existing-account statement replay conflict"
             ) from None
@@ -861,12 +919,15 @@ def _expected_after(
 
 def _expected_after_existing_account(
     before: ProductionCounts,
-    plan: MyBankExistingAccountStatementPlan,
+    plan: ExistingAccountStatementPlan,
 ) -> ProductionCounts:
     """Expected delta for the plan's explicit evidence mode and existing account."""
 
     transaction_count = plan.expected_transaction_count
-    evidence_delta = int(plan.evidence_mode is MyBankEvidenceMode.CREATE_NEW)
+    evidence_delta = int(
+        isinstance(plan, MyBankExistingAccountStatementPlan)
+        and plan.evidence_mode is MyBankEvidenceMode.CREATE_NEW
+    )
     return ProductionCounts(
         evidence_objects=before.evidence_objects + evidence_delta,
         encrypted_object_identities=before.encrypted_object_identities + evidence_delta,
@@ -915,7 +976,7 @@ def _as_registry_replay(result: AccountRegistryPlanResult) -> AccountRegistryPla
 def _receipt_matches(
     result: BankStatementImportResult,
     statement: MyBankStatement,
-    plan: MyBankStatementCutoverPlan | MyBankExistingAccountStatementPlan,
+    plan: MyBankStatementCutoverPlan | ExistingAccountStatementPlan,
 ) -> bool:
     return (
         result.statement_ref == statement.statement_ref
@@ -1033,7 +1094,77 @@ def run_transactional_database_mybank_existing_account_import(
     acceptance: Callable[[MyBankStatementCutoverReceipt, Connection], None] | None = None,
     logger: logging.Logger | None = None,
 ) -> MyBankStatementCutoverReceipt:
-    """Import one statement for an existing account under one rollback boundary."""
+    """Run the legacy MYbank existing-account plan without changing its parser contract."""
+
+    return _run_transactional_database_existing_account_import(
+        engine,
+        plan,
+        parser=parse_mybank_xlsx,
+        gates=gates,
+        safety_proof=safety_proof,
+        key_file=key_file,
+        artifact_root=artifact_root,
+        commit=commit,
+        acceptance=acceptance,
+        logger=logger,
+    )
+
+
+def run_transactional_database_bank_statement_existing_account_import(
+    engine: Engine,
+    plan: BankStatementExistingAccountPlan,
+    *,
+    gates: MyBankStatementCutoverGates,
+    safety_proof: MyBankCutoverSafetyProof,
+    key_file: Path,
+    artifact_root: Path,
+    commit: bool,
+    acceptance: Callable[[MyBankStatementCutoverReceipt, Connection], None] | None = None,
+    logger: logging.Logger | None = None,
+) -> MyBankStatementCutoverReceipt:
+    """Import one profile-bound statement for a pre-registered account."""
+
+    def parser(
+        source_path: Path,
+        *,
+        expected_sha256: str,
+        managed_account_suffix: str,
+    ) -> BankStatement:
+        return parse_bank_statement(
+            plan.parser_profile,
+            source_path,
+            expected_sha256=expected_sha256,
+            managed_account_suffix=managed_account_suffix,
+        )
+
+    return _run_transactional_database_existing_account_import(
+        engine,
+        plan,
+        parser=parser,
+        gates=gates,
+        safety_proof=safety_proof,
+        key_file=key_file,
+        artifact_root=artifact_root,
+        commit=commit,
+        acceptance=acceptance,
+        logger=logger,
+    )
+
+
+def _run_transactional_database_existing_account_import(
+    engine: Engine,
+    plan: ExistingAccountStatementPlan,
+    *,
+    parser: Callable[..., BankStatement],
+    gates: MyBankStatementCutoverGates,
+    safety_proof: MyBankCutoverSafetyProof,
+    key_file: Path,
+    artifact_root: Path,
+    commit: bool,
+    acceptance: Callable[[MyBankStatementCutoverReceipt, Connection], None] | None,
+    logger: logging.Logger | None,
+) -> MyBankStatementCutoverReceipt:
+    """Import one existing-account statement under one rollback boundary."""
 
     if type(commit) is not bool:
         raise MyBankStatementCutoverError("transactional existing-account mode is invalid")
@@ -1048,7 +1179,7 @@ def run_transactional_database_mybank_existing_account_import(
         )
         try:
             runner = MyBankExistingAccountStatementRunner(
-                parser=parse_mybank_xlsx,
+                parser=parser,
                 evidence_writer=boundary.write,
                 account_authorizer=_DatabaseExistingAccountAuthorizer(boundary),
                 statement_importer=_DatabaseStatementImporter(
@@ -1062,7 +1193,7 @@ def run_transactional_database_mybank_existing_account_import(
             )
             receipt = runner.run(plan, gates=replace(gates, verify_fact_conflict=False))
             if gates.verify_fact_conflict:
-                statement = parse_mybank_xlsx(
+                statement = parser(
                     plan.source_path,
                     expected_sha256=plan.expected_sha256,
                     managed_account_suffix=plan.account_suffix,
@@ -1139,13 +1270,13 @@ class _DatabaseExistingAccountAuthorizer:
 
     def authorize(
         self,
-        plan: MyBankExistingAccountStatementPlan,
+        plan: ExistingAccountStatementPlan,
         statement: MyBankStatement,
     ) -> None:
         session = self._boundary.ensure_session()
         try:
             _require_existing_account_identity(session, plan, statement)
-            if plan.evidence_mode is MyBankEvidenceMode.REUSE_EXISTING:
+            if _reuses_existing_evidence(plan):
                 self._boundary.require_reusable_evidence(
                     session,
                     MyBankEvidenceDescriptor(
@@ -1155,7 +1286,7 @@ class _DatabaseExistingAccountAuthorizer:
                         plaintext_sha256=plan.expected_sha256,
                         plaintext_size=plan.expected_size,
                         declared_media_type=statement.declared_media_type,
-                        display_name=f"mybank-statement-{statement.statement_ref}.xlsx",
+                        display_name=_statement_display_name(statement),
                     ),
                 )
             self._boundary.set_statement_expectation(self._boundary.evidence_staged)
@@ -1174,7 +1305,7 @@ class _DatabaseStatementImporter:
     def __init__(
         self,
         boundary: _DatabaseEvidenceBoundary,
-        plan: MyBankStatementCutoverPlan | MyBankExistingAccountStatementPlan,
+        plan: MyBankStatementCutoverPlan | ExistingAccountStatementPlan,
         *,
         commit_publication: bool = True,
     ) -> None:
@@ -1190,9 +1321,11 @@ class _DatabaseStatementImporter:
     ) -> BankStatementImportResult:
         session = self._boundary.session()
         try:
-            if isinstance(self._plan, MyBankExistingAccountStatementPlan):
+            if _is_existing_account_plan(self._plan):
                 _require_existing_account_identity(session, self._plan, statement)
             else:
+                if not isinstance(self._plan, MyBankStatementCutoverPlan):
+                    raise MyBankStatementCutoverError("cutover plan type is invalid")
                 _require_import_identity(session, self._plan, statement, context)
             result = BankStatementImportService(lambda: session).import_statement(
                 statement,
@@ -1268,7 +1401,7 @@ class _DatabaseEvidenceBoundary:
         self,
         engine: Engine | Connection,
         *,
-        plan: MyBankStatementCutoverPlan | MyBankExistingAccountStatementPlan,
+        plan: MyBankStatementCutoverPlan | ExistingAccountStatementPlan,
         key_file: Path,
         artifact_root: Path,
     ) -> None:
@@ -1300,10 +1433,7 @@ class _DatabaseEvidenceBoundary:
             raise MyBankStatementCutoverError("evidence publication is already active")
         session: Session | None = None
         try:
-            if (
-                isinstance(self._plan, MyBankExistingAccountStatementPlan)
-                and self._plan.evidence_mode is MyBankEvidenceMode.REUSE_EXISTING
-            ):
+            if _is_existing_account_plan(self._plan) and _reuses_existing_evidence(self._plan):
                 session = _new_session(self._engine)
                 _require_unique_scope(session, evidence, owner_kind=self._plan.owner_kind)
                 _require_reusable_existing_evidence(session, self._store, evidence)
@@ -1597,20 +1727,12 @@ def _require_import_identity(
 
 def _require_existing_account_identity(
     session: Session,
-    plan: MyBankExistingAccountStatementPlan,
+    plan: ExistingAccountStatementPlan,
     statement: MyBankStatement,
 ) -> None:
     """Bind a new statement to one ACTIVE account and one covering unit assignment."""
 
-    if (
-        statement.institution_code != "mybank"
-        or statement.account_suffix != plan.account_suffix
-        or statement.source_sha256 != plan.expected_sha256
-        or statement.source_size != plan.expected_size
-        or not statement.transactions
-        or len(statement.transactions) != plan.expected_transaction_count
-    ):
-        raise MyBankStatementCutoverError("existing-account statement identity conflicts")
+    _require_existing_plan_statement(plan, statement)
     descriptor = MyBankEvidenceDescriptor(
         evidence_ref=plan.evidence_ref,
         entity_ref=plan.entity_ref,
@@ -1618,7 +1740,7 @@ def _require_existing_account_identity(
         plaintext_sha256=plan.expected_sha256,
         plaintext_size=plan.expected_size,
         declared_media_type=statement.declared_media_type,
-        display_name=f"mybank-statement-{statement.statement_ref}.xlsx",
+        display_name=_statement_display_name(statement),
     )
     _require_unique_scope(session, descriptor, owner_kind=plan.owner_kind)
     _require_existing_evidence_binding(session, descriptor)
@@ -1670,7 +1792,7 @@ def _require_existing_account_identity(
     if (
         account["managed_account_ref"] != plan.managed_account_ref
         or account["entity_id"] != plan.entity_ref
-        or account["institution_code"] != "mybank"
+        or account["institution_code"] != statement.institution_code
         or account["account_suffix"] != plan.account_suffix
         or account["owner_ref"] != str(plan.entity_ref)
         or account["owner_kind"] != _legacy_owner_kind(plan.owner_kind)
@@ -1687,7 +1809,7 @@ def _require_existing_account_identity(
 def _run_database_fact_conflict_probe(
     engine: Engine | Connection,
     *,
-    plan: MyBankStatementCutoverPlan | MyBankExistingAccountStatementPlan,
+    plan: MyBankStatementCutoverPlan | ExistingAccountStatementPlan,
     statement: MyBankStatement,
 ) -> None:
     """Prove a changed fact for an overlapping serial is rejected and rolled back."""
@@ -1742,9 +1864,7 @@ def _run_database_fact_conflict_probe(
                         "entity": plan.entity_ref,
                         "unit": plan.business_unit_ref,
                         "media_type": statement.declared_media_type,
-                        "display_name": (
-                            f"mybank-conflict-probe-{probe_statement.statement_ref}.xlsx"
-                        ),
+                        "display_name": _conflict_probe_display_name(probe_statement),
                         "digest": bytes.fromhex(probe_source_digest),
                         "size": probe_statement.source_size,
                         "audit": audit_ref,

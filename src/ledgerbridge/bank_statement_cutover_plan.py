@@ -157,6 +157,12 @@ class BankStatementExistingAccountPlan:
         ):
             raise BankStatementPlanError("parsed bank statement conflicts with private plan")
 
+    @property
+    def owner_kind(self) -> EntityType:
+        """Expose the owner kind through the legacy cutover's structural seam."""
+
+        return self.expected_owner_kind
+
 
 def _validate_audit_text(field: str, value: str, maximum: int) -> None:
     if (

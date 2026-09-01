@@ -1354,12 +1354,33 @@ def test_database_cutover_persists_encrypted_evidence_and_replays_atomically(
             latest_pending_candidates=0,
             audit_events=0,
         )
+        gates = replace(
+            _gates(before, schema_revision="20260902_0030"),
+            verify_fact_conflict=True,
+        )
+        safety_proof = _safety_proof(
+            tmp_path,
+            before,
+            schema_revision="20260902_0030",
+        )
+        cutover_plan = _plan(source, digest, len(raw))
+        registered = cutover_plan.registry_plan.accounts[0]
+        registered = replace(
+            registered,
+            account_suffix="7968",
+            aliases=(replace(registered.aliases[0], alias_value="0000 0000 0000 7968"),),
+        )
+        cutover_plan = replace(
+            cutover_plan,
+            account_suffix="7968",
+            registry_plan=replace(cutover_plan.registry_plan, accounts=(registered,)),
+        )
 
         preflight = run_transactional_database_mybank_statement_cutover(
             engine,
-            _plan(source, digest, len(raw)),
-            gates=replace(_gates(before), verify_fact_conflict=True),
-            safety_proof=_safety_proof(tmp_path, before),
+            cutover_plan,
+            gates=gates,
+            safety_proof=safety_proof,
             registry_principal=_registry_principal(),
             key_file=key_file,
             artifact_root=artifact_root,
@@ -1375,9 +1396,9 @@ def test_database_cutover_persists_encrypted_evidence_and_replays_atomically(
 
         receipt = run_transactional_database_mybank_statement_cutover(
             engine,
-            _plan(source, digest, len(raw)),
-            gates=replace(_gates(before), verify_fact_conflict=True),
-            safety_proof=_safety_proof(tmp_path, before),
+            cutover_plan,
+            gates=gates,
+            safety_proof=safety_proof,
             registry_principal=_registry_principal(),
             key_file=key_file,
             artifact_root=artifact_root,
@@ -1588,19 +1609,20 @@ def test_database_existing_account_import_preserves_registry_candidates_and_post
         artifact_root = (tmp_path / "existing-account-artifacts").resolve()
         artifact_root.mkdir(mode=0o700)
         gates = replace(
-            _gates(before, schema_revision="20260901_0029"),
+            _gates(before, schema_revision="20260902_0030"),
             verify_fact_conflict=True,
+        )
+        safety_proof = _safety_proof(
+            tmp_path,
+            before,
+            schema_revision="20260902_0030",
         )
 
         preflight = run_transactional_database_mybank_existing_account_import(
             engine,
             plan,
             gates=gates,
-            safety_proof=_safety_proof(
-                tmp_path,
-                before,
-                schema_revision="20260901_0029",
-            ),
+            safety_proof=safety_proof,
             key_file=key_file,
             artifact_root=artifact_root,
             commit=False,
@@ -1613,11 +1635,7 @@ def test_database_existing_account_import_preserves_registry_candidates_and_post
             engine,
             plan,
             gates=gates,
-            safety_proof=_safety_proof(
-                tmp_path,
-                before,
-                schema_revision="20260901_0029",
-            ),
+            safety_proof=safety_proof,
             key_file=key_file,
             artifact_root=artifact_root,
             commit=True,
