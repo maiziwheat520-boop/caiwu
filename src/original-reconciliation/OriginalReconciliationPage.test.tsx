@@ -170,10 +170,32 @@ describe('OriginalReconciliationPage', () => {
       amountMinor: -500_000,
       summary: '建设银行 | 2026-07-31 | 支出 | 林素美工资 | 实际工资',
     }))
+    const ordinaryPayrollIncome = classifyCandidate(candidate({
+      category: '个人工资收入',
+      categoryCode: 'PAYROLL_INCOME',
+      amountMinor: 800_000,
+      summary: '建设银行 | 2026-07-31 | 收入 | 工资 | 本人工资收入',
+    }))
+    const otherMonthDisinfection = classifyCandidate(candidate({
+      accountingMonth: '2026-07',
+      category: '结余滚动',
+      categoryCode: 'MANUAL_REVIEW',
+      amountMinor: 430_000,
+      summary: '景怡公账 | 2026-07-31 | 收入 | 消杀 | 另一月份待核对',
+    }))
+    const parentNonTransferIncome = classifyCandidate(candidate({
+      category: '其他收入',
+      categoryCode: 'MANUAL_REVIEW',
+      amountMinor: 200_000,
+      summary: '建设银行 | 2026-07-31 | 收入 | 林素美退款 | 业务退款',
+    }))
 
     expect(disinfection.flowKind).toBe('expense')
     expect(disinfection.signedAmountMinor).toBe(-430_000)
     expect(dividend.flowKind).toBe('current')
     expect(parentPayroll.flowKind).toBe('expense')
+    expect(ordinaryPayrollIncome.flowKind).toBe('income')
+    expect(otherMonthDisinfection.flowKind).toBe('income')
+    expect(parentNonTransferIncome.flowKind).toBe('income')
   })
 })

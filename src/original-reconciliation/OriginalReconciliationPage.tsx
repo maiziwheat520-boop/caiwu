@@ -40,9 +40,10 @@ const currentAccountCodes = new Set([
   'REPAYMENT',
   'CAPITAL_ADVANCE',
 ])
-const currentAccountTerms = /(内部往来|往来款|关联往来|股东往来|分红|利润分配|转账|余额互转|账户互转|资金调拨|借款|还款|垫付款|充值|提现|陈展武|林素美|老爸|老妈)/
+const currentAccountTerms = /(内部往来|往来款|关联往来|股东往来|分红|利润分配|转账|余额互转|账户互转|资金调拨|借款|还款|垫付款|充值|提现)/
 const explicitIncomeTerms = /(文杰房租)/
-const explicitExpenseTerms = /(消杀|工资|薪资|薪酬)/
+const payrollTerms = /(工资|薪资|薪酬)/
+const parentTerms = /(陈展武|林素美|老爸|老妈|爸妈)/
 const flowLabels: Record<FlowKind, string> = {
   income: '收入',
   expense: '支出',
@@ -87,6 +88,12 @@ export function classifyCandidate(candidate: Candidate): ClassifiedCandidate {
   const categoryCode = candidate.categoryCode.toUpperCase()
   const classificationText = `${candidate.category} ${categoryCode} ${transactionType} ${candidate.summary}`
   const riskCodes = new Set(candidate.reviewRisks.map((risk) => risk.code))
+  const isCorrectedDisinfectionExpense = /景怡/.test(classificationText)
+    && /消杀/.test(classificationText)
+    && Math.abs(candidate.amountMinor) === 430_000
+    && candidate.accountingMonth === '2026-06'
+  const isParentPayrollExpense = payrollTerms.test(classificationText)
+    && parentTerms.test(classificationText)
   const isCurrentAccount = currentAccountCodes.has(categoryCode)
     || currentAccountTerms.test(classificationText)
     || riskCodes.has('RELATED_ACCOUNT_STATEMENT_REQUIRED')
@@ -95,7 +102,7 @@ export function classifyCandidate(candidate: Candidate): ClassifiedCandidate {
   if (explicitIncomeTerms.test(classificationText)) {
     return { candidate, flowKind: 'income', signedAmountMinor: Math.abs(candidate.amountMinor) }
   }
-  if (explicitExpenseTerms.test(classificationText)) {
+  if (isCorrectedDisinfectionExpense || isParentPayrollExpense) {
     return { candidate, flowKind: 'expense', signedAmountMinor: -Math.abs(candidate.amountMinor) }
   }
   if (isCurrentAccount) {
@@ -395,7 +402,7 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
         <div className="current-account-registry-note">
           <Info size={18} />
           <div><strong>历史口径校正</strong><span>{historicalClassificationCorrection}</span></div>
-          <Badge color="blue">导入时强制采用</Badge>
+          <Badge color="blue">网页核对口径</Badge>
         </div>
       </section>
 
