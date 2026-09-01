@@ -2157,7 +2157,7 @@ describe('LedgerBridge Web API client', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
 
     const formal = await screen.findByRole('region', { name: '个人正式银行流水' })
-    expect(within(formal).getByText('陈莹')).toBeInTheDocument()
+    expect(await within(formal).findByText('陈莹')).toBeInTheDocument()
     expect(within(formal).queryByText('陈莹 6')).not.toBeInTheDocument()
     expect(within(formal).getByText('跨行转账 · 手机银行 · 中国工商银行 · 对方尾号 7442')).toBeInTheDocument()
     expect(formal).not.toHaveTextContent('----')
@@ -2561,7 +2561,7 @@ describe('LedgerBridge Web API client', () => {
     expect(within(lanes).getByRole('tab', { name: /收入/ })).toBeInTheDocument()
     expect(within(lanes).getByRole('tab', { name: /支出/ })).toBeInTheDocument()
     expect(within(lanes).getByRole('tab', { name: /往来款/ })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: '已确认账单来源' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '旧表项目取数来源' })).toBeInTheDocument()
 
     fireEvent.click(within(workflow).getByRole('button', { name: '前往待审核' }))
     expect(window.location.pathname).toBe('/review')
@@ -2647,8 +2647,8 @@ describe('LedgerBridge Web API client', () => {
       },
     })
     renderApp()
-    expect(await screen.findByRole('heading', { name: '本月还没有可核对的账单记录' })).toBeInTheDocument()
-    expect(screen.queryByText(/Excel|截图导入|受控导入/)).not.toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '本月还没有已映射的旧表事项' })).toBeInTheDocument()
+    expect(screen.queryByText(/截图导入|受控导入/)).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: '原口径合计' })).not.toBeInTheDocument()
     expect(screen.queryByRole('table', { name: '原口径固定列对账表' })).not.toBeInTheDocument()
   })
