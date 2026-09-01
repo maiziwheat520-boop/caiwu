@@ -3,7 +3,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 import { api } from '../api'
 import { originalReconciliationFixture } from '../test-fixtures/original-reconciliation'
 import type { Candidate } from '../types'
-import { OriginalReconciliationPage } from './OriginalReconciliationPage'
+import { classifyCandidate, OriginalReconciliationPage } from './OriginalReconciliationPage'
 
 function candidate(overrides: Partial<Candidate>): Candidate {
   return {
@@ -148,5 +148,32 @@ describe('OriginalReconciliationPage', () => {
     expect(within(sourceRegistry).getByText('文杰房租')).toBeInTheDocument()
     expect(within(sourceRegistry).getAllByText('薇旭网商银行企业账户')).toHaveLength(2)
     expect(within(sourceRegistry).getByText('陈展武（老爸）、林素美（老妈）')).toBeInTheDocument()
+    expect(within(sourceRegistry).getByText(/消杀 4,300 元记景怡公账支出/)).toBeInTheDocument()
+  })
+
+  it('applies the corrected historical rules before legacy signs and generic transfer terms', () => {
+    const disinfection = classifyCandidate(candidate({
+      category: '结余滚动',
+      categoryCode: 'MANUAL_REVIEW',
+      amountMinor: 430_000,
+      summary: '景怡公账 | 2026-06-30 | 收入 | 消杀 | 原表正号待校正',
+    }))
+    const dividend = classifyCandidate(candidate({
+      category: '股东分红',
+      categoryCode: 'MANUAL_REVIEW',
+      amountMinor: -1_000_000,
+      summary: '网商银行 | 2026-07-31 | 支出 | 分红 | 股东资金流出',
+    }))
+    const parentPayroll = classifyCandidate(candidate({
+      category: '工资',
+      categoryCode: 'MANUAL_REVIEW',
+      amountMinor: -500_000,
+      summary: '建设银行 | 2026-07-31 | 支出 | 林素美工资 | 实际工资',
+    }))
+
+    expect(disinfection.flowKind).toBe('expense')
+    expect(disinfection.signedAmountMinor).toBe(-430_000)
+    expect(dividend.flowKind).toBe('current')
+    expect(parentPayroll.flowKind).toBe('expense')
   })
 })

@@ -14,7 +14,11 @@ import {
 import { api, minorToMajor } from '../api'
 import type { Candidate, OriginalReconciliation, Page } from '../types'
 import { PageHeader } from '../shared/PagePrimitives'
-import { currentAccountCounterpartyNote, statementSourceRules } from './statementSourceRegistry'
+import {
+  currentAccountCounterpartyNote,
+  historicalClassificationCorrection,
+  statementSourceRules,
+} from './statementSourceRegistry'
 
 type FlowKind = 'income' | 'expense' | 'current' | 'unclassified'
 
@@ -36,7 +40,9 @@ const currentAccountCodes = new Set([
   'REPAYMENT',
   'CAPITAL_ADVANCE',
 ])
-const currentAccountTerms = /(内部往来|往来款|关联往来|股东往来|转账|余额互转|账户互转|资金调拨|借款|还款|垫付款|充值|提现)/
+const currentAccountTerms = /(内部往来|往来款|关联往来|股东往来|分红|利润分配|转账|余额互转|账户互转|资金调拨|借款|还款|垫付款|充值|提现|陈展武|林素美|老爸|老妈)/
+const explicitIncomeTerms = /(文杰房租)/
+const explicitExpenseTerms = /(消杀|工资|薪资|薪酬)/
 const flowLabels: Record<FlowKind, string> = {
   income: '收入',
   expense: '支出',
@@ -72,18 +78,26 @@ function summaryFields(candidate: Candidate) {
   return candidate.summary.split('|').map((value) => value.trim())
 }
 
-function classifyCandidate(candidate: Candidate): ClassifiedCandidate {
+// Exported for the finance-rule regression test; the page remains the only runtime consumer.
+// eslint-disable-next-line react-refresh/only-export-components
+export function classifyCandidate(candidate: Candidate): ClassifiedCandidate {
   const fields = summaryFields(candidate)
   const direction = fields[2]
   const transactionType = fields[3] ?? ''
   const categoryCode = candidate.categoryCode.toUpperCase()
-  const classificationText = `${candidate.category} ${categoryCode} ${transactionType}`
+  const classificationText = `${candidate.category} ${categoryCode} ${transactionType} ${candidate.summary}`
   const riskCodes = new Set(candidate.reviewRisks.map((risk) => risk.code))
   const isCurrentAccount = currentAccountCodes.has(categoryCode)
     || currentAccountTerms.test(classificationText)
     || riskCodes.has('RELATED_ACCOUNT_STATEMENT_REQUIRED')
     || riskCodes.has('TRANSFER_REVIEW_REQUIRED')
 
+  if (explicitIncomeTerms.test(classificationText)) {
+    return { candidate, flowKind: 'income', signedAmountMinor: Math.abs(candidate.amountMinor) }
+  }
+  if (explicitExpenseTerms.test(classificationText)) {
+    return { candidate, flowKind: 'expense', signedAmountMinor: -Math.abs(candidate.amountMinor) }
+  }
   if (isCurrentAccount) {
     const signedAmountMinor = direction === '收入'
       ? Math.abs(candidate.amountMinor)
@@ -377,6 +391,11 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
           <ArrowsLeftRight size={18} />
           <div><strong>往来款重点对象</strong><span>{currentAccountCounterpartyNote}</span></div>
           <Badge color="amber">账户与例外待确认</Badge>
+        </div>
+        <div className="current-account-registry-note">
+          <Info size={18} />
+          <div><strong>历史口径校正</strong><span>{historicalClassificationCorrection}</span></div>
+          <Badge color="blue">导入时强制采用</Badge>
         </div>
       </section>
 

@@ -15,3 +15,6 @@ export const statementSourceRules: StatementSourceRule[] = [
 ]
 
 export const currentAccountCounterpartyNote = '陈展武（老爸）、林素美（老妈）'
+
+export const historicalClassificationCorrection =
+  '原表口径校正：文杰房租记收入；消杀 4,300 元记景怡公账支出；分红及老爸、老妈明确转账记往来款且不计经营损益；爸妈实际工资仍记支出。'
