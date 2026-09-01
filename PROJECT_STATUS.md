@@ -4,6 +4,13 @@ Updated: 2026-09-01
 
 ## Product-test payroll and statement intake checkpoint (2026-09-01)
 
+The payroll material preview now also accepts the strict
+`payroll-summary-authoritative-preview/v1` projection for historical wage-statistics workbooks.
+It preserves the summary workbook as the historical source of truth, validates descending unique
+months, unique store labels, integer-minor amounts, total-row reconciliation, company scope, and
+permanent disabled payment flags.  July/August payroll sheets remain separate TEST_ONLY experiment
+materials and are never added together to manufacture historical totals.
+
 Core now exposes the company-scoped TEST_ONLY payroll workspace operations used by Web to read,
 organize, validate, and preview historical material.  The adapter binds every successful
 organize/validate receipt to the exact submitted workspace revision, period, material type, and
