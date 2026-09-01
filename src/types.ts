@@ -674,6 +674,7 @@ export type PayrollTestWorkspaceReadResponse = {
 }
 
 export type PayrollTestMaterialPreviewLine = {
+  source_row: number
   company_id: string
   employee_id: string
   employee_name: string
@@ -699,6 +700,8 @@ export type PayrollTestMaterialPreview = {
   company_id: string
   material_id: string
   period: string
+  routing_status: 'AUTO_TEST' | 'REVIEW_REQUIRED'
+  auto_batch_eligible: boolean
   status: 'READY_FOR_REVIEW' | 'NEEDS_HUMAN_REVIEW'
   line_count: number
   total_net_pay_cents: number
@@ -770,6 +773,159 @@ export type PayrollTestWorkspaceCommandResult<T> = {
   resource_ref: string
   replayed: boolean
   data: T
+}
+
+export type PayrollLegacyAction =
+  | 'FILL_MAIN'
+  | 'GENERATE_NORMAL_DRAFT'
+  | 'GENERATE_SUPPLEMENTAL_DRAFT'
+  | 'UPDATE_SUMMARY'
+  | 'SAVE_RULES'
+  | 'CHECK_RULES_AND_HISTORY'
+  | 'VERIFY_CURRENT_PAID'
+  | 'CHECK_PREVIOUS_PENDING'
+
+export type PayrollLegacyLine = PayrollTestMaterialPreviewLine & {
+  payment_kind?: 'NORMAL' | 'CASH' | 'SUPPLEMENT'
+  night_shift_rate_cents?: number
+  rest_days?: number
+  job_group?: string
+  location?: string
+}
+
+export type PayrollLegacyAdjustment = {
+  employee_id: string
+  item_code: string
+  kind: 'PERFORMANCE' | 'SPECIAL'
+  amount_cents: number
+  reason: string
+  disposition: 'MAIN' | 'SUPPLEMENT'
+  source_pending_id?: string
+}
+
+export type PayrollLegacyDraftLine = {
+  employee_id: string
+  account_id: string
+  account_masked: string
+  amount_cents: number
+  payment_channel: string
+  memo: string
+}
+
+export type PayrollLegacyDraft = {
+  schema_version: 'payroll-bank-draft/v1'
+  draft_id: string
+  draft_type: 'normal_bank_payroll' | 'supplemental_bank_payroll'
+  company_id: string
+  batch_id: string
+  pay_period: string
+  version: number
+  lines: PayrollLegacyDraftLine[]
+  total_amount_cents: number
+  warning: string
+  payable: false
+  submission_supported: false
+}
+
+export type PayrollLegacyPendingItem = {
+  pending_id: string
+  source_batch_id: string
+  source_period: string
+  employee_id: string
+  account_id: string
+  amount_cents: number
+  direction: 'ADD' | 'DEDUCT'
+  reason: string
+  status: 'OPEN' | 'RESOLVED' | 'IGNORED'
+  decision?: 'ADD_TO_MAIN' | 'SUPPLEMENT' | 'IGNORE'
+  resolution_reason?: string
+  resolved_in_period?: string
+}
+
+export type PayrollLegacyBatch = {
+  batch_id: string
+  period: string
+  revision: number
+  main_material_id: string
+  supporting_material_ids: Record<string, string>
+  lines: PayrollLegacyLine[]
+  adjustments: PayrollLegacyAdjustment[]
+  source_exceptions: Array<Record<string, unknown>>
+  drafts: PayrollLegacyDraft[]
+  summary: null | {
+    schema_version: 'payroll-monthly-summary/v1'
+    company_id: string
+    batch_id: string
+    period: string
+    employee_count: number
+    gross_pay_cents: number
+    net_pay_cents: number
+    by_payment_channel: Array<{ payment_channel: string; amount_cents: number }>
+    payable: false
+    submission_supported: false
+  }
+  verification: null | Record<string, unknown>
+  pending_items: PayrollLegacyPendingItem[]
+  checks: null | {
+    schema_version: 'payroll-rules-history-check/v1'
+    current_issues: Array<Record<string, unknown>>
+    history_issues: Array<Record<string, unknown>>
+    [key: string]: unknown
+  }
+}
+
+export type PayrollLegacyEmployeeRule = {
+  employee_id: string
+  fixed_base_salary_cents: number
+  fixed_allowance_cents: number
+  night_shift_rate_cents: number
+  rest_days: number
+  payment_channel: 'MYBANK' | 'BOC' | 'WECHAT' | 'CASH'
+  payment_kind: 'NORMAL' | 'CASH' | 'SUPPLEMENT'
+  job_group: string
+  location: string
+}
+
+export type PayrollLegacyWorkspace = {
+  schema_version: 'payroll-legacy-feature-workspace/v1'
+  data_scope: 'TEST_ONLY'
+  company_id: string
+  test_batch_id: string
+  revision: number
+  active_period: string
+  rules: { revision: number; employees: PayrollLegacyEmployeeRule[] }
+  batches: PayrollLegacyBatch[]
+  audit_events: Array<{
+    sequence: number
+    action: string
+    period: string
+    occurred_at: string
+    reason: string
+  }>
+  payment_submission_supported: false
+  payable: false
+  submission_supported: false
+}
+
+export type PayrollLegacyWorkspaceReadResponse = {
+  contract_version: 'ledgerbridge.payroll-legacy-feature-read.v1'
+  entity_ref: string
+  company_id: string
+  data: PayrollLegacyWorkspace
+}
+
+export type PayrollLegacyCommandResult = {
+  contract_version: 'ledgerbridge.payroll-legacy-feature-command-result.v1'
+  entity_ref: string
+  company_id: string
+  action: 'payroll.test_workspace.legacy.command'
+  resource_ref: string
+  replayed: boolean
+  data: {
+    action: PayrollLegacyAction
+    replayed: boolean
+    workspace: PayrollLegacyWorkspace
+  }
 }
 
 export type PayrollStatusData = {
