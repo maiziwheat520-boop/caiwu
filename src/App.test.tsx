@@ -78,6 +78,15 @@ const payrollEntityRef = '30000000-0000-4000-8000-000000000001'
 const payrollCompanyId = 'company_hotel_001'
 const payrollBatchId = 'batch_0123456789abcdef01234567'
 const payrollArtifactId = 'artifact_0123456789abcdef01234567'
+const payrollEvidence = [
+  ...Array.from({ length: 5 }, (_, index) => ({
+    artifact_id: index === 0 ? payrollArtifactId : `artifact_mybank_company_${index + 1}_2026_08`,
+    evidence_type: 'MYBANK_STATEMENT',
+  })),
+  { artifact_id: 'artifact_boc_cash_2026_08', evidence_type: 'BOC_RECEIPT' },
+  { artifact_id: 'artifact_wechat_separate_2026_08', evidence_type: 'WECHAT_RECEIPT' },
+]
+const payrollEvidenceIds = payrollEvidence.map((item) => item.artifact_id)
 
 function payrollRead(data: unknown) {
   return {
@@ -216,7 +225,7 @@ const livePayrollResponses: Record<string, unknown> = {
       verification_id: 'verification_0123456789abcdef01234567',
       company_id: payrollCompanyId,
       batch_id: payrollBatchId,
-      source_artifact_ids: [payrollArtifactId],
+      source_artifact_ids: payrollEvidenceIds,
       status: 'MATCHED',
       results: [{
         company_id: payrollCompanyId,
@@ -230,14 +239,13 @@ const livePayrollResponses: Record<string, unknown> = {
       submission_supported: false,
       payment_submission_supported: false,
     }],
-    available_evidence: [{
+    available_evidence: payrollEvidence.map((evidence) => ({
       company_id: payrollCompanyId,
-      artifact_id: payrollArtifactId,
+      ...evidence,
       period: '2026-08',
-      evidence_type: 'MYBANK_STATEMENT',
       status: 'READY_FOR_MATCHING',
-      display_label: 'MYBANK_STATEMENT · 2026-08',
-    }],
+      display_label: `${evidence.evidence_type} · 2026-08`,
+    })),
   }),
 }
 
@@ -2773,9 +2781,12 @@ describe('LedgerBridge Web API client', () => {
     })
     renderApp()
 
-    const evidenceOption = await screen.findByRole('checkbox', { name: 'MYBANK_STATEMENT · 2026-08' })
-    expect(evidenceOption).not.toBeChecked()
-    fireEvent.click(evidenceOption)
+    const evidenceOptions = await screen.findAllByRole('checkbox')
+    expect(evidenceOptions).toHaveLength(7)
+    for (const evidenceOption of evidenceOptions) {
+      expect(evidenceOption).not.toBeChecked()
+      fireEvent.click(evidenceOption)
+    }
     fireEvent.click(screen.getByRole('button', { name: '提交发放验证' }))
 
     await waitFor(() => {
@@ -2795,7 +2806,7 @@ describe('LedgerBridge Web API client', () => {
     expect(JSON.parse(String(init?.body))).toEqual({
       expected_revision: 4,
       reason_code: 'MANUAL_DISBURSEMENT_VERIFICATION',
-      source_artifact_ids: [payrollArtifactId],
+      source_artifact_ids: payrollEvidenceIds,
     })
   })
 
@@ -2814,7 +2825,7 @@ describe('LedgerBridge Web API client', () => {
     })
     renderApp()
 
-    expect(await screen.findByText('MYBANK_STATEMENT · 2026-08')).toBeInTheDocument()
+    expect((await screen.findAllByText('网商银行代发表 · 2026-08')).length).toBe(5)
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '提交发放验证' })).not.toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([input, init]) =>

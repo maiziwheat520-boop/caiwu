@@ -20,6 +20,8 @@ import type {
   PayrollLegacyAdjustment,
   PayrollLegacyBatch,
   PayrollLegacyEmployeeRule,
+  PayrollLegacyEvidenceDocument,
+  PayrollLegacyEvidenceType,
   PayrollLegacyLine,
   PayrollLegacyWorkspace,
   PayrollTestWorkspaceReadResponse,
@@ -57,6 +59,10 @@ type ReceiptInput = {
   status: '' | 'SUCCEEDED' | 'FAILED'
 }
 
+type EvidenceSlot = PayrollLegacyEvidenceDocument & {
+  label: string
+}
+
 const tasks: Array<{
   id: TaskId
   label: string
@@ -73,8 +79,21 @@ const tasks: Array<{
   { id: 'history', label: '检查规则与历史', description: '检查来源异常、缺失材料和跨月变化。', icon: ListChecks },
 ]
 
-const channels = ['MYBANK', 'BOC', 'WECHAT', 'CASH'] as const
+const channels = ['MYBANK', 'BOC', 'WECHAT'] as const
 const paymentKinds = ['NORMAL', 'CASH', 'SUPPLEMENT'] as const
+const evidenceSlotDefinitions: Array<{ evidence_type: PayrollLegacyEvidenceType; label: string }> = [
+  ...Array.from({ length: 5 }, (_, index) => ({
+    evidence_type: 'MYBANK_STATEMENT' as const,
+    label: `网商银行代发表${index + 1}`,
+  })),
+  { evidence_type: 'BOC_RECEIPT', label: '中国银行现金发放账单' },
+  { evidence_type: 'WECHAT_RECEIPT', label: '微信单独发放账单' },
+]
+
+const emptyEvidenceSlots = (): EvidenceSlot[] => evidenceSlotDefinitions.map((item) => ({
+  ...item,
+  evidence_ref: '',
+}))
 
 const money = (cents: number) => new Intl.NumberFormat('zh-CN', {
   style: 'currency',
@@ -82,7 +101,7 @@ const money = (cents: number) => new Intl.NumberFormat('zh-CN', {
 }).format(cents / 100)
 
 const isChannel = (value: string): value is PayrollLegacyEmployeeRule['payment_channel'] =>
-  channels.includes(value as PayrollLegacyEmployeeRule['payment_channel'])
+  channels.includes(value as (typeof channels)[number])
 
 const activeBatchFrom = (workspace: PayrollLegacyWorkspace | null, period?: string) =>
   workspace?.batches.find((batch) => batch.period === (period ?? workspace.active_period)) ?? null
@@ -108,23 +127,32 @@ function rulesFromBatch(workspace: PayrollLegacyWorkspace, batch: PayrollLegacyB
 }
 
 function receiptsFromBatch(batch: PayrollLegacyBatch): ReceiptInput[] {
-  const expected = new Map<string, ReceiptInput>()
-  for (const draft of batch.drafts) {
-    for (const line of draft.lines) {
-      const current = expected.get(line.employee_id) ?? {
-        employee_id: line.employee_id,
-        account_id: line.account_id,
-        account_masked: line.account_masked,
-        payment_channel: line.payment_channel,
-        expected_amount_cents: 0,
-        amount: '',
-        status: '' as const,
-      }
-      current.expected_amount_cents += line.amount_cents
-      expected.set(line.employee_id, current)
-    }
+  return batch.lines.map((line) => ({
+    employee_id: line.employee_id,
+    account_id: line.account_id,
+    account_masked: line.account_masked,
+    payment_channel: line.payment_channel,
+    expected_amount_cents: line.net_pay_cents,
+    amount: '',
+    status: '' as const,
+  }))
+}
+
+function evidenceSlotsFromBatch(batch: PayrollLegacyBatch): EvidenceSlot[] {
+  const slots = emptyEvidenceSlots()
+  if (batch.verification?.schema_version !== 'payroll-current-paid-verification/v2') return slots
+  const byType = new Map<PayrollLegacyEvidenceType, PayrollLegacyEvidenceDocument[]>()
+  for (const document of batch.verification.evidence_documents) {
+    const current = byType.get(document.evidence_type) ?? []
+    current.push(document)
+    byType.set(document.evidence_type, current)
   }
-  return [...expected.values()]
+  const offsets = new Map<PayrollLegacyEvidenceType, number>()
+  return slots.map((slot) => {
+    const offset = offsets.get(slot.evidence_type) ?? 0
+    offsets.set(slot.evidence_type, offset + 1)
+    return { ...slot, evidence_ref: byType.get(slot.evidence_type)?.[offset]?.evidence_ref ?? '' }
+  })
 }
 
 export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
@@ -154,7 +182,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
   const [supporting, setSupporting] = useState<Record<string, string>>({})
   const [adjustments, setAdjustments] = useState<PayrollLegacyAdjustment[]>([])
   const [rules, setRules] = useState<EditableRule[]>([])
-  const [evidenceRef, setEvidenceRef] = useState('')
+  const [evidenceSlots, setEvidenceSlots] = useState<EvidenceSlot[]>(emptyEvidenceSlots)
   const [receipts, setReceipts] = useState<ReceiptInput[]>([])
   const [pendingDecisions, setPendingDecisions] = useState<Record<string, {
     decision: '' | 'ADD_TO_MAIN' | 'SUPPLEMENT' | 'IGNORE'
@@ -167,6 +195,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
     setPeriod(nextPeriod)
     setRules(batch ? rulesFromBatch(nextWorkspace, batch) : [])
     setReceipts(batch ? receiptsFromBatch(batch) : [])
+    setEvidenceSlots(batch ? evidenceSlotsFromBatch(batch) : emptyEvidenceSlots())
     setAdjustments(batch ? batch.adjustments.filter((item) => !item.source_pending_id) : [])
   }, [])
 
@@ -183,6 +212,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
       setPeriod('')
       setRules([])
       setReceipts([])
+      setEvidenceSlots(emptyEvidenceSlots())
       setAdjustments([])
     } finally {
       setLoading(false)
@@ -261,9 +291,13 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
   const rulesComplete = rules.length > 0 && rules.every(
     (rule) => rule.payment_channel && rule.job_group.trim() && rule.location.trim(),
   )
-  const receiptsComplete = receipts.length > 0 && receipts.every(
+  const evidenceRefs = evidenceSlots.map((item) => item.evidence_ref.trim())
+  const evidenceComplete = evidenceRefs.every(
+    (value) => /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/.test(value),
+  ) && new Set(evidenceRefs).size === evidenceSlots.length
+  const receiptsComplete = evidenceComplete && receipts.length > 0 && receipts.every(
     (receipt) => receipt.status && receipt.amount !== '' && Number(receipt.amount) >= 0,
-  ) && /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/.test(evidenceRef)
+  )
   const pendingComplete = previousOpenItems.length > 0 && previousOpenItems.every((item) => {
     const resolution = pendingDecisions[item.pending_id]
     return resolution?.decision && resolution.reason.trim()
@@ -500,10 +534,37 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
 
           {task === 'verify' && activeBatch ? (
             <div className="payroll-task-panel">
-              <div className="payroll-task-heading"><div><span>06</span><h3>按实际回单核对本月已发</h3></div><p>不把草稿金额当成已发金额；必须逐人录入实际回单结果。</p></div>
+              <div className="payroll-task-heading"><div><span>06</span><h3>按三类账单核对本月已发</h3></div><p>工资表全体员工是理论应发基准；网商银行、中行和微信实际到账合计必须与它相等。</p></div>
+              <div className="payroll-evidence-collection">
+                <div>
+                  <strong>账单收集完整度</strong>
+                  <span>工资表理论总额：{money(activeBatch.lines.reduce((sum, line) => sum + line.net_pay_cents, 0))}</span>
+                </div>
+                <ul>
+                  <li>网商银行代发表 {evidenceSlots.filter((item) => item.evidence_type === 'MYBANK_STATEMENT' && item.evidence_ref.trim()).length}/5</li>
+                  <li>中国银行现金发放账单 {evidenceSlots.some((item) => item.evidence_type === 'BOC_RECEIPT' && item.evidence_ref.trim()) ? 1 : 0}/1</li>
+                  <li>微信单独发放账单 {evidenceSlots.some((item) => item.evidence_type === 'WECHAT_RECEIPT' && item.evidence_ref.trim()) ? 1 : 0}/1</li>
+                </ul>
+                <div className="payroll-evidence-reference-grid">
+                  {evidenceSlots.map((slot, index) => (
+                    <label key={`${slot.evidence_type}-${index}`}>
+                      <span>{slot.label}</span>
+                      <input
+                        aria-label={slot.label}
+                        value={slot.evidence_ref}
+                        onChange={(event) => setEvidenceSlots((current) => current.map(
+                          (item, itemIndex) => itemIndex === index
+                            ? { ...item, evidence_ref: event.target.value }
+                            : item,
+                        ))}
+                        placeholder="填写已接收账单的证据编号"
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
               {receipts.length ? (
                 <>
-                  <label className="payroll-evidence-ref"><span>回单/流水证据编号</span><input value={evidenceRef} onChange={(event) => setEvidenceRef(event.target.value)} placeholder="例如 receipt_2026_08_001" /></label>
                   <div className="payroll-receipt-list">
                     {receipts.map((receipt) => (
                       <div key={receipt.employee_id}>
@@ -514,8 +575,14 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
                     ))}
                   </div>
                 </>
-              ) : <p className="payroll-empty-task">请先生成正常或补发草稿，再录入实际回单核对。</p>}
-              <button type="button" className="primary" disabled={!receiptsComplete || busy} onClick={() => void execute('VERIFY_CURRENT_PAID', { period: activeBatch.period, evidence_ref: evidenceRef, receipts: receipts.map((receipt) => ({ employee_id: receipt.employee_id, account_id: receipt.account_id, payment_channel: receipt.payment_channel, amount_cents: Math.round(Number(receipt.amount) * 100), status: receipt.status })) })}>保存本月已发核对</button>
+              ) : <p className="payroll-empty-task">当前工资表没有可核对人员。</p>}
+              {activeBatch.verification?.schema_version === 'payroll-current-paid-verification/v2' ? (
+                <div className={`payroll-verification-total ${activeBatch.verification.totals_match ? 'matched' : 'attention'}`}>
+                  <strong>{activeBatch.verification.totals_match ? '理论总额与实际总额一致' : '理论总额与实际总额不一致'}</strong>
+                  <span>理论 {money(activeBatch.verification.theoretical_total_cents)} · 实际 {money(activeBatch.verification.actual_total_cents)} · 差额 {money(activeBatch.verification.difference_cents)}</span>
+                </div>
+              ) : null}
+              <button type="button" className="primary" disabled={!receiptsComplete || busy} onClick={() => void execute('VERIFY_CURRENT_PAID', { period: activeBatch.period, evidence_documents: evidenceSlots.map(({ evidence_type, evidence_ref }) => ({ evidence_type, evidence_ref: evidence_ref.trim() })), receipts: receipts.map((receipt) => ({ employee_id: receipt.employee_id, account_id: receipt.account_id, payment_channel: receipt.payment_channel, amount_cents: Math.round(Number(receipt.amount) * 100), status: receipt.status })) })}>保存本月已发核对</button>
             </div>
           ) : null}
 

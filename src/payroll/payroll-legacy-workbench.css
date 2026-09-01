@@ -223,6 +223,24 @@
 .payroll-pending-row > div span,
 .payroll-receipt-list small { margin-top: 3px; color: #758396; font-size: 10px; }
 
+.payroll-evidence-collection {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #d8e2ee;
+  border-radius: 12px;
+  background: #f7fafd;
+}
+.payroll-evidence-collection > div:first-child { display: flex; justify-content: space-between; gap: 12px; color: #586d86; font-size: 11px; }
+.payroll-evidence-collection > div:first-child strong { color: #234e7b; }
+.payroll-evidence-collection ul { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.payroll-evidence-collection li { padding: 9px 10px; border: 1px solid #dfe7f0; border-radius: 8px; color: #49647f; background: #fff; font-size: 11px; font-weight: 750; }
+.payroll-evidence-reference-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.payroll-evidence-reference-grid label { display: grid; gap: 5px; color: #65758a; font-size: 10px; }
+.payroll-verification-total { display: flex; justify-content: space-between; gap: 12px; padding: 12px; border-radius: 9px; font-size: 11px; }
+.payroll-verification-total.matched { color: #176b46; background: #effaf4; }
+.payroll-verification-total.attention { color: #9a5910; background: #fff7e8; }
+
 .payroll-summary-strip,
 .payroll-check-result,
 .payroll-draft-list > div {
@@ -281,4 +299,7 @@
   .payroll-task-heading p { text-align: left; }
   .payroll-pending-row,
   .payroll-receipt-list > div { grid-template-columns: 1fr; }
+  .payroll-evidence-collection > div:first-child { flex-direction: column; }
+  .payroll-evidence-collection ul,
+  .payroll-evidence-reference-grid { grid-template-columns: 1fr; }
 }

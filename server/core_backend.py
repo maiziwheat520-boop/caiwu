@@ -1326,9 +1326,27 @@ class CoreBackedState:
                 verification = self.payroll_verification(session_token, session_subject)
             except CoreBackendError as error:
                 return error.status, error.payload
-            available_ids = _payroll_available_evidence_ids(verification)
-            if any(not isinstance(value, str) or value not in available_ids for value in requested):
+            available = _payroll_available_evidence_by_id(verification)
+            if (
+                any(not isinstance(value, str) for value in requested)
+                or len({str(value) for value in requested}) != len(requested)
+                or any(str(value) not in available for value in requested)
+            ):
                 return 422, _problem(422, "PAYROLL_VERIFICATION_EVIDENCE_NOT_AVAILABLE")
+            selected = [available[str(value)] for value in requested]
+            required_counts = {
+                "MYBANK_STATEMENT": 5,
+                "BOC_RECEIPT": 1,
+                "WECHAT_RECEIPT": 1,
+            }
+            selected_counts = {
+                evidence_type: sum(
+                    item.get("evidence_type") == evidence_type for item in selected
+                )
+                for evidence_type in required_counts
+            }
+            if len(selected) != 7 or selected_counts != required_counts:
+                return 422, _problem(422, "VERIFICATION_EVIDENCE_SET_INCOMPLETE")
         resource_ref = _payroll_resource_ref(batch_ref)
         operation_id = str(uuid.UUID(idempotency_key))
         expected_revision = request.get("expected_revision")
@@ -4615,12 +4633,14 @@ def _reject_unsafe_payroll_values(value: object) -> None:
             pending.extend(item)
 
 
-def _payroll_available_evidence_ids(payload: dict[str, object]) -> set[str]:
+def _payroll_available_evidence_by_id(
+    payload: dict[str, object],
+) -> dict[str, dict[str, object]]:
     data = payload.get("data")
     available = data.get("available_evidence") if isinstance(data, dict) else None
     if not isinstance(available, list):
         raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
-    available_ids: set[str] = set()
+    available_by_id: dict[str, dict[str, object]] = {}
     expected_fields = {
         "company_id",
         "artifact_id",
@@ -4652,8 +4672,15 @@ def _payroll_available_evidence_ids(payload: dict[str, object]) -> set[str]:
             != f"{item.get('evidence_type')} · {item.get('period')}"
         ):
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
-        available_ids.add(str(item["artifact_id"]))
-    return available_ids
+        artifact_id = str(item["artifact_id"])
+        if artifact_id in available_by_id:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        available_by_id[artifact_id] = item
+    return available_by_id
+
+
+def _payroll_available_evidence_ids(payload: dict[str, object]) -> set[str]:
+    return set(_payroll_available_evidence_by_id(payload))
 
 def _payroll_resource_ref(value: object) -> str:
     if not isinstance(value, str) or PAYROLL_RESOURCE_REF.fullmatch(value) is None:

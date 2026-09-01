@@ -881,6 +881,53 @@ export type PayrollLegacyPendingItem = {
   resolved_in_period?: string
 }
 
+export type PayrollLegacyEvidenceType =
+  | 'MYBANK_STATEMENT'
+  | 'BOC_RECEIPT'
+  | 'WECHAT_RECEIPT'
+
+export type PayrollLegacyEvidenceDocument = {
+  evidence_type: PayrollLegacyEvidenceType
+  evidence_ref: string
+}
+
+export type PayrollLegacyCurrentPaidVerification = {
+  schema_version: 'payroll-current-paid-verification/v2'
+  company_id: string
+  batch_id: string
+  period: string
+  evidence_documents: PayrollLegacyEvidenceDocument[]
+  evidence_summary: Array<{
+    evidence_type: PayrollLegacyEvidenceType
+    required_count: number
+    received_count: number
+  }>
+  theoretical_total_cents: number
+  actual_total_cents: number
+  difference_cents: number
+  totals_match: boolean
+  by_payment_channel: Array<{
+    payment_channel: 'MYBANK' | 'BOC' | 'WECHAT'
+    expected_amount_cents: number
+    actual_amount_cents: number
+    difference_cents: number
+    totals_match: boolean
+  }>
+  overall_status: 'MATCHED' | 'ATTENTION_REQUIRED'
+  results: Array<{
+    employee_id: string
+    account_id: string
+    payment_channel: 'MYBANK' | 'BOC' | 'WECHAT'
+    expected_amount_cents: number
+    actual_amount_cents: number
+    difference_cents: number
+    status: 'MATCHED' | 'MISSING_RECEIPT' | 'IDENTITY_MISMATCH' | 'PAYMENT_FAILED' | 'UNDERPAID' | 'OVERPAID'
+  }>
+  verified_at: string
+  payable: false
+  submission_supported: false
+}
+
 export type PayrollLegacyBatch = {
   batch_id: string
   period: string
@@ -903,7 +950,10 @@ export type PayrollLegacyBatch = {
     payable: false
     submission_supported: false
   }
-  verification: null | Record<string, unknown>
+  verification: null | PayrollLegacyCurrentPaidVerification | {
+    schema_version: 'payroll-current-paid-verification/v1'
+    [key: string]: unknown
+  }
   pending_items: PayrollLegacyPendingItem[]
   checks: null | {
     schema_version: 'payroll-rules-history-check/v1'
