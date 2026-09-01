@@ -74,7 +74,16 @@ def _line(values: tuple[str, ...]) -> str:
 
 
 def _page_text(
-    *, account: str = _ACCOUNT, debit: str = "12.34", first_amount: str = "20.00"
+    *,
+    account: str = _ACCOUNT,
+    debit: str = "12.34",
+    first_amount: str = "20.00",
+    first_channel: str = "手机银行",
+    first_branch: str = "测试网点",
+    first_note: str = "合成附言",
+    first_counterparty: str = "乙",
+    first_counterparty_account: str = "6222000000000002",
+    first_counterparty_institution: str = "测试银行乙",
 ) -> str:
     return "\n".join(
         (
@@ -91,12 +100,12 @@ def _page_text(
                     first_amount,
                     "107.66",
                     "转入",
-                    "手机银行",
-                    "测试网点",
-                    "合成附言",
-                    "乙",
-                    "6222000000000002",
-                    "测试银行乙",
+                    first_channel,
+                    first_branch,
+                    first_note,
+                    first_counterparty,
+                    first_counterparty_account,
+                    first_counterparty_institution,
                 )
             ),
             _line(
@@ -215,6 +224,27 @@ def test_parser_corrects_only_sign_loss_proven_by_balance_chain(
     _, statement = _parse(tmp_path, monkeypatch, page_text=text)
 
     assert statement.transactions[0].amount_minor == 2000
+
+
+def test_parser_discards_pdf_layout_rules_and_repairs_account_spill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = _page_text(
+        first_channel="手机银行 ----",
+        first_branch="--------------- --",
+        first_note="--------",
+        first_counterparty="乙          1",
+        first_counterparty_account="6222000000000002  测",
+        first_counterparty_institution="试银行乙",
+    )
+
+    _, statement = _parse(tmp_path, monkeypatch, page_text=text)
+
+    first = statement.transactions[0]
+    assert first.counterparty_name == "乙"
+    assert first.counterparty_account == "16222000000000002"
+    assert first.counterparty_institution == "测试银行乙"
+    assert first.transaction_name == "转入 | 手机银行"
 
 
 @pytest.mark.parametrize(

@@ -58,6 +58,11 @@ _MAIN_LINE_RE = re.compile(
 _CONTINUATION_FORBIDDEN_RE = re.compile(
     rf"(?:{_DATE})|(?:{_TIME})|(?<![\d,])(?:{_SIGNED_MONEY})(?![\d,])"
 )
+_LAYOUT_RULE_TOKEN_RE = re.compile(r"(?<!\S)-{2,}(?!\S)")
+_COUNTERPARTY_ACCOUNT_SPILL_RE = re.compile(
+    r"^(?P<name>.*?)\s{2,}(?P<account_prefix>[0-9]{1,4})\s*$"
+)
+_COUNTERPARTY_ACCOUNT_CELL_RE = re.compile(r"^(?P<account>[0-9]{16,30})(?P<institution_prefix>.*)$")
 _COLUMN_HEADERS: Final = (
     "记账日期",
     "记账时间",
@@ -424,7 +429,9 @@ def _parse_transactions(
                     "人民币",
                     main_match.group("amount"),
                     main_match.group("balance"),
-                    *_slice_columns(line, starts[5:]),
+                    *_clean_layout_cells(
+                        _slice_columns(line, starts[5:]),
+                    ),
                 ]
             )
             continue
@@ -433,7 +440,9 @@ def _parse_transactions(
         prefix = line[: starts[5]]
         if _CONTINUATION_FORBIDDEN_RE.search(prefix) is not None:
             raise BocStatementError("statement transaction continuation is invalid")
-        text_cells = _slice_columns(line, starts[5:])
+        text_cells = _clean_layout_cells(
+            _slice_columns(line, starts[5:]),
+        )
         if not any(text_cells):
             continue
         current = records[-1]
@@ -626,6 +635,29 @@ def _slice_columns(line: str, starts: tuple[int, ...]) -> list[str]:
         line[start : starts[index + 1] if index + 1 < len(starts) else None].strip()
         for index, start in enumerate(starts)
     ]
+
+
+def _clean_layout_cells(cells: list[str]) -> list[str]:
+    """Remove proven layout rules and repair fixed-column account spill."""
+
+    if len(cells) != len(_COLUMN_HEADERS[5:]):
+        raise BocStatementError("statement transaction text width is invalid")
+    result = list(cells)
+    for index in range(4):
+        result[index] = _LAYOUT_RULE_TOKEN_RE.sub(" ", result[index]).strip()
+    name_spill = _COUNTERPARTY_ACCOUNT_SPILL_RE.fullmatch(result[4])
+    account_cell = _COUNTERPARTY_ACCOUNT_CELL_RE.fullmatch(result[5])
+    if name_spill is not None and account_cell is not None:
+        account = name_spill.group("account_prefix") + account_cell.group("account")
+        if _ACCOUNT_NUMBER.fullmatch(account) is None:
+            raise BocStatementError("statement counterparty account spill is invalid")
+        institution_prefix = _LAYOUT_RULE_TOKEN_RE.sub(
+            " ", account_cell.group("institution_prefix")
+        ).strip()
+        result[4] = name_spill.group("name").strip()
+        result[5] = account
+        result[6] = f"{institution_prefix}{result[6]}".strip()
+    return result
 
 
 def _find_footer(lines: list[str], start: int) -> int:
