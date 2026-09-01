@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import {
   Badge,
   Button,
@@ -68,10 +68,14 @@ import type {
   ReviewEvent,
   Session,
 } from './types'
-import { CompanyReportsPage } from './company-reports/CompanyReportsPage'
-import { OriginalReconciliationPage } from './original-reconciliation/OriginalReconciliationPage'
-import { PayrollWorkspacePage } from './payroll/PayrollWorkspacePage'
 import { ErrorState, LoadingState, Metric, PageHeader } from './shared/PagePrimitives'
+
+const CompanyReportsPage = lazy(() => import('./company-reports/CompanyReportsPage')
+  .then((module) => ({ default: module.CompanyReportsPage })))
+const OriginalReconciliationPage = lazy(() => import('./original-reconciliation/OriginalReconciliationPage')
+  .then((module) => ({ default: module.OriginalReconciliationPage })))
+const PayrollWorkspacePage = lazy(() => import('./payroll/PayrollWorkspacePage')
+  .then((module) => ({ default: module.PayrollWorkspacePage })))
 
 const CURRENT_MONTH = '2026-08'
 const CLASSIFICATION_GROUPS_UNAVAILABLE_NOTICE = '同类批量归类暂不可用，可继续逐笔审核'
@@ -877,13 +881,15 @@ function App() {
         ) : null}
 
         <main className="content">
-          {page === 'payroll'
-            ? renderPage()
-            : loading
-              ? <LoadingState />
-              : loadError
-                ? <ErrorState message={loadError} onRetry={loadData} />
-                : renderPage()}
+          <Suspense fallback={<LoadingState title="正在加载功能模块" description="只加载当前打开的功能区。" />}>
+            {page === 'payroll'
+              ? renderPage()
+              : loading
+                ? <LoadingState />
+                : loadError
+                  ? <ErrorState message={loadError} onRetry={loadData} />
+                  : renderPage()}
+          </Suspense>
         </main>
       </div>
 

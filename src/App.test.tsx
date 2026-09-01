@@ -2122,10 +2122,10 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.getByRole('heading', { name: '2026 年 8 月对账草稿' })).toBeInTheDocument()
     fireEvent.click(screen.getAllByRole('button', { name: /原口径对账表/ })[0])
     expect(window.location.pathname).toBe('/original-reconciliation')
-    expect(screen.getByRole('heading', { name: '原口径对账表' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '原口径对账表' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: '2026 年 8 月对账草稿' })).not.toBeInTheDocument()
     fireEvent.click(screen.getAllByRole('button', { name: /各公司报表/ })[0])
-    expect(screen.getByRole('heading', { name: '各公司报表' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '各公司报表' })).toBeInTheDocument()
     expect(await screen.findByText('当前期间没有可展示的公司报表')).toBeInTheDocument()
   })
 
