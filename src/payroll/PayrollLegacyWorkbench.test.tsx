@@ -56,7 +56,32 @@ const legacyWorkspace: PayrollLegacyWorkspace = {
   test_batch_id: testWorkspace.data.test_batch_id,
   revision: 1,
   active_period: '2026-08',
-  rules: { revision: 0, employees: [] },
+  rules: {
+    revision: 0,
+    employees: [],
+    review_rules: [{
+      rule_id: 'review_payment_channel',
+      name: '发放渠道必须确认',
+      rule_type: 'PAYMENT_CHANNEL_REQUIRED',
+      enabled: true,
+      severity: 'BLOCKING',
+      threshold_cents: 0,
+    }, {
+      rule_id: 'review_supporting_materials',
+      name: '三类工资素材必须齐全',
+      rule_type: 'SUPPORTING_MATERIAL_REQUIRED',
+      enabled: true,
+      severity: 'REVIEW',
+      threshold_cents: 0,
+    }, {
+      rule_id: 'review_history_change',
+      name: '相邻月份人员与工资变化',
+      rule_type: 'HISTORY_CHANGE_REVIEW',
+      enabled: true,
+      severity: 'REVIEW',
+      threshold_cents: 1,
+    }],
+  },
   batches: [{
     batch_id: 'payroll_history_through_2026_08_2026_08',
     period: '2026-08',
@@ -139,7 +164,7 @@ describe('PayrollLegacyWorkbench', () => {
     expect(await screen.findByRole('cell', { name: '示例员工甲' })).toBeInTheDocument()
     expect(screen.getByText('工资主表已保存 · 版本 1')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '管理工资规则' }))
-    expect(screen.getByRole('button', { name: '保存规则并重新计算' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '保存全部工资规则' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /付款|发薪|提交银行/ })).not.toBeInTheDocument()
   })
 
@@ -179,7 +204,7 @@ describe('PayrollLegacyWorkbench', () => {
     expect(await screen.findByText('工资主表已保存 · 版本 1')).toBeInTheDocument()
     for (const name of [
       '填入主表',
-      '生成正常代发草稿',
+      '生成网商银行代发表',
       '生成补发代发草稿',
       '更新工资汇总',
       '检查上月待办',
@@ -208,20 +233,20 @@ describe('PayrollLegacyWorkbench', () => {
     await screen.findByText('工资主表已保存 · 版本 1')
     fireEvent.click(screen.getByRole('button', { name: '核对本月已发' }))
     expect(screen.getByText('账单收集完整度')).toBeInTheDocument()
-    expect(screen.getByText('网商银行代发表 0/5')).toBeInTheDocument()
-    expect(screen.getByText('中国银行现金发放账单 0/1')).toBeInTheDocument()
-    expect(screen.getByText('微信单独发放账单 0/1')).toBeInTheDocument()
+    expect(screen.getByText('网商银行实际发放流水 0/5')).toBeInTheDocument()
+    expect(screen.getByText('中国银行实际发放流水 0/1')).toBeInTheDocument()
+    expect(screen.getByText('李勇微信实际转账记录 0/1')).toBeInTheDocument()
     expect(screen.getByText('工资表理论总额：¥5,000.00')).toBeInTheDocument()
 
     for (let index = 1; index <= 5; index += 1) {
-      fireEvent.change(screen.getByLabelText(`网商银行代发表${index}`), {
+      fireEvent.change(screen.getByLabelText(`网商银行发放流水${index}`), {
         target: { value: `mybank_company_${index}_2026_08` },
       })
     }
-    fireEvent.change(screen.getByLabelText('中国银行现金发放账单'), {
+    fireEvent.change(screen.getByLabelText('中国银行实际发放流水'), {
       target: { value: 'boc_cash_2026_08' },
     })
-    fireEvent.change(screen.getByLabelText('微信单独发放账单'), {
+    fireEvent.change(screen.getByLabelText('李勇微信实际转账记录'), {
       target: { value: 'wechat_separate_2026_08' },
     })
     fireEvent.change(screen.getByLabelText('emp_preview_001实际到账金额'), {
@@ -269,6 +294,7 @@ describe('PayrollLegacyWorkbench', () => {
       revision: 2,
       rules: {
         revision: 1,
+        review_rules: legacyWorkspace.rules.review_rules,
         employees: [{
           employee_id: 'emp_preview_001',
           fixed_base_salary_cents: 520000,
@@ -296,7 +322,7 @@ describe('PayrollLegacyWorkbench', () => {
     fireEvent.change(screen.getByLabelText('示例员工甲可休天数'), { target: { value: '4' } })
     fireEvent.change(screen.getByLabelText('示例员工甲工种'), { target: { value: '客房' } })
     fireEvent.change(screen.getByLabelText('示例员工甲地点'), { target: { value: '主楼' } })
-    fireEvent.click(screen.getByRole('button', { name: '保存规则并重新计算' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存全部工资规则' }))
 
     await waitFor(() => expect(api.runPayrollLegacyCommand).toHaveBeenCalledWith({
       action: 'SAVE_RULES',
@@ -314,10 +340,93 @@ describe('PayrollLegacyWorkbench', () => {
           job_group: '客房',
           location: '主楼',
         }],
+        review_rules: legacyWorkspace.rules.review_rules,
       },
       csrfToken: 'csrf-test',
     }))
     expect(await screen.findByText('工资主表已保存 · 版本 2')).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('已保存并重新读取最新工资工作区')
+  })
+
+  it('lists, edits, toggles, deletes, saves, and reloads payroll review rules', async () => {
+    vi.spyOn(api, 'getPayrollLegacyWorkspace').mockResolvedValue({
+      contract_version: 'ledgerbridge.payroll-legacy-feature-read.v1',
+      entity_ref: testWorkspace.entity_ref,
+      company_id: testWorkspace.company_id,
+      data: legacyWorkspace,
+    })
+    const savedReviewRules = [
+      legacyWorkspace.rules.review_rules![0],
+      {
+        ...legacyWorkspace.rules.review_rules![1],
+        name: '工资素材完整性',
+        enabled: false,
+      },
+    ]
+    vi.spyOn(api, 'runPayrollLegacyCommand').mockResolvedValue({
+      ...fillResult,
+      data: {
+        action: 'SAVE_RULES',
+        replayed: false,
+        workspace: {
+          ...legacyWorkspace,
+          revision: 2,
+          rules: { ...legacyWorkspace.rules, revision: 1, review_rules: savedReviewRules },
+        },
+      },
+    })
+
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
+    await screen.findByText('工资主表已保存 · 版本 1')
+    fireEvent.click(screen.getByRole('button', { name: '管理工资规则' }))
+
+    expect(screen.getByDisplayValue('三类工资素材必须齐全')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('示例员工甲工种'), { target: { value: '前台' } })
+    fireEvent.change(screen.getByLabelText('示例员工甲地点'), { target: { value: '测试酒店' } })
+    fireEvent.click(screen.getByRole('button', { name: '停用 三类工资素材必须齐全' }))
+    fireEvent.change(screen.getByLabelText('辅助材料完整性规则名称'), {
+      target: { value: '工资素材完整性' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '删除 相邻月份人员与工资变化' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存全部工资规则' }))
+
+    await waitFor(() => expect(api.runPayrollLegacyCommand).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'SAVE_RULES',
+      expectedRevision: 1,
+      payload: expect.objectContaining({ review_rules: savedReviewRules }),
+      csrfToken: 'csrf-test',
+    })))
+    expect(screen.getByRole('button', { name: '启用 工资素材完整性' })).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('相邻月份人员与工资变化')).not.toBeInTheDocument()
+  })
+
+  it('adds a missing review rule and shows the real save error', async () => {
+    const withoutHistory: PayrollLegacyWorkspace = {
+      ...legacyWorkspace,
+      rules: {
+        ...legacyWorkspace.rules,
+        review_rules: legacyWorkspace.rules.review_rules!.slice(0, 2),
+      },
+    }
+    vi.spyOn(api, 'getPayrollLegacyWorkspace').mockResolvedValue({
+      contract_version: 'ledgerbridge.payroll-legacy-feature-read.v1',
+      entity_ref: testWorkspace.entity_ref,
+      company_id: testWorkspace.company_id,
+      data: withoutHistory,
+    })
+    vi.spyOn(api, 'runPayrollLegacyCommand').mockRejectedValue(
+      new ApiError('审查规则名称不能为空', 422, 'LEGACY_PAYROLL_REVIEW_RULES_INVALID'),
+    )
+
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
+    await screen.findByText('工资主表已保存 · 版本 1')
+    fireEvent.click(screen.getByRole('button', { name: '管理工资规则' }))
+    fireEvent.change(screen.getByLabelText('示例员工甲工种'), { target: { value: '前台' } })
+    fireEvent.change(screen.getByLabelText('示例员工甲地点'), { target: { value: '测试酒店' } })
+    fireEvent.click(screen.getByRole('button', { name: '新增审查规则' }))
+    expect(screen.getByDisplayValue('相邻月份人员与工资变化')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '保存全部工资规则' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('审查规则名称不能为空')
   })
 })

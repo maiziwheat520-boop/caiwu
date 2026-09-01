@@ -23,6 +23,8 @@ import type {
   PayrollLegacyEvidenceDocument,
   PayrollLegacyEvidenceType,
   PayrollLegacyLine,
+  PayrollLegacyReviewRule,
+  PayrollLegacyReviewRuleType,
   PayrollLegacyWorkspace,
   PayrollTestWorkspaceReadResponse,
 } from '../types'
@@ -81,6 +83,39 @@ const tasks: Array<{
 
 const channels = ['MYBANK', 'BOC', 'WECHAT'] as const
 const paymentKinds = ['NORMAL', 'CASH', 'SUPPLEMENT'] as const
+const reviewRuleDefinitions: ReadonlyArray<{
+  rule_type: PayrollLegacyReviewRuleType
+  rule_id: string
+  label: string
+  default_name: string
+  default_severity: PayrollLegacyReviewRule['severity']
+  default_threshold_cents: number
+}> = [
+  {
+    rule_type: 'PAYMENT_CHANNEL_REQUIRED',
+    rule_id: 'review_payment_channel',
+    label: '发放渠道完整性',
+    default_name: '发放渠道必须确认',
+    default_severity: 'BLOCKING',
+    default_threshold_cents: 0,
+  },
+  {
+    rule_type: 'SUPPORTING_MATERIAL_REQUIRED',
+    rule_id: 'review_supporting_materials',
+    label: '辅助材料完整性',
+    default_name: '三类工资素材必须齐全',
+    default_severity: 'REVIEW',
+    default_threshold_cents: 0,
+  },
+  {
+    rule_type: 'HISTORY_CHANGE_REVIEW',
+    rule_id: 'review_history_change',
+    label: '跨月变化',
+    default_name: '相邻月份人员与工资变化',
+    default_severity: 'REVIEW',
+    default_threshold_cents: 1,
+  },
+]
 const evidenceSlotDefinitions: Array<{ evidence_type: PayrollLegacyEvidenceType; label: string }> = [
   ...Array.from({ length: 5 }, (_, index) => ({
     evidence_type: 'MYBANK_STATEMENT' as const,
@@ -102,6 +137,9 @@ const money = (cents: number) => new Intl.NumberFormat('zh-CN', {
 
 const isChannel = (value: string): value is PayrollLegacyEmployeeRule['payment_channel'] =>
   channels.includes(value as (typeof channels)[number])
+
+const reviewRuleDefinition = (type: PayrollLegacyReviewRuleType) =>
+  reviewRuleDefinitions.find((definition) => definition.rule_type === type)!
 
 const activeBatchFrom = (workspace: PayrollLegacyWorkspace | null, period?: string) =>
   workspace?.batches.find((batch) => batch.period === (period ?? workspace.active_period)) ?? null
@@ -182,6 +220,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
   const [supporting, setSupporting] = useState<Record<string, string>>({})
   const [adjustments, setAdjustments] = useState<PayrollLegacyAdjustment[]>([])
   const [rules, setRules] = useState<EditableRule[]>([])
+  const [reviewRules, setReviewRules] = useState<PayrollLegacyReviewRule[]>([])
   const [evidenceSlots, setEvidenceSlots] = useState<EvidenceSlot[]>(emptyEvidenceSlots)
   const [receipts, setReceipts] = useState<ReceiptInput[]>([])
   const [pendingDecisions, setPendingDecisions] = useState<Record<string, {
@@ -194,6 +233,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
     setWorkspace(nextWorkspace)
     setPeriod(nextPeriod)
     setRules(batch ? rulesFromBatch(nextWorkspace, batch) : [])
+    setReviewRules(nextWorkspace.rules.review_rules ?? [])
     setReceipts(batch ? receiptsFromBatch(batch) : [])
     setEvidenceSlots(batch ? evidenceSlotsFromBatch(batch) : emptyEvidenceSlots())
     setAdjustments(batch ? batch.adjustments.filter((item) => !item.source_pending_id) : [])
@@ -211,6 +251,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
       setWorkspace(null)
       setPeriod('')
       setRules([])
+      setReviewRules([])
       setReceipts([])
       setEvidenceSlots(emptyEvidenceSlots())
       setAdjustments([])
@@ -252,8 +293,8 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
         tone: 'error',
         text: status === 409
           ? '工作区已被更新，请刷新后重试'
-          : status === 422
-            ? '当前材料或填写内容未通过工资规则校验'
+          : error instanceof ApiError
+            ? error.message
             : '工资功能操作暂时未完成',
       })
     } finally {
@@ -285,10 +326,19 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
         job_group: rule.job_group,
         location: rule.location,
       })),
+      review_rules: reviewRules,
     })
   }
 
-  const rulesComplete = rules.length > 0 && rules.every(
+  const reviewRuleIds = new Set(reviewRules.map((rule) => rule.rule_id))
+  const reviewRuleTypes = new Set(reviewRules.map((rule) => rule.rule_type))
+  const reviewRulesComplete = reviewRuleIds.size === reviewRules.length &&
+    reviewRuleTypes.size === reviewRules.length && reviewRules.every((rule) => (
+      rule.name.trim() && Number.isSafeInteger(rule.threshold_cents) &&
+      rule.threshold_cents >= 0 &&
+      (rule.rule_type === 'HISTORY_CHANGE_REVIEW' || rule.threshold_cents === 0)
+    ))
+  const rulesComplete = reviewRulesComplete && rules.length > 0 && rules.every(
     (rule) => rule.payment_channel && rule.job_group.trim() && rule.location.trim(),
   )
   const evidenceRefs = evidenceSlots.map((item) => item.evidence_ref.trim())
@@ -307,6 +357,26 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
     setRules((current) => current.map((rule) => rule.employee_id === employeeId
       ? { ...rule, ...patch }
       : rule))
+  }
+
+  const updateReviewRule = (ruleId: string, patch: Partial<PayrollLegacyReviewRule>) => {
+    setReviewRules((current) => current.map((rule) => rule.rule_id === ruleId
+      ? { ...rule, ...patch }
+      : rule))
+  }
+  const addableReviewRule = reviewRuleDefinitions.find(
+    (definition) => !reviewRules.some((rule) => rule.rule_type === definition.rule_type),
+  )
+  const addReviewRule = () => {
+    if (!addableReviewRule) return
+    setReviewRules((current) => [...current, {
+      rule_id: addableReviewRule.rule_id,
+      name: addableReviewRule.default_name,
+      rule_type: addableReviewRule.rule_type,
+      enabled: true,
+      severity: addableReviewRule.default_severity,
+      threshold_cents: addableReviewRule.default_threshold_cents,
+    }])
   }
 
   const selectedMaterial = payrollSheets.find((material) => material.material_id === mainMaterialId)
@@ -445,7 +515,46 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
 
           {task === 'rules' && activeBatch ? (
             <div className="payroll-task-panel">
-              <div className="payroll-task-heading"><div><span>07</span><h3>编辑规则并重新计算</h3></div><p>空白地点、工种或发放渠道不会被系统猜测。</p></div>
+              <div className="payroll-task-heading"><div><span>07</span><h3>工资计算与审查规则</h3></div><p>规则保存后刷新仍会保留；停用或删除的审查规则不会参与下一次检查。</p></div>
+              <section className="payroll-review-rules" aria-labelledby="payroll-review-rules-heading">
+                <div className="payroll-review-rules-heading">
+                  <div><strong id="payroll-review-rules-heading">审查规则管理</strong><span>控制“检查规则与历史”实际执行的项目。</span></div>
+                  <button type="button" className="secondary" disabled={!addableReviewRule || busy} onClick={addReviewRule}>新增审查规则</button>
+                </div>
+                {reviewRules.length ? reviewRules.map((rule) => {
+                  const definition = reviewRuleDefinition(rule.rule_type)
+                  return (
+                    <article className="payroll-review-rule" data-enabled={rule.enabled} key={rule.rule_id}>
+                      <div className="payroll-review-rule-title">
+                        <strong>{definition.label}</strong>
+                        <span>{rule.enabled ? '已启用' : '已停用'}</span>
+                      </div>
+                      <label>
+                        <span>规则名称</span>
+                        <input aria-label={`${definition.label}规则名称`} value={rule.name} maxLength={120} onChange={(event) => updateReviewRule(rule.rule_id, { name: event.target.value })} />
+                      </label>
+                      <label>
+                        <span>提醒级别</span>
+                        <select aria-label={`${definition.label}提醒级别`} value={rule.severity} onChange={(event) => updateReviewRule(rule.rule_id, { severity: event.target.value as PayrollLegacyReviewRule['severity'] })}>
+                          <option value="REVIEW">需复核</option>
+                          <option value="BLOCKING">阻断</option>
+                        </select>
+                      </label>
+                      {rule.rule_type === 'HISTORY_CHANGE_REVIEW' ? (
+                        <label>
+                          <span>金额变化阈值（元）</span>
+                          <input aria-label="跨月变化金额变化阈值" type="number" min="0" step="0.01" value={(rule.threshold_cents / 100).toFixed(2)} onChange={(event) => updateReviewRule(rule.rule_id, { threshold_cents: Math.round(Number(event.target.value) * 100) })} />
+                        </label>
+                      ) : <span className="payroll-review-rule-scope">按当前工资表直接核对</span>}
+                      <div className="payroll-review-rule-actions">
+                        <button type="button" onClick={() => updateReviewRule(rule.rule_id, { enabled: !rule.enabled })}>{rule.enabled ? `停用 ${rule.name}` : `启用 ${rule.name}`}</button>
+                        <button type="button" className="danger" onClick={() => setReviewRules((current) => current.filter((item) => item.rule_id !== rule.rule_id))}>删除 {rule.name}</button>
+                      </div>
+                    </article>
+                  )
+                }) : <p className="payroll-empty-task">当前没有审查规则；可新增需要的检查项目。</p>}
+              </section>
+              <div className="payroll-rule-section-title"><strong>员工工资计算规则</strong><span>固定待遇、渠道和岗位信息会用于重新计算当前主表。</span></div>
               <div className="payroll-rule-table" role="table" aria-label="工资规则">
                 <div className="payroll-rule-row header" role="row">
                   <span>员工 / 账户</span><span>固定工资</span><span>固定津贴</span><span>渠道</span><span>类型</span><span>夜班标准</span><span>可休天数</span><span>工种</span><span>地点</span>
@@ -465,7 +574,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
                 ))}
               </div>
               <div className="payroll-main-total"><span>重新计算后实发合计</span><strong>{money(activeBatch.lines.reduce((sum, line) => sum + line.net_pay_cents, 0))}</strong></div>
-              <button type="button" className="primary" disabled={!rulesComplete || busy} onClick={saveRules}>保存规则并重新计算</button>
+              <button type="button" className="primary" disabled={!rulesComplete || busy} onClick={saveRules}>保存全部工资规则</button>
             </div>
           ) : null}
 
