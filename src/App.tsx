@@ -1529,14 +1529,15 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate }: {
   const personalSelection = selectPersonalFinanceEntries(candidates)
   const financialEntries = personalSelection.entries
   const unassignedEntries = personalSelection.unassignedEntries
-  const confirmedPendingPostingCount = financialEntries.length + unassignedEntries.length
-  const financialCandidates = financialEntries.map((entry) => entry.candidate)
-  const incomeMinor = financialEntries.reduce((total, entry) => total + Math.max(entry.cashflowMinor, 0), 0)
-  const expenseMinor = financialEntries.reduce((total, entry) => total + Math.abs(Math.min(entry.cashflowMinor, 0)), 0)
+  const testEntries = [...financialEntries, ...unassignedEntries]
+  const confirmedPendingPostingCount = testEntries.length
+  const financialCandidates = testEntries.map((entry) => entry.candidate)
+  const incomeMinor = testEntries.reduce((total, entry) => total + Math.max(entry.cashflowMinor, 0), 0)
+  const expenseMinor = testEntries.reduce((total, entry) => total + Math.abs(Math.min(entry.cashflowMinor, 0)), 0)
   const netMinor = incomeMinor - expenseMinor
   const evidenceCount = new Set(financialCandidates.flatMap((candidate) => candidate.evidence.map((evidence) => evidence.id))).size
 
-  const categoryTotals = financialEntries.reduce((totals, entry) => {
+  const categoryTotals = testEntries.reduce((totals, entry) => {
     const amountMinor = Math.abs(entry.cashflowMinor)
     if (amountMinor === 0) return totals
     const category = entry.candidate.category.trim() || '待分类'
@@ -1552,7 +1553,7 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate }: {
     }))
     .sort((left, right) => right.amountMinor - left.amountMinor || left.category.localeCompare(right.category, 'zh-CN'))
 
-  const monthlyTotals = financialEntries.reduce((totals, entry) => {
+  const monthlyTotals = testEntries.reduce((totals, entry) => {
     if (!entry.candidate.accountingMonth) return totals
     const current = totals.get(entry.candidate.accountingMonth) ?? { incomeMinor: 0, expenseMinor: 0 }
     if (entry.cashflowMinor >= 0) current.incomeMinor += entry.cashflowMinor
@@ -1570,7 +1571,7 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate }: {
       <PageHeader
         eyebrow="个人财务"
         title="完整个人财务对账"
-        description="区分已确认草稿、归属待校准与正式过账；所有数字均可回到原始材料。"
+        description="先把全部已确认且可识别的记录放入测试试算；归属待校准与正式过账仍严格分开。"
         action={<Button onClick={() => onNavigate('review')}><ListChecks size={17} />处理待审核</Button>}
       />
 
@@ -1603,9 +1604,9 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate }: {
       </section>
 
       <section className="metric-grid personal-finance-metrics" aria-label="个人财务收支概览">
-        <Metric primary label="草稿收入" value={currency.format(minorToMajor(incomeMinor))} detail={`${financialEntries.length} 条已确认个人收支（待入账）`} icon={<CloudArrowUp size={20} />} />
-        <Metric label="草稿支出" value={currency.format(minorToMajor(expenseMinor))} detail={`${financialEntries.filter((entry) => entry.cashflowMinor < 0).length} 条已确认个人支出（待入账）`} icon={<Bank size={20} />} />
-        <Metric label="草稿净额" value={currency.format(minorToMajor(netMinor))} detail="已确认个人收入减支出，尚未过账" icon={<ArrowsClockwise size={20} />} />
+        <Metric primary label="测试收入" value={currency.format(minorToMajor(incomeMinor))} detail={`${testEntries.filter((entry) => entry.cashflowMinor >= 0).length} 条已确认收入，含归属待校准`} icon={<CloudArrowUp size={20} />} />
+        <Metric label="测试支出" value={currency.format(minorToMajor(expenseMinor))} detail={`${testEntries.filter((entry) => entry.cashflowMinor < 0).length} 条已确认支出，含归属待校准`} icon={<Bank size={20} />} />
+        <Metric label="测试净额" value={currency.format(minorToMajor(netMinor))} detail="全量测试试算，尚未过账" icon={<ArrowsClockwise size={20} />} />
         <Metric label="原始材料" value={`${evidenceCount} 份`} detail="只计入本次汇总所依据的材料" icon={<FolderOpen size={20} />} />
       </section>
 
@@ -1618,11 +1619,11 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate }: {
       {unassignedEntries.length > 0 ? (
         <section className="panel personal-unassigned-panel" aria-label="个人财务归属待校准">
           <div className="panel-heading">
-            <div><h2>归属待校准</h2><p>这些记录以前靠营业单元名称识别而被整批隐藏；现在先如实列出，但不混入个人正式汇总。</p></div>
+            <div><h2>归属待校准</h2><p>以下记录全部展开并进入上方测试试算，但归属确认前不会进入个人正式账簿。</p></div>
             <Badge color="amber">{unassignedEntries.length} 条归属待校准</Badge>
           </div>
           <div className="personal-review-list">
-            {unassignedEntries.slice(0, 6).map((entry) => (
+            {unassignedEntries.map((entry) => (
               <button key={entry.candidate.id} onClick={() => onOpenCandidate(entry.candidate)} type="button">
                 <span><strong>{entry.candidate.shortId}</strong><small>{entry.candidate.businessUnit || '主体待校准'} · {entry.candidate.category} · {accountingMonthLabel(entry.candidate.accountingMonth)}</small></span>
                 <span>{entry.candidate.summary}</span>
@@ -1636,7 +1637,7 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate }: {
 
       <div className="personal-insight-grid">
         <section className="panel personal-category-panel">
-          <div className="panel-heading"><div><h2>分类占比</h2><p>按收入与支出的绝对金额计算</p></div></div>
+          <div className="panel-heading"><div><h2>测试分类占比</h2><p>按全部试算收入与支出的绝对金额计算</p></div></div>
           {categoryShares.length > 0 ? (
             <div className="personal-category-list">
               {categoryShares.map((item) => (
@@ -1650,7 +1651,7 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate }: {
         </section>
 
         <section className="panel personal-trend-panel">
-          <div className="panel-heading"><div><h2>月度趋势</h2><p>按已确认个人事实的归属月份汇总</p></div></div>
+          <div className="panel-heading"><div><h2>测试月度趋势</h2><p>按全部已确认试算记录的归属月份汇总</p></div></div>
           {latestTrend ? (
             <p className="personal-trend-summary">
               {accountingMonthLabel(latestTrend.month)}净额 {currency.format(minorToMajor(latestTrend.netMinor))}

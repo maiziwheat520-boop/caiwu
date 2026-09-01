@@ -2015,19 +2015,20 @@ describe('LedgerBridge Web API client', () => {
     expect(within(screen.getByRole('region', { name: '个人财务归属待校准' })).getByText('C-UNSC')).toBeInTheDocument()
     expect(screen.getByText('1 条归属待校准')).toBeInTheDocument()
     expect(within(review).getByText('C-PEND')).toBeInTheDocument()
-    expect(within(summary).getByText('¥100.00')).toBeInTheDocument()
+    expect(within(summary).getByText('¥5,100.00')).toBeInTheDocument()
     expect(within(summary).getByText('¥225.00')).toBeInTheDocument()
-    expect(within(summary).getByText('-¥125.00')).toBeInTheDocument()
-    expect(within(summary).getByText('3 条已确认个人收支（待入账）')).toBeInTheDocument()
+    expect(within(summary).getByText('¥4,875.00')).toBeInTheDocument()
+    expect(within(summary).getByText('2 条已确认收入，含归属待校准')).toBeInTheDocument()
+    expect(within(summary).getByText('2 条已确认支出，含归属待校准')).toBeInTheDocument()
     expect(screen.getByText('2 条不属于个人范围或状态未确认，未计入汇总')).toBeInTheDocument()
     expect(screen.getByText('2 条跨来源重复记录已合并')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '分类占比' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '测试分类占比' })).toBeInTheDocument()
     expect(screen.getByText('工资')).toBeInTheDocument()
-    expect(screen.getByText('61.5%')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '月度趋势' })).toBeInTheDocument()
+    expect(screen.getByText('97.7%')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '测试月度趋势' })).toBeInTheDocument()
     expect(screen.getByText('2026 年 8 月')).toBeInTheDocument()
     expect(screen.queryByText('公司收入')).not.toBeInTheDocument()
-    const categoryPanel = screen.getByRole('heading', { name: '分类占比' }).closest('section')
+    const categoryPanel = screen.getByRole('heading', { name: '测试分类占比' }).closest('section')
     expect(categoryPanel).not.toBeNull()
     expect(within(categoryPanel!).queryByText('待审核')).not.toBeInTheDocument()
   })
@@ -2092,8 +2093,32 @@ describe('LedgerBridge Web API client', () => {
 
     const summary = screen.getByRole('region', { name: '个人财务收支概览' })
     expect(within(summary).getByText('¥450.00')).toBeInTheDocument()
-    expect(within(summary).getByText('4 条已确认个人收支（待入账）')).toBeInTheDocument()
+    expect(within(summary).getByText('4 条已确认支出，含归属待校准')).toBeInTheDocument()
     expect(screen.getByText('2 条跨来源重复记录已合并')).toBeInTheDocument()
+  })
+
+  it('shows every confirmed unassigned record in the test view', async () => {
+    const unassignedCandidates = Array.from({ length: 7 }, (_, index): ApiCandidate => ({
+      ...candidates[3],
+      id: `candidate-unassigned-${index + 1}`,
+      short_id: `C-UA0${index + 1}`,
+      business_unit: '待归属',
+      business_unit_ref: '',
+      amount_minor: (index + 1) * 100,
+      accounting_month: '2026-08',
+      category: '转账',
+      category_code: 'TRANSFER',
+      summary: `中国银行 | 2026-08-${String(index + 1).padStart(2, '0')} | 收入 | 转账 | 对方${index + 1} | 借记卡 | 交易成功`,
+    }))
+    installFetch({ items: unassignedCandidates })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+
+    const unassigned = screen.getByRole('region', { name: '个人财务归属待校准' })
+    expect(within(unassigned).getByText('C-UA01')).toBeInTheDocument()
+    expect(within(unassigned).getByText('C-UA07')).toBeInTheDocument()
+    expect(screen.getByText('7 条归属待校准')).toBeInTheDocument()
   })
 
   it('groups ordinary transfers by counterparty and filters to the selected object', async () => {
@@ -2379,7 +2404,7 @@ describe('LedgerBridge Web API client', () => {
     installFetch({ originalReconciliationGate: projectionGate })
     const loadingView = renderApp()
     expect(await screen.findByRole('heading', { name: '收支与往来对账' })).toBeInTheDocument()
-    expect(screen.getByText('正在确认公司 / 门店范围')).toBeInTheDocument()
+    expect(screen.getByText('正在确认原表投影范围')).toBeInTheDocument()
     await act(async () => releaseProjection())
     expect(await screen.findByRole('region', { name: '收支与往来事项' })).toBeInTheDocument()
     loadingView.unmount()
