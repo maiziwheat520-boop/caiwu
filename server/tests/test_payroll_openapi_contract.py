@@ -212,6 +212,14 @@ class PayrollOpenApiContractTests(unittest.TestCase):
                 ),
             ),
             (
+                "/api/v1/payroll/legacy-workspace",
+                "PayrollLegacyWorkspaceEnvelope",
+                client.json(
+                    "GET",
+                    f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/legacy-features",
+                ),
+            ),
+            (
                 "/api/v1/payroll/dashboard",
                 "PayrollDashboardEnvelope",
                 client.json("GET", "/internal/v1/payroll/dashboard"),
@@ -245,6 +253,21 @@ class PayrollOpenApiContractTests(unittest.TestCase):
             headers={"Idempotency-Key": operation_id},
         )
         _validate(document, _component(document, "PayrollCommandResult"), command)
+
+        legacy_command = client.json(
+            "POST",
+            f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/legacy-features/commands",
+            body=json.dumps({
+                "action": "UPDATE_SUMMARY",
+                "expected_revision": 1,
+            }).encode("utf-8"),
+            headers={"Idempotency-Key": "30000000-0000-4000-8000-000000000003"},
+        )
+        _validate(
+            document,
+            _component(document, "PayrollLegacyCommandResult"),
+            legacy_command,
+        )
 
     def test_openapi_rejects_test_workspace_revision_above_javascript_safe_integer(self) -> None:
         document = OPENAPI_PATH.read_text(encoding="utf-8")

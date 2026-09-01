@@ -1,0 +1,225 @@
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { api, ApiError } from '../api'
+import type {
+  PayrollLegacyCommandResult,
+  PayrollLegacyWorkspace,
+  PayrollTestWorkspaceReadResponse,
+} from '../types'
+import { PayrollLegacyWorkbench } from './PayrollLegacyWorkbench'
+
+const testWorkspace: PayrollTestWorkspaceReadResponse = {
+  contract_version: 'ledgerbridge.payroll-test-workspace-read.v1',
+  entity_ref: '10000000-0000-4000-8000-000000000001',
+  company_id: 'company_live_hotel',
+  data: {
+    contract_version: '1.0.0',
+    schema_version: 'payroll-ledgerbridge-test-projection/v1',
+    data_scope: 'TEST_ONLY',
+    test_batch_id: 'payroll_history_through_2026_08',
+    company_id: 'company_live_hotel',
+    cutoff_date: '2026-08-31',
+    workspace_revision: 1,
+    projection_revision: 'a'.repeat(64),
+    etag: `"${'a'.repeat(64)}"`,
+    generated_at: '2026-09-01T00:00:00.000Z',
+    auto_test_ready: true,
+    payment_submission_supported: false,
+    payable: false,
+    submission_supported: false,
+    routing_counts: { auto_test: 1, review_required: 0, date_unknown: 0 },
+    materials: [{
+      company_id: 'company_live_hotel',
+      material_id: 'material_history_2026_08',
+      routing_status: 'AUTO_TEST',
+      period: '2026-08',
+      material_type: 'PAYROLL_SHEET',
+      payable: false,
+      submission_supported: false,
+    }],
+  },
+}
+
+const legacyWorkspace: PayrollLegacyWorkspace = {
+  schema_version: 'payroll-legacy-feature-workspace/v1',
+  data_scope: 'TEST_ONLY',
+  company_id: 'company_live_hotel',
+  test_batch_id: testWorkspace.data.test_batch_id,
+  revision: 1,
+  active_period: '2026-08',
+  rules: { revision: 0, employees: [] },
+  batches: [{
+    batch_id: 'payroll_history_through_2026_08_2026_08',
+    period: '2026-08',
+    revision: 1,
+    main_material_id: 'material_history_2026_08',
+    supporting_material_ids: {},
+    lines: [{
+      source_row: 4,
+      company_id: 'company_live_hotel',
+      employee_id: 'emp_preview_001',
+      employee_name: '示例员工甲',
+      account_id: 'acct_preview_001',
+      account_masked: '****0138',
+      payment_channel: 'MYBANK',
+      base_salary_cents: 500000,
+      allowance_cents: 30000,
+      bonus_cents: 20000,
+      deduction_cents: 5000,
+      social_insurance_cents: 18000,
+      housing_fund_cents: 12000,
+      individual_income_tax_cents: 15000,
+      gross_pay_cents: 550000,
+      net_pay_cents: 500000,
+      notes: '',
+    }],
+    adjustments: [],
+    source_exceptions: [],
+    drafts: [],
+    summary: null,
+    verification: null,
+    pending_items: [],
+    checks: null,
+  }],
+  audit_events: [{
+    sequence: 1,
+    action: 'payroll.main_filled',
+    period: '2026-08',
+    occurred_at: '2026-09-01T02:00:00.000Z',
+    reason: '受信工资表已进入网页测试主表',
+  }],
+  payment_submission_supported: false,
+  payable: false,
+  submission_supported: false,
+}
+
+const fillResult: PayrollLegacyCommandResult = {
+  contract_version: 'ledgerbridge.payroll-legacy-feature-command-result.v1',
+  entity_ref: testWorkspace.entity_ref,
+  company_id: testWorkspace.company_id,
+  action: 'payroll.test_workspace.legacy.command',
+  resource_ref: testWorkspace.data.test_batch_id,
+  replayed: false,
+  data: { action: 'FILL_MAIN', replayed: false, workspace: legacyWorkspace },
+}
+
+afterEach(() => vi.restoreAllMocks())
+
+describe('PayrollLegacyWorkbench', () => {
+  it('imports a real payroll sheet into a calculated persistent main table', async () => {
+    vi.spyOn(api, 'getPayrollLegacyWorkspace').mockRejectedValue(new ApiError('missing', 404))
+    vi.spyOn(api, 'runPayrollLegacyCommand').mockResolvedValue(fillResult)
+
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
+
+    expect(await screen.findByText('原工资软件工作台')).toBeInTheDocument()
+    expect(screen.getByLabelText('选择原工资表')).toHaveValue('material_history_2026_08')
+    fireEvent.click(screen.getByRole('button', { name: '导入主表并计算' }))
+
+    await waitFor(() => expect(api.runPayrollLegacyCommand).toHaveBeenCalledWith({
+      action: 'FILL_MAIN',
+      expectedRevision: 0,
+      payload: {
+        main_material_id: 'material_history_2026_08',
+        supporting_material_ids: {},
+        adjustments: [],
+      },
+      csrfToken: 'csrf-test',
+    }))
+    expect(await screen.findByRole('cell', { name: '示例员工甲' })).toBeInTheDocument()
+    expect(screen.getByText('工资主表已保存 · 版本 1')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '管理工资规则' }))
+    expect(screen.getByRole('button', { name: '保存规则并重新计算' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /付款|发薪|提交银行/ })).not.toBeInTheDocument()
+  })
+
+  it('reloads the saved main table and exposes all eight real feature actions', async () => {
+    vi.spyOn(api, 'getPayrollLegacyWorkspace').mockResolvedValue({
+      contract_version: 'ledgerbridge.payroll-legacy-feature-read.v1',
+      entity_ref: testWorkspace.entity_ref,
+      company_id: testWorkspace.company_id,
+      data: legacyWorkspace,
+    })
+
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
+
+    expect(await screen.findByText('工资主表已保存 · 版本 1')).toBeInTheDocument()
+    for (const name of [
+      '填入主表',
+      '生成正常代发草稿',
+      '生成补发代发草稿',
+      '更新工资汇总',
+      '检查上月待办',
+      '核对本月已发',
+      '管理工资规则',
+      '检查规则与历史',
+    ]) {
+      expect(screen.getByRole('button', { name })).toBeInTheDocument()
+    }
+  })
+
+  it('edits rules, recalculates, saves, and reloads the new workspace revision', async () => {
+    vi.spyOn(api, 'getPayrollLegacyWorkspace').mockResolvedValue({
+      contract_version: 'ledgerbridge.payroll-legacy-feature-read.v1',
+      entity_ref: testWorkspace.entity_ref,
+      company_id: testWorkspace.company_id,
+      data: legacyWorkspace,
+    })
+    const savedWorkspace: PayrollLegacyWorkspace = {
+      ...legacyWorkspace,
+      revision: 2,
+      rules: {
+        revision: 1,
+        employees: [{
+          employee_id: 'emp_preview_001',
+          fixed_base_salary_cents: 520000,
+          fixed_allowance_cents: 30000,
+          night_shift_rate_cents: 0,
+          rest_days: 4,
+          payment_channel: 'MYBANK',
+          payment_kind: 'NORMAL',
+          job_group: '客房',
+          location: '主楼',
+        }],
+      },
+      batches: legacyWorkspace.batches.map((batch) => ({ ...batch, revision: 2 })),
+    }
+    vi.spyOn(api, 'runPayrollLegacyCommand').mockResolvedValue({
+      ...fillResult,
+      data: { action: 'SAVE_RULES', replayed: false, workspace: savedWorkspace },
+    })
+
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
+
+    await screen.findByText('工资主表已保存 · 版本 1')
+    fireEvent.click(screen.getByRole('button', { name: '管理工资规则' }))
+    fireEvent.change(screen.getByLabelText('示例员工甲固定工资'), { target: { value: '5200.00' } })
+    fireEvent.change(screen.getByLabelText('示例员工甲可休天数'), { target: { value: '4' } })
+    fireEvent.change(screen.getByLabelText('示例员工甲工种'), { target: { value: '客房' } })
+    fireEvent.change(screen.getByLabelText('示例员工甲地点'), { target: { value: '主楼' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存规则并重新计算' }))
+
+    await waitFor(() => expect(api.runPayrollLegacyCommand).toHaveBeenCalledWith({
+      action: 'SAVE_RULES',
+      expectedRevision: 1,
+      payload: {
+        period: '2026-08',
+        employee_rules: [{
+          employee_id: 'emp_preview_001',
+          fixed_base_salary_cents: 520000,
+          fixed_allowance_cents: 30000,
+          night_shift_rate_cents: 0,
+          rest_days: 4,
+          payment_channel: 'MYBANK',
+          payment_kind: 'NORMAL',
+          job_group: '客房',
+          location: '主楼',
+        }],
+      },
+      csrfToken: 'csrf-test',
+    }))
+    expect(await screen.findByText('工资主表已保存 · 版本 2')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('已保存并重新读取最新工资工作区')
+  })
+})

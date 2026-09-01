@@ -12,9 +12,8 @@ import type {
   PayrollVerificationListData,
 } from '../types'
 import { ErrorState, LoadingState, PageHeader } from '../shared/PagePrimitives'
-import { PayrollFeatureHub } from './PayrollFeatureHub'
+import { PayrollLegacyWorkbench } from './PayrollLegacyWorkbench'
 import { PayrollTestWorkspaceActionsPanel } from './PayrollTestWorkspaceActionsPanel'
-import './payroll-feature-hub.css'
 
 const currency = new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY' })
 
@@ -219,13 +218,11 @@ export function PayrollWorkspacePage() {
         description="读取当前公司经过服务端隔离和脱敏的工资材料、批次与发放验证投影。"
       />
 
-      <PayrollFeatureHub
-        hasTestWorkspace={testWorkspace !== null}
-        liveDataReady={status?.data.live_data_ready === true}
-        canVerifyReceipts={canVerifyReceipts}
-      />
-
       {loading ? <LoadingState /> : error ? <ErrorState message={error} onRetry={loadPayroll} /> : null}
+
+      {!loading && !error && testWorkspace && csrfToken ? (
+        <PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken={csrfToken} />
+      ) : null}
 
       {!loading && !error && status && !status.data.live_data_ready ? (
         <>

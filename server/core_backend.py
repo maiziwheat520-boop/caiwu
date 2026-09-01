@@ -26,6 +26,7 @@ from urllib.request import (
 
 MAX_JSON_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_EVIDENCE_RESPONSE_BYTES = 128 * 1024 * 1024
+JSON_SAFE_INTEGER = 9_007_199_254_740_991
 SAFE_HEADER_VALUE = re.compile(r"^[\x21-\x7e]+$")
 EVIDENCE_UNLOCK_CORE_PATH = "/internal/v1/evidence/unlocks"
 EVIDENCE_UNLOCK_STATUSES = {"NOT_REQUIRED", "PASSWORD_REQUIRED", "UNLOCKED"}
@@ -880,6 +881,95 @@ class CoreBackedState:
             expected_material_id=material_id,
         )
         return payload
+
+    def payroll_legacy_workspace(
+        self,
+        session_token: str,
+        session_subject: str,
+    ) -> dict[str, object]:
+        if not self.payroll_test_workspace_enabled or self.payroll_test_batch_id is None:
+            raise CoreBackendError(404, _problem(404, "PAYROLL_TEST_WORKSPACE_DISABLED"))
+        path = (
+            f"{PAYROLL_TEST_WORKSPACES_CORE_PATH}/{self.payroll_test_batch_id}/legacy-features"
+        )
+        assertion = self._payroll_user_assertion(
+            session_token=session_token,
+            session_subject=session_subject,
+            action="payroll.test_workspace.legacy.read",
+            method="GET",
+            path=path,
+            body=b"",
+            resource_ref=self.payroll_test_batch_id,
+        )
+        payload = self.client.json(
+            "GET",
+            path,
+            headers={"X-LedgerBridge-User-Assertion": assertion},
+        )
+        _validate_payroll_legacy_workspace_payload(
+            payload,
+            expected_entity_ref=self.entity_ref,
+            expected_batch_id=self.payroll_test_batch_id,
+        )
+        return payload
+
+    def payroll_legacy_workspace_command(
+        self,
+        *,
+        session_token: str,
+        session_subject: str,
+        action: str,
+        expected_revision: int,
+        payload: dict[str, object],
+        idempotency_key: str,
+    ) -> tuple[int, dict[str, object]]:
+        if not self.payroll_test_workspace_enabled or self.payroll_test_batch_id is None:
+            return 404, _problem(404, "PAYROLL_TEST_WORKSPACE_DISABLED")
+        path = (
+            f"{PAYROLL_TEST_WORKSPACES_CORE_PATH}/{self.payroll_test_batch_id}"
+            "/legacy-features/commands"
+        )
+        request = {
+            "schema_version": "payroll-legacy-feature-command-request/v1",
+            "action": action,
+            "expected_revision": expected_revision,
+            "idempotency_key": idempotency_key,
+            "explicitly_confirmed": True,
+            "payload": payload,
+        }
+        body = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        assertion = self._payroll_user_assertion(
+            session_token=session_token,
+            session_subject=session_subject,
+            action="payroll.test_workspace.legacy.command",
+            method="POST",
+            path=path,
+            body=body,
+            resource_ref=self.payroll_test_batch_id,
+            expected_revision=expected_revision,
+            operation_id=idempotency_key,
+        )
+        try:
+            result = self.client.json(
+                "POST",
+                path,
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": idempotency_key,
+                    "X-LedgerBridge-User-Assertion": assertion,
+                },
+            )
+            _validate_payroll_legacy_command_payload(
+                result,
+                expected_entity_ref=self.entity_ref,
+                expected_batch_id=self.payroll_test_batch_id,
+                expected_action=action,
+                expected_revision=expected_revision,
+            )
+        except CoreBackendError as error:
+            return error.status, error.payload
+        return 200, result
 
     def _read_payroll_test_workspace(
         self,
@@ -2943,7 +3033,8 @@ def _validate_payroll_test_material_preview_payload(
     company_id = str(payload["company_id"])
     fields = {
         "schema_version", "data_scope", "test_batch_id", "company_id", "material_id",
-        "period", "status", "line_count", "total_net_pay_cents", "lines", "exceptions",
+        "period", "routing_status", "auto_batch_eligible", "status", "line_count",
+        "total_net_pay_cents", "lines", "exceptions",
         "payment_submission_supported", "payable", "submission_supported",
     }
     lines = data.get("lines")
@@ -2957,6 +3048,12 @@ def _validate_payroll_test_material_preview_payload(
         or data.get("material_id") != expected_material_id
         or not isinstance(data.get("period"), str)
         or PAYROLL_PERIOD.fullmatch(str(data["period"])) is None
+        or data.get("routing_status") not in {"AUTO_TEST", "REVIEW_REQUIRED"}
+        or type(data.get("auto_batch_eligible")) is not bool
+        or data.get("auto_batch_eligible") is not (
+            data.get("routing_status") == "AUTO_TEST"
+            and data.get("status") == "READY_FOR_REVIEW"
+        )
         or data.get("status") not in {"READY_FOR_REVIEW", "NEEDS_HUMAN_REVIEW"}
         or type(data.get("line_count")) is not int
         or int(data["line_count"]) < 0
@@ -2970,7 +3067,7 @@ def _validate_payroll_test_material_preview_payload(
     ):
         raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
     line_fields = {
-        "company_id", "employee_id", "employee_name", "account_id", "account_masked",
+        "source_row", "company_id", "employee_id", "employee_name", "account_id", "account_masked",
         "payment_channel", "base_salary_cents", "allowance_cents", "bonus_cents",
         "deduction_cents", "social_insurance_cents", "housing_fund_cents",
         "individual_income_tax_cents", "gross_pay_cents", "net_pay_cents", "notes",
@@ -2986,10 +3083,12 @@ def _validate_payroll_test_material_preview_payload(
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
         if (
             line.get("company_id") != company_id
+            or type(line.get("source_row")) is not int
+            or int(line["source_row"]) < 1
             or not _payroll_identifier(line.get("employee_id"))
             or not _payroll_identifier(line.get("account_id"))
             or not isinstance(line.get("account_masked"), str)
-            or re.fullmatch(r"\*{4}\d{4}", str(line["account_masked"])) is None
+            or re.fullmatch(r"\*{4}(?:\d{4}|\?{4})", str(line["account_masked"])) is None
             or not isinstance(line.get("employee_name"), str)
             or not 1 <= len(str(line["employee_name"])) <= 120
             or not isinstance(line.get("payment_channel"), str)
@@ -3034,6 +3133,221 @@ def _validate_payroll_test_material_preview_payload(
                 or not 0 <= int(exception[field]) <= 9_007_199_254_740_991
             ):
                 raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+
+def _validate_payroll_legacy_workspace_payload(
+    payload: dict[str, object],
+    *,
+    expected_entity_ref: str,
+    expected_batch_id: str,
+) -> None:
+    if (
+        set(payload) != {"contract_version", "entity_ref", "company_id", "data"}
+        or payload.get("contract_version") != "ledgerbridge.payroll-legacy-feature-read.v1"
+        or payload.get("entity_ref") != expected_entity_ref
+        or not _payroll_identifier(payload.get("company_id"))
+        or not isinstance(payload.get("data"), dict)
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    _validate_payroll_legacy_workspace_data(
+        payload["data"],
+        expected_company_id=str(payload["company_id"]),
+        expected_batch_id=expected_batch_id,
+    )
+
+
+def _validate_payroll_legacy_workspace_data(
+    data: object,
+    *,
+    expected_company_id: str,
+    expected_batch_id: str,
+) -> None:
+    fields = {
+        "schema_version",
+        "data_scope",
+        "company_id",
+        "test_batch_id",
+        "revision",
+        "active_period",
+        "rules",
+        "batches",
+        "audit_events",
+        "payment_submission_supported",
+        "payable",
+        "submission_supported",
+    }
+    if not isinstance(data, dict) or set(data) != fields:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    revision = data.get("revision")
+    active_period = data.get("active_period")
+    rules = data.get("rules")
+    batches = data.get("batches")
+    events = data.get("audit_events")
+    if any(data.get(field) is not False for field in (
+        "payment_submission_supported", "payable", "submission_supported"
+    )):
+        raise CoreBackendError(503, _problem(503, "PAYROLL_PAYMENT_MODE_NOT_ALLOWED"))
+    if (
+        data.get("schema_version") != "payroll-legacy-feature-workspace/v1"
+        or data.get("data_scope") != "TEST_ONLY"
+        or data.get("company_id") != expected_company_id
+        or data.get("test_batch_id") != expected_batch_id
+        or type(revision) is not int
+        or not 1 <= int(revision) <= JSON_SAFE_INTEGER
+        or not isinstance(active_period, str)
+        or PAYROLL_PERIOD.fullmatch(active_period) is None
+        or not isinstance(rules, dict)
+        or set(rules) != {"revision", "employees"}
+        or type(rules.get("revision")) is not int
+        or not 0 <= int(rules["revision"]) <= JSON_SAFE_INTEGER
+        or not isinstance(rules.get("employees"), list)
+        or not isinstance(batches, list)
+        or not batches
+        or not isinstance(events, list)
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    batch_fields = {
+        "batch_id",
+        "period",
+        "revision",
+        "main_material_id",
+        "supporting_material_ids",
+        "lines",
+        "adjustments",
+        "source_exceptions",
+        "drafts",
+        "summary",
+        "verification",
+        "pending_items",
+        "checks",
+    }
+    periods: set[str] = set()
+    for batch in batches:
+        if not isinstance(batch, dict) or set(batch) != batch_fields:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        period = batch.get("period")
+        lines = batch.get("lines")
+        supporting = batch.get("supporting_material_ids")
+        if (
+            not _payroll_identifier(batch.get("batch_id"))
+            or not isinstance(period, str)
+            or PAYROLL_PERIOD.fullmatch(period) is None
+            or period in periods
+            or type(batch.get("revision")) is not int
+            or not 1 <= int(batch["revision"]) <= JSON_SAFE_INTEGER
+            or not _payroll_identifier(batch.get("main_material_id"))
+            or not isinstance(supporting, dict)
+            or any(not _payroll_identifier(item) for item in supporting.values())
+            or not isinstance(lines, list)
+            or not lines
+            or any(not isinstance(batch.get(field), list) for field in (
+                "adjustments", "source_exceptions", "drafts", "pending_items"
+            ))
+            or any(
+                batch.get(field) is not None and not isinstance(batch.get(field), dict)
+                for field in ("summary", "verification", "checks")
+            )
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        periods.add(period)
+        for line in lines:
+            if (
+                not isinstance(line, dict)
+                or line.get("company_id") != expected_company_id
+                or not _payroll_identifier(line.get("employee_id"))
+                or not _payroll_identifier(line.get("account_id"))
+                or sum(character.isdigit() for character in str(line.get("account_id"))) >= 12
+                or not isinstance(line.get("account_masked"), str)
+                or re.fullmatch(r"\*{4}(?:\d{4}|\?{4})", str(line["account_masked"])) is None
+                or type(line.get("source_row")) is not int
+                or int(line["source_row"]) < 1
+            ):
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    if active_period not in periods:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    for sequence, event in enumerate(events, start=1):
+        if not isinstance(event, dict) or event.get("sequence") != sequence:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    _reject_unsafe_legacy_payroll_values(data, expected_company_id, expected_batch_id)
+
+
+def _reject_unsafe_legacy_payroll_values(
+    value: object,
+    expected_company_id: str,
+    expected_batch_id: str,
+) -> None:
+    pending = [value]
+    forbidden_keys = {
+        "filename", "file_name", "file_path", "filepath", "source_path", "local_path",
+        "account_number", "bank_account", "raw_account", "bytes", "raw_bytes",
+    }
+    while pending:
+        item = pending.pop()
+        if type(item) is float:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        if type(item) is int and not -JSON_SAFE_INTEGER <= item <= JSON_SAFE_INTEGER:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        if isinstance(item, dict):
+            if any(str(key).lower() in forbidden_keys for key in item):
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+            for key, nested in item.items():
+                if key in PAYROLL_SAFETY_FLAGS and nested is not False:
+                    raise CoreBackendError(
+                        503, _problem(503, "PAYROLL_PAYMENT_MODE_NOT_ALLOWED")
+                    )
+                if key == "company_id" and nested != expected_company_id:
+                    raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+                if key == "test_batch_id" and nested != expected_batch_id:
+                    raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+                if key.endswith(("_cents", "_minor")) and type(nested) is not int:
+                    raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+                pending.append(nested)
+        elif isinstance(item, list):
+            pending.extend(item)
+
+
+def _validate_payroll_legacy_command_payload(
+    payload: dict[str, object],
+    *,
+    expected_entity_ref: str,
+    expected_batch_id: str,
+    expected_action: str,
+    expected_revision: int,
+) -> None:
+    fields = {
+        "contract_version",
+        "entity_ref",
+        "company_id",
+        "action",
+        "resource_ref",
+        "replayed",
+        "data",
+    }
+    data = payload.get("data")
+    if (
+        set(payload) != fields
+        or payload.get("contract_version")
+        != "ledgerbridge.payroll-legacy-feature-command-result.v1"
+        or payload.get("entity_ref") != expected_entity_ref
+        or not _payroll_identifier(payload.get("company_id"))
+        or payload.get("action") != "payroll.test_workspace.legacy.command"
+        or payload.get("resource_ref") != expected_batch_id
+        or type(payload.get("replayed")) is not bool
+        or not isinstance(data, dict)
+        or set(data) != {"action", "replayed", "workspace"}
+        or data.get("action") != expected_action
+        or data.get("replayed") != payload.get("replayed")
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    workspace = data.get("workspace")
+    _validate_payroll_legacy_workspace_data(
+        workspace,
+        expected_company_id=str(payload["company_id"]),
+        expected_batch_id=expected_batch_id,
+    )
+    assert isinstance(workspace, dict)
+    if workspace.get("revision") != expected_revision + 1:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
 
 
 def _payroll_test_workspace_read_from_create(

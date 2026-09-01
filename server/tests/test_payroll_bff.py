@@ -70,6 +70,7 @@ class FakePayrollCoreClient:
         self.test_workspace_data_updates: dict[str, object] = {}
         self.test_workspace_command_data_updates: dict[str, object] = {}
         self.test_material_preview_updates: dict[str, object] = {}
+        self.legacy_workspace_updates: dict[str, object] = {}
 
     def test_workspace_projection(self) -> dict[str, object]:
         data: dict[str, object] = {
@@ -124,6 +125,62 @@ class FakePayrollCoreClient:
         }
         set_test_projection_revision(data)
         data.update(self.test_workspace_data_updates)
+        return data
+
+    def legacy_workspace(self) -> dict[str, object]:
+        data: dict[str, object] = {
+            "schema_version": "payroll-legacy-feature-workspace/v1",
+            "data_scope": "TEST_ONLY",
+            "company_id": "company_live_hotel",
+            "test_batch_id": TEST_BATCH_ID,
+            "revision": 1,
+            "active_period": "2026-08",
+            "rules": {"revision": 0, "employees": []},
+            "batches": [{
+                "batch_id": f"{TEST_BATCH_ID}_2026_08",
+                "period": "2026-08",
+                "revision": 1,
+                "main_material_id": "material_history_2026_08",
+                "supporting_material_ids": {},
+                "lines": [{
+                    "source_row": 4,
+                    "company_id": "company_live_hotel",
+                    "employee_id": "emp_preview_001",
+                    "employee_name": "示例员工甲",
+                    "account_id": "acct_preview_001",
+                    "account_masked": "****0138",
+                    "payment_channel": "MYBANK",
+                    "base_salary_cents": 500000,
+                    "allowance_cents": 30000,
+                    "bonus_cents": 20000,
+                    "deduction_cents": 5000,
+                    "social_insurance_cents": 18000,
+                    "housing_fund_cents": 12000,
+                    "individual_income_tax_cents": 15000,
+                    "gross_pay_cents": 550000,
+                    "net_pay_cents": 500000,
+                    "notes": "脱敏测试材料",
+                }],
+                "adjustments": [],
+                "source_exceptions": [],
+                "drafts": [],
+                "summary": None,
+                "verification": None,
+                "pending_items": [],
+                "checks": None,
+            }],
+            "audit_events": [{
+                "sequence": 1,
+                "action": "payroll.main_filled",
+                "period": "2026-08",
+                "occurred_at": "2026-09-01T02:00:00.000Z",
+                "reason": "受信工资表已进入网页测试主表",
+            }],
+            "payment_submission_supported": False,
+            "payable": False,
+            "submission_supported": False,
+        }
+        data.update(self.legacy_workspace_updates)
         return data
 
     def json(
@@ -222,6 +279,27 @@ class FakePayrollCoreClient:
                     "replayed": False,
                 },
             }
+        if (
+            method == "POST"
+            and path
+            == f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/legacy-features/commands"
+        ):
+            request = json.loads(body or b"{}")
+            workspace = self.legacy_workspace()
+            workspace["revision"] = request["expected_revision"] + 1
+            return {
+                "contract_version": "ledgerbridge.payroll-legacy-feature-command-result.v1",
+                "entity_ref": ENTITY_ID,
+                "company_id": "company_live_hotel",
+                "action": "payroll.test_workspace.legacy.command",
+                "resource_ref": TEST_BATCH_ID,
+                "replayed": False,
+                "data": {
+                    "action": request["action"],
+                    "replayed": False,
+                    "workspace": workspace,
+                },
+            }
         if method == "POST" and path.startswith("/internal/v1/payroll/"):
             action = path.rsplit("/", 1)[-1]
             resource_ref = path.split("/")[-2]
@@ -286,10 +364,13 @@ class FakePayrollCoreClient:
                     "company_id": "company_live_hotel",
                     "material_id": "material_history_2026_08",
                     "period": "2026-08",
+                    "routing_status": "AUTO_TEST",
+                    "auto_batch_eligible": True,
                     "status": "READY_FOR_REVIEW",
                     "line_count": 1,
-                    "total_net_pay_cents": 512000,
+                    "total_net_pay_cents": 500000,
                     "lines": [{
+                        "source_row": 4,
                         "company_id": "company_live_hotel",
                         "employee_id": "emp_preview_001",
                         "employee_name": "示例员工甲",
@@ -304,7 +385,7 @@ class FakePayrollCoreClient:
                         "housing_fund_cents": 12000,
                         "individual_income_tax_cents": 15000,
                         "gross_pay_cents": 550000,
-                        "net_pay_cents": 512000,
+                        "net_pay_cents": 500000,
                         "notes": "脱敏测试材料",
                     }],
                     "exceptions": [],
@@ -328,6 +409,13 @@ class FakePayrollCoreClient:
                     "entity_ref": self.response_entity_ref,
                     "company_id": "company_live_hotel",
                     "data": data,
+                }
+            if path == f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/legacy-features":
+                return {
+                    "contract_version": "ledgerbridge.payroll-legacy-feature-read.v1",
+                    "entity_ref": self.response_entity_ref,
+                    "company_id": "company_live_hotel",
+                    "data": self.legacy_workspace(),
                 }
             if path == "/internal/v1/payroll/status":
                 data = {
@@ -804,6 +892,66 @@ class PayrollBffTests(unittest.TestCase):
         )
         self.assertEqual(organize_claims["action"], "payroll.test_workspace.organize")
         self.assertEqual(organize_claims["resource_ref"], "material_date_unknown")
+
+    def test_legacy_feature_workspace_fills_and_reloads_through_request_bound_bff(self) -> None:
+        read_request = urllib.request.Request(
+            (
+                f"http://127.0.0.1:{self.server.server_port}"
+                "/api/v1/payroll/legacy-workspace"
+            ),
+            headers={"Cookie": f"{COOKIE_NAME}=session-token"},
+        )
+        with urllib.request.urlopen(read_request, timeout=2) as response:
+            read_payload = json.load(response)
+        self.assertEqual(read_payload["data"]["revision"], 1)
+        self.assertFalse(read_payload["data"]["payable"])
+
+        status, command = self.post_payroll(
+            "/api/v1/payroll/legacy-workspace/commands",
+            {
+                "action": "FILL_MAIN",
+                "expected_revision": 1,
+                "payload": {
+                    "main_material_id": "material_history_2026_08",
+                    "supporting_material_ids": {},
+                    "adjustments": [],
+                },
+            },
+            idempotency_key="70000000-0000-4000-8000-000000000021",
+        )
+        self.assertEqual(status, 200, command)
+        self.assertEqual(command["data"]["workspace"]["revision"], 2)
+        self.assertFalse(command["data"]["workspace"]["submission_supported"])
+        method, path, body, headers = self.client.calls[-1]
+        self.assertEqual(method, "POST")
+        self.assertEqual(
+            path,
+            f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/legacy-features/commands",
+        )
+        provider_request = json.loads(body or b"{}")
+        self.assertEqual(
+            set(provider_request),
+            {
+                "schema_version",
+                "action",
+                "expected_revision",
+                "idempotency_key",
+                "explicitly_confirmed",
+                "payload",
+            },
+        )
+        _, encoded, _ = headers["X-LedgerBridge-User-Assertion"].split(".")
+        claims = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        self.assertEqual(claims["action"], "payroll.test_workspace.legacy.command")
+        self.assertEqual(claims["resource_ref"], TEST_BATCH_ID)
+        self.assertEqual(claims["expected_revision"], 1)
+
+    def test_legacy_feature_workspace_rejects_payment_mode_drift(self) -> None:
+        state = build_state(self.client, payroll_test_workspace_enabled=True)
+        self.client.legacy_workspace_updates = {"payable": True}
+        with self.assertRaises(CoreBackendError) as raised:
+            state.payroll_legacy_workspace("session-token", "ledgerbridge-owner")
+        self.assertEqual(raised.exception.payload["code"], "PAYROLL_PAYMENT_MODE_NOT_ALLOWED")
 
     def test_test_workspace_command_rejects_payment_mode_drift(self) -> None:
         self.client.test_workspace_command_data_updates = {"payable": True}

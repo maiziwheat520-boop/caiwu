@@ -71,6 +71,18 @@ PAYROLL_TEST_MATERIAL_PREVIEW_PATH = re.compile(
     r"([A-Za-z0-9][A-Za-z0-9._-]{0,127})/preview$"
 )
 PAYROLL_TEST_VALIDATE_PATH = "/api/v1/payroll/test-workspace/validate"
+PAYROLL_LEGACY_WORKSPACE_PATH = "/api/v1/payroll/legacy-workspace"
+PAYROLL_LEGACY_COMMAND_PATH = "/api/v1/payroll/legacy-workspace/commands"
+PAYROLL_LEGACY_ACTIONS = {
+    "FILL_MAIN",
+    "GENERATE_NORMAL_DRAFT",
+    "GENERATE_SUPPLEMENTAL_DRAFT",
+    "UPDATE_SUMMARY",
+    "SAVE_RULES",
+    "CHECK_RULES_AND_HISTORY",
+    "VERIFY_CURRENT_PAID",
+    "CHECK_PREVIOUS_PENDING",
+}
 MAX_REQUEST_BYTES = 64 * 1024
 JSON_SAFE_INTEGER = 9_007_199_254_740_991
 STATUSES = {"INCOMPLETE", "PENDING", "CONFLICTED", "CONFIRMED", "IGNORED", "SUPERSEDED"}
@@ -978,6 +990,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         payroll_reads = {
             "/api/v1/payroll/status": "payroll_status",
             "/api/v1/payroll/test-workspace": "payroll_test_workspace",
+            PAYROLL_LEGACY_WORKSPACE_PATH: "payroll_legacy_workspace",
             "/api/v1/payroll/dashboard": "payroll_dashboard",
             "/api/v1/payroll/materials": "payroll_materials",
             "/api/v1/payroll/batches": "payroll_batches",
@@ -1402,6 +1415,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         payroll_batch_command = PAYROLL_BATCH_COMMAND_PATH.fullmatch(path)
         payroll_test_organize = PAYROLL_TEST_MATERIAL_ORGANIZE_PATH.fullmatch(path)
         payroll_test_validate = path == PAYROLL_TEST_VALIDATE_PATH
+        payroll_legacy_command = path == PAYROLL_LEGACY_COMMAND_PATH
         if (
             decision_match is None
             and classification_batch_match is None
@@ -1410,6 +1424,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             and payroll_batch_command is None
             and payroll_test_organize is None
             and not payroll_test_validate
+            and not payroll_legacy_command
         ):
             self._send_json(404 if path.startswith("/api/") else 405, _problem(404 if path.startswith("/api/") else 405, "API_ROUTE_NOT_FOUND" if path.startswith("/api/") else "METHOD_NOT_ALLOWED", "路径不接受该请求"))
             return
@@ -1444,6 +1459,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             payroll_batch_command is not None
             or payroll_test_organize is not None
             or payroll_test_validate
+            or payroll_legacy_command
         ):
             payroll_identity = self._payroll_session_identity()
             if payroll_identity is None:
@@ -1458,6 +1474,56 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             return
         request = self._read_json_object()
         if request is None:
+            return
+        if payroll_legacy_command:
+            if payroll_identity is None:
+                self._send_json(401, _problem(401, "AUTH_REQUIRED", "需要登录"))
+                return
+            if not bool(
+                getattr(self.preview_server.state, "payroll_test_workspace_enabled", False)
+            ):
+                self._send_json(
+                    404,
+                    _problem(404, "PAYROLL_TEST_WORKSPACE_DISABLED", "工资功能工作区未启用"),
+                )
+                return
+            if set(request) != {"action", "expected_revision", "payload"}:
+                self._send_json(
+                    422,
+                    _problem(422, "INVALID_PAYROLL_LEGACY_COMMAND", "工资功能请求字段无效"),
+                )
+                return
+            action = request.get("action")
+            expected_revision = request.get("expected_revision")
+            command_payload = request.get("payload")
+            if (
+                action not in PAYROLL_LEGACY_ACTIONS
+                or isinstance(expected_revision, bool)
+                or not isinstance(expected_revision, int)
+                or not 0 <= expected_revision <= JSON_SAFE_INTEGER
+                or not isinstance(command_payload, dict)
+            ):
+                self._send_json(
+                    422,
+                    _problem(422, "INVALID_PAYROLL_LEGACY_COMMAND", "工资功能动作或版本无效"),
+                )
+                return
+            if not hasattr(self.preview_server.state, "payroll_legacy_workspace_command"):
+                self._send_json(
+                    503,
+                    _problem(503, "PAYROLL_TEST_COMMAND_UNAVAILABLE", "工资功能写入尚未配置"),
+                )
+                return
+            session_token, session_subject = payroll_identity
+            status, payload = self.preview_server.state.payroll_legacy_workspace_command(
+                session_token=session_token,
+                session_subject=session_subject,
+                action=str(action),
+                expected_revision=expected_revision,
+                payload=command_payload,
+                idempotency_key=idempotency_key.lower(),
+            )
+            self._send_json(status, payload)
             return
         if payroll_test_organize is not None or payroll_test_validate:
             if payroll_identity is None:

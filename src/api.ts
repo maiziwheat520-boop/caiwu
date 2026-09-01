@@ -31,6 +31,9 @@ import type {
   PayrollTestBatchValidationResult,
   PayrollTestMaterialType,
   PayrollTestMaterialPreviewResponse,
+  PayrollLegacyAction,
+  PayrollLegacyCommandResult,
+  PayrollLegacyWorkspaceReadResponse,
   Problem,
   Reconciliation,
   ReviewEvent,
@@ -413,6 +416,28 @@ export const api = {
 
   getPayrollTestWorkspace: () =>
     requestJson<PayrollTestWorkspaceReadResponse>('/api/v1/payroll/test-workspace'),
+
+  getPayrollLegacyWorkspace: () =>
+    requestJson<PayrollLegacyWorkspaceReadResponse>('/api/v1/payroll/legacy-workspace'),
+
+  runPayrollLegacyCommand: ({ action, expectedRevision, payload, csrfToken }: {
+    action: PayrollLegacyAction
+    expectedRevision: number
+    payload: Record<string, unknown>
+    csrfToken: string
+  }) => requestJson<PayrollLegacyCommandResult>('/api/v1/payroll/legacy-workspace/commands', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': createOperationId(),
+      'X-CSRF-Token': csrfToken,
+    },
+    body: JSON.stringify({
+      action,
+      expected_revision: expectedRevision,
+      payload,
+    }),
+  }),
 
   previewPayrollTestMaterial: (materialId: string) =>
     requestJson<PayrollTestMaterialPreviewResponse>(
