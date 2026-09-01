@@ -2135,7 +2135,7 @@ describe('LedgerBridge Web API client', () => {
 
     renderApp()
 
-    expect(await screen.findByRole('heading', { name: '演示公司' })).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: '演示公司 财务汇总' })).toBeInTheDocument()
     expect(screen.getAllByText('¥8,000.00').length).toBeGreaterThan(0)
     expect(screen.getAllByText('¥2,350.00').length).toBeGreaterThan(0)
     expect(screen.getAllByText('¥5,650.00').length).toBeGreaterThan(0)
@@ -2153,7 +2153,7 @@ describe('LedgerBridge Web API client', () => {
 
     renderApp()
 
-    expect(await screen.findByRole('heading', { name: '演示公司' })).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: '演示公司 财务汇总' })).toBeInTheDocument()
     expect(screen.getByText('61 条已确认来源待账户或经济性质归属')).toBeInTheDocument()
     expect(screen.getByText('146 条来源待审核')).toBeInTheDocument()
     expect(screen.getAllByText('¥0.00').length).toBeGreaterThanOrEqual(3)
@@ -2169,7 +2169,7 @@ describe('LedgerBridge Web API client', () => {
 
     renderApp()
 
-    expect(await screen.findByRole('heading', { name: '演示公司' })).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: '演示公司 财务汇总' })).toBeInTheDocument()
     expect(screen.getByText('已确认来源 61 条')).toBeInTheDocument()
     const formalTotals = screen.getByRole('region', { name: '演示公司 正式财务总额' })
     expect(within(formalTotals).getAllByText('待接正式账簿')).toHaveLength(3)
@@ -2235,7 +2235,7 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.getByText('当前 Core 只返回一个通用公司主体，已导入数据尚未分配到各家公司；下方汇总不代表公司报表已完整。')).toBeInTheDocument()
   })
 
-  it('renders every authoritative company independently without the generic attribution warning', async () => {
+  it('switches between every authoritative company without the generic attribution warning', async () => {
     window.history.replaceState({}, '', '/company-reports')
     const reports = companyReports(true)
     reports.layers.forEach((layer) => {
@@ -2250,8 +2250,12 @@ describe('LedgerBridge Web API client', () => {
 
     renderApp()
 
-    expect(await screen.findByRole('heading', { name: '薇旭公司' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '景怡公司' })).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: '薇旭公司 财务汇总' })).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox', { name: '选择公司' }), {
+      target: { value: '20000000-0000-4000-8000-000000000002' },
+    })
+    expect(screen.getByRole('region', { name: '景怡公司 财务汇总' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '薇旭公司 财务汇总' })).not.toBeInTheDocument()
     expect(screen.queryByText('待完成公司归属')).not.toBeInTheDocument()
   })
 
@@ -2276,7 +2280,7 @@ describe('LedgerBridge Web API client', () => {
 
     renderApp()
 
-    expect(await screen.findByRole('heading', { name: '演示公司' })).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: '演示公司 财务汇总' })).toBeInTheDocument()
     expect(screen.getByText('账户流水的业务单元归属待补；公司级现金流仍保留。')).toBeInTheDocument()
     expect(screen.getByText('历史业务单元快照缺失；未使用当前维度名称回填。')).toBeInTheDocument()
     expect(screen.queryByText('演示门店')).not.toBeInTheDocument()

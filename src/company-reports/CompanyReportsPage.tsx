@@ -4,7 +4,10 @@ import { Bank, Database, Info, Warning } from '@phosphor-icons/react'
 import { api, minorToMajor } from '../api'
 import type {
   CompanyReportAggregate,
+  CompanyReportCategoryComposition,
+  CompanyReportCategorySlice,
   CompanyReportCompany,
+  CompanyReportCompositionItem,
   CompanyReportLayer,
   CompanyReportMonth,
   CompanyReportsResponse,
@@ -15,12 +18,20 @@ export function CompanyReportsPage() {
   const [reports, setReports] = useState<CompanyReportsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [selectedCompanyRef, setSelectedCompanyRef] = useState('')
+  const [basis, setBasis] = useState<'CONFIRMED_CANDIDATE' | 'POSTED_LEDGER'>('CONFIRMED_CANDIDATE')
+  const [fromMonth, setFromMonth] = useState('')
+  const [toMonth, setToMonth] = useState('')
+  const [appliedRange, setAppliedRange] = useState<{ fromMonth: string; toMonth: string } | null>(null)
 
   const loadReports = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      setReports(await api.getCompanyReports())
+      const response = await api.getCompanyReports(appliedRange ?? {})
+      setReports(response)
+      setFromMonth(response.from_month)
+      setToMonth(response.to_month)
     } catch (loadError) {
       setReports(null)
       const detail = loadError instanceof Error ? loadError.message : '公司报表暂不可用'
@@ -28,7 +39,7 @@ export function CompanyReportsPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [appliedRange])
 
   useEffect(() => {
     const loadTimer = window.setTimeout(() => void loadReports(), 0)
@@ -60,10 +71,62 @@ export function CompanyReportsPage() {
     }
   }))
 
+  const companies = [...companyIndex.entries()]
+  const activeCompanyRef = companyIndex.has(selectedCompanyRef)
+    ? selectedCompanyRef
+    : companies[0]?.[0] ?? ''
+  const activeCompany = companyIndex.get(activeCompanyRef)
+  const activeComposition = compositionFor(reports, basis, activeCompanyRef)
+  const activeReport = companyFor(layerFor(reports.layers, basis), activeCompanyRef)
+  const dashboard = dashboardSummary(basis, activeReport, activeComposition)
+  const rangeInvalid = !isReportMonth(fromMonth)
+    || !isReportMonth(toMonth)
+    || fromMonth > toMonth
+    || monthDistance(fromMonth, toMonth) >= 24
+
+  const toolbar = (
+    <section className="company-report-toolbar" aria-label="报表筛选">
+      <label>
+        <span>公司</span>
+        <select
+          aria-label="选择公司"
+          value={activeCompanyRef}
+          disabled={companies.length === 0}
+          onChange={(event) => setSelectedCompanyRef(event.target.value)}
+        >
+          {companies.map(([companyRef, identity]) => (
+            <option key={companyRef} value={companyRef}>{identity.name}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <span>开始月份</span>
+        <input aria-label="开始月份" type="month" value={fromMonth} onChange={(event) => setFromMonth(event.target.value)} />
+      </label>
+      <label>
+        <span>结束月份</span>
+        <input aria-label="结束月份" type="month" value={toMonth} onChange={(event) => setToMonth(event.target.value)} />
+      </label>
+      <button
+        type="button"
+        className="primary-button company-report-apply"
+        disabled={rangeInvalid}
+        onClick={() => setAppliedRange({ fromMonth, toMonth })}
+      >
+        应用期间
+      </button>
+      <button type="button" className="secondary-button" onClick={() => void loadReports()}>
+        重新加载
+      </button>
+      {rangeInvalid ? <p role="alert">请选择不超过 24 个月的有效月份范围。</p> : null}
+    </section>
+  )
+
   if (companyIndex.size === 0) {
     return (
       <>
         {header}
+        {toolbar}
         <section className="empty-state company-report-empty">
           <Database size={34} weight="light" />
           <h2>当前期间没有可展示的公司报表</h2>
@@ -78,6 +141,7 @@ export function CompanyReportsPage() {
   return (
     <>
       {header}
+      {toolbar}
       <section className="company-report-basis-note" aria-label="公司报表口径说明">
         <Info size={18} />
         <div>
@@ -94,8 +158,52 @@ export function CompanyReportsPage() {
           </div>
         </section>
       ) : null}
+      <section className="company-financial-dashboard" aria-label={`${activeCompany?.name ?? '公司'} 财务汇总`}>
+        <header className="company-dashboard-header">
+          <div>
+            <span className="eyebrow">{reports.from_month} 至 {reports.to_month}</span>
+            <h2>{activeCompany?.name}</h2>
+            <p>{basis === 'CONFIRMED_CANDIDATE' ? '测试口径：按已确认候选金额正负统计，未正式入账。' : '正式口径：仅统计已过账账本。'}</p>
+          </div>
+          <div className="company-basis-switch" role="group" aria-label="汇总口径">
+            <button
+              type="button"
+              aria-pressed={basis === 'CONFIRMED_CANDIDATE'}
+              className={basis === 'CONFIRMED_CANDIDATE' ? 'active' : ''}
+              onClick={() => setBasis('CONFIRMED_CANDIDATE')}
+            >测试口径</button>
+            <button
+              type="button"
+              aria-pressed={basis === 'POSTED_LEDGER'}
+              className={basis === 'POSTED_LEDGER' ? 'active' : ''}
+              onClick={() => setBasis('POSTED_LEDGER')}
+            >正式账簿</button>
+          </div>
+        </header>
+        <div className="company-dashboard-totals">
+          <ReportTotal label="总收入" value={dashboard.available ? reportMoney(dashboard.incomeMinor, activeCompany?.currencyCode ?? 'CNY') : '待接正式账簿'} />
+          <ReportTotal label="总支出" value={dashboard.available ? reportMoney(dashboard.expenseMinor, activeCompany?.currencyCode ?? 'CNY') : '待接正式账簿'} />
+          <ReportTotal label="净额" value={dashboard.available ? reportMoney(dashboard.netMinor, activeCompany?.currencyCode ?? 'CNY') : '待接正式账簿'} emphasis />
+        </div>
+        <div className="company-composition-grid">
+          <CategoryShareChart
+            title="收入类型占比"
+            composition={dashboard.incomeComposition}
+            currencyCode={activeCompany?.currencyCode ?? 'CNY'}
+            tone="income"
+            unavailable={!dashboard.available}
+          />
+          <CategoryShareChart
+            title="支出类型占比"
+            composition={dashboard.expenseComposition}
+            currencyCode={activeCompany?.currencyCode ?? 'CNY'}
+            tone="expense"
+            unavailable={!dashboard.available}
+          />
+        </div>
+      </section>
       <div className="company-report-list">
-        {[...companyIndex.entries()].map(([companyRef, identity]) => (
+        {activeCompany ? [[activeCompanyRef, activeCompany] as const].map(([companyRef, identity]) => (
           <CompanyReportCard
             key={companyRef}
             companyRef={companyRef}
@@ -104,9 +212,120 @@ export function CompanyReportsPage() {
             postedLedgerStatus={reports.posted_ledger_status}
             layers={reports.layers}
           />
-        ))}
+        )) : null}
       </div>
     </>
+  )
+}
+
+function monthDistance(fromMonth: string, toMonth: string) {
+  const [fromYear, fromValue] = fromMonth.split('-').map(Number)
+  const [toYear, toValue] = toMonth.split('-').map(Number)
+  return (toYear * 12 + toValue) - (fromYear * 12 + fromValue)
+}
+
+function isReportMonth(value: string) {
+  return /^\d{4}-(0[1-9]|1[0-2])$/.test(value)
+}
+
+function compositionFor(
+  reports: CompanyReportsResponse,
+  basis: 'CONFIRMED_CANDIDATE' | 'POSTED_LEDGER',
+  companyRef: string,
+) {
+  return reports.compositions
+    ?.find((layer) => layer.basis === basis)
+    ?.items.find((item) => item.company_ref === companyRef)
+}
+
+function dashboardSummary(
+  basis: 'CONFIRMED_CANDIDATE' | 'POSTED_LEDGER',
+  report: CompanyReportCompany | undefined,
+  composition: CompanyReportCompositionItem | undefined,
+) {
+  if (basis === 'CONFIRMED_CANDIDATE') {
+    const metrics = confirmedMetrics(report)
+    return {
+      available: metrics !== null,
+      incomeMinor: metrics?.confirmed_positive_minor ?? 0,
+      expenseMinor: Math.abs(metrics?.confirmed_negative_minor ?? 0),
+      netMinor: metrics?.confirmed_net_minor ?? 0,
+      incomeComposition: composition?.basis === basis ? composition.positive : undefined,
+      expenseComposition: composition?.basis === basis ? composition.negative : undefined,
+    }
+  }
+  const metrics = postedMetrics(report)
+  return {
+    available: metrics !== null,
+    incomeMinor: metrics?.revenue_minor ?? 0,
+    expenseMinor: metrics?.expense_minor ?? 0,
+    netMinor: metrics?.profit_minor ?? 0,
+    incomeComposition: composition?.basis === basis ? composition.revenue : undefined,
+    expenseComposition: composition?.basis === basis ? composition.expense : undefined,
+  }
+}
+
+function visibleCategorySlices(composition: CompanyReportCategoryComposition) {
+  if (composition.items.length <= 8) return composition.items
+  const visible = composition.items.slice(0, 7)
+  const remainder = composition.items.slice(7)
+  return [
+    ...visible,
+    {
+      category_code: 'OTHER_AGGREGATED',
+      category_label: '其他类型',
+      amount_minor: remainder.reduce((total, item) => total + item.amount_minor, 0),
+      fact_count: remainder.reduce((total, item) => total + item.fact_count, 0),
+    },
+  ]
+}
+
+function CategoryShareChart({ title, composition, currencyCode, tone, unavailable }: {
+  title: string
+  composition: CompanyReportCategoryComposition | undefined
+  currencyCode: string
+  tone: 'income' | 'expense'
+  unavailable: boolean
+}) {
+  const items = composition ? visibleCategorySlices(composition) : []
+  return (
+    <section className={`company-category-card ${tone}`} aria-label={title}>
+      <header><h3>{title}</h3><span>{composition?.fact_count ?? 0} 条</span></header>
+      {unavailable ? (
+        <p className="company-category-empty">正式账簿尚未接入，未显示任何 0 值。</p>
+      ) : items.length === 0 || !composition ? (
+        <p className="company-category-empty">当前期间没有可展示的类型金额。</p>
+      ) : (
+        <div className="company-category-list">
+          {items.map((item) => (
+            <CategoryShareRow
+              key={`${item.category_code ?? 'unclassified'}:${item.category_label ?? ''}`}
+              item={item}
+              totalMinor={composition.total_minor}
+              currencyCode={currencyCode}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function CategoryShareRow({ item, totalMinor, currencyCode }: {
+  item: CompanyReportCategorySlice
+  totalMinor: number
+  currencyCode: string
+}) {
+  const percentage = totalMinor > 0 ? item.amount_minor / totalMinor * 100 : 0
+  const label = item.category_label ?? '未分类'
+  return (
+    <div className="company-category-row">
+      <div className="company-category-label"><strong>{label}</strong><span>{percentage.toFixed(1)}%</span></div>
+      <div className="company-category-track" role="img" aria-label={`${label} ${percentage.toFixed(1)}%`}>
+        <span style={{ width: `${percentage}%` }} />
+      </div>
+      <div className="company-category-value"><strong>{reportMoney(item.amount_minor, currencyCode)}</strong><span>{item.fact_count} 条</span></div>
+    </div>
   )
 }
 

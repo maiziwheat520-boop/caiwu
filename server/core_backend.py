@@ -542,7 +542,8 @@ class CoreBackedState:
         }
 
     def company_reports(self, from_month: str, to_month: str) -> dict[str, object]:
-        layers = []
+        layers: list[dict[str, object]] = []
+        compositions: list[dict[str, object]] = []
         posted_ledger_status = "AVAILABLE"
         for basis in _COMPANY_REPORT_BASES:
             query = urlencode(
@@ -571,12 +572,39 @@ class CoreBackedState:
                 )
             )
         _validate_company_report_layer_identities(layers)
+        layer_by_basis = {str(layer["basis"]): layer for layer in layers}
+        for basis in _COMPANY_REPORT_COMPOSITION_BASES:
+            if basis == "POSTED_LEDGER" and posted_ledger_status == "UNAVAILABLE":
+                continue
+            query = urlencode(
+                {
+                    "from_month": from_month,
+                    "to_month": to_month,
+                    "basis": basis,
+                }
+            )
+            payload = self.client.json(
+                "GET",
+                f"/internal/v1/company-report-composition?{query}",
+            )
+            composition = _company_report_composition_from_core(
+                payload,
+                basis,
+                from_month,
+                to_month,
+            )
+            _validate_company_report_composition_against_layer(
+                composition,
+                layer_by_basis[basis],
+            )
+            compositions.append(composition)
         return {
-            "contract_version": "ledgerbridge.company-reports-bff.v1",
+            "contract_version": "ledgerbridge.company-reports-bff.v2",
             "from_month": from_month,
             "to_month": to_month,
             "posted_ledger_status": posted_ledger_status,
             "layers": layers,
+            "compositions": compositions,
         }
 
     def append_decision(
@@ -1751,6 +1779,10 @@ _COMPANY_REPORT_BASES = (
     "ACCOUNT_STATEMENT",
     "POSTED_LEDGER",
 )
+_COMPANY_REPORT_COMPOSITION_BASES = (
+    "CONFIRMED_CANDIDATE",
+    "POSTED_LEDGER",
+)
 _COMPANY_REPORT_ROLLUP_FIELDS = {
     "metrics",
     "pending_review_count",
@@ -1810,6 +1842,188 @@ def _validate_company_report_layer_identities(
             expected_company_refs = seen
         elif seen != expected_company_refs:
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+
+
+def _company_report_composition_from_core(
+    value: dict[str, object],
+    basis: str,
+    from_month: str,
+    to_month: str,
+) -> dict[str, object]:
+    _company_report_require_exact_keys(
+        value,
+        {"contract_version", "basis", "from_month", "to_month", "items"},
+    )
+    items = value.get("items")
+    if (
+        value.get("contract_version")
+        != "ledgerbridge.company-report-composition.v1"
+        or basis not in _COMPANY_REPORT_COMPOSITION_BASES
+        or value.get("basis") != basis
+        or value.get("from_month") != from_month
+        or value.get("to_month") != to_month
+        or not isinstance(items, list)
+        or len(items) > 50
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    mapped_items = [
+        _company_report_composition_item_from_core(item, basis)
+        for item in items
+    ]
+    _company_report_require_stable_unique(mapped_items, "company_ref")
+    return {
+        "contract_version": "ledgerbridge.company-report-composition.v1",
+        "basis": basis,
+        "from_month": from_month,
+        "to_month": to_month,
+        "items": mapped_items,
+    }
+
+
+def _company_report_composition_item_from_core(
+    value: object,
+    basis: str,
+) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    composition_fields = (
+        ("positive", "negative")
+        if basis == "CONFIRMED_CANDIDATE"
+        else ("revenue", "expense")
+    )
+    _company_report_require_exact_keys(
+        value,
+        {
+            "company_ref",
+            "company_name",
+            "currency",
+            "basis",
+            *composition_fields,
+        },
+    )
+    if value.get("basis") != basis:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    return {
+        "company_ref": _company_report_uuid(value.get("company_ref")),
+        "company_name": _company_report_text(value.get("company_name"), maximum=200),
+        "currency": _company_report_text(
+            value.get("currency"),
+            maximum=3,
+            pattern=_COMPANY_REPORT_CURRENCY,
+        ),
+        "basis": basis,
+        **{
+            field: _company_report_category_composition_from_core(value.get(field))
+            for field in composition_fields
+        },
+    }
+
+
+def _company_report_category_composition_from_core(
+    value: object,
+) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    _company_report_require_exact_keys(value, {"total_minor", "fact_count", "items"})
+    items = value.get("items")
+    if not isinstance(items, list) or len(items) > 100:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    total_minor = _company_report_integer(value.get("total_minor"), nonnegative=True)
+    fact_count = _company_report_integer(value.get("fact_count"), nonnegative=True)
+    mapped_items = [_company_report_category_slice_from_core(item) for item in items]
+    identities = [
+        (item["category_code"], item["category_label"])
+        for item in mapped_items
+    ]
+    ordered = sorted(
+        mapped_items,
+        key=lambda item: (
+            -int(item["amount_minor"]),
+            item["category_code"] is None,
+            str(item["category_code"] or ""),
+            str(item["category_label"] or ""),
+        ),
+    )
+    if (
+        len(identities) != len(set(identities))
+        or mapped_items != ordered
+        or sum(int(item["amount_minor"]) for item in mapped_items) != total_minor
+        or sum(int(item["fact_count"]) for item in mapped_items) != fact_count
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    return {
+        "total_minor": total_minor,
+        "fact_count": fact_count,
+        "items": mapped_items,
+    }
+
+
+def _company_report_category_slice_from_core(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    _company_report_require_exact_keys(
+        value,
+        {"category_code", "category_label", "amount_minor", "fact_count"},
+    )
+    category_code = value.get("category_code")
+    category_label = value.get("category_label")
+    if (category_code is None) != (category_label is None):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    if category_code is not None:
+        category_code = _company_report_text(category_code, maximum=100)
+        category_label = _company_report_text(category_label, maximum=200)
+    amount_minor = _company_report_integer(value.get("amount_minor"), nonnegative=True)
+    fact_count = _company_report_integer(value.get("fact_count"), nonnegative=True)
+    if amount_minor == 0 or fact_count == 0:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    return {
+        "category_code": category_code,
+        "category_label": category_label,
+        "amount_minor": amount_minor,
+        "fact_count": fact_count,
+    }
+
+
+def _validate_company_report_composition_against_layer(
+    composition: dict[str, object],
+    layer: dict[str, object],
+) -> None:
+    composition_items = composition["items"]
+    layer_items = layer["items"]
+    if not isinstance(composition_items, list) or not isinstance(layer_items, list):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    composition_by_ref = {
+        str(item["company_ref"]): item for item in composition_items
+    }
+    layer_by_ref = {str(item["company_ref"]): item for item in layer_items}
+    if set(composition_by_ref) != set(layer_by_ref):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    basis = str(composition["basis"])
+    for company_ref, item in composition_by_ref.items():
+        report = layer_by_ref[company_ref]
+        if (
+            item["company_name"] != report["company_name"]
+            or item["currency"] != report["currency"]
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        metrics = report["metrics"]
+        if not isinstance(metrics, dict):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        expected_totals = (
+            (
+                ("positive", metrics["confirmed_positive_minor"]),
+                ("negative", -int(metrics["confirmed_negative_minor"])),
+            )
+            if basis == "CONFIRMED_CANDIDATE"
+            else (
+                ("revenue", metrics["revenue_minor"]),
+                ("expense", metrics["expense_minor"]),
+            )
+        )
+        for field, expected_total in expected_totals:
+            category = item[field]
+            if not isinstance(category, dict) or category["total_minor"] != expected_total:
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
 
 
 def _company_report_layer_from_core(

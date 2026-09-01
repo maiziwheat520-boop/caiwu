@@ -488,6 +488,16 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
 .compact-empty { min-height: 210px; border: 0; border-radius: 0; }
 
 .company-report-empty { min-height: 360px; }
+.company-report-toolbar { display: grid; grid-template-columns: minmax(220px, 1.5fr) repeat(2, minmax(145px, .7fr)) auto auto; align-items: end; gap: 10px; margin-bottom: 16px; padding: 15px; border: 1px solid #dce4ee; border-radius: 13px; background: white; box-shadow: var(--shadow); }
+.company-report-toolbar label { display: grid; gap: 6px; }
+.company-report-toolbar label > span { color: #61718a; font-size: 10px; font-weight: 750; }
+.company-report-toolbar select, .company-report-toolbar input { width: 100%; min-height: 38px; padding: 0 11px; border: 1px solid #cfd9e6; border-radius: 8px; color: #243953; background: white; font: inherit; font-size: 12px; }
+.company-report-toolbar button { min-height: 38px; padding: 0 14px; border: 1px solid #c9d5e5; border-radius: 8px; color: #3f5775; background: #f8fafc; font: inherit; font-size: 11px; font-weight: 750; cursor: pointer; }
+.company-report-toolbar button:hover { border-color: #9fb4cf; background: #f0f5fb; }
+.company-report-toolbar button:disabled { cursor: not-allowed; opacity: .5; }
+.company-report-toolbar .company-report-apply { border-color: #285f9f; color: white; background: #285f9f; }
+.company-report-toolbar .company-report-apply:hover { background: #204f86; }
+.company-report-toolbar > p { grid-column: 1 / -1; margin: 0; color: #9b6510; font-size: 10px; }
 .company-report-basis-note { display: flex; align-items: flex-start; gap: 11px; margin-bottom: 18px; padding: 14px 16px; border: 1px solid #bfd2ee; border-radius: 12px; color: #315d9c; background: #f3f8ff; }
 .company-report-basis-note svg { flex: 0 0 auto; margin-top: 1px; }
 .company-report-basis-note strong, .company-report-basis-note span { display: block; }
@@ -498,6 +508,37 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
 .company-attribution-warning strong, .company-attribution-warning span { display: block; }
 .company-attribution-warning strong { color: #87570a; font-size: 13px; }
 .company-attribution-warning span { margin-top: 4px; color: #7f6a45; font-size: 10px; line-height: 1.55; }
+.company-financial-dashboard { margin-bottom: 18px; overflow: hidden; border: 1px solid #d8e1ec; border-radius: 16px; background: white; box-shadow: var(--shadow); }
+.company-dashboard-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 20px 22px 16px; border-bottom: 1px solid #e6ebf1; }
+.company-dashboard-header h2 { margin: 2px 0 0; color: #17263f; font-size: 22px; }
+.company-dashboard-header p { margin: 6px 0 0; color: #6a7a90; font-size: 10px; }
+.company-basis-switch { display: inline-flex; padding: 3px; border: 1px solid #d5deea; border-radius: 9px; background: #f6f8fb; }
+.company-basis-switch button { min-height: 31px; padding: 0 12px; border: 0; border-radius: 6px; color: #62748c; background: transparent; font: inherit; font-size: 10px; font-weight: 750; cursor: pointer; }
+.company-basis-switch button.active { color: white; background: #2b5f9f; box-shadow: 0 2px 6px rgb(31 74 127 / 20%); }
+.company-dashboard-totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: #dde5ef; }
+.company-dashboard-totals > div { padding: 18px 22px; background: #fbfcfe; }
+.company-dashboard-totals > div.emphasis { background: #f0f6ff; }
+.company-dashboard-totals span, .company-dashboard-totals strong { display: block; }
+.company-dashboard-totals span { color: #687991; font-size: 10px; font-weight: 750; }
+.company-dashboard-totals strong { margin-top: 8px; color: #193552; font-size: 23px; font-variant-numeric: tabular-nums; }
+.company-composition-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 18px; border-top: 1px solid #e8edf3; }
+.company-category-card { min-width: 0; padding: 16px; border: 1px solid #e0e6ee; border-radius: 12px; background: #fbfcfe; }
+.company-category-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 15px; }
+.company-category-card h3 { margin: 0; color: #2a3e58; font-size: 13px; }
+.company-category-card > header > span { color: #74849a; font-size: 9px; }
+.company-category-list { display: grid; gap: 13px; }
+.company-category-row { display: grid; grid-template-columns: minmax(0, 1fr) 92px; gap: 6px 12px; }
+.company-category-label { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; }
+.company-category-label strong { overflow: hidden; color: #43556d; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.company-category-label span, .company-category-value span { color: #7b899b; font-size: 9px; font-variant-numeric: tabular-nums; }
+.company-category-track { grid-column: 1; height: 7px; overflow: hidden; border-radius: 5px; background: #e8edf3; }
+.company-category-track span { display: block; height: 100%; min-width: 2px; border-radius: inherit; background: #3977bd; }
+.company-category-card.expense .company-category-track span { background: #d39a37; }
+.company-category-value { grid-row: 1 / span 2; grid-column: 2; align-self: center; text-align: right; }
+.company-category-value strong, .company-category-value span { display: block; }
+.company-category-value strong { color: #344861; font-size: 10px; font-variant-numeric: tabular-nums; }
+.company-category-value span { margin-top: 3px; }
+.company-category-empty { min-height: 82px; margin: 0; padding: 28px 12px; color: #78879a; background: #f6f8fb; font-size: 10px; text-align: center; }
 .company-report-list { display: grid; gap: 18px; }
 .company-report-card { padding: 22px; border: 1px solid var(--line); border-radius: 16px; background: white; box-shadow: var(--shadow); }
 .company-report-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 17px; }
@@ -601,6 +642,8 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .connection-card { min-height: auto; }
   .connection-card > p { min-height: auto; }
   .company-report-layers { grid-template-columns: 1fr; }
+  .company-report-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .company-report-toolbar label:first-child { grid-column: 1 / -1; }
   .original-reconciliation-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .personal-finance-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .personal-insight-grid { grid-template-columns: 1fr; }
@@ -615,7 +658,11 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .account-label { display: none; }
   .content { padding: 48px 16px 38px; }
   .notice { margin: 40px 16px -29px; }
-  .company-report-totals, .company-month-totals, .company-test-totals { grid-template-columns: 1fr; }
+  .company-report-toolbar, .company-composition-grid, .company-dashboard-totals, .company-report-totals, .company-month-totals, .company-test-totals { grid-template-columns: 1fr; }
+  .company-report-toolbar label:first-child { grid-column: auto; }
+  .company-dashboard-header { display: grid; }
+  .company-basis-switch { width: 100%; }
+  .company-basis-switch button { flex: 1; }
   .company-business-units > article { grid-template-columns: 1fr; }
   .bottom-nav { position: fixed; inset: auto 0 0; z-index: 30; display: grid; grid-auto-columns: minmax(76px, 1fr); grid-auto-flow: column; min-height: calc(68px + env(safe-area-inset-bottom)); overflow-x: auto; padding: 7px 5px max(7px, env(safe-area-inset-bottom)); border-top: 1px solid #dce2ea; background: rgb(255 255 255 / 96%); backdrop-filter: blur(14px); }
   .bottom-nav button { display: grid; place-items: center; gap: 2px; padding: 0; border: 0; color: #596b83; background: transparent; font-size: 9px; font-weight: 650; }

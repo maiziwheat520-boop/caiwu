@@ -272,7 +272,13 @@ export const api = {
 
   getSession: () => requestJson<Session>('/api/v1/session'),
 
-  getCompanyReports: () => requestJson<CompanyReportsResponse>('/api/v1/company-reports'),
+  getCompanyReports: ({ fromMonth, toMonth }: { fromMonth?: string; toMonth?: string } = {}) => {
+    const query = new URLSearchParams()
+    if (fromMonth) query.set('from_month', fromMonth)
+    if (toMonth) query.set('to_month', toMonth)
+    const suffix = query.size > 0 ? `?${query.toString()}` : ''
+    return requestJson<CompanyReportsResponse>(`/api/v1/company-reports${suffix}`)
+  },
 
   listCandidates: ({ status, cursor }: { status?: string; cursor?: string } = {}) => {
     const query = new URLSearchParams()
