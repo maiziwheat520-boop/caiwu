@@ -141,8 +141,7 @@ def test_restored_artifacts_are_owned_and_readable_by_runtime_uid(
 
     assert digest == hashlib.sha256(b"restored").hexdigest()
     assert any(
-        command[-4:] == ["chown", "-R", "10001:10001", "/target"]
-        and "CHOWN" in command
+        command[-4:] == ["chown", "-R", "10001:10001", "/target"] and "CHOWN" in command
         for command in commands
     )
     assert any(
@@ -175,6 +174,12 @@ def test_mybank_restore_inventory_accepts_current_integrated_schema_revision() -
     inventory = _cutover_inventory(schema_revision="20260901_0027")
 
     assert inventory.schema_revision == "20260901_0027"
+
+
+def test_bank_statement_restore_inventory_accepts_boc_abc_profile_revision() -> None:
+    inventory = _cutover_inventory(schema_revision="20260902_0031")
+
+    assert inventory.schema_revision == "20260902_0031"
 
 
 def test_account_registry_privilege_probe_uses_catalog_function_oid() -> None:
@@ -2977,9 +2982,7 @@ def test_r1_0030_sibling_does_not_require_0029_multi_scope_reader() -> None:
         for item in function_privileges
         if item.get("name") != "list_candidates_for_scopes_as_of"
     ]
-    schema_privileges = cast(
-        list[dict[str, object]], metadata["r1_effective_schema_privileges"]
-    )
+    schema_privileges = cast(list[dict[str, object]], metadata["r1_effective_schema_privileges"])
     metadata["r1_effective_schema_privileges"] = [
         {**item, "usage": True}
         if item.get("role") == "ledgerbridge_api" and item.get("schema") == "internal_read"

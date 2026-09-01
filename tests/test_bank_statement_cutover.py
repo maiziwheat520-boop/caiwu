@@ -184,7 +184,7 @@ def test_generic_existing_account_runner_keeps_evidence_and_registry_zero_delta(
     receipt = runner.run(
         plan,
         gates=BankStatementCutoverGates(
-            schema_revision="20260902_0030",
+            schema_revision="20260902_0031",
             backup_verified=True,
             isolated_restore_verified=True,
             rollback_ready=True,
@@ -316,9 +316,7 @@ def test_generic_command_binds_preflight_receipt_before_production(
                 **common,
                 "LEDGERBRIDGE_ENV": "production",
                 "LEDGERBRIDGE_BANK_STATEMENT_DATABASE_TARGET": "production",
-                "LEDGERBRIDGE_BANK_STATEMENT_PRODUCTION_EXECUTION": (
-                    "execute-reviewed-cutover-v1"
-                ),
+                "LEDGERBRIDGE_BANK_STATEMENT_PRODUCTION_EXECUTION": ("execute-reviewed-cutover-v1"),
             },
             executor=execute,
         )
@@ -422,6 +420,7 @@ def test_database_ccb_existing_account_create_replay_and_conflict(
         boundary.commit_publication()
 
         with engine.begin() as connection:
+
             def append_audit(
                 action: str,
                 payload: dict[str, object],
@@ -534,7 +533,7 @@ def test_database_ccb_existing_account_create_replay_and_conflict(
 
         before = _read_production_counts(engine)
         gates = BankStatementCutoverGates(
-            schema_revision="20260902_0030",
+            schema_revision="20260902_0031",
             backup_verified=True,
             isolated_restore_verified=True,
             rollback_ready=True,
@@ -544,7 +543,7 @@ def test_database_ccb_existing_account_create_replay_and_conflict(
         proof = _safety_proof(
             tmp_path,
             before,
-            schema_revision="20260902_0030",
+            schema_revision="20260902_0031",
         )
         preflight = run_transactional_database_bank_statement_existing_account_import(
             engine,

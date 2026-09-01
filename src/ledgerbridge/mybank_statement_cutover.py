@@ -64,6 +64,7 @@ _SUPPORTED_SCHEMA_REVISIONS = frozenset(
         "20260901_0028",
         "20260901_0029",
         "20260902_0030",
+        "20260902_0031",
     }
 )
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -231,9 +232,7 @@ class MyBankExistingAccountStatementPlan:
         return self.expected_owner_kind
 
 
-ExistingAccountStatementPlan = (
-    MyBankExistingAccountStatementPlan | BankStatementExistingAccountPlan
-)
+ExistingAccountStatementPlan = MyBankExistingAccountStatementPlan | BankStatementExistingAccountPlan
 
 
 def _is_existing_account_plan(plan: object) -> TypeGuard[ExistingAccountStatementPlan]:
@@ -275,8 +274,7 @@ def _require_existing_plan_statement(
 def _statement_display_name(statement: BankStatement) -> str:
     spec = parser_spec(statement.parser_profile)
     return (
-        f"{statement.institution_code}-statement-"
-        f"{statement.statement_ref}{spec.display_extension}"
+        f"{statement.institution_code}-statement-{statement.statement_ref}{spec.display_extension}"
     )
 
 
