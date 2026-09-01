@@ -104,9 +104,9 @@ class FakePayrollCoreClient:
             "payable": False,
             "submission_supported": False,
             "routing_counts": {
-                "auto_test": 1,
-                "review_required": 1,
-                "date_unknown": 1,
+                "auto_test": 4,
+                "review_required": 0,
+                "date_unknown": 0,
             },
             "materials": [
                 {
@@ -120,19 +120,28 @@ class FakePayrollCoreClient:
                 },
                 {
                     "company_id": "company_live_hotel",
-                    "material_id": "material_review_2026_09",
-                    "routing_status": "REVIEW_REQUIRED",
-                    "period": "2026-09",
-                    "material_type": "PAYROLL_SHEET",
+                    "material_id": "material_attendance",
+                    "routing_status": "AUTO_TEST",
+                    "period": "2026-07",
+                    "material_type": "ATTENDANCE_SHEET",
                     "payable": False,
                     "submission_supported": False,
                 },
                 {
                     "company_id": "company_live_hotel",
-                    "material_id": "material_date_unknown",
-                    "routing_status": "DATE_UNKNOWN",
+                    "material_id": "material_aunt_attendance",
+                    "routing_status": "AUTO_TEST",
+                    "period": "2026-08",
+                    "material_type": "AUNT_ATTENDANCE_SHEET",
+                    "payable": False,
+                    "submission_supported": False,
+                },
+                {
+                    "company_id": "company_live_hotel",
+                    "material_id": "material_authoritative_summary",
+                    "routing_status": "AUTO_TEST",
                     "period": None,
-                    "material_type": None,
+                    "material_type": "PAYROLL_SUMMARY",
                     "payable": False,
                     "submission_supported": False,
                 },
@@ -225,7 +234,7 @@ class FakePayrollCoreClient:
             and path
             == (
                 f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/materials/"
-                "material_date_unknown/organize"
+                "material_attendance/organize"
             )
         ):
             request = json.loads(body or b"{}")
@@ -238,7 +247,7 @@ class FakePayrollCoreClient:
                 "projection_revision": "a" * 64,
                 "material": {
                     "company_id": "company_live_hotel",
-                    "material_id": "material_date_unknown",
+                    "material_id": "material_attendance",
                     "routing_status": "AUTO_TEST",
                     "period": request["period"],
                     "material_type": request["material_type"],
@@ -256,7 +265,7 @@ class FakePayrollCoreClient:
                 "entity_ref": ENTITY_ID,
                 "company_id": "company_live_hotel",
                 "action": "payroll.test_workspace.organize",
-                "resource_ref": "material_date_unknown",
+                "resource_ref": "material_attendance",
                 "replayed": False,
                 "data": data,
             }
@@ -384,7 +393,7 @@ class FakePayrollCoreClient:
                         "test_batch_id": TEST_BATCH_ID,
                         "company_id": "company_live_hotel",
                         "material_id": "material_authoritative_summary",
-                        "routing_status": "DATE_UNKNOWN",
+                        "routing_status": "AUTO_TEST",
                         "source_of_truth": "PAYROLL_SUMMARY",
                         "authoritative": True,
                         "period_count": 1,
@@ -400,6 +409,40 @@ class FakePayrollCoreClient:
                             "total_source": "SUMMARY_TOTAL_ROW",
                             "total_matches_stores": True,
                         }],
+                        "payment_submission_supported": False,
+                        "payable": False,
+                        "submission_supported": False,
+                    },
+                }
+            if path == (
+                f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/materials/"
+                "material_attendance/preview"
+            ):
+                return {
+                    "contract_version":
+                        "ledgerbridge.payroll-test-material-preview-read.v1",
+                    "entity_ref": self.response_entity_ref,
+                    "company_id": "company_live_hotel",
+                    "material_id": "material_attendance",
+                    "data": {
+                        "schema_version": "payroll-input-material-preview/v1",
+                        "data_scope": "TEST_ONLY",
+                        "test_batch_id": TEST_BATCH_ID,
+                        "company_id": "company_live_hotel",
+                        "material_id": "material_attendance",
+                        "period": "2026-07",
+                        "material_type": "ATTENDANCE_SHEET",
+                        "detected_material_type": "AUNT_ATTENDANCE_SHEET",
+                        "canonical_name": "2026.7_阿姨考勤表",
+                        "selected_sheet": "阿姨考勤",
+                        "sheet_names": ["阿姨考勤"],
+                        "columns": ["姓名", "考勤天数", "工资合计"],
+                        "record_count": 2,
+                        "preview_rows": [
+                            {"source_row": 2, "values": ["员工甲", "26", "5000"]},
+                            {"source_row": 3, "values": ["员工乙", "25", "4800"]},
+                        ],
+                        "status": "READY_FOR_REVIEW",
                         "payment_submission_supported": False,
                         "payable": False,
                         "submission_supported": False,
@@ -786,7 +829,7 @@ class PayrollBffTests(unittest.TestCase):
         self.assertNotIn("session-token", json.dumps(claims))
         self.assertNotIn("required_role", claims)
 
-    def test_authenticated_session_reads_date_routed_test_workspace(self) -> None:
+    def test_authenticated_session_reads_july_august_test_workspace(self) -> None:
         request = urllib.request.Request(
             f"http://127.0.0.1:{self.server.server_port}/api/v1/payroll/test-workspace",
             headers={"Cookie": f"{COOKIE_NAME}=session-token"},
@@ -797,7 +840,7 @@ class PayrollBffTests(unittest.TestCase):
         self.assertEqual(payload["data"]["data_scope"], "TEST_ONLY")
         self.assertEqual(
             payload["data"]["routing_counts"],
-            {"auto_test": 1, "review_required": 1, "date_unknown": 1},
+            {"auto_test": 4, "review_required": 0, "date_unknown": 0},
         )
         self.assertFalse(payload["data"]["payment_submission_supported"])
         method, path, body, headers = self.client.calls[-1]
@@ -851,6 +894,23 @@ class PayrollBffTests(unittest.TestCase):
         self.assertEqual(claims["action"], "payroll.test_workspace.read")
         self.assertEqual(claims["resource_ref"], material_id)
 
+    def test_authenticated_session_previews_renamed_wage_input_rows(self) -> None:
+        material_id = "material_attendance"
+        request = urllib.request.Request(
+            (
+                f"http://127.0.0.1:{self.server.server_port}"
+                f"/api/v1/payroll/test-workspace/materials/{material_id}/preview"
+            ),
+            headers={"Cookie": f"{COOKIE_NAME}=session-token"},
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            payload = json.load(response)
+
+        self.assertEqual(payload["data"]["canonical_name"], "2026.7_阿姨考勤表")
+        self.assertEqual(payload["data"]["record_count"], 2)
+        self.assertEqual(payload["data"]["preview_rows"][0]["values"][0], "员工甲")
+        self.assertFalse(payload["data"]["submission_supported"])
+
     def test_authenticated_session_reads_authoritative_monthly_store_summary(self) -> None:
         material_id = "material_authoritative_summary"
         request = urllib.request.Request(
@@ -897,7 +957,7 @@ class PayrollBffTests(unittest.TestCase):
 
     def test_test_workspace_material_can_be_organized_and_batches_validated(self) -> None:
         organize_status, organized = self.post_payroll(
-            "/api/v1/payroll/test-workspace/materials/material_date_unknown/organize",
+            "/api/v1/payroll/test-workspace/materials/material_attendance/organize",
             {
                 "expected_workspace_revision": 1,
                 "period": "2026-08",
@@ -924,7 +984,7 @@ class PayrollBffTests(unittest.TestCase):
             organize_call[:2],
             (
                 "POST",
-                f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/materials/material_date_unknown/organize",
+                f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/materials/material_attendance/organize",
             ),
         )
         self.assertEqual(
@@ -965,7 +1025,7 @@ class PayrollBffTests(unittest.TestCase):
             )
         )
         self.assertEqual(organize_claims["action"], "payroll.test_workspace.organize")
-        self.assertEqual(organize_claims["resource_ref"], "material_date_unknown")
+        self.assertEqual(organize_claims["resource_ref"], "material_attendance")
 
     def test_legacy_feature_workspace_fills_and_reloads_through_request_bound_bff(self) -> None:
         read_request = urllib.request.Request(
@@ -1030,7 +1090,7 @@ class PayrollBffTests(unittest.TestCase):
     def test_test_workspace_command_rejects_payment_mode_drift(self) -> None:
         self.client.test_workspace_command_data_updates = {"payable": True}
         status, payload = self.post_payroll(
-            "/api/v1/payroll/test-workspace/materials/material_date_unknown/organize",
+            "/api/v1/payroll/test-workspace/materials/material_attendance/organize",
             {
                 "expected_workspace_revision": 1,
                 "period": "2026-08",
@@ -1135,19 +1195,19 @@ class PayrollBffTests(unittest.TestCase):
                 )
         self.client.test_workspace_data_updates = {}
 
-    def test_date_unknown_material_may_keep_a_safe_derived_period(self) -> None:
+    def test_summary_material_may_keep_a_safe_derived_period(self) -> None:
         projection = self.client.test_workspace_projection()
         materials = projection["materials"]
         assert isinstance(materials, list)
-        assert isinstance(materials[2], dict)
-        materials[2]["period"] = "2026-08"
+        assert isinstance(materials[3], dict)
+        materials[3]["period"] = "2026-08"
         set_test_projection_revision(projection)
         self.client.test_workspace_data_updates = projection
         state = build_state(self.client, payroll_test_workspace_enabled=True)
 
         payload = state.payroll_test_workspace("session-token", "ledgerbridge-owner")
 
-        self.assertEqual(payload["data"]["routing_counts"]["date_unknown"], 1)
+        self.assertEqual(payload["data"]["routing_counts"]["auto_test"], 4)
 
     def test_test_workspace_rejects_material_tampering_with_a_stale_revision(self) -> None:
         projection = self.client.test_workspace_projection()

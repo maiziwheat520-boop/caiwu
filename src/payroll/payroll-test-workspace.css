@@ -43,7 +43,7 @@
 
 .payroll-test-summary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -99,6 +99,21 @@
 .payroll-test-preview-table { display: grid; gap: 8px; }
 .payroll-test-preview-table > div { padding-top: 8px; border-top: 1px solid #e2e8f0; }
 .payroll-test-preview-table strong { text-align: right; }
+
+.payroll-input-preview-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+.payroll-input-preview-heading > div { display: grid; gap: 3px; }
+.payroll-input-preview-heading span { color: #64748b; font-size: 13px; }
+.payroll-input-preview-table { overflow-x: auto; border: 1px solid #dbe4ef; border-radius: 9px; }
+.payroll-input-preview-table [role='row'] { display: grid; min-width: max-content; border-top: 1px solid #e2e8f0; }
+.payroll-input-preview-table [role='row']:first-child { border-top: 0; }
+.payroll-input-preview-table [role='row'].header { background: #eff6ff; }
+.payroll-input-preview-table [role='cell'],
+.payroll-input-preview-table [role='columnheader'] { padding: 9px 11px; text-align: left; white-space: nowrap; }
 
 .payroll-test-empty { padding: 30px; text-align: center; }
 .payroll-test-validation { display: grid; gap: 9px; padding: 16px; border-radius: 12px; background: #f8fafc; }

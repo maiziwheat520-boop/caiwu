@@ -546,6 +546,8 @@ export type PayrollTestMaterialType =
   | 'RELEASE_LIST'
   | 'CASH_LIST'
   | 'ATTENDANCE_SHEET'
+  | 'AUNT_ATTENDANCE_SHEET'
+  | 'REVIEW_STATISTICS'
   | 'ADJUSTMENT_SOURCE'
   | 'PAYROLL_SUMMARY'
   | 'SUPPORTING_SCAN'
@@ -644,6 +646,35 @@ export type PayrollTestMaterialPreviewResponse = {
   company_id: string
   material_id: string
   data: PayrollTestMaterialPreview
+}
+
+export type PayrollInputMaterialPreview = {
+  schema_version: 'payroll-input-material-preview/v1'
+  data_scope: 'TEST_ONLY'
+  test_batch_id: string
+  company_id: string
+  material_id: string
+  period: '2026-07' | '2026-08'
+  material_type: 'ATTENDANCE_SHEET' | 'AUNT_ATTENDANCE_SHEET' | 'REVIEW_STATISTICS' | 'ADJUSTMENT_SOURCE'
+  detected_material_type: 'ATTENDANCE_SHEET' | 'AUNT_ATTENDANCE_SHEET' | 'REVIEW_STATISTICS' | 'UNRECOGNIZED'
+  canonical_name: string
+  selected_sheet: string
+  sheet_names: string[]
+  columns: string[]
+  record_count: number
+  preview_rows: Array<{ source_row: number; values: string[] }>
+  status: 'READY_FOR_REVIEW' | 'NEEDS_HUMAN_REVIEW'
+  payment_submission_supported: false
+  payable: false
+  submission_supported: false
+}
+
+export type PayrollInputMaterialPreviewResponse = {
+  contract_version: 'ledgerbridge.payroll-test-material-preview-read.v1'
+  entity_ref: string
+  company_id: string
+  material_id: string
+  data: PayrollInputMaterialPreview
 }
 
 export type PayrollSummaryStoreTotal = {

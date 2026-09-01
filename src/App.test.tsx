@@ -140,10 +140,10 @@ const livePayrollResponses: Record<string, unknown> = {
       routing_counts: { auto_test: 1, review_required: 0, date_unknown: 0 },
       materials: [{
         company_id: payrollCompanyId,
-        material_id: 'material_history_001',
+        material_id: 'material_attendance_001',
         routing_status: 'AUTO_TEST',
         period: '2026-08',
-        material_type: 'PAYROLL_SHEET',
+        material_type: 'ATTENDANCE_SHEET',
         payable: false,
         submission_supported: false,
       }],
@@ -297,10 +297,10 @@ const notReadyPayrollResponses: Record<string, unknown> = {
       routing_counts: { auto_test: 1, review_required: 0, date_unknown: 0 },
       materials: [{
         company_id: payrollCompanyId,
-        material_id: 'material_history_001',
+        material_id: 'material_attendance_001',
         routing_status: 'AUTO_TEST',
         period: '2026-08',
-        material_type: 'PAYROLL_SHEET',
+        material_type: 'ATTENDANCE_SHEET',
         payable: false,
         submission_supported: false,
       }],
@@ -2455,12 +2455,11 @@ describe('LedgerBridge Web API client', () => {
 
     expect(await screen.findByRole('heading', { name: '工资与发放验证' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: '工资与发放验证' })).toHaveLength(2)
-    expect(await screen.findByText('历史工资材料已进入测试账本')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '8 月及以前 1' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '9 月后待审核 0' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '日期待确认 0' })).toBeInTheDocument()
-    expect(screen.getByText('已进入测试账本')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '生成并验证测试批次' })).toBeInTheDocument()
+    expect(await screen.findByText('七、八月工资测试账本已就绪')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '全部 1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '2026 年 7 月 0' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '2026 年 8 月 1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '检查七八月素材' })).toBeInTheDocument()
     expect(screen.getByText('只读工资发布契约已部署')).toBeInTheDocument()
     expect(screen.getByText('服务已接通，待归属材料 3 份')).toBeInTheDocument()
     expect(screen.getByText('工资材料仍有待归属项')).toBeInTheDocument()
@@ -2492,8 +2491,8 @@ describe('LedgerBridge Web API client', () => {
     })
     renderApp()
 
-    expect(await screen.findByText('测试账本已创建，暂无可自动接入材料')).toBeInTheDocument()
-    expect(screen.queryByText('历史工资材料已进入测试账本')).not.toBeInTheDocument()
+    expect(await screen.findByText('测试账本已创建，暂无七、八月工资素材')).toBeInTheDocument()
+    expect(screen.queryByText('七、八月工资测试账本已就绪')).not.toBeInTheDocument()
   })
 
   it('reads the live payroll projection only through the same-origin BFF and renders its real summaries', async () => {
