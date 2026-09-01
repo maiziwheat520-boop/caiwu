@@ -9,7 +9,6 @@ import os
 import re
 import stat
 import zipfile
-from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
@@ -18,7 +17,18 @@ from uuid import UUID, uuid5
 from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
-_XLSX_MEDIA_TYPE: Final = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+from ledgerbridge.bank_statement_contract import (
+    MYBANK_XLSX_V1,
+    BankStatementParserProfile,
+)
+from ledgerbridge.bank_statement_contract import (
+    BankStatement as MyBankStatement,
+)
+from ledgerbridge.bank_statement_contract import (
+    BankStatementTransaction as MyBankTransaction,
+)
+
+_XLSX_MEDIA_TYPE: Final = MYBANK_XLSX_V1.declared_media_type
 _MAIN_NS: Final = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _REL_NS: Final = "http://schemas.openxmlformats.org/package/2006/relationships"
 _OFFICE_REL_NS: Final = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -52,35 +62,6 @@ class MyBankStatementError(RuntimeError):
 
 class MyBankEmptyStatementError(MyBankStatementError):
     """The source is a valid MYbank export with no transactions to import."""
-
-
-@dataclass(frozen=True, slots=True)
-class MyBankTransaction:
-    source_event_ref: UUID
-    source_row_number: int
-    source_row_sha256: str
-    occurred_at: datetime
-    amount_minor: int
-    balance_minor: int
-    counterparty_name: str
-    counterparty_account: str
-    counterparty_institution: str
-    transaction_serial: str
-    transaction_name: str
-
-
-@dataclass(frozen=True, slots=True)
-class MyBankStatement:
-    statement_ref: UUID
-    source_sha256: str
-    source_size: int
-    declared_media_type: str
-    currency: str
-    institution_code: str
-    account_suffix: str
-    worksheet_index: int
-    header_row_number: int
-    transactions: tuple[MyBankTransaction, ...]
 
 
 def parse_mybank_xlsx(
@@ -175,6 +156,14 @@ def parse_mybank_xlsx(
         worksheet_index=1,
         header_row_number=header_row_number,
         transactions=tuple(transactions),
+        parser_profile=BankStatementParserProfile.MYBANK_XLSX_V1,
+        source_system=MYBANK_XLSX_V1.source_system,
+        parser_facts_sha256=hashlib.sha256(
+            (
+                f"mybank_xlsx_v1:{source_sha256}:{header_row_number}:"
+                f"{len(transactions)}"
+            ).encode("ascii")
+        ).hexdigest(),
     )
 
 

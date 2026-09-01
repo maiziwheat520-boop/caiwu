@@ -16,13 +16,17 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from ledgerbridge.bank_statement_contract import (
+    BankStatement,
+    BankStatementTransaction,
+    parser_spec,
+)
 from ledgerbridge.internal_read_contract import (
     Capability,
     ResourceNotVisible,
     WorkloadPrincipal,
     require_capability,
 )
-from ledgerbridge.mybank_statement import MyBankStatement, MyBankTransaction
 from ledgerbridge.text import contains_unstorable_text
 
 _ACCOUNT_SUFFIX: Final = re.compile(r"^[0-9]{4,8}$")
@@ -96,7 +100,7 @@ class BankStatementImportService:
 
     def import_statement(
         self,
-        statement: MyBankStatement,
+        statement: BankStatement,
         *,
         context: BankStatementImportContext,
         session: Session | None = None,
@@ -242,15 +246,21 @@ class BankStatementReadService:
 
 
 def _build_request(
-    statement: MyBankStatement,
+    statement: BankStatement,
     context: BankStatementImportContext,
 ) -> dict[str, object]:
     if not statement.transactions:
         raise BankStatementPersistenceError("bank statement has no transactions")
     if statement.currency != "CNY" or _DIGEST.fullmatch(statement.source_sha256) is None:
         raise BankStatementPersistenceError("bank statement identity is invalid")
+    try:
+        spec = parser_spec(statement.parser_profile)
+    except ValueError as exc:
+        raise BankStatementPersistenceError("bank statement parser identity is invalid") from exc
     if (
-        statement.institution_code != "mybank"
+        statement.institution_code != spec.institution_code
+        or statement.source_system != spec.source_system
+        or statement.declared_media_type != spec.declared_media_type
         or _ACCOUNT_SUFFIX.fullmatch(statement.account_suffix) is None
     ):
         raise BankStatementPersistenceError("managed account identity does not match statement")
@@ -284,14 +294,14 @@ def _build_request(
                 "transaction_name": item.transaction_name,
             }
         )
-    return {
+    request: dict[str, object] = {
         "statement_ref": str(statement.statement_ref),
         "managed_account_ref": str(context.managed_account_ref),
         "owner_entity_ref": str(context.owner_entity_ref),
         "institution_code": statement.institution_code,
         "account_suffix": statement.account_suffix,
         "evidence_ref": str(context.evidence_ref),
-        "source_system": "mybank_xlsx_export",
+        "source_system": statement.source_system,
         "source_sha256": statement.source_sha256,
         "source_size": statement.source_size,
         "declared_media_type": statement.declared_media_type,
@@ -304,9 +314,12 @@ def _build_request(
         "reason": context.reason,
         "transactions": transactions,
     }
+    if statement.parser_profile.value != "mybank_xlsx_v1":
+        request["parser_profile"] = statement.parser_profile.value
+    return request
 
 
-def _counterparty_ref(entity_ref: UUID, transaction: MyBankTransaction) -> str:
+def _counterparty_ref(entity_ref: UUID, transaction: BankStatementTransaction) -> str:
     values = (
         transaction.counterparty_account,
         transaction.counterparty_name,

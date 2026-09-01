@@ -352,6 +352,8 @@ def test_statement_request_uses_pre_registered_account_refs_without_owner_guess_
     assert request["managed_account_ref"] == str(ACCOUNT_REF)
     assert request["institution_code"] == "mybank"
     assert request["account_suffix"] == "7968"
+    assert request["source_system"] == "mybank_xlsx_export"
+    assert "parser_profile" not in request
     assert "owner_ref" not in request
     assert "owner_kind" not in request
     assert "account_kind" not in request
