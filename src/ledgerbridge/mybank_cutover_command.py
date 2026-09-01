@@ -29,6 +29,7 @@ from ledgerbridge.internal_read_contract import (
 from ledgerbridge.models import EntityType
 from ledgerbridge.mybank_statement_cutover import (
     MyBankCutoverSafetyProof,
+    MyBankEvidenceMode,
     MyBankExistingAccountStatementPlan,
     MyBankStatementCutoverPlan,
     MyBankStatementCutoverReceipt,
@@ -98,10 +99,10 @@ def load_private_mybank_cutover_plan(path: Path) -> LoadedMyBankCutoverPlan:
             payload["source"],
             {"path", "sha256", "size", "account_suffix", "transaction_count"},
         )
-        scope = _mapping(
-            payload["scope"],
-            {"evidence_ref", "owner_entity_ref", "business_unit_ref", "owner_kind"},
-        )
+        scope_keys = {"evidence_ref", "owner_entity_ref", "business_unit_ref", "owner_kind"}
+        if schema_version == MYBANK_EXISTING_ACCOUNT_PLAN_SCHEMA:
+            scope_keys.add("evidence_mode")
+        scope = _mapping(payload["scope"], scope_keys)
         audit = _mapping(payload["audit"], {"actor", "reason"})
         safety = _mapping(
             payload["safety"],
@@ -186,6 +187,7 @@ def load_private_mybank_cutover_plan(path: Path) -> LoadedMyBankCutoverPlan:
                 expected_sha256=_text(source["sha256"]),
                 expected_size=_integer(source["size"]),
                 evidence_ref=evidence_ref,
+                evidence_mode=MyBankEvidenceMode(_text(scope["evidence_mode"])),
                 entity_ref=entity_ref,
                 business_unit_ref=business_unit_ref,
                 managed_account_ref=_uuid(account["managed_account_ref"]),

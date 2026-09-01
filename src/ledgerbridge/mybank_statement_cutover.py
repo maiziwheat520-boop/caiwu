@@ -9,6 +9,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID, uuid5
@@ -23,7 +24,7 @@ from ledgerbridge.account_registry import (
     AccountRegistryPlan,
     AccountRegistryPlanResult,
 )
-from ledgerbridge.artifacts import ArtifactStore
+from ledgerbridge.artifacts import ArtifactStore, PublishedArtifact
 from ledgerbridge.bank_statement_persistence import (
     BankStatementImportContext,
     BankStatementImportResult,
@@ -34,9 +35,12 @@ from ledgerbridge.crypto import ENVELOPE_ALGORITHM, ENVELOPE_SCHEMA, SecretStrea
 from ledgerbridge.encrypted_artifacts import (
     EncryptedArtifactPublication,
     EncryptedArtifactStore,
+    EncryptedEnvelopeMetadata,
+    EncryptedPublishedArtifact,
 )
 from ledgerbridge.file_key_provider import FileKeyProvider
 from ledgerbridge.internal_read_contract import WorkloadPrincipal
+from ledgerbridge.keyring import WrappedKey
 from ledgerbridge.models import EntityType
 from ledgerbridge.mybank_statement import MyBankStatement, parse_mybank_xlsx
 
@@ -61,6 +65,13 @@ _SOURCE_TIME_ZONE = ZoneInfo("Asia/Shanghai")
 
 class MyBankStatementCutoverError(RuntimeError):
     """The cutover could not prove a complete, replay-safe result."""
+
+
+class MyBankEvidenceMode(StrEnum):
+    """Explicit evidence handling for an existing-account statement import."""
+
+    CREATE_NEW = "CREATE_NEW"
+    REUSE_EXISTING = "REUSE_EXISTING"
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +188,7 @@ class MyBankExistingAccountStatementPlan:
     expected_sha256: str
     expected_size: int
     evidence_ref: UUID
+    evidence_mode: MyBankEvidenceMode
     entity_ref: UUID
     business_unit_ref: UUID
     managed_account_ref: UUID
@@ -193,6 +205,8 @@ class MyBankExistingAccountStatementPlan:
             raise ValueError("expected source digest is invalid")
         if type(self.expected_size) is not int or self.expected_size <= 0:
             raise ValueError("expected source size is invalid")
+        if not isinstance(self.evidence_mode, MyBankEvidenceMode):
+            raise ValueError("existing-account evidence mode is invalid")
         if _ACCOUNT_SUFFIX.fullmatch(self.account_suffix) is None:
             raise ValueError("MYbank existing-account suffix is invalid")
         if type(self.expected_transaction_count) is not int or self.expected_transaction_count <= 0:
@@ -848,13 +862,14 @@ def _expected_after_existing_account(
     before: ProductionCounts,
     plan: MyBankExistingAccountStatementPlan,
 ) -> ProductionCounts:
-    """Expected delta when statement evidence is new but the account already exists."""
+    """Expected delta for the plan's explicit evidence mode and existing account."""
 
     transaction_count = plan.expected_transaction_count
+    evidence_delta = int(plan.evidence_mode is MyBankEvidenceMode.CREATE_NEW)
     return ProductionCounts(
-        evidence_objects=before.evidence_objects + 1,
-        encrypted_object_identities=before.encrypted_object_identities + 1,
-        encrypted_blob_versions=before.encrypted_blob_versions + 1,
+        evidence_objects=before.evidence_objects + evidence_delta,
+        encrypted_object_identities=before.encrypted_object_identities + evidence_delta,
+        encrypted_blob_versions=before.encrypted_blob_versions + evidence_delta,
         managed_accounts=before.managed_accounts,
         managed_account_lifecycles=before.managed_account_lifecycles,
         account_registry_operations=before.account_registry_operations,
@@ -868,7 +883,7 @@ def _expected_after_existing_account(
         bank_statement_reviews=before.bank_statement_reviews + 1,
         candidates=before.candidates,
         latest_pending_candidates=before.latest_pending_candidates,
-        audit_events=before.audit_events + 4 + 2 * transaction_count,
+        audit_events=before.audit_events + 2 + 2 * transaction_count + 2 * evidence_delta,
         journal_entries=before.journal_entries,
         postings=before.postings,
     )
@@ -1129,6 +1144,19 @@ class _DatabaseExistingAccountAuthorizer:
         session = self._boundary.ensure_session()
         try:
             _require_existing_account_identity(session, plan, statement)
+            if plan.evidence_mode is MyBankEvidenceMode.REUSE_EXISTING:
+                self._boundary.require_reusable_evidence(
+                    session,
+                    MyBankEvidenceDescriptor(
+                        evidence_ref=plan.evidence_ref,
+                        entity_ref=plan.entity_ref,
+                        business_unit_ref=plan.business_unit_ref,
+                        plaintext_sha256=plan.expected_sha256,
+                        plaintext_size=plan.expected_size,
+                        declared_media_type=statement.declared_media_type,
+                        display_name=f"mybank-statement-{statement.statement_ref}.xlsx",
+                    ),
+                )
             self._boundary.set_statement_expectation(self._boundary.evidence_staged)
         except BaseException:
             try:
@@ -1271,6 +1299,16 @@ class _DatabaseEvidenceBoundary:
             raise MyBankStatementCutoverError("evidence publication is already active")
         session: Session | None = None
         try:
+            if (
+                isinstance(self._plan, MyBankExistingAccountStatementPlan)
+                and self._plan.evidence_mode is MyBankEvidenceMode.REUSE_EXISTING
+            ):
+                session = _new_session(self._engine)
+                _require_unique_scope(session, evidence, owner_kind=self._plan.owner_kind)
+                _require_reusable_existing_evidence(session, self._store, evidence)
+                self._pending_session = session
+                self._evidence_staged = True
+                return
             with source_path.open("rb") as source:
                 publication = self._store.begin_publication(source)
             self._pending_publication = publication
@@ -1412,6 +1450,13 @@ class _DatabaseEvidenceBoundary:
             pending = _new_session(self._engine)
             self._pending_session = pending
         return pending
+
+    def require_reusable_evidence(
+        self,
+        session: Session,
+        evidence: MyBankEvidenceDescriptor,
+    ) -> None:
+        _require_reusable_existing_evidence(session, self._store, evidence)
 
     def clear(self, session: Session) -> None:
         if self._pending_session is session:
@@ -1575,26 +1620,7 @@ def _require_existing_account_identity(
         display_name=f"mybank-statement-{statement.statement_ref}.xlsx",
     )
     _require_unique_scope(session, descriptor, owner_kind=plan.owner_kind)
-    evidence = (
-        session.execute(
-            text(
-                "SELECT evidence_ref, entity_id, business_unit_id, media_type, "
-                "plaintext_sha256, plaintext_size FROM public.evidence_object "
-                "WHERE evidence_ref=:evidence"
-            ),
-            {"evidence": plan.evidence_ref},
-        )
-        .mappings()
-        .one_or_none()
-    )
-    if evidence is None or (
-        evidence["entity_id"] != plan.entity_ref
-        or evidence["business_unit_id"] != plan.business_unit_ref
-        or evidence["media_type"] != statement.declared_media_type
-        or bytes(evidence["plaintext_sha256"]).hex() != plan.expected_sha256
-        or int(evidence["plaintext_size"]) != plan.expected_size
-    ):
-        raise MyBankStatementCutoverError("statement evidence binding conflicts")
+    _require_existing_evidence_binding(session, descriptor)
 
     period_start = min(
         item.occurred_at.astimezone(_SOURCE_TIME_ZONE).date() for item in statement.transactions
@@ -1797,6 +1823,98 @@ def _require_new_evidence(session: Session, evidence: MyBankEvidenceDescriptor) 
     )
     if matches:
         raise MyBankStatementCutoverError("statement evidence already exists or conflicts")
+
+
+def _require_existing_evidence_binding(
+    session: Session,
+    evidence: MyBankEvidenceDescriptor,
+) -> None:
+    row = (
+        session.execute(
+            text(
+                "SELECT evidence_ref, entity_id, business_unit_id, media_type, "
+                "plaintext_sha256, plaintext_size FROM public.evidence_object "
+                "WHERE evidence_ref=:evidence"
+            ),
+            {"evidence": evidence.evidence_ref},
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None or (
+        row["evidence_ref"] != evidence.evidence_ref
+        or row["entity_id"] != evidence.entity_ref
+        or row["business_unit_id"] != evidence.business_unit_ref
+        or row["media_type"] != evidence.declared_media_type
+        or bytes(row["plaintext_sha256"]).hex() != evidence.plaintext_sha256
+        or int(row["plaintext_size"]) != evidence.plaintext_size
+    ):
+        raise MyBankStatementCutoverError("statement evidence binding conflicts")
+
+
+def _require_reusable_existing_evidence(
+    session: Session,
+    store: EncryptedArtifactStore,
+    evidence: MyBankEvidenceDescriptor,
+) -> None:
+    """Prove the exact Evidence and its single active encrypted lineage are reusable."""
+
+    _require_existing_evidence_binding(session, evidence)
+    rows = (
+        session.execute(
+            text(
+                "SELECT identity.object_ref, identity.evidence_ref AS identity_evidence_ref, "
+                "blob.evidence_ref AS blob_evidence_ref, blob.ciphertext_sha256, "
+                "blob.ciphertext_size, blob.storage_key, blob.envelope_schema, blob.algorithm, "
+                "blob.chunk_size, blob.stream_header, blob.wrapped_key_generation, "
+                "blob.wrapped_key_nonce, blob.wrapped_key_ciphertext, blob.purpose "
+                "FROM public.encrypted_object_identity identity "
+                "JOIN public.encrypted_blob_version blob "
+                "ON blob.object_ref=identity.object_ref "
+                "AND blob.evidence_ref=identity.evidence_ref "
+                "WHERE identity.evidence_ref=:evidence AND NOT EXISTS ("
+                "SELECT 1 FROM public.encrypted_blob_version child "
+                "WHERE child.predecessor_blob_ref=blob.blob_ref)"
+            ),
+            {"evidence": evidence.evidence_ref},
+        )
+        .mappings()
+        .all()
+    )
+    if len(rows) != 1:
+        raise MyBankStatementCutoverError("reusable evidence encrypted lineage conflicts")
+    row = rows[0]
+    if (
+        row["identity_evidence_ref"] != evidence.evidence_ref
+        or row["blob_evidence_ref"] != evidence.evidence_ref
+        or row["envelope_schema"] != ENVELOPE_SCHEMA
+        or row["algorithm"] != ENVELOPE_ALGORITHM
+        or row["purpose"] != "ledgerbridge-artifact-v2"
+    ):
+        raise MyBankStatementCutoverError("reusable evidence encrypted metadata conflicts")
+    artifact = EncryptedPublishedArtifact(
+        object_ref=row["object_ref"],
+        plaintext_sha256=bytes.fromhex(evidence.plaintext_sha256),
+        plaintext_size=evidence.plaintext_size,
+        ciphertext=PublishedArtifact(
+            sha256=bytes(row["ciphertext_sha256"]),
+            byte_size=int(row["ciphertext_size"]),
+            storage_key=row["storage_key"],
+            created=False,
+        ),
+    )
+    metadata = EncryptedEnvelopeMetadata(
+        chunk_size=int(row["chunk_size"]),
+        stream_header=bytes(row["stream_header"]),
+        wrapped_key=WrappedKey(
+            generation=row["wrapped_key_generation"],
+            nonce=bytes(row["wrapped_key_nonce"]),
+            ciphertext=bytes(row["wrapped_key_ciphertext"]),
+        ),
+    )
+    with store.open_verified(artifact, envelope_metadata=metadata) as verified:
+        if hashlib.sha256(verified.read()).hexdigest() != evidence.plaintext_sha256:
+            raise MyBankStatementCutoverError("reusable evidence plaintext identity conflicts")
 
 
 def _append_audit(

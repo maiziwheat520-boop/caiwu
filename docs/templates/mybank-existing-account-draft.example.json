@@ -7,6 +7,7 @@
   },
   "scope": {
     "evidence_ref": "84000000-0000-4000-8000-000000000003",
+    "evidence_mode": "CREATE_NEW",
     "owner_entity_ref": "84000000-0000-4000-8000-000000000001",
     "business_unit_ref": "84000000-0000-4000-8000-000000000002",
     "owner_kind": "COMPANY"

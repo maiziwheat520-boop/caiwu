@@ -43,6 +43,14 @@ plan. Before importing, Core requires the Managed Account's latest lifecycle to
 be `ACTIVE` and requires exactly one business-unit assignment that covers the
 whole statement period.
 
+Every existing-account draft must choose `scope.evidence_mode` explicitly.
+`CREATE_NEW` requires a new Evidence UUID and creates one encrypted artifact.
+`REUSE_EXISTING` creates neither: it requires the supplied Evidence UUID to
+match the exact Entity, business unit, media type, plaintext digest, and byte
+size, and verifies one consistent active encrypted-object/blob lineage and its
+stored plaintext before the statement can be imported. The runner never falls
+back from one mode to the other.
+
 Use the same builder, rollback-only preflight, and separately gated production
 commands documented below. One plan imports one statement; for multiple files,
 generate and execute the plans sequentially so each plan has its own evidence

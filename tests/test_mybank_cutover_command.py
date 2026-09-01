@@ -24,6 +24,7 @@ from ledgerbridge.mybank_cutover_plan_builder import (
     run_mybank_cutover_plan_builder,
 )
 from ledgerbridge.mybank_statement_cutover import (
+    MyBankEvidenceMode,
     MyBankExistingAccountStatementPlan,
     MyBankStatementCutoverReceipt,
     ProductionCounts,
@@ -116,6 +117,7 @@ def _synthetic_existing_account_plan(tmp_path: Path) -> dict[str, object]:
     payload = _synthetic_plan(tmp_path)
     payload["schema_version"] = MYBANK_EXISTING_ACCOUNT_PLAN_SCHEMA
     payload["scope"]["owner_kind"] = "COMPANY"  # type: ignore[index]
+    payload["scope"]["evidence_mode"] = "CREATE_NEW"  # type: ignore[index]
     payload["account"] = {"managed_account_ref": str(ACCOUNT_REF)}
     payload.pop("principal")
     return payload
@@ -239,6 +241,7 @@ def test_existing_account_plan_loads_without_account_registration_payload(
     assert loaded.cutover.managed_account_ref == ACCOUNT_REF
     assert loaded.cutover.account_suffix == "1357"
     assert loaded.cutover.expected_transaction_count == 2
+    assert loaded.cutover.evidence_mode is MyBankEvidenceMode.CREATE_NEW
     assert loaded.cutover.owner_kind is EntityType.COMPANY
     assert loaded.principal is None
     payload = _synthetic_existing_account_plan(tmp_path)
@@ -292,7 +295,25 @@ def test_existing_account_draft_binds_digest_size_and_nonempty_row_count(
         "transaction_count": 2,
     }
     assert payload["account"] == {"managed_account_ref": str(ACCOUNT_REF)}
+    assert payload["scope"]["evidence_mode"] == "CREATE_NEW"
     assert "principal" not in payload
+
+
+@pytest.mark.parametrize("mode", (None, "AUTO", "reuse_existing"))
+def test_existing_account_plan_requires_explicit_supported_evidence_mode(
+    tmp_path: Path,
+    mode: str | None,
+) -> None:
+    payload = _synthetic_existing_account_plan(tmp_path)
+    if mode is None:
+        del payload["scope"]["evidence_mode"]  # type: ignore[index]
+    else:
+        payload["scope"]["evidence_mode"] = mode  # type: ignore[index]
+    path = (tmp_path / "invalid-existing-account-plan.json").resolve()
+    _write_private_plan(path, payload)
+
+    with pytest.raises(MyBankCutoverCommandError, match="private plan"):
+        load_private_mybank_cutover_plan(path)
 
 
 def test_private_draft_wrong_account_mapping_publishes_no_plan(tmp_path: Path) -> None:

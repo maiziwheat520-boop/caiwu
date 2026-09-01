@@ -8,6 +8,7 @@ import traceback
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import cast
 from uuid import UUID
@@ -30,6 +31,8 @@ from ledgerbridge.bank_statement_persistence import (
     BankStatementImportResult,
     BankStatementPersistenceError,
 )
+from ledgerbridge.crypto import ENVELOPE_ALGORITHM, ENVELOPE_SCHEMA
+from ledgerbridge.encrypted_artifacts import EncryptedArtifactStore
 from ledgerbridge.file_key_provider import bootstrap_file_key
 from ledgerbridge.internal_read_contract import Capability, EntityGrant, WorkloadPrincipal
 from ledgerbridge.models import EntityType
@@ -37,6 +40,7 @@ from ledgerbridge.mybank_statement import MyBankStatement, MyBankTransaction
 from ledgerbridge.mybank_statement_cutover import (
     MyBankCutoverSafetyProof,
     MyBankEvidenceDescriptor,
+    MyBankEvidenceMode,
     MyBankExistingAccountStatementPlan,
     MyBankExistingAccountStatementRunner,
     MyBankStatementCutoverError,
@@ -48,6 +52,7 @@ from ledgerbridge.mybank_statement_cutover import (
     _read_production_counts,
     _require_existing_account_identity,
     _require_import_identity,
+    _require_reusable_existing_evidence,
     run_transactional_database_mybank_existing_account_import,
     run_transactional_database_mybank_statement_cutover,
     verify_mybank_cutover_safety_proof,
@@ -196,12 +201,15 @@ def _existing_account_plan(
     source_path: Path,
     digest: str,
     size: int,
+    *,
+    evidence_mode: MyBankEvidenceMode = MyBankEvidenceMode.CREATE_NEW,
 ) -> MyBankExistingAccountStatementPlan:
     return MyBankExistingAccountStatementPlan(
         source_path=source_path,
         expected_sha256=digest,
         expected_size=size,
         evidence_ref=EVIDENCE_REF,
+        evidence_mode=evidence_mode,
         entity_ref=ENTITY_REF,
         business_unit_ref=BUSINESS_UNIT_REF,
         managed_account_ref=MANAGED_ACCOUNT_REF,
@@ -699,6 +707,142 @@ def test_existing_account_plan_preserves_registry_and_posting_counts(tmp_path: P
     assert after.audit_events == before.audit_events + 8
 
 
+def test_existing_account_reuse_mode_preserves_evidence_and_uses_statement_audits_only(
+    tmp_path: Path,
+) -> None:
+    source, digest = _synthetic_source(tmp_path)
+    before = replace(
+        _before_counts(),
+        managed_accounts=5,
+        managed_account_lifecycles=5,
+        account_registry_operations=5,
+        managed_account_aliases=5,
+        account_business_unit_assignments=5,
+    )
+    plan = _existing_account_plan(
+        source,
+        digest,
+        source.stat().st_size,
+        evidence_mode=MyBankEvidenceMode.REUSE_EXISTING,
+    )
+
+    after = _expected_after_existing_account(before, plan)
+
+    assert after.evidence_objects == before.evidence_objects
+    assert after.encrypted_object_identities == before.encrypted_object_identities
+    assert after.encrypted_blob_versions == before.encrypted_blob_versions
+    assert after.bank_statements == before.bank_statements + 1
+    assert after.bank_statement_transactions == before.bank_statement_transactions + 2
+    assert after.audit_events == before.audit_events + 6
+
+
+class _ReusableEvidenceStore:
+    def __init__(self, plaintext: bytes) -> None:
+        self._plaintext = plaintext
+        self.opened = False
+
+    def open_verified(self, *_args: object, **_kwargs: object) -> BytesIO:
+        self.opened = True
+        return BytesIO(self._plaintext)
+
+
+def test_reusable_existing_evidence_requires_exact_row_and_active_encrypted_blob(
+    tmp_path: Path,
+) -> None:
+    source, digest = _synthetic_source(tmp_path)
+    descriptor = MyBankEvidenceDescriptor(
+        evidence_ref=EVIDENCE_REF,
+        entity_ref=ENTITY_REF,
+        business_unit_ref=BUSINESS_UNIT_REF,
+        plaintext_sha256=digest,
+        plaintext_size=source.stat().st_size,
+        declared_media_type=MEDIA_TYPE,
+        display_name="synthetic.xlsx",
+    )
+    session = _IdentitySession(
+        iter(
+            (
+                _MappingResult(
+                    one={
+                        "evidence_ref": EVIDENCE_REF,
+                        "entity_id": ENTITY_REF,
+                        "business_unit_id": BUSINESS_UNIT_REF,
+                        "media_type": MEDIA_TYPE,
+                        "plaintext_sha256": bytes.fromhex(digest),
+                        "plaintext_size": source.stat().st_size,
+                    }
+                ),
+                _MappingResult(
+                    rows=[
+                        {
+                            "object_ref": "a" * 64,
+                            "identity_evidence_ref": EVIDENCE_REF,
+                            "blob_evidence_ref": EVIDENCE_REF,
+                            "ciphertext_sha256": b"c" * 32,
+                            "ciphertext_size": 128,
+                            "storage_key": "sha256/aa/synthetic.enc",
+                            "envelope_schema": ENVELOPE_SCHEMA,
+                            "algorithm": ENVELOPE_ALGORITHM,
+                            "chunk_size": 65_536,
+                            "stream_header": b"h" * 24,
+                            "wrapped_key_generation": "synthetic-v1",
+                            "wrapped_key_nonce": b"n" * 24,
+                            "wrapped_key_ciphertext": b"w" * 48,
+                            "purpose": "ledgerbridge-artifact-v2",
+                        }
+                    ]
+                ),
+            )
+        )
+    )
+    store = _ReusableEvidenceStore(source.read_bytes())
+
+    _require_reusable_existing_evidence(
+        cast(Session, session),
+        cast(EncryptedArtifactStore, store),
+        descriptor,
+    )
+
+    assert store.opened is True
+
+
+def test_reusable_existing_evidence_rejects_missing_encrypted_lineage(tmp_path: Path) -> None:
+    source, digest = _synthetic_source(tmp_path)
+    descriptor = MyBankEvidenceDescriptor(
+        evidence_ref=EVIDENCE_REF,
+        entity_ref=ENTITY_REF,
+        business_unit_ref=BUSINESS_UNIT_REF,
+        plaintext_sha256=digest,
+        plaintext_size=source.stat().st_size,
+        declared_media_type=MEDIA_TYPE,
+        display_name="synthetic.xlsx",
+    )
+    session = _IdentitySession(
+        iter(
+            (
+                _MappingResult(
+                    one={
+                        "evidence_ref": EVIDENCE_REF,
+                        "entity_id": ENTITY_REF,
+                        "business_unit_id": BUSINESS_UNIT_REF,
+                        "media_type": MEDIA_TYPE,
+                        "plaintext_sha256": bytes.fromhex(digest),
+                        "plaintext_size": source.stat().st_size,
+                    }
+                ),
+                _MappingResult(rows=[]),
+            )
+        )
+    )
+
+    with pytest.raises(MyBankStatementCutoverError, match="encrypted lineage"):
+        _require_reusable_existing_evidence(
+            cast(Session, session),
+            cast(EncryptedArtifactStore, _ReusableEvidenceStore(source.read_bytes())),
+            descriptor,
+        )
+
+
 def test_existing_account_plan_rejects_empty_statement_count(tmp_path: Path) -> None:
     source, digest = _synthetic_source(tmp_path)
 
@@ -806,6 +950,7 @@ def test_existing_account_identity_requires_active_account_and_one_period_bindin
                 _MappingResult(one={"entity_type": EntityType.COMPANY.value}),
                 _MappingResult(
                     one={
+                        "evidence_ref": EVIDENCE_REF,
                         "entity_id": ENTITY_REF,
                         "business_unit_id": BUSINESS_UNIT_REF,
                         "media_type": MEDIA_TYPE,
@@ -844,6 +989,7 @@ def test_existing_account_identity_accepts_exact_active_period_binding(tmp_path:
                 _MappingResult(one={"entity_type": EntityType.COMPANY.value}),
                 _MappingResult(
                     one={
+                        "evidence_ref": EVIDENCE_REF,
                         "entity_id": ENTITY_REF,
                         "business_unit_id": BUSINESS_UNIT_REF,
                         "media_type": MEDIA_TYPE,
