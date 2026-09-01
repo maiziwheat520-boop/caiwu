@@ -44,6 +44,16 @@ const verificationStatusLabel = (status: string) => ({
   UNMATCHED: '待核对',
 }[status.toUpperCase()] ?? '状态待确认')
 
+const verificationEvidenceRequirements = [
+  { evidenceType: 'MYBANK_STATEMENT', label: '网商银行代发表', requiredCount: 5 },
+  { evidenceType: 'BOC_RECEIPT', label: '中国银行现金发放账单', requiredCount: 1 },
+  { evidenceType: 'WECHAT_RECEIPT', label: '微信单独发放账单', requiredCount: 1 },
+] as const
+
+const evidenceTypeLabel = (evidenceType: string) => verificationEvidenceRequirements.find(
+  (item) => item.evidenceType === evidenceType,
+)?.label ?? evidenceType
+
 const setupBlockerLabel = (code: string) => ({
   UNASSIGNED_MATERIALS: '工资材料仍有待归属项',
   MATERIAL_REVIEW_REQUIRED: '已归属材料仍需人工复核',
@@ -162,6 +172,19 @@ export function PayrollWorkspacePage() {
   const evidenceForBatch = selectedBatch
     ? verification?.available_evidence.filter((evidence) => evidence.period === selectedBatch.pay_period) ?? []
     : []
+  const selectedEvidenceRecords = evidenceForBatch.filter(
+    (evidence) => selectedEvidence.includes(evidence.artifact_id),
+  )
+  const evidenceSetAvailable = verificationEvidenceRequirements.every(
+    (requirement) => evidenceForBatch.filter(
+      (evidence) => evidence.evidence_type === requirement.evidenceType,
+    ).length >= requirement.requiredCount,
+  )
+  const selectedEvidenceComplete = verificationEvidenceRequirements.every(
+    (requirement) => selectedEvidenceRecords.filter(
+      (evidence) => evidence.evidence_type === requirement.evidenceType,
+    ).length === requirement.requiredCount,
+  ) && selectedEvidenceRecords.length === 7
   const testWorkspaceReady = testWorkspace?.data.auto_test_ready === true
 
   const toggleEvidence = (artifactId: string) => {
@@ -171,7 +194,10 @@ export function PayrollWorkspacePage() {
   }
 
   const submitVerification = async () => {
-    if (commandBusyRef.current || !canVerifyReceipts || !selectedBatch || !csrfToken || selectedEvidence.length === 0) return
+    if (
+      commandBusyRef.current || !canVerifyReceipts || !selectedBatch || !csrfToken ||
+      !evidenceSetAvailable || !selectedEvidenceComplete
+    ) return
     commandBusyRef.current = true
     setCommandBusy(true)
     setCommandMessage(null)
@@ -378,6 +404,18 @@ export function PayrollWorkspacePage() {
                     </label>
                   ) : null}
                   <div className="payroll-evidence-options">
+                    <div className="payroll-evidence-completeness">
+                      <strong>本月应收 7 份账单</strong>
+                      <span>工资表理论总额：{currency.format(minorToMajor(selectedBatch?.lines.reduce((sum, line) => sum + line.net_pay_minor, 0) ?? 0))}</span>
+                      <ul>
+                        {verificationEvidenceRequirements.map((requirement) => {
+                          const received = evidenceForBatch.filter(
+                            (evidence) => evidence.evidence_type === requirement.evidenceType,
+                          ).length
+                          return <li key={requirement.evidenceType}>{requirement.label} {received}/{requirement.requiredCount}</li>
+                        })}
+                      </ul>
+                    </div>
                     {evidenceForBatch.map((evidence) => (
                       <label key={evidence.artifact_id}>
                         <input
@@ -385,23 +423,26 @@ export function PayrollWorkspacePage() {
                           checked={selectedEvidence.includes(evidence.artifact_id)}
                           onChange={() => toggleEvidence(evidence.artifact_id)}
                         />
-                        <span>{evidence.display_label}</span>
+                        <span>{evidenceTypeLabel(evidence.evidence_type)} · {evidence.period}</span>
                       </label>
                     ))}
                   </div>
                   {selectedBatch ? (
-                    <Button
-                      disabled={commandBusy || selectedEvidence.length === 0}
-                      onClick={() => void submitVerification()}
-                    >
-                      {commandBusy ? '正在提交' : '提交发放验证'}
-                    </Button>
+                    <>
+                      {!evidenceSetAvailable ? <p className="payroll-evidence-required">三类账单尚未收齐：需 5 份网商银行、1 份中行、1 份微信账单。</p> : null}
+                      <Button
+                        disabled={commandBusy || !evidenceSetAvailable || !selectedEvidenceComplete}
+                        onClick={() => void submitVerification()}
+                      >
+                        {commandBusy ? '正在提交' : selectedEvidenceComplete ? '提交发放验证' : '选择全部 7 份账单'}
+                      </Button>
+                    </>
                   ) : null}
                 </div>
               ) : (
                 <ul>
                   {verification.available_evidence.map((evidence) => (
-                    <li key={evidence.artifact_id}><ShieldCheck size={18} weight="fill" /><span>{evidence.display_label}</span></li>
+                    <li key={evidence.artifact_id}><ShieldCheck size={18} weight="fill" /><span>{evidenceTypeLabel(evidence.evidence_type)} · {evidence.period}</span></li>
                   ))}
                 </ul>
               )}
