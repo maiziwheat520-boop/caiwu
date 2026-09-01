@@ -478,6 +478,85 @@ def legacy_workspace_payload():
     }
 
 
+def legacy_channel_verification_payload():
+    documents = [
+        *[
+            {
+                "evidence_type": "MYBANK_STATEMENT",
+                "evidence_ref": f"mybank_company_{index}_2026_08",
+            }
+            for index in range(1, 6)
+        ],
+        {"evidence_type": "BOC_RECEIPT", "evidence_ref": "boc_cash_2026_08"},
+        {
+            "evidence_type": "WECHAT_RECEIPT",
+            "evidence_ref": "wechat_separate_2026_08",
+        },
+    ]
+    return {
+        "schema_version": "payroll-current-paid-verification/v2",
+        "company_id": "company_demo",
+        "batch_id": "batch_demo_2026_08",
+        "period": "2026-08",
+        "evidence_documents": documents,
+        "evidence_summary": [
+            {
+                "evidence_type": "MYBANK_STATEMENT",
+                "required_count": 5,
+                "received_count": 5,
+            },
+            {"evidence_type": "BOC_RECEIPT", "required_count": 1, "received_count": 1},
+            {
+                "evidence_type": "WECHAT_RECEIPT",
+                "required_count": 1,
+                "received_count": 1,
+            },
+        ],
+        "theoretical_total_cents": 500000,
+        "actual_total_cents": 500000,
+        "difference_cents": 0,
+        "totals_match": True,
+        "by_payment_channel": [
+            {
+                "payment_channel": "MYBANK",
+                "expected_amount_cents": 500000,
+                "actual_amount_cents": 500000,
+                "difference_cents": 0,
+                "totals_match": True,
+            },
+            {
+                "payment_channel": "BOC",
+                "expected_amount_cents": 0,
+                "actual_amount_cents": 0,
+                "difference_cents": 0,
+                "totals_match": True,
+            },
+            {
+                "payment_channel": "WECHAT",
+                "expected_amount_cents": 0,
+                "actual_amount_cents": 0,
+                "difference_cents": 0,
+                "totals_match": True,
+            },
+        ],
+        "overall_status": "MATCHED",
+        "results": [
+            {
+                "employee_id": "emp_preview_001",
+                "account_id": "acct_preview_001",
+                "payment_channel": "MYBANK",
+                "expected_amount_cents": 500000,
+                "actual_amount_cents": 500000,
+                "difference_cents": 0,
+                "status": "MATCHED",
+            }
+        ],
+        "verified_at": "2026-09-01T02:00:00.000Z",
+        "payable": False,
+        "submission_supported": False,
+    }
+
+
 def test_legacy_feature_workspace_read_and_command_preserve_safe_provider_state():
     entity, adapter = source(legacy_workspace_payload())
     read = adapter.read_legacy_features(
@@ -503,6 +582,50 @@ def test_legacy_feature_workspace_read_and_command_preserve_safe_provider_state(
     )
     assert command.replayed is False
     assert command.payload_copy()["workspace"]["revision"] == 1
+
+
+def test_legacy_feature_workspace_accepts_complete_channel_and_total_reconciliation():
+    payload = legacy_workspace_payload()
+    payload["batches"][0]["verification"] = legacy_channel_verification_payload()
+    entity, adapter = source(payload)
+
+    read = adapter.read_legacy_features(
+        entity_ref=entity,
+        test_batch_id="batch_demo",
+        provider_headers={},
+    ).payload_copy()
+
+    verification = read["batches"][0]["verification"]
+    assert verification["theoretical_total_cents"] == 500000
+    assert verification["actual_total_cents"] == 500000
+    assert verification["totals_match"] is True
+    assert verification["evidence_summary"][0]["received_count"] == 5
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda verification: verification.update(theoretical_total_cents=499999),
+        lambda verification: verification.update(totals_match=False),
+        lambda verification: verification["evidence_documents"].pop(),
+        lambda verification: verification["by_payment_channel"][0].update(
+            actual_amount_cents=499999
+        ),
+    ],
+)
+def test_legacy_feature_workspace_rejects_channel_reconciliation_drift(mutate):
+    payload = legacy_workspace_payload()
+    verification = legacy_channel_verification_payload()
+    mutate(verification)
+    payload["batches"][0]["verification"] = verification
+    entity, adapter = source(payload)
+
+    with pytest.raises(PayrollIntegrationError):
+        adapter.read_legacy_features(
+            entity_ref=entity,
+            test_batch_id="batch_demo",
+            provider_headers={},
+        )
 
 
 @pytest.mark.parametrize(
