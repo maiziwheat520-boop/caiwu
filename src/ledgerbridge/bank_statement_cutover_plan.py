@@ -71,16 +71,9 @@ class BankStatementExistingAccountPlan:
         spec = parser_spec(self.parser_profile)
         if self.institution_code != spec.institution_code:
             raise ValueError("bank statement institution conflicts with parser profile")
-        if (
-            self.parser_profile
-            in {
-                BankStatementParserProfile.CCB_PERSONAL_XLS_V1,
-                BankStatementParserProfile.BOC_PERSONAL_PDF_V1,
-                BankStatementParserProfile.ABC_PERSONAL_PDF_V1,
-            }
-            and self.expected_owner_kind is not EntityType.PERSON
-        ):
-            raise ValueError("personal bank statement owner must be PERSON")
+        if self.expected_owner_kind.value not in spec.allowed_owner_kinds:
+            required = "/".join(sorted(spec.allowed_owner_kinds))
+            raise ValueError(f"bank statement owner must be {required}")
         if _ACCOUNT_SUFFIX.fullmatch(self.account_suffix) is None:
             raise ValueError("bank statement managed-account suffix is invalid")
         if self.period_start > self.period_end:

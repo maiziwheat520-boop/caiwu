@@ -23,6 +23,10 @@ def parse_bank_statement(
         from ledgerbridge.mybank_statement import parse_mybank_xlsx
 
         parser = parse_mybank_xlsx
+    elif profile is BankStatementParserProfile.MYBANK_COMPANY_DAILY_XLSX_V2:
+        from ledgerbridge.mybank_statement import parse_mybank_company_daily_xlsx
+
+        parser = parse_mybank_company_daily_xlsx
     elif profile is BankStatementParserProfile.CCB_PERSONAL_XLS_V1:
         from ledgerbridge.ccb_statement import parse_ccb_personal_xls
 

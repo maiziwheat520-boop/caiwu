@@ -18,6 +18,7 @@ class BankStatementParserProfile(StrEnum):
     """Versioned parser identities admitted by the persistence boundary."""
 
     MYBANK_XLSX_V1 = "mybank_xlsx_v1"
+    MYBANK_COMPANY_DAILY_XLSX_V2 = "mybank_company_daily_xlsx_v2"
     CCB_PERSONAL_XLS_V1 = "ccb_personal_xls_v1"
     BOC_PERSONAL_PDF_V1 = "boc_personal_pdf_v1"
     ABC_PERSONAL_PDF_V1 = "abc_personal_pdf_v1"
@@ -30,6 +31,7 @@ class BankStatementParserSpec:
     source_system: str
     declared_media_type: str
     display_extension: str
+    allowed_owner_kinds: frozenset[str]
 
 
 MYBANK_XLSX_V1: Final = BankStatementParserSpec(
@@ -38,6 +40,15 @@ MYBANK_XLSX_V1: Final = BankStatementParserSpec(
     source_system="mybank_xlsx_export",
     declared_media_type=("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
     display_extension=".xlsx",
+    allowed_owner_kinds=frozenset({"PERSON", "COMPANY"}),
+)
+MYBANK_COMPANY_DAILY_XLSX_V2: Final = BankStatementParserSpec(
+    profile=BankStatementParserProfile.MYBANK_COMPANY_DAILY_XLSX_V2,
+    institution_code="mybank",
+    source_system="mybank_daily_statement",
+    declared_media_type=("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    display_extension=".xlsx",
+    allowed_owner_kinds=frozenset({"COMPANY"}),
 )
 CCB_PERSONAL_XLS_V1: Final = BankStatementParserSpec(
     profile=BankStatementParserProfile.CCB_PERSONAL_XLS_V1,
@@ -45,6 +56,7 @@ CCB_PERSONAL_XLS_V1: Final = BankStatementParserSpec(
     source_system="ccb_personal_xls_export",
     declared_media_type="application/vnd.ms-excel",
     display_extension=".xls",
+    allowed_owner_kinds=frozenset({"PERSON"}),
 )
 BOC_PERSONAL_PDF_V1: Final = BankStatementParserSpec(
     profile=BankStatementParserProfile.BOC_PERSONAL_PDF_V1,
@@ -52,6 +64,7 @@ BOC_PERSONAL_PDF_V1: Final = BankStatementParserSpec(
     source_system="boc_transaction_statement",
     declared_media_type="application/pdf",
     display_extension=".pdf",
+    allowed_owner_kinds=frozenset({"PERSON"}),
 )
 ABC_PERSONAL_PDF_V1: Final = BankStatementParserSpec(
     profile=BankStatementParserProfile.ABC_PERSONAL_PDF_V1,
@@ -59,12 +72,14 @@ ABC_PERSONAL_PDF_V1: Final = BankStatementParserSpec(
     source_system="abc_personal_pdf_export",
     declared_media_type="application/pdf",
     display_extension=".pdf",
+    allowed_owner_kinds=frozenset({"PERSON"}),
 )
 
 _SPECS: Final = {
     spec.profile: spec
     for spec in (
         MYBANK_XLSX_V1,
+        MYBANK_COMPANY_DAILY_XLSX_V2,
         CCB_PERSONAL_XLS_V1,
         BOC_PERSONAL_PDF_V1,
         ABC_PERSONAL_PDF_V1,
@@ -128,6 +143,7 @@ class BankStatement:
                 BankStatementParserProfile.CCB_PERSONAL_XLS_V1,
                 BankStatementParserProfile.BOC_PERSONAL_PDF_V1,
                 BankStatementParserProfile.ABC_PERSONAL_PDF_V1,
+                BankStatementParserProfile.MYBANK_COMPANY_DAILY_XLSX_V2,
             }
             and _DIGEST.fullmatch(self.parser_facts_sha256) is None
         ):
