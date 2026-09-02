@@ -97,6 +97,36 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _build_company_report_client(
+    *,
+    default_base_url: str,
+    default_ca_file: str,
+    timeout_seconds: float,
+) -> CoreHttpClient | None:
+    certificate_file = os.environ.get("CORE_COMPANY_REPORT_CERT_FILE", "").strip()
+    private_key_file = os.environ.get("CORE_COMPANY_REPORT_KEY_FILE", "").strip()
+    if not certificate_file or not private_key_file:
+        return None
+    try:
+        return CoreHttpClient(
+            base_url=os.environ.get(
+                "CORE_COMPANY_REPORT_BASE_URL",
+                default_base_url,
+            ).strip()
+            or default_base_url,
+            ca_file=os.environ.get(
+                "CORE_COMPANY_REPORT_CA_FILE",
+                default_ca_file,
+            ).strip()
+            or default_ca_file,
+            certificate_file=certificate_file,
+            private_key_file=private_key_file,
+            timeout_seconds=timeout_seconds,
+        )
+    except (OSError, ValueError):
+        return None
+
+
 def _problem(status: int, code: str, title: str, detail: str = "") -> dict[str, object]:
     payload: dict[str, object] = {"type": "about:blank", "title": title, "status": status, "code": code}
     if detail:
@@ -2034,15 +2064,22 @@ def run() -> None:
             else None
         )
         try:
+            timeout_seconds = float(os.environ.get("CORE_TIMEOUT_SECONDS", "10"))
             client = CoreHttpClient(
                 base_url=required["CORE_BASE_URL"],
                 ca_file=required["CORE_CA_FILE"],
                 certificate_file=required["CORE_CERT_FILE"],
                 private_key_file=required["CORE_KEY_FILE"],
-                timeout_seconds=float(os.environ.get("CORE_TIMEOUT_SECONDS", "10")),
+                timeout_seconds=timeout_seconds,
+            )
+            company_report_client = _build_company_report_client(
+                default_base_url=required["CORE_BASE_URL"],
+                default_ca_file=required["CORE_CA_FILE"],
+                timeout_seconds=timeout_seconds,
             )
             state = CoreBackedState(
                 client,
+                company_report_client=company_report_client,
                 assertion_key=required["CORE_USER_ASSERTION_KEY"].encode("utf-8"),
                 assertion_issuer=required["CORE_ASSERTION_ISSUER"],
                 assertion_audience=required["CORE_ASSERTION_AUDIENCE"],
