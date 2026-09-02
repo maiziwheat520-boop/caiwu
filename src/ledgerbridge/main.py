@@ -28,6 +28,9 @@ from ledgerbridge.auth import (
     authorize_principal,
 )
 from ledgerbridge.company_reporting_routes import router as company_reporting_router
+from ledgerbridge.company_bank_statement_routes import (
+    router as company_bank_statement_router,
+)
 from ledgerbridge.config import Settings, get_settings
 from ledgerbridge.connectors import Connector
 from ledgerbridge.db import get_session, get_session_factory
@@ -90,6 +93,7 @@ app.add_middleware(
 )
 app.include_router(internal_read_router)
 app.include_router(company_reporting_router)
+app.include_router(company_bank_statement_router)
 app.include_router(personal_finance_router)
 app.include_router(internal_candidate_command_router)
 app.include_router(internal_bank_statement_review_router)

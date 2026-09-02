@@ -38,7 +38,10 @@ def get_service(
 def require_review(
     principal: Annotated[WorkloadPrincipal, Depends(get_internal_read_principal)],
 ) -> WorkloadPrincipal:
-    require_capability(principal, Capability.CANDIDATE_DECIDE)
+    if Capability.BANK_STATEMENT_REVIEW_DECIDE in principal.capabilities:
+        require_capability(principal, Capability.BANK_STATEMENT_REVIEW_DECIDE)
+    else:
+        require_capability(principal, Capability.CANDIDATE_DECIDE)
     return principal
 
 

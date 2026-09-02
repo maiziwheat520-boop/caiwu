@@ -31,6 +31,8 @@ class Capability(StrEnum):
     RECONCILIATION_READ = "reconciliation:read"
     LEDGER_READ = "ledger:read"
     COMPANY_REPORT_READ = "company-report:read"
+    BANK_STATEMENT_REVIEW_READ = "bank-statement-review:read"
+    BANK_STATEMENT_REVIEW_DECIDE = "bank-statement-review:decide"
     CANDIDATE_CREATE = "candidate:create"
     CANDIDATE_DECIDE = "candidate:decide"
     CANDIDATE_SUPERSEDE = "candidate:supersede"
@@ -56,6 +58,7 @@ READ_CAPABILITIES = frozenset(
         Capability.RECONCILIATION_READ,
         Capability.LEDGER_READ,
         Capability.COMPANY_REPORT_READ,
+        Capability.BANK_STATEMENT_REVIEW_READ,
         Capability.ACCOUNT_REGISTRY_READ,
     }
 )
@@ -72,6 +75,7 @@ READ_ROUTE_CAPABILITIES: Mapping[str, Capability] = {
     "GET /internal/v1/company-reports": Capability.COMPANY_REPORT_READ,
     "GET /internal/v1/company-report-composition": Capability.COMPANY_REPORT_READ,
     "GET /internal/v1/personal-finance": Capability.LEDGER_READ,
+    "GET /internal/v1/company-bank-statements/{id}": Capability.BANK_STATEMENT_REVIEW_READ,
 }
 
 READ_ROUTE_SCOPE_MODES: Mapping[str, ScopeMode] = {
@@ -85,6 +89,7 @@ READ_ROUTE_SCOPE_MODES: Mapping[str, ScopeMode] = {
     "GET /internal/v1/company-reports": ScopeMode.COLLECTION,
     "GET /internal/v1/company-report-composition": ScopeMode.COLLECTION,
     "GET /internal/v1/personal-finance": ScopeMode.OBJECT,
+    "GET /internal/v1/company-bank-statements/{id}": ScopeMode.OBJECT,
 }
 
 CANDIDATE_ACTION_CAPABILITIES: Mapping[CandidateAction, Capability] = {

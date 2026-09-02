@@ -52,8 +52,10 @@ class DatabasePersonalFinanceService:
         *,
         statement_ref: UUID,
         entity_ref: UUID,
+        required_capability: Capability = Capability.LEDGER_READ,
+        owner_kind: str = "PERSON",
     ) -> PersonalFinancePage:
-        require_capability(principal, Capability.LEDGER_READ)
+        require_capability(principal, required_capability)
         if not any(grant.entity_ref == entity_ref for grant in principal.grants):
             raise ResourceNotVisible("resource was not found")
 
@@ -92,6 +94,7 @@ class DatabasePersonalFinanceService:
                     managed_account_ref=managed_account_ref,
                     horizon_sequence=sequence,
                     horizon_hash=horizon_hash,
+                    owner_kind=owner_kind,
                 )
                 items = self._transactions(
                     session,
@@ -165,6 +168,7 @@ class DatabasePersonalFinanceService:
         managed_account_ref: UUID,
         horizon_sequence: int,
         horizon_hash: bytes,
+        owner_kind: str,
     ) -> tuple[str, str]:
         raw = session.execute(
             text(
@@ -177,7 +181,7 @@ class DatabasePersonalFinanceService:
                 "horizon_hash": horizon_hash,
             },
         ).scalar_one_or_none()
-        if not isinstance(raw, Mapping) or raw.get("owner_kind") != "PERSON":
+        if not isinstance(raw, Mapping) or raw.get("owner_kind") != owner_kind:
             raise ResourceNotVisible("resource was not found")
         accounts = raw.get("accounts")
         if not isinstance(accounts, list):

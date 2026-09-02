@@ -15,7 +15,7 @@ from ledgerbridge.internal_candidate_command import (
     CandidateCommandRejected,
     CandidateCommandUnavailable,
 )
-from ledgerbridge.internal_read_contract import WorkloadPrincipal
+from ledgerbridge.internal_read_contract import Capability, WorkloadPrincipal
 from ledgerbridge.personal_finance_service import DatabasePersonalFinanceService
 
 
@@ -69,6 +69,16 @@ class DatabaseBankStatementReviewService:
             principal,
             statement_ref=statement_ref,
             entity_ref=command.entity_ref,
+            required_capability=(
+                Capability.BANK_STATEMENT_REVIEW_DECIDE
+                if Capability.BANK_STATEMENT_REVIEW_DECIDE in principal.capabilities
+                else Capability.LEDGER_READ
+            ),
+            owner_kind=(
+                "COMPANY"
+                if Capability.BANK_STATEMENT_REVIEW_DECIDE in principal.capabilities
+                else "PERSON"
+            ),
         )
         if current.statement.review_revision != command.expected_revision:
             raise BankStatementReviewRejected("bank statement review revision is stale")
