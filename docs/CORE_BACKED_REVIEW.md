@@ -111,6 +111,9 @@ returns 503; Passkey login and the other Core-backed routes continue to start an
 operate. The Compose template expects these files under the existing read-only
 `config` mount at `company-report-core/client.crt` and
 `company-report-core/client.key`, unless container paths are overridden.
+The default report origin is `https://internal-ingress:8444`; Core binds that
+port to the report-only proxy identity. The primary Web client remains on 8443,
+and crossing either certificate with the other port fails authentication.
 
 VM103 injects the non-secret identity context through those variables: entity
 `a131ef1b-e250-5a6d-82ff-cab68f767997`, user subject `ledgerbridge-owner`,

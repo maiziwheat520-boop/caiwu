@@ -30,7 +30,7 @@ services:
       CORE_CA_FILE: /run/ledgerbridge-core/ca.crt
       CORE_CERT_FILE: /run/ledgerbridge-core/client.crt
       CORE_KEY_FILE: /run/ledgerbridge-core/client.key
-      CORE_COMPANY_REPORT_BASE_URL: "${CORE_COMPANY_REPORT_BASE_URL:-https://internal-ingress:8443}"
+      CORE_COMPANY_REPORT_BASE_URL: "${CORE_COMPANY_REPORT_BASE_URL:-https://internal-ingress:8444}"
       CORE_COMPANY_REPORT_CA_FILE: "${CORE_COMPANY_REPORT_CA_FILE:-/run/ledgerbridge-core/ca.crt}"
       CORE_COMPANY_REPORT_CERT_FILE: "${CORE_COMPANY_REPORT_CERT_FILE:-/config/company-report-core/client.crt}"
       CORE_COMPANY_REPORT_KEY_FILE: "${CORE_COMPANY_REPORT_KEY_FILE:-/config/company-report-core/client.key}"
