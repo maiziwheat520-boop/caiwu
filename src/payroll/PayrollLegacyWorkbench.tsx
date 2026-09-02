@@ -309,7 +309,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
       binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
     }
     await execute('IMPORT_RULES', {
-      period: generationPeriod,
+      period: '2026-08',
       source_filename: ruleSourceFile.name,
       source_file_base64: window.btoa(binary),
     })
@@ -491,19 +491,26 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
           {task === 'rules' ? (
             <div className="payroll-task-panel">
               <div className="payroll-task-heading"><div><span>07</span><h3>工资计算与审查规则</h3></div><p>规则保存后刷新仍会保留；停用或删除的审查规则不会参与下一次检查。</p></div>
-              <section className="payroll-rule-import" aria-labelledby="payroll-rule-import-heading">
-                <div>
-                  <strong id="payroll-rule-import-heading">从原工资软件导入长期规则</strong>
-                  <span>选择旧工资表后，只读取“员工信息表”和“标准表”。源文件不会进入素材库；每月素材仍只有阿姨考勤表、考勤表和好评表。</span>
+              {rules.length === 0 ? (
+                <section className="payroll-rule-import" aria-labelledby="payroll-rule-import-heading">
+                  <div>
+                    <strong id="payroll-rule-import-heading">一次性建立八月工资规则基线</strong>
+                    <span>仅在系统首次切换时，从原软件迁移 2026 年 8 月长期规则。完成后入口自动关闭，往后只在本网页保存和修改，不再依赖 Excel。</span>
+                  </div>
+                  <label className="payroll-rule-file">
+                    <span>{ruleSourceFile?.name ?? '选择八月规则源（.xlsx）'}</span>
+                    <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => setRuleSourceFile(event.target.files?.[0] ?? null)} />
+                  </label>
+                  <button type="button" className="primary" disabled={!ruleSourceFile || busy} onClick={() => void importRules()}>
+                    {busy ? '正在建立基线' : '建立规则基线'}
+                  </button>
+                </section>
+              ) : (
+                <div className="payroll-rule-baseline-status">
+                  <strong>八月规则基线已建立</strong>
+                  <span>当前规则以网页保存内容为准；Excel 导入入口已关闭。</span>
                 </div>
-                <label className="payroll-rule-file">
-                  <span>{ruleSourceFile?.name ?? '选择旧工资表（.xlsx）'}</span>
-                  <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => setRuleSourceFile(event.target.files?.[0] ?? null)} />
-                </label>
-                <button type="button" className="primary" disabled={!ruleSourceFile || busy} onClick={() => void importRules()}>
-                  {busy ? '正在导入' : '导入并显示工资规则'}
-                </button>
-              </section>
+              )}
               <section className="payroll-review-rules" aria-labelledby="payroll-review-rules-heading">
                 <div className="payroll-review-rules-heading">
                   <div><strong id="payroll-review-rules-heading">审查规则管理</strong><span>控制“检查规则与历史”实际执行的项目。</span></div>
