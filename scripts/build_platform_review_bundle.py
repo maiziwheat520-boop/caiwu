@@ -111,12 +111,18 @@ def main() -> int:
     parser.add_argument("--normalized-records", type=Path, required=True)
     parser.add_argument("--wechat-statement", type=Path, required=True)
     parser.add_argument("--alipay-statement", type=Path, required=True)
+    parser.add_argument(
+        "--alipay-source-account-ref",
+        type=UUID,
+        help="Stable opaque account identity used to isolate Alipay evidence and transactions",
+    )
     parser.add_argument("--output-directory", type=Path, required=True)
     args = parser.parse_args()
     manifest_path, manifest = build_platform_bundle(
         normalized_records=args.normalized_records.resolve(),
         wechat_statement=args.wechat_statement.resolve(),
         alipay_statement=args.alipay_statement.resolve(),
+        alipay_source_account_ref=args.alipay_source_account_ref,
         output_directory=args.output_directory.resolve(),
     )
     print(
@@ -133,6 +139,7 @@ def build_platform_bundle(
     wechat_statement: Path,
     alipay_statement: Path,
     output_directory: Path,
+    alipay_source_account_ref: UUID | None = None,
 ) -> tuple[Path, SourceManifest]:
     envelope = _load_normalized(normalized_records)
     statements = {
@@ -155,7 +162,12 @@ def build_platform_bundle(
     for alias, (source, safe_name, media_type) in statements.items():
         digest = _digest(source)
         source_digests.append(digest)
-        ref = uuid5(_NAMESPACE, f"evidence:{alias}:{digest}")
+        account_scope = (
+            f":account:{alipay_source_account_ref}"
+            if alias == "alipay" and alipay_source_account_ref is not None
+            else ""
+        )
+        ref = uuid5(_NAMESPACE, f"evidence:{alias}{account_scope}:{digest}")
         evidence_refs[alias] = ref
         shutil.copy2(source, output_directory / safe_name)
         evidence.append(
@@ -191,7 +203,12 @@ def build_platform_bundle(
         category_code = (
             "WECHAT_TRANSACTION_REVIEW" if record.source == "微信" else "ALIPAY_TRANSACTION_REVIEW"
         )
-        stable = f"{source_system}:{envelope.period}:{record.recordId}"
+        account_scope = (
+            f":account:{alipay_source_account_ref}"
+            if record.source == "支付宝" and alipay_source_account_ref is not None
+            else ""
+        )
+        stable = f"{source_system}{account_scope}:{envelope.period}:{record.recordId}"
         summary_parts = (
             record.source,
             record.date,
@@ -249,7 +266,10 @@ def build_platform_bundle(
             }
         )
 
-    fingerprint = ":".join((*sorted(source_digests), *(record.recordId for record in effective)))
+    fingerprint_parts = [*sorted(source_digests), *(record.recordId for record in effective)]
+    if alipay_source_account_ref is not None:
+        fingerprint_parts.append(f"alipay-account:{alipay_source_account_ref}")
+    fingerprint = ":".join(fingerprint_parts)
     payload = {
         "schema_version": SOURCE_MANIFEST_SCHEMA,
         "batch_ref": uuid5(_NAMESPACE, f"batch:{fingerprint}"),

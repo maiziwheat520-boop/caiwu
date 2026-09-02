@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
+from ledgerbridge.controlled_import import SourceManifest
 from scripts.build_platform_review_bundle import (
     PlatformBundleError,
     build_platform_bundle,
@@ -92,6 +94,39 @@ def test_platform_bundle_keeps_native_evidence_and_only_effective_records(
     assert tuple(item.candidate_ref for item in replay.candidates) == tuple(
         item.candidate_ref for item in manifest.candidates
     )
+
+
+def test_alipay_identity_is_idempotent_per_account_and_distinct_across_accounts(
+    tmp_path: Path,
+) -> None:
+    normalized = tmp_path / "normalized.json"
+    wechat = tmp_path / "wechat.xlsx"
+    alipay = tmp_path / "alipay.csv"
+    wechat.write_bytes(b"synthetic-wechat")
+    alipay.write_bytes(b"synthetic-alipay")
+    _write_normalized(normalized, [_record("ZFB-abcdef012345", source="支付宝")])
+    account_one = UUID("10000000-0000-4000-8000-000000000001")
+    account_two = UUID("10000000-0000-4000-8000-000000000002")
+
+    def build(name: str, account_ref: UUID) -> SourceManifest:
+        return build_platform_bundle(
+            normalized_records=normalized,
+            wechat_statement=wechat,
+            alipay_statement=alipay,
+            alipay_source_account_ref=account_ref,
+            output_directory=tmp_path / name,
+        )[1]
+
+    first = build("first", account_one)
+    replay = build("replay", account_one)
+    second_account = build("second-account", account_two)
+
+    assert first.batch_ref == replay.batch_ref
+    assert first.candidates[0].candidate_ref == replay.candidates[0].candidate_ref
+    assert first.candidates[0].source_event_ref == replay.candidates[0].source_event_ref
+    assert first.candidates[0].candidate_ref != second_account.candidates[0].candidate_ref
+    assert first.candidates[0].source_event_ref != second_account.candidates[0].source_event_ref
+    assert first.evidence[1].evidence_ref != second_account.evidence[1].evidence_ref
 
 
 def test_platform_bundle_rejects_duplicate_normalized_ids(tmp_path: Path) -> None:
