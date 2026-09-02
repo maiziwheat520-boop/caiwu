@@ -3881,6 +3881,7 @@ def _validate_legacy_feature_tree(
                     _invalid_response("payroll legacy feature batch scope is invalid")
                 if key == "employee_id":
                     _require_stable_identifier(nested, key)
+                    continue
                 elif key == "account_id":
                     _require_stable_identifier(nested, key, account=True)
                     # Already validated as an opaque account identifier; scanning
