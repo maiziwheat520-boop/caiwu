@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Badge, Button } from '@radix-ui/themes'
-import { ArrowsClockwise, Bank, CloudArrowDown, CloudArrowUp, Database, Warning } from '@phosphor-icons/react'
+import { ArrowsClockwise, Bank, CaretDown, CaretUp, CloudArrowDown, CloudArrowUp, Database, MagnifyingGlass, Warning } from '@phosphor-icons/react'
 import { api, minorToMajor } from '../api'
 import type { PersonalBankStatement, PersonalBankTransaction, PersonalBankTransactionsResponse } from '../types'
 import { presentPersonalBankTransaction } from './personalBankPresentation'
@@ -24,6 +24,8 @@ const institutionLabels: Record<string, string> = {
   ccb: '中国建设银行',
   mybank: '网商银行',
 }
+
+const transactionPageSize = 50
 
 async function loadAllPersonalBankTransactions() {
   const result = await api.getPersonalBankTransactions()
@@ -103,10 +105,51 @@ function PersonalBankFacts({ data, csrfToken, reviewBusy, setReviewBusy, reload 
   setReviewBusy: (value: string | null) => void
   reload: () => Promise<void>
 }) {
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const [accountFilter, setAccountFilter] = useState('all')
+  const [directionFilter, setDirectionFilter] = useState<'all' | 'income' | 'expense'>('all')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [query, setQuery] = useState('')
+  const [visibleCount, setVisibleCount] = useState(transactionPageSize)
   const summary = data.summary
-  const statementsByRef = new Map(data.statements.map((statement) => [statement.statement_ref, statement]))
+  const statementsByRef = useMemo(
+    () => new Map(data.statements.map((statement) => [statement.statement_ref, statement])),
+    [data.statements],
+  )
   const periodStart = data.statements.reduce((value, statement) => value < statement.period_start ? value : statement.period_start, data.statements[0].period_start)
   const periodEnd = data.statements.reduce((value, statement) => value > statement.period_end ? value : statement.period_end, data.statements[0].period_end)
+  const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN')
+  const filteredItems = useMemo(() => data.items.filter((item) => {
+    const statement = statementsByRef.get(item.statement_ref)
+    if (!statement) return false
+    if (accountFilter !== 'all' && item.statement_ref !== accountFilter) return false
+    if (directionFilter === 'income' && item.amount_minor <= 0) return false
+    if (directionFilter === 'expense' && item.amount_minor >= 0) return false
+    const occurredDate = item.occurred_at.slice(0, 10)
+    if (dateFrom && occurredDate < dateFrom) return false
+    if (dateTo && occurredDate > dateTo) return false
+    if (!normalizedQuery) return true
+    const presentation = presentPersonalBankTransaction(item, statement)
+    return [
+      institutionLabels[statement.institution_code] ?? '银行账户',
+      statement.account_suffix,
+      presentation.counterparty,
+      presentation.detail,
+    ].some((value) => value.toLocaleLowerCase('zh-CN').includes(normalizedQuery))
+  }), [accountFilter, data.items, dateFrom, dateTo, directionFilter, normalizedQuery, statementsByRef])
+  const visibleItems = filteredItems.slice(0, visibleCount)
+  const hasFilters = accountFilter !== 'all' || directionFilter !== 'all' || dateFrom !== '' || dateTo !== '' || query !== ''
+
+  const resetFilters = () => {
+    setAccountFilter('all')
+    setDirectionFilter('all')
+    setDateFrom('')
+    setDateTo('')
+    setQuery('')
+    setVisibleCount(transactionPageSize)
+  }
+
   return (
     <>
       <div className="personal-bank-facts-metrics" aria-label="正式银行流水汇总">
@@ -116,18 +159,98 @@ function PersonalBankFacts({ data, csrfToken, reviewBusy, setReviewBusy, reload 
         <FormalMetric icon={<ArrowsClockwise size={19} />} label="净现金流" value={currency.format(minorToMajor(summary.net_cash_flow_minor))} detail="流入减流出" />
       </div>
       <StatementStatuses statements={data.statements} csrfToken={csrfToken} reviewBusy={reviewBusy} setReviewBusy={setReviewBusy} reload={reload} />
-      <div className="personal-bank-transaction-list" aria-label="正式银行流水明细">
-        {data.items.map((item) => {
-          const statement = statementsByRef.get(item.statement_ref)
-          return statement ? (
-            <PersonalBankTransactionRow
-              key={`${item.statement_ref}:${item.source_row_number}`}
-              item={item}
-              statement={statement}
-            />
-          ) : null
-        })}
+      <div className="personal-bank-details-entry">
+        <div>
+          <strong>银行流水明细</strong>
+          <span>按账户、日期、收支方向或交易对象查询，不在个人财务首屏默认展开。</span>
+        </div>
+        <Button
+          aria-controls="personal-bank-transaction-details"
+          aria-expanded={detailsOpen}
+          variant="soft"
+          onClick={() => setDetailsOpen((open) => !open)}
+        >
+          {detailsOpen ? <CaretUp size={15} /> : <CaretDown size={15} />}
+          {detailsOpen ? '收起流水明细' : `查看流水明细（${summary.transaction_count} 笔）`}
+        </Button>
       </div>
+      {detailsOpen ? (
+        <div className="personal-bank-details" id="personal-bank-transaction-details">
+          <div className="personal-bank-filter-bar" role="search" aria-label="筛选正式银行流水">
+            <label>
+              <span>账户</span>
+              <select aria-label="银行账户筛选" value={accountFilter} onChange={(event) => {
+                setAccountFilter(event.target.value)
+                setVisibleCount(transactionPageSize)
+              }}>
+                <option value="all">全部账户</option>
+                {data.statements.map((statement) => (
+                  <option key={statement.statement_ref} value={statement.statement_ref}>
+                    {institutionLabels[statement.institution_code] ?? '银行账户'} · 尾号 {statement.account_suffix}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>方向</span>
+              <select aria-label="收支方向筛选" value={directionFilter} onChange={(event) => {
+                setDirectionFilter(event.target.value as typeof directionFilter)
+                setVisibleCount(transactionPageSize)
+              }}>
+                <option value="all">全部方向</option>
+                <option value="income">仅流入</option>
+                <option value="expense">仅流出</option>
+              </select>
+            </label>
+            <label>
+              <span>开始日期</span>
+              <input aria-label="流水开始日期" max={dateTo || periodEnd} min={periodStart} type="date" value={dateFrom} onChange={(event) => {
+                setDateFrom(event.target.value)
+                setVisibleCount(transactionPageSize)
+              }} />
+            </label>
+            <label>
+              <span>结束日期</span>
+              <input aria-label="流水结束日期" max={periodEnd} min={dateFrom || periodStart} type="date" value={dateTo} onChange={(event) => {
+                setDateTo(event.target.value)
+                setVisibleCount(transactionPageSize)
+              }} />
+            </label>
+            <label className="personal-bank-query-field">
+              <span>交易对象或关键词</span>
+              <div><MagnifyingGlass size={15} /><input aria-label="搜索银行流水" placeholder="搜索对手方、银行或交易类型" value={query} onChange={(event) => {
+                setQuery(event.target.value)
+                setVisibleCount(transactionPageSize)
+              }} /></div>
+            </label>
+            <Button disabled={!hasFilters} size="1" variant="outline" color="gray" onClick={resetFilters}>清除筛选</Button>
+          </div>
+          <div className="personal-bank-filter-summary" role="status">
+            符合条件 {filteredItems.length} 笔{filteredItems.length > visibleItems.length ? `，当前显示前 ${visibleItems.length} 笔` : ''}
+          </div>
+          {visibleItems.length > 0 ? (
+            <div className="personal-bank-transaction-list" aria-label="正式银行流水明细">
+              {visibleItems.map((item) => {
+                const statement = statementsByRef.get(item.statement_ref)
+                return statement ? (
+                  <PersonalBankTransactionRow
+                    key={`${item.statement_ref}:${item.source_row_number}`}
+                    item={item}
+                    statement={statement}
+                  />
+                ) : null
+              })}
+            </div>
+          ) : <div className="personal-bank-filter-empty">当前筛选条件下没有流水。</div>}
+          {visibleItems.length < filteredItems.length ? (
+            <div className="personal-bank-load-more">
+              <Button variant="soft" onClick={() => setVisibleCount((count) => count + transactionPageSize)}>
+                再显示 {Math.min(transactionPageSize, filteredItems.length - visibleItems.length)} 笔
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </>
   )
 }

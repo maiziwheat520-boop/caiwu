@@ -79,7 +79,7 @@ describe('CompanyReportsPage', () => {
 
     expect(await screen.findByText('待完成公司归属')).toBeInTheDocument()
     expect(screen.getByText(/216 条已确认来源待账户或经济性质归属/)).toBeInTheDocument()
-    expect(screen.getByText('正式账簿尚未接入')).toBeInTheDocument()
+    expect(screen.getByText('会计账簿尚未接入')).toBeInTheDocument()
   })
 
   it('shows totals and ranked category shares for the selected test company', async () => {
@@ -124,11 +124,23 @@ describe('CompanyReportsPage', () => {
     const dashboard = await screen.findByRole('region', {
       name: 'LedgerBridge controlled reconciliation 财务汇总',
     })
-    expect(screen.getByRole('button', { name: '账户流水' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: '正式银行流水' })).toHaveAttribute('aria-pressed', 'true')
     expect(within(dashboard).getByText('¥6,160,215.31')).toBeInTheDocument()
     expect(within(dashboard).getByText('¥5,930,787.86')).toBeInTheDocument()
     expect(within(dashboard).getByText('¥229,427.45')).toBeInTheDocument()
     expect(within(dashboard).getAllByText('账户流水尚未完成收支类型分类，当前仅展示现金流总额。')).toHaveLength(2)
+    const statementSummary = screen.getByRole('region', {
+      name: 'LedgerBridge controlled reconciliation 账户流水汇总',
+    })
+    expect(within(statementSummary).getByText('正式银行流水')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('正式数据')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('账户流入')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('账户流出')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('净现金流')).toBeInTheDocument()
+    expect(screen.queryByText('测试汇总收入')).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', {
+      name: 'LedgerBridge controlled reconciliation 正式财务总额',
+    })).not.toBeInTheDocument()
   })
 
   it('switches companies and requests an applied month range', async () => {
@@ -172,6 +184,18 @@ describe('CompanyReportsPage', () => {
     expect(within(dashboard).getAllByText('¥220.00')).toHaveLength(2)
     expect(within(dashboard).getByText('未分类')).toBeInTheDocument()
 
+    fireEvent.change(screen.getByRole('combobox', { name: '选择公司' }), {
+      target: { value: '__all_companies__' },
+    })
+    const allCompaniesDashboard = screen.getByRole('region', { name: '全部公司 财务汇总' })
+    expect(within(allCompaniesDashboard).getByRole('heading', { name: '全部公司汇总' })).toBeInTheDocument()
+    expect(within(allCompaniesDashboard).getByText('2 家公司合并展示')).toBeInTheDocument()
+    expect(within(allCompaniesDashboard).getByText('¥320.00')).toBeInTheDocument()
+    expect(within(allCompaniesDashboard).getByText('¥80.00')).toBeInTheDocument()
+    expect(within(allCompaniesDashboard).getByText('¥240.00')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '薇旭公司' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '景怡公司' })).toBeInTheDocument()
+
     fireEvent.change(screen.getByLabelText('开始月份'), { target: { value: '2026-03' } })
     fireEvent.change(screen.getByLabelText('结束月份'), { target: { value: '2026-05' } })
     fireEvent.click(screen.getByRole('button', { name: '应用期间' }))
@@ -200,7 +224,8 @@ describe('CompanyReportsPage', () => {
     render(<CompanyReportsPage csrfToken="csrf-test" />)
 
     const selector = await screen.findByRole('combobox', { name: '选择公司' })
-    expect(within(selector).getAllByRole('option')).toHaveLength(5)
+    expect(within(selector).getAllByRole('option')).toHaveLength(6)
+    expect(within(selector).getByRole('option', { name: '全部公司' })).toBeInTheDocument()
     expect(within(selector).getByRole('option', { name: '公司五' })).toBeInTheDocument()
     fireEvent.change(selector, {
       target: { value: '50000000-0000-4000-8000-000000000005' },

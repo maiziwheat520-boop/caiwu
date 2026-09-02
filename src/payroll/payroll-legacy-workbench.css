@@ -61,7 +61,7 @@
 
 .payroll-legacy-taskbar {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -92,7 +92,8 @@
 
 .payroll-legacy-toolbar,
 .payroll-task-panel,
-.payroll-main-table {
+.payroll-main-table,
+.payroll-ledger {
   padding: 16px;
   border: 1px solid #dce3ec;
   border-radius: 13px;
@@ -423,11 +424,94 @@
 .payroll-legacy-loading,
 .payroll-empty-task { padding: 28px; border: 1px dashed #cbd6e3; border-radius: 12px; color: #6a7b90; text-align: center; background: #fff; font-size: 12px; }
 .payroll-legacy-loading { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.payroll-load-failed { border-color: #eccaca; color: #9a4147; background: #fff7f7; }
+
+.payroll-ledger { display: grid; gap: 15px; }
+.payroll-ledger-heading,
+.payroll-ledger-detail-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.payroll-ledger-heading > div,
+.payroll-ledger-detail-heading > div { display: grid; gap: 3px; }
+.payroll-ledger-heading span { color: #3868a3; font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+.payroll-ledger-heading h3 { margin: 0; color: #17283f; font-size: 18px; }
+.payroll-ledger-heading small,
+.payroll-ledger-detail-heading span { color: #748398; font-size: 10px; }
+.payroll-ledger-heading > strong { color: #214f83; font-size: 13px; }
+
+.payroll-ledger-equation {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr) auto) minmax(92px, auto);
+  align-items: stretch;
+  border: 1px solid #d8e2ee;
+  border-radius: 11px;
+  overflow: hidden;
+}
+.payroll-ledger-equation > div:not(.payroll-ledger-status) { display: grid; gap: 7px; padding: 13px 15px; background: #fbfcfe; }
+.payroll-ledger-equation > div span { color: #6b7b8f; font-size: 10px; }
+.payroll-ledger-equation > div strong { color: #263b55; font-size: 15px; }
+.payroll-ledger-equation > b { align-self: center; color: #8795a7; font-size: 12px; }
+.payroll-ledger-equation .actual { color: #2469b0; }
+.payroll-ledger-equation .negative,
+.payroll-ledger-table-scroll .attention { color: #b64d48; }
+.payroll-ledger-equation .matched,
+.payroll-ledger-table-scroll .matched { color: #188257; }
+.payroll-ledger-equation .attention { color: #a96911; }
+.payroll-ledger-status { display: grid; place-items: center; padding: 10px 14px; font-size: 12px; font-weight: 850; }
+.payroll-ledger-status.matched { color: #17714a; background: #eff9f3; }
+.payroll-ledger-status.pending { color: #91610f; background: #fff8e8; }
+
+.payroll-ledger-layout { display: grid; grid-template-columns: 180px minmax(0, 1fr); border: 1px solid #dce4ed; border-radius: 11px; overflow: hidden; }
+.payroll-ledger-layout aside { display: grid; align-content: start; gap: 4px; padding: 14px 10px; border-right: 1px solid #e0e6ee; background: #fafbfd; }
+.payroll-ledger-layout aside > strong { color: #253b55; font-size: 12px; }
+.payroll-ledger-layout aside > small { margin-bottom: 6px; color: #78879a; font-size: 9px; }
+.payroll-ledger-layout aside button { display: grid; gap: 4px; padding: 10px; border: 0; border-left: 3px solid transparent; border-radius: 7px; color: #53667d; text-align: left; background: transparent; cursor: pointer; }
+.payroll-ledger-layout aside button:hover { background: #f0f5fb; }
+.payroll-ledger-layout aside button.active { border-left-color: #3570b5; color: #215a94; background: #edf4fc; }
+.payroll-ledger-layout aside button span { font-size: 11px; font-weight: 800; }
+.payroll-ledger-layout aside button b { font-size: 10px; font-weight: 600; }
+.payroll-ledger-detail { min-width: 0; padding: 14px; }
+.payroll-ledger-detail-heading { margin-bottom: 11px; }
+.payroll-ledger-detail-heading strong { color: #253b55; font-size: 12px; }
+.payroll-ledger-detail-heading div span { color: #687b91; font-size: 10px; }
+.payroll-ledger-table-scroll { overflow: auto; border: 1px solid #e0e6ee; border-radius: 8px; }
+.payroll-ledger-table-scroll table { width: 100%; min-width: 840px; border-collapse: collapse; color: #42576e; font-size: 10px; }
+.payroll-ledger-table-scroll th { position: sticky; top: 0; z-index: 1; padding: 9px; color: #66778c; text-align: right; background: #f4f7fa; }
+.payroll-ledger-table-scroll th:first-child,
+.payroll-ledger-table-scroll th:nth-child(2),
+.payroll-ledger-table-scroll th:last-child { text-align: left; }
+.payroll-ledger-table-scroll td { padding: 10px 9px; border-top: 1px solid #edf1f5; text-align: right; vertical-align: top; white-space: nowrap; }
+.payroll-ledger-table-scroll td:first-child,
+.payroll-ledger-table-scroll td:nth-child(2),
+.payroll-ledger-table-scroll td:last-child { text-align: left; }
+.payroll-ledger-table-scroll td span,
+.payroll-ledger-table-scroll td small { display: block; }
+.payroll-ledger-table-scroll td small { margin-top: 4px; color: #7b899a; font-size: 9px; }
+.payroll-ledger-table-scroll .actual { color: #2469b0; font-weight: 800; }
+.payroll-ledger-table-scroll tr.expanded { background: #f8fbff; }
+.payroll-row-toggle { display: grid; gap: 3px; padding: 0; border: 0; color: #234f80; text-align: left; background: none; font: inherit; font-weight: 800; cursor: pointer; }
+.payroll-row-toggle small { font-weight: 500; }
+.payroll-ledger-table-scroll tfoot td { border-top: 1px solid #cbd8e6; color: #253b55; background: #f7f9fc; font-weight: 850; }
+.payroll-ledger-audit { padding: 10px 12px; border-top: 1px solid #e4eaf1; color: #53677f; font-size: 10px; }
+.payroll-ledger-audit summary { color: #294e78; font-size: 11px; font-weight: 800; cursor: pointer; }
+.payroll-ledger-audit span { display: block; margin-top: 8px; }
 
 @media (max-width: 1050px) {
   .payroll-legacy-taskbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .payroll-source-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .payroll-adjustment-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 880px) {
+  .payroll-ledger-equation { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .payroll-ledger-equation > b { display: none; }
+  .payroll-ledger-layout { grid-template-columns: 1fr; }
+  .payroll-ledger-layout aside { grid-template-columns: repeat(2, minmax(0, 1fr)); border-right: 0; border-bottom: 1px solid #e0e6ee; }
+  .payroll-ledger-layout aside > strong,
+  .payroll-ledger-layout aside > small { grid-column: 1 / -1; }
 }
 
 @media (max-width: 680px) {

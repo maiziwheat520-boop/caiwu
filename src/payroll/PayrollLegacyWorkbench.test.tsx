@@ -95,18 +95,21 @@ function mockRead(workspace = legacyWorkspace) {
 afterEach(() => vi.restoreAllMocks())
 
 describe('PayrollLegacyWorkbench', () => {
-  it('exposes exactly the six confirmed payroll functions', async () => {
+  it('exposes four payroll tasks and keeps checks and supplements inside the workflow', async () => {
     mockRead()
     render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
     await screen.findByText('工资工作区版本 1')
-    const navigation = screen.getByRole('navigation', { name: '工资软件六项功能' })
-    expect(within(navigation).getAllByRole('button')).toHaveLength(6)
-    for (const name of ['生成当月工资', '生成网商银行代发表', '生成补发代发表',
-      '复核本月已发并更新汇总', '管理工资规则', '检查规则与历史']) {
+    const navigation = screen.getByRole('navigation', { name: '工资工作流程' })
+    expect(within(navigation).getAllByRole('button')).toHaveLength(4)
+    for (const name of ['生成当月工资', '查看代发表与发放表',
+      '复核本月已发并更新汇总', '管理工资规则']) {
       expect(within(navigation).getByRole('button', { name })).toBeInTheDocument()
     }
-    expect(within(navigation).queryByRole('button', { name: '填入主表' })).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '2026-08 工资表' })).toBeInTheDocument()
+    expect(within(navigation).queryByRole('button', { name: '生成补发代发表' })).not.toBeInTheDocument()
+    expect(within(navigation).queryByRole('button', { name: '检查规则与历史' })).not.toBeInTheDocument()
+    expect(screen.getByText('月度工资账本')).toBeInTheDocument()
+    expect(screen.getByText('2026-08 工资表 · 版本 1')).toBeInTheDocument()
+    expect(screen.getByText('实际发放（统计口径）')).toBeInTheDocument()
   })
 
   it('generates monthly payroll from the three explicitly confirmed materials', async () => {
@@ -133,7 +136,7 @@ describe('PayrollLegacyWorkbench', () => {
     mockRead()
     render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
     await screen.findByText('工资工作区版本 1')
-    fireEvent.click(screen.getByRole('button', { name: '生成网商银行代发表' }))
+    fireEvent.click(screen.getByRole('button', { name: '查看代发表与发放表' }))
     expect(screen.getByRole('heading', { name: '五家公司代发表预览' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: '工资发放表' })).toBeInTheDocument()
     expect(screen.getByText('测试公司1')).toBeInTheDocument()
