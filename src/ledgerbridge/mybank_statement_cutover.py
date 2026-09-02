@@ -66,6 +66,7 @@ _SUPPORTED_SCHEMA_REVISIONS = frozenset(
         "20260902_0030",
         "20260902_0031",
         "20260902_0032",
+        "20260902_0033",
     }
 )
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")

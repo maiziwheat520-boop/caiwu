@@ -518,7 +518,10 @@ def test_cutover_creates_whole_statement_facts_without_candidates(tmp_path: Path
     assert receipt.latest_pending_candidate_delta == 0
 
 
-@pytest.mark.parametrize("schema_revision", ("20260830_0025", "20260902_0032"))
+@pytest.mark.parametrize(
+    "schema_revision",
+    ("20260830_0025", "20260902_0032", "20260902_0033"),
+)
 def test_cutover_accepts_reviewed_schema_revision(
     tmp_path: Path,
     schema_revision: str,

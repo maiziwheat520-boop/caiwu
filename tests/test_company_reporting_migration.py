@@ -17,6 +17,12 @@ def _sql() -> str:
     return re.sub(r"\s+", " ", _migration_source()).lower()
 
 
+def _fact_independence_migration_source() -> str:
+    matches = list(VERSIONS.glob("20260902_0033_*.py"))
+    assert len(matches) == 1, "statement-report revision 20260902_0033 must exist exactly once"
+    return matches[0].read_text(encoding="utf-8")
+
+
 def test_company_reporting_migration_is_the_next_versioned_reader_only_seam() -> None:
     source = _migration_source()
     sql = _sql()
@@ -132,6 +138,20 @@ def test_statement_and_posted_bases_require_their_own_authoritative_facts() -> N
     assert re.search(r"bank_statement_review[^;]+status\s*=\s*'confirmed'", sql)
     assert re.search(r"journal_entry[^;]+status\s*=\s*'posted'", sql)
     assert sql.count("sequence <= p_audit_sequence") >= 4
+
+
+def test_statement_report_does_not_require_an_accounting_candidate_source() -> None:
+    source = _fact_independence_migration_source()
+    sql = re.sub(r"\s+", " ", source).lower()
+
+    assert re.search(r'revision[^\n=]*=\s*["\']20260902_0033["\']', source)
+    assert re.search(r'down_revision[^\n=]*=\s*["\']20260902_0032["\']', source)
+    assert "pg_get_functiondef" in sql
+    assert "statement_report_v1_as_of" in sql
+    assert "v_candidate_source_join" in sql
+    assert "replace(v_without_source_columns, v_candidate_source_join, '')" in sql
+    assert "dependency shape is not the reviewed revision" in sql
+    assert "candidate-source dependency was not removed" in sql
 
 
 def test_projection_keeps_shared_unknowns_and_authoritative_balance_explicit() -> None:
