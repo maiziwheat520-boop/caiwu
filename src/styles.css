@@ -175,6 +175,8 @@ button { -webkit-tap-highlight-color: transparent; }
 .audit-strip h2 { margin: 0; font-size: 14px; }
 .audit-strip p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
 .audit-strip button { margin-left: auto; }
+.overview-section { scroll-margin-top: 22px; }
+.overview-section + .overview-section { margin-top: 48px; padding-top: 4px; }
 
 .audit-log-panel { overflow: hidden; }
 .audit-load-state { display: grid; justify-items: center; gap: 9px; padding: 50px 24px; color: #9f313d; text-align: center; }
