@@ -437,6 +437,22 @@ export type CompanyReportCategorySlice = {
   fact_count: number
 }
 
+export type CashReconciliation = {
+  contract_version: 'ledgerbridge.cash-reconciliation.v1'
+  accounting_month: string
+  rows: Array<{
+    rule_key: string
+    flow_kind: 'INCOME' | 'EXPENSE' | 'CURRENT'
+    business_unit_label: string
+    item_label: string
+    source_kind: 'BANK_TRANSACTION' | 'CANDIDATE'
+    transaction_count: number
+    amount_minor: number
+    facts: Array<{ fact_ref: string; occurred_on: string; amount_minor: number }>
+  }>
+  totals: { income_minor: number; expense_minor: number; current_minor: number }
+}
+
 export type CompanyReportCategoryComposition = {
   total_minor: number
   fact_count: number

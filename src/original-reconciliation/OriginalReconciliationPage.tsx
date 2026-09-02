@@ -12,7 +12,7 @@ import {
   Warning,
 } from '@phosphor-icons/react'
 import { api, minorToMajor } from '../api'
-import type { Candidate, OriginalReconciliation, Page } from '../types'
+import type { Candidate, CashReconciliation, OriginalReconciliation, Page } from '../types'
 import { PageHeader } from '../shared/PagePrimitives'
 import {
   currentAccountCounterpartyNote,
@@ -136,6 +136,7 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
   const [selectedMonthOverride, setSelectedMonthOverride] = useState<string | null>(null)
   const [selectedFlow, setSelectedFlow] = useState<FlowKind>('income')
   const [data, setData] = useState<OriginalReconciliation | null>(null)
+  const [cashData, setCashData] = useState<CashReconciliation | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const requestRef = useRef(0)
@@ -148,17 +149,22 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
     setError(null)
     try {
       const scope = scopeRef.current
-      const projection = await api.getOriginalReconciliation({
-        accountingMonth: selectedMonth,
-        entityRef: scope?.entity_ref,
-        businessUnitRef: scope?.business_unit_ref,
-      })
+      const [projection, cashProjection] = await Promise.all([
+        api.getOriginalReconciliation({
+          accountingMonth: selectedMonth,
+          entityRef: scope?.entity_ref,
+          businessUnitRef: scope?.business_unit_ref,
+        }),
+        api.getCashReconciliation(selectedMonth).catch(() => null),
+      ])
       if (requestId !== requestRef.current) return
       scopeRef.current = projection.scope
       setData(projection)
+      setCashData(cashProjection)
     } catch (loadError) {
       if (requestId !== requestRef.current) return
       setData(null)
+      setCashData(null)
       setError(loadError instanceof Error ? loadError.message : '无法读取月度对账状态')
     } finally {
       if (requestId === requestRef.current) setLoading(false)
@@ -183,6 +189,7 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
     return result
   }, { income: [], expense: [], current: [], unclassified: [] })
   const selectedItems = grouped[selectedFlow]
+  const selectedCashRows = cashData?.rows.filter((row) => row.flow_kind === selectedFlow.toUpperCase()) ?? []
   const laneDefinitions = [
     { kind: 'income' as const, label: '收入', detail: '经营流入', icon: <ArrowDown size={19} /> },
     { kind: 'expense' as const, label: '支出', detail: '经营流出', icon: <ArrowUp size={19} /> },
@@ -209,7 +216,7 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
       <PageHeader
         eyebrow="月度对账"
         title="收支与往来对账"
-        description="只核对旧 Excel 原有项目。收入、支出影响经营结果，往来款单独核对且不计损益。"
+        description="导入银行和微信流水后，系统按固定规则直接生成旧对账表已有项目。"
         action={(
           <div className="original-reconciliation-filters">
             <input
@@ -240,8 +247,8 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
       <section className="statement-source-notice" aria-label="账单数据入口状态">
         <Receipt size={20} />
         <div>
-          <strong>账单只用于旧表项目取数和复核</strong>
-          <span>普通收支、采购、实际报销和银行工资候选不进入本页；旧截图和历史表格提交仍暂停。</span>
+          <strong>流水是对账表的直接取数来源</strong>
+          <span>按实际到账的自然月归类；不再上传平台账单、不重建七天账期，也不与平台金额比较。</span>
         </div>
       </section>
 
@@ -249,15 +256,21 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
         <div className="panel-heading statement-workbench-heading">
           <div>
             <h2>{selectedMonthLabel}</h2>
-            <p>{monthCandidates.length} 笔已由 Core 确认的旧表事项，选择业务性质后逐笔核对</p>
+            <p>{monthCandidates.length} 笔已按落库规则归类的旧表项目</p>
           </div>
-          <Button onClick={() => onNavigate('review')}><ListChecks size={16} />前往待审核</Button>
+            <Button onClick={() => onNavigate('review')}><ListChecks size={16} />查看未识别流水</Button>
         </div>
 
         <div className="statement-flow-tabs" role="tablist" aria-label="业务性质">
           {laneDefinitions.map((lane) => {
             const laneItems = grouped[lane.kind]
-            const amountMinor = laneItems.reduce((total, item) => total + Math.abs(item.signedAmountMinor), 0)
+            const cashRows = cashData?.rows.filter((row) => row.flow_kind === lane.kind.toUpperCase()) ?? []
+            const amountMinor = cashRows.length
+              ? cashRows.reduce((total, row) => total + row.amount_minor, 0)
+              : laneItems.reduce((total, item) => total + Math.abs(item.signedAmountMinor), 0)
+            const itemCount = cashRows.length
+              ? cashRows.reduce((total, row) => total + row.transaction_count, 0)
+              : laneItems.length
             const active = selectedFlow === lane.kind
             return (
               <button
@@ -272,7 +285,7 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
               >
                 <span className="statement-flow-icon">{lane.icon}</span>
                 <span className="statement-flow-copy"><strong>{lane.label}</strong><small>{lane.detail}</small></span>
-                <span className="statement-flow-value"><strong>{currency.format(minorToMajor(amountMinor))}</strong><small>{laneItems.length} 笔</small></span>
+                <span className="statement-flow-value"><strong>{currency.format(minorToMajor(amountMinor))}</strong><small>{itemCount} 笔</small></span>
               </button>
             )
           })}
@@ -301,7 +314,15 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
           </div>
 
           <div className="statement-item-list">
-            {selectedItems.map((item) => {
+            {selectedCashRows.map((row) => (
+              <article key={row.rule_key} className={`statement-item ${selectedFlow}`}>
+                <div className="statement-item-status"><Badge color="green">自动生成</Badge><span>{selectedMonth}</span></div>
+                <div className="statement-item-main"><strong>{row.item_label}</strong><span>{row.transaction_count} 笔实收流水</span></div>
+                <div className="statement-item-context"><span>{row.business_unit_label}</span><small>{row.source_kind === 'BANK_TRANSACTION' ? '银行流水' : '微信流水'}</small></div>
+                <div className="statement-item-amount"><strong>{selectedFlow === 'expense' ? '-' : selectedFlow === 'income' ? '+' : ''}{currency.format(minorToMajor(row.amount_minor))}</strong><span>{row.rule_key}</span></div>
+              </article>
+            ))}
+            {selectedCashRows.length === 0 ? selectedItems.map((item) => {
               const status = candidateStatus(item.candidate)
               return (
                 <article key={item.candidate.id} className={`statement-item ${item.flowKind}`}>
@@ -332,12 +353,12 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
                   </Button>
                 </article>
               )
-            })}
-            {selectedItems.length === 0 ? (
+            }) : null}
+            {selectedCashRows.length === 0 && selectedItems.length === 0 ? (
               <div className="empty-state compact-empty statement-empty">
                 <Receipt size={30} />
                 <h3>{monthCandidates.length === 0 ? '本月还没有已映射的旧表事项' : `本月没有${flowLabels[selectedFlow]}事项`}</h3>
-                <p>{monthCandidates.length === 0 ? '只有 Core 受控旧表导入已确认的项目会显示；整份银行或平台账单不会自动进入。' : '切换上方业务性质查看本月其他事项。'}</p>
+                <p>{monthCandidates.length === 0 ? '本月尚未导入可命中规则的银行或微信流水。' : '切换上方业务性质查看本月其他事项。'}</p>
               </div>
             ) : null}
           </div>
@@ -354,7 +375,7 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
 
       <section className="panel statement-source-registry" aria-label="旧表项目取数来源">
         <div className="panel-heading">
-          <div><h2>旧表项目取数来源</h2><p>这些来源只给旧表已有项目取数，不代表该账户其他交易也进入本页</p></div>
+          <div><h2>自动取数规则</h2><p>规则保存在系统中，只把明确命中的流水写入旧表项目</p></div>
           <Badge color="green">收入 {incomeSourceRuleCount} · 支出 {expenseSourceRuleCount}</Badge>
         </div>
         <div className="statement-source-registry-list">

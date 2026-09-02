@@ -60,6 +60,7 @@ CLASSIFICATION_BATCH_PATH = re.compile(
 )
 RECONCILIATION_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)$")
 ORIGINAL_RECONCILIATION_PATH = re.compile(r"^/api/v1/original-reconciliations/([^/]+)$")
+CASH_RECONCILIATION_PATH = re.compile(r"^/api/v1/cash-reconciliations/([^/]+)$")
 DRAFT_CREATE_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)/drafts$")
 DRAFT_PATH = re.compile(r"^/api/v1/workbook-drafts/([0-9a-f-]{36})$")
 EVIDENCE_PATH = re.compile(r"^/api/v1/evidence/([0-9a-f-]{36})/content$")
@@ -1365,6 +1366,18 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 ),
                 headers={"Cache-Control": "no-store"},
             )
+            return
+        match = CASH_RECONCILIATION_PATH.fullmatch(path)
+        if match:
+            month = match.group(1)
+            if not MONTH_PATTERN.fullmatch(month):
+                self._send_json(400, _problem(400, "INVALID_ACCOUNTING_MONTH", "归属月份格式无效"))
+                return
+            read_projection = getattr(state, "cash_reconciliation", None)
+            if read_projection is None:
+                self._send_json(503, _problem(503, "CASH_RECONCILIATION_UNAVAILABLE", "流水自动生成尚未连接"))
+                return
+            self._send_json(200, read_projection(month), headers={"Cache-Control": "no-store"})
             return
         match = DRAFT_PATH.fullmatch(path)
         if match:
