@@ -874,10 +874,12 @@ def test_database_reader_rejects_multiple_scopes_and_missing_cursor_signer() -> 
     )
     with pytest.raises(InternalReadBackendUnavailable, match="one bound"):
         _service(_Session({})).list_candidates(multi)
-    scoped = _service(_Session({})).list_candidates(
-        multi, business_unit="unit-demo-a"
-    )
-    assert scoped.items == ()
+    candidate = SyntheticInternalReadService()._fixture.candidates[1]
+    row = candidate.model_dump()
+    row["entity_ref"] = ENTITY
+    row["business_unit_ref"] = "unit-demo-a"
+    scoped = _service(_Session(row)).list_candidates(multi, business_unit="unit-demo-a")
+    assert [item.candidate_ref for item in scoped.items] == [candidate.candidate_ref]
 
     unassigned = _principal().model_copy(
         update={
