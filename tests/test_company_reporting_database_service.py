@@ -194,7 +194,7 @@ def _principal(
         principal_ref="workload:company-report-test",
         san_uri="spiffe://ledgerbridge.test/company-report-test",
         policy_generation=3,
-        capabilities=(frozenset({Capability.LEDGER_READ}) if capability else frozenset()),
+        capabilities=(frozenset({Capability.COMPANY_REPORT_READ}) if capability else frozenset()),
         grants=grants
         or (
             _grant(COMPANY_A, "unit-a", UNIT_A),

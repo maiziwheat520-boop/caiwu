@@ -30,8 +30,8 @@ from ledgerbridge.internal_read_routes import (
     _closed_query,
     _parse_month,
     _parse_uuid,
+    require_company_report_read,
     require_internal_read_api,
-    require_ledger_read,
 )
 from ledgerbridge.internal_read_service import InternalReadBackendUnavailable
 
@@ -90,11 +90,16 @@ router = APIRouter(
     route_class=InternalReadRoute,
 )
 
-LedgerPrincipal = Annotated[WorkloadPrincipal, Depends(require_ledger_read)]
+CompanyReportCapabilityPrincipal = Annotated[
+    WorkloadPrincipal,
+    Depends(require_company_report_read),
+]
 
 
-def require_company_report_collection(principal: LedgerPrincipal) -> WorkloadPrincipal:
-    authorize_collection_read(principal, Capability.LEDGER_READ)
+def require_company_report_collection(
+    principal: CompanyReportCapabilityPrincipal,
+) -> WorkloadPrincipal:
+    authorize_collection_read(principal, Capability.COMPANY_REPORT_READ)
     return principal
 
 

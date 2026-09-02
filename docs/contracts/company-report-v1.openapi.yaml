@@ -13,7 +13,7 @@ paths:
   /internal/v1/company-reports:
     get:
       operationId: getInternalCompanyReports
-      x-ledgerbridge-capability: ledger:read
+      x-ledgerbridge-capability: company-report:read
       x-ledgerbridge-scope: collection
       x-ledgerbridge-reject-unknown-query: true
       parameters:
@@ -64,7 +64,7 @@ paths:
   /internal/v1/company-report-composition:
     get:
       operationId: getInternalCompanyReportComposition
-      x-ledgerbridge-capability: ledger:read
+      x-ledgerbridge-capability: company-report:read
       x-ledgerbridge-scope: collection
       x-ledgerbridge-reject-unknown-query: true
       description: >-

@@ -148,8 +148,8 @@ def test_composition_rejects_half_present_category_identity_and_mixed_basis() ->
         )
 
 
-def test_composition_route_reuses_ledger_read_collection_scope() -> None:
+def test_composition_route_uses_the_company_report_collection_capability() -> None:
     key = "GET /internal/v1/company-report-composition"
 
-    assert READ_ROUTE_CAPABILITIES[key] is Capability.LEDGER_READ
+    assert READ_ROUTE_CAPABILITIES[key] is Capability.COMPANY_REPORT_READ
     assert READ_ROUTE_SCOPE_MODES[key] is ScopeMode.COLLECTION

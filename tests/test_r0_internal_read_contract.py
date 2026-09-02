@@ -211,6 +211,7 @@ def test_route_capability_matrix_is_exact_and_non_transitive() -> None:
         Capability.EVIDENCE_READ,
         Capability.RECONCILIATION_READ,
         Capability.LEDGER_READ,
+        Capability.COMPANY_REPORT_READ,
     ):
         with pytest.raises(AuthorizationDenied):
             authorize_read(candidate_only, denied)
@@ -218,6 +219,13 @@ def test_route_capability_matrix_is_exact_and_non_transitive() -> None:
     authorize_collection_read(candidate_only, Capability.CANDIDATE_READ)
     ledger_collection = _principal("ledger-collection", frozenset({Capability.LEDGER_READ}))
     authorize_collection_read(ledger_collection, Capability.LEDGER_READ)
+    report_collection = _principal(
+        "report-collection",
+        frozenset({Capability.COMPANY_REPORT_READ}),
+    )
+    authorize_collection_read(report_collection, Capability.COMPANY_REPORT_READ)
+    with pytest.raises(AuthorizationDenied):
+        authorize_collection_read(ledger_collection, Capability.COMPANY_REPORT_READ)
     with pytest.raises(AuthorizationDenied):
         authorize_collection_read(ledger_collection, Capability.EVIDENCE_READ)
     no_scope = _principal("no-scope", frozenset({Capability.CANDIDATE_READ})).model_copy(

@@ -54,7 +54,7 @@ class DatabaseCompanyReportingService:
         to_month: str,
         company_ref: UUID | None = None,
     ) -> CompanyReportPage:
-        require_capability(principal, Capability.LEDGER_READ)
+        require_capability(principal, Capability.COMPANY_REPORT_READ)
         validate_report_month_range(from_month, to_month)
         try:
             selected_basis = CompanyReportBasis(basis)
@@ -141,7 +141,7 @@ class DatabaseCompanyReportingService:
         to_month: str,
         company_ref: UUID | None = None,
     ) -> CompanyReportCompositionPage:
-        require_capability(principal, Capability.LEDGER_READ)
+        require_capability(principal, Capability.COMPANY_REPORT_READ)
         validate_report_month_range(from_month, to_month)
         try:
             selected_basis = CompanyReportBasis(basis)

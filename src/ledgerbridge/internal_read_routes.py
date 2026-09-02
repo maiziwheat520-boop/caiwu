@@ -353,6 +353,11 @@ def require_ledger_read(principal: VerifiedPrincipal) -> WorkloadPrincipal:
     return principal
 
 
+def require_company_report_read(principal: VerifiedPrincipal) -> WorkloadPrincipal:
+    require_capability(principal, Capability.COMPANY_REPORT_READ)
+    return principal
+
+
 router = APIRouter(
     prefix="/internal/v1",
     tags=["internal-read"],

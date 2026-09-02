@@ -200,10 +200,10 @@ def test_company_report_rejects_mixed_metric_bases_in_one_page() -> None:
             )
 
 
-def test_company_report_route_reuses_ledger_read_as_a_collection_scope() -> None:
+def test_company_report_route_uses_a_dedicated_collection_capability() -> None:
     key = "GET /internal/v1/company-reports"
 
-    assert READ_ROUTE_CAPABILITIES[key] is Capability.LEDGER_READ
+    assert READ_ROUTE_CAPABILITIES[key] is Capability.COMPANY_REPORT_READ
     assert READ_ROUTE_SCOPE_MODES[key] is ScopeMode.COLLECTION
 
 
