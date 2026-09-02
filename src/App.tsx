@@ -111,6 +111,15 @@ function pageFromPath(pathname: string): Page {
   return entry ? entry[0] as Page : 'overview'
 }
 
+function scrollToOverviewSection(anchor: '#overview-summary' | '#review' | '#files') {
+  const scroll = () => document.getElementById(anchor.slice(1))?.scrollIntoView?.({ block: 'start' })
+  if (typeof window.requestAnimationFrame === 'function') {
+    window.requestAnimationFrame(scroll)
+  } else {
+    scroll()
+  }
+}
+
 type CandidateUpdateIntent = 'CONFIRM' | 'IGNORE' | 'RESOLVE_CONFLICT'
 
 const currency = new Intl.NumberFormat('zh-CN', {
@@ -326,13 +335,6 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true)
   const [authError, setAuthError] = useState<string | null>(null)
   const [page, setPage] = useState<Page>(() => pageFromPath(window.location.pathname))
-  const [overviewSection, setOverviewSection] = useState<'summary' | 'review' | 'files'>(() => (
-    window.location.pathname === pagePaths.review || window.location.hash === '#review'
-      ? 'review'
-      : window.location.pathname === pagePaths.files || window.location.hash === '#files'
-        ? 'files'
-        : 'summary'
-  ))
   const [reconciliationView, setReconciliationView] = useState<'monthly' | 'original'>(() => (
     window.location.pathname === pagePaths['original-reconciliation']
       || new URLSearchParams(window.location.search).get('view') === 'original'
@@ -374,15 +376,14 @@ function App() {
   const navigate = useCallback((nextPage: Page, replace = false) => {
     const overviewAnchor = nextPage === 'review' ? '#review' : nextPage === 'files' ? '#files' : ''
     const nextPath = overviewAnchor ? `${pagePaths.overview}${overviewAnchor}` : pagePaths[nextPage]
-    if (window.location.pathname !== nextPath) {
+    if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== nextPath) {
       window.history[replace ? 'replaceState' : 'pushState']({}, '', nextPath)
     }
-    setPage(nextPage)
+    setPage(overviewAnchor ? 'overview' : nextPage)
     if (overviewAnchor) {
-      setPage('overview')
-      setOverviewSection(nextPage === 'review' ? 'review' : 'files')
+      scrollToOverviewSection(overviewAnchor)
     } else if (nextPage === 'overview') {
-      setOverviewSection('summary')
+      scrollToOverviewSection('#overview-summary')
     }
     if (nextPage === 'reconciliation') setReconciliationView('monthly')
   }, [])
@@ -409,12 +410,23 @@ function App() {
     }
     const handlePopState = () => {
       setPage(pageFromPath(window.location.pathname))
-      setOverviewSection(window.location.hash === '#review' ? 'review' : window.location.hash === '#files' ? 'files' : 'summary')
+      if (window.location.hash === '#review' || window.location.hash === '#files') {
+        scrollToOverviewSection(window.location.hash)
+      } else if (window.location.pathname === pagePaths.overview) {
+        scrollToOverviewSection('#overview-summary')
+      }
       setReconciliationView(new URLSearchParams(window.location.search).get('view') === 'original' ? 'original' : 'monthly')
     }
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
   }, [navigate])
+
+  useEffect(() => {
+    if (page !== 'overview' || authLoading || loading) return
+    if (window.location.hash === '#review' || window.location.hash === '#files') {
+      scrollToOverviewSection(window.location.hash)
+    }
+  }, [authLoading, loading, page])
 
   const loadAuthStatus = useCallback(async () => {
     setAuthLoading(true)
@@ -836,9 +848,21 @@ function App() {
 
   const renderPage = () => {
     if (page === 'overview') {
-      if (overviewSection === 'review') {
-        return (
-          <><nav className="reconciliation-view-tabs" aria-label="概览工作区"><button type="button" onClick={() => navigate('overview')}>概览摘要</button><button className="active" type="button" onClick={() => navigate('review')}>待审核</button><button type="button" onClick={() => navigate('files')}>文件与连接</button></nav><div id="review">
+      return (
+        <>
+          <section className="overview-section" id="overview-summary" aria-label="概览摘要">
+            <Overview
+              pending={pendingCandidates}
+              monthPending={overviewMonthPending}
+              monthConfirmed={overviewMonthConfirmed}
+              accountingMonth={selectedMonth}
+              reconciliation={reconciliation}
+              connections={connections}
+              onNavigate={navigate}
+              onOpenCandidate={openCandidate}
+            />
+          </section>
+          <section className="overview-section" id="review" aria-label="待审核">
             <CompanyBankStatementReviewPanel csrfToken={session?.csrf_token ?? ''} />
             <ReviewQueue
               candidates={pendingCandidates}
@@ -857,63 +881,15 @@ function App() {
               batchBusy={batchBusy}
               onBatchConfirm={bulkConfirmCandidates}
             />
-          </div></>
-        )
-      }
-      if (overviewSection === 'files') {
-        return (
-          <><nav className="reconciliation-view-tabs" aria-label="概览工作区"><button type="button" onClick={() => navigate('overview')}>概览摘要</button><button type="button" onClick={() => navigate('review')}>待审核</button><button className="active" type="button" onClick={() => navigate('files')}>文件与连接</button></nav><div id="files">
+          </section>
+          <section className="overview-section" id="files" aria-label="文件与连接">
             <FilesAndConnections candidates={candidates} connections={connections} csrfToken={session?.csrf_token ?? null} onOpenCandidate={openCandidate} onRefresh={loadData} onNotice={setNotice} />
-          </div></>
-        )
-      }
-      return (
-        <>
-          <nav className="reconciliation-view-tabs" aria-label="概览工作区">
-            <button className="active" type="button" onClick={() => navigate('overview')}>概览摘要</button>
-            <button type="button" onClick={() => navigate('review')}>待审核</button>
-            <button type="button" onClick={() => navigate('files')}>文件与连接</button>
-          </nav>
-          <CompanyBankStatementReviewPanel csrfToken={session?.csrf_token ?? ''} />
-          <Overview
-            pending={pendingCandidates}
-            monthPending={overviewMonthPending}
-            monthConfirmed={overviewMonthConfirmed}
-            accountingMonth={selectedMonth}
-            reconciliation={reconciliation}
-            connections={connections}
-            onNavigate={navigate}
-            onOpenCandidate={openCandidate}
-          />
+          </section>
         </>
       )
     }
     if (page === 'personal-finance') {
       return <PersonalFinanceOverview candidates={candidates} onNavigate={navigate} onOpenCandidate={openCandidate} csrfToken={session?.csrf_token ?? ''} />
-    }
-    if (page === 'review') {
-      return (
-        <>
-          <CompanyBankStatementReviewPanel csrfToken={session?.csrf_token ?? ''} />
-          <ReviewQueue
-            candidates={pendingCandidates}
-            bankStatements={pendingBankStatements}
-            csrfToken={session?.csrf_token ?? ''}
-            onBankStatementReviewed={async () => {
-              const refreshed = await api.getPersonalBankTransactions()
-              setPersonalBankData(refreshed)
-            }}
-            classificationGroups={classificationGroups}
-            classificationGroupsAvailable={classificationGroupsAvailable}
-            onOpenCandidate={openCandidate}
-            onUpdate={updateCandidate}
-            onRefresh={loadData}
-            busyId={decisionBusyId}
-            batchBusy={batchBusy}
-            onBatchConfirm={bulkConfirmCandidates}
-          />
-        </>
-      )
     }
     if (page === 'reconciliation') {
       return (
@@ -958,7 +934,7 @@ function App() {
         />
       )
     }
-    return <FilesAndConnections candidates={candidates} connections={connections} csrfToken={session?.csrf_token ?? null} onOpenCandidate={openCandidate} onRefresh={loadData} onNotice={setNotice} />
+    return null
   }
 
   if (authLoading) return <AuthFrame><LoadingState title="正在检查访问状态" description="正在确认此设备的单用户会话。" /></AuthFrame>

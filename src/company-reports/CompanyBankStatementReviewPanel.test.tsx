@@ -30,7 +30,7 @@ describe('CompanyBankStatementReviewPanel', () => {
 
     expect(await screen.findByText('全部已确认')).toBeInTheDocument()
     expect(screen.queryByText('公司 1')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '查看 6 份账单明细' }))
+    fireEvent.click(await screen.findByRole('button', { name: '查看 6 份账单明细' }))
     expect(screen.getByText('公司 1')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '收起账单明细' })).toBeInTheDocument()
   })
