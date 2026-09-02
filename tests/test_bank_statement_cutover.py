@@ -47,9 +47,11 @@ from ledgerbridge.mybank_statement_cutover import (
     MyBankEvidenceDescriptor,
     MyBankEvidenceMode,
     MyBankExistingAccountStatementPlan,
+    MyBankStatementCutoverError,
     _DatabaseEvidenceBoundary,
     _expected_after_existing_account,
     _read_production_counts,
+    _require_expected_new_statement_fact_count,
 )
 
 STATEMENT_REF = UUID("72000000-0000-4000-8000-000000000001")
@@ -106,6 +108,70 @@ def _plan(source: Path, statement: BankStatement) -> BankStatementExistingAccoun
         actor="worker:ccb-cutover",
         reason="operator-confirmed synthetic CCB cutover",
     )
+
+
+class _ScalarResult:
+    def __init__(self, value: object) -> None:
+        self._value = value
+
+    def scalar_one(self) -> object:
+        return self._value
+
+
+class _OverlapCountSession:
+    def __init__(self, existing_count: int) -> None:
+        self._existing_count = existing_count
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def execute(
+        self,
+        statement: object,
+        parameters: dict[str, object] | None = None,
+    ) -> _ScalarResult:
+        rendered = str(statement)
+        values = parameters or {}
+        self.calls.append((rendered, values))
+        if "pg_advisory_xact_lock" in rendered:
+            return _ScalarResult(None)
+        return _ScalarResult(self._existing_count)
+
+
+def test_overlap_preflight_locks_account_and_matches_bound_new_count(tmp_path: Path) -> None:
+    statement = _statement()
+    plan = replace(
+        _plan((tmp_path / "statement.xls").resolve(), statement),
+        expected_new_transaction_count=1,
+    )
+    session = _OverlapCountSession(existing_count=1)
+
+    _require_expected_new_statement_fact_count(
+        session,  # type: ignore[arg-type]
+        plan,
+        statement,
+    )
+
+    assert len(session.calls) == 2
+    assert "pg_advisory_xact_lock" in session.calls[0][0]
+    assert session.calls[0][1] == {"account": ACCOUNT_REF}
+    assert json.loads(str(session.calls[1][1]["serials"])) == ["serial-1", "serial-2"]
+
+
+def test_overlap_preflight_rejects_bound_new_count_drift(tmp_path: Path) -> None:
+    statement = _statement()
+    plan = replace(
+        _plan((tmp_path / "statement.xls").resolve(), statement),
+        expected_new_transaction_count=0,
+    )
+
+    with pytest.raises(
+        MyBankStatementCutoverError,
+        match="statement overlap preflight count conflicts",
+    ):
+        _require_expected_new_statement_fact_count(
+            _OverlapCountSession(existing_count=1),  # type: ignore[arg-type]
+            plan,
+            statement,
+        )
 
 
 def _counts() -> ProductionCounts:

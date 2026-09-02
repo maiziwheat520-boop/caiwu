@@ -1491,7 +1491,10 @@ class _DatabaseExistingAccountAuthorizer:
                         display_name=_statement_display_name(statement),
                     ),
                 )
-            self._boundary.set_statement_expectation(self._boundary.evidence_staged)
+            expected_created = self._boundary.evidence_staged
+            if expected_created:
+                _require_expected_new_statement_fact_count(session, plan, statement)
+            self._boundary.set_statement_expectation(expected_created)
         except BaseException:
             try:
                 session.rollback()
@@ -2055,6 +2058,44 @@ def _assignments_cover_statement_period(
         if covered_until > period_end:
             return True
     return False
+
+
+def _require_expected_new_statement_fact_count(
+    session: Session,
+    plan: ExistingAccountStatementPlan,
+    statement: MyBankStatement,
+) -> None:
+    """Lock one account and bind the planned fact delta before statement insertion."""
+
+    serials = [transaction.transaction_serial for transaction in statement.transactions]
+    if not serials or len(set(serials)) != len(serials):
+        raise MyBankStatementCutoverError("statement transaction identity is invalid")
+    session.execute(
+        text(
+            "SELECT pg_advisory_xact_lock(hashtextextended("
+            "'managed-account-ref:' || CAST(:account AS text), 0))"
+        ),
+        {"account": plan.managed_account_ref},
+    ).scalar_one()
+    existing_count = session.execute(
+        text(
+            "SELECT count(*) FROM public.bank_statement_transaction transaction "
+            "WHERE transaction.managed_account_ref=:account "
+            "AND transaction.transaction_serial IN ("
+            "SELECT requested.transaction_serial "
+            "FROM jsonb_array_elements_text(CAST(:serials AS jsonb)) "
+            "AS requested(transaction_serial))"
+        ),
+        {
+            "account": plan.managed_account_ref,
+            "serials": json.dumps(serials, ensure_ascii=True, separators=(",", ":")),
+        },
+    ).scalar_one()
+    if type(existing_count) is not int or not 0 <= existing_count <= len(serials):
+        raise MyBankStatementCutoverError("statement overlap preflight count is invalid")
+    observed_new_count = len(serials) - existing_count
+    if observed_new_count != _expected_new_transaction_count(plan):
+        raise MyBankStatementCutoverError("statement overlap preflight count conflicts")
 
 
 def _run_database_fact_conflict_probe(
