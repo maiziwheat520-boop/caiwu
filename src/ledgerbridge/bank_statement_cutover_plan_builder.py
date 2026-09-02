@@ -96,8 +96,7 @@ def finalize_private_bank_statement_plan(draft_path: Path, output_path: Path) ->
             expected_sha256=digest,
             managed_account_suffix=account_suffix,
         )
-        if _text(scope["evidence_mode"]) != ExistingStatementEvidenceMode.REUSE_EXISTING:
-            raise ValueError
+        ExistingStatementEvidenceMode(_text(scope["evidence_mode"]))
         payload = dict(draft)
         payload["schema_version"] = BANK_STATEMENT_EXISTING_ACCOUNT_PLAN_SCHEMA
         payload["source"] = {

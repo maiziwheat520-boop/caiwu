@@ -10,8 +10,11 @@ from uuid import UUID
 
 import pytest
 
-from ledgerbridge.bank_statement_contract import BankStatementParserProfile
-from ledgerbridge.bank_statement_cutover_plan import BankStatementExistingAccountPlan
+from ledgerbridge.bank_statement_contract import BankStatement, BankStatementParserProfile
+from ledgerbridge.bank_statement_cutover_plan import (
+    BankStatementExistingAccountPlan,
+    ExistingStatementEvidenceMode,
+)
 from ledgerbridge.bank_statement_cutover_plan_builder import (
     BANK_STATEMENT_EXISTING_ACCOUNT_DRAFT_SCHEMA,
     finalize_private_bank_statement_plan,
@@ -24,6 +27,10 @@ from ledgerbridge.mybank_statement import (
     MyBankEmptyStatementError,
     MyBankStatementError,
     parse_mybank_company_daily_xlsx,
+)
+from ledgerbridge.mybank_statement_cutover import (
+    ProductionCounts,
+    _expected_after_existing_account,
 )
 
 _HEADERS = (
@@ -177,7 +184,10 @@ def _write_xlsx(
     return path.read_bytes()
 
 
-def _parse(path: Path, rows: list[tuple[str, ...]] | None = None):
+def _parse(
+    path: Path,
+    rows: list[tuple[str, ...]] | None = None,
+) -> BankStatement:
     raw = _write_xlsx(path, rows or _rows())
     return parse_mybank_company_daily_xlsx(
         path,
@@ -301,7 +311,11 @@ def test_company_daily_parser_requires_exact_sheet_name(tmp_path: Path) -> None:
         )
 
 
-def test_generic_plan_builder_materializes_company_profile(tmp_path: Path) -> None:
+@pytest.mark.parametrize("evidence_mode", ["CREATE_NEW", "REUSE_EXISTING"])
+def test_generic_plan_builder_materializes_company_profile(
+    tmp_path: Path,
+    evidence_mode: str,
+) -> None:
     source = (tmp_path / "synthetic-company.xlsx").resolve()
     statement = _parse(source)
     backup = (tmp_path / "backup").resolve()
@@ -317,7 +331,7 @@ def test_generic_plan_builder_materializes_company_profile(tmp_path: Path) -> No
                 "source": {"path": str(source), "account_suffix": _SUFFIX},
                 "scope": {
                     "evidence_ref": str(_EVIDENCE_REF),
-                    "evidence_mode": "REUSE_EXISTING",
+                    "evidence_mode": evidence_mode,
                     "owner_entity_ref": str(_ENTITY_REF),
                     "business_unit_ref": str(_BUSINESS_UNIT_REF),
                     "owner_kind": "COMPANY",
@@ -345,3 +359,29 @@ def test_generic_plan_builder_materializes_company_profile(tmp_path: Path) -> No
     assert loaded.cutover.expected_owner_kind is EntityType.COMPANY
     assert loaded.cutover.expected_transaction_count == 2
     assert loaded.cutover.expected_parser_facts_sha256 == statement.parser_facts_sha256
+    assert loaded.cutover.evidence_mode is ExistingStatementEvidenceMode(evidence_mode)
+    if loaded.cutover.evidence_mode is ExistingStatementEvidenceMode.CREATE_NEW:
+        before = ProductionCounts(
+            evidence_objects=4,
+            encrypted_object_identities=4,
+            encrypted_blob_versions=4,
+            managed_accounts=5,
+            managed_account_lifecycles=5,
+            account_registry_operations=5,
+            managed_account_aliases=5,
+            account_business_unit_assignments=5,
+            fact_business_unit_allocation_sets=0,
+            fact_business_unit_allocation_items=0,
+            bank_statements=0,
+            bank_statement_transactions=0,
+            bank_statement_observations=0,
+            bank_statement_reviews=0,
+            candidates=7,
+            latest_pending_candidates=2,
+            audit_events=20,
+        )
+        after = _expected_after_existing_account(before, loaded.cutover)
+        assert after.evidence_objects == before.evidence_objects + 1
+        assert after.encrypted_object_identities == before.encrypted_object_identities + 1
+        assert after.encrypted_blob_versions == before.encrypted_blob_versions + 1
+        assert after.managed_accounts == before.managed_accounts

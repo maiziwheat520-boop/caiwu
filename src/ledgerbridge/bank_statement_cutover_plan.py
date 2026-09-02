@@ -23,8 +23,9 @@ _MONTH = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
 
 
 class ExistingStatementEvidenceMode(StrEnum):
-    """Generic plans may only bind an already admitted exact Evidence object."""
+    """Explicit evidence handling for a registered-account statement import."""
 
+    CREATE_NEW = "CREATE_NEW"
     REUSE_EXISTING = "REUSE_EXISTING"
 
 
@@ -66,8 +67,8 @@ class BankStatementExistingAccountPlan:
             raise ValueError("bank statement parser-facts digest is invalid")
         if type(self.expected_size) is not int or self.expected_size <= 0:
             raise ValueError("bank statement source size is invalid")
-        if self.evidence_mode is not ExistingStatementEvidenceMode.REUSE_EXISTING:
-            raise ValueError("bank statement evidence mode must be REUSE_EXISTING")
+        if not isinstance(self.evidence_mode, ExistingStatementEvidenceMode):
+            raise ValueError("bank statement evidence mode is invalid")
         spec = parser_spec(self.parser_profile)
         if self.institution_code != spec.institution_code:
             raise ValueError("bank statement institution conflicts with parser profile")

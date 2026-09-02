@@ -248,6 +248,12 @@ def _reuses_existing_evidence(plan: ExistingAccountStatementPlan) -> bool:
     return plan.evidence_mode is MyBankEvidenceMode.REUSE_EXISTING
 
 
+def _creates_new_evidence(plan: ExistingAccountStatementPlan) -> bool:
+    if isinstance(plan, BankStatementExistingAccountPlan):
+        return plan.evidence_mode is ExistingStatementEvidenceMode.CREATE_NEW
+    return plan.evidence_mode is MyBankEvidenceMode.CREATE_NEW
+
+
 def _require_existing_plan_statement(
     plan: ExistingAccountStatementPlan,
     statement: BankStatement,
@@ -922,10 +928,7 @@ def _expected_after_existing_account(
     """Expected delta for the plan's explicit evidence mode and existing account."""
 
     transaction_count = plan.expected_transaction_count
-    evidence_delta = int(
-        isinstance(plan, MyBankExistingAccountStatementPlan)
-        and plan.evidence_mode is MyBankEvidenceMode.CREATE_NEW
-    )
+    evidence_delta = int(_creates_new_evidence(plan))
     return ProductionCounts(
         evidence_objects=before.evidence_objects + evidence_delta,
         encrypted_object_identities=before.encrypted_object_identities + evidence_delta,
