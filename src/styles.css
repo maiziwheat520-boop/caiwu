@@ -34,6 +34,33 @@ button { -webkit-tap-highlight-color: transparent; }
 .brand.compact .brand-mark { width: 34px; height: 34px; }
 .brand.compact strong { color: #16243c; }
 .side-nav { display: grid; gap: 5px; }
+
+.reconciliation-view-tabs {
+  display: inline-flex;
+  gap: 4px;
+  margin: 0 0 18px;
+  padding: 4px;
+  border: 1px solid #dbe3ee;
+  border-radius: 10px;
+  background: #f3f6fa;
+}
+.reconciliation-view-tabs button {
+  min-height: 36px;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 7px;
+  color: #5c6d83;
+  background: transparent;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.reconciliation-view-tabs button.active {
+  color: #244b7a;
+  background: white;
+  box-shadow: 0 3px 12px rgb(35 57 86 / 8%);
+}
+.reconciliation-view-tabs button:focus-visible { outline: 2px solid #4b82d6; outline-offset: 2px; }
 .nav-item { display: flex; align-items: center; width: 100%; min-height: 43px; padding: 0 12px; border: 0; border-radius: 9px; color: #aab5c7; background: transparent; cursor: pointer; text-align: left; transition: color 140ms ease, background 140ms ease; }
 .nav-item:hover { color: white; background: rgb(255 255 255 / 5%); }
 .nav-item.active { color: white; background: #253a5d; }

@@ -89,7 +89,6 @@ const navigation: Array<{ id: Page; label: string; icon: typeof House }> = [
   { id: 'personal-finance', label: '完整个人财务对账', icon: Bank },
   { id: 'review', label: '待审核', icon: ListChecks },
   { id: 'reconciliation', label: '月度对账', icon: Table },
-  { id: 'original-reconciliation', label: '原口径对账表', icon: FileText },
   { id: 'company-reports', label: '各公司报表', icon: Database },
   { id: 'files', label: '文件与连接', icon: FolderOpen },
 ]
@@ -107,6 +106,7 @@ const pagePaths: Record<Page, string> = {
 }
 
 function pageFromPath(pathname: string): Page {
+  if (pathname === pagePaths['original-reconciliation']) return 'reconciliation'
   const entry = Object.entries(pagePaths).find(([, path]) => path === pathname)
   return entry ? entry[0] as Page : 'overview'
 }
@@ -326,6 +326,12 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true)
   const [authError, setAuthError] = useState<string | null>(null)
   const [page, setPage] = useState<Page>(() => pageFromPath(window.location.pathname))
+  const [reconciliationView, setReconciliationView] = useState<'monthly' | 'original'>(() => (
+    window.location.pathname === pagePaths['original-reconciliation']
+      || new URLSearchParams(window.location.search).get('view') === 'original'
+      ? 'original'
+      : 'monthly'
+  ))
   const [candidates, setCandidates] = useState<Candidate[]>([])
   const [classificationGroups, setClassificationGroups] = useState<ClassificationGroup[]>([])
   const [classificationGroupsAvailable, setClassificationGroupsAvailable] = useState(false)
@@ -364,13 +370,29 @@ function App() {
       window.history[replace ? 'replaceState' : 'pushState']({}, '', nextPath)
     }
     setPage(nextPage)
+    if (nextPage === 'reconciliation') setReconciliationView('monthly')
+  }, [])
+
+  const changeReconciliationView = useCallback((view: 'monthly' | 'original', replace = false) => {
+    const nextPath = view === 'original' ? `${pagePaths.reconciliation}?view=original` : pagePaths.reconciliation
+    if (`${window.location.pathname}${window.location.search}` !== nextPath) {
+      window.history[replace ? 'replaceState' : 'pushState']({}, '', nextPath)
+    }
+    setPage('reconciliation')
+    setReconciliationView(view)
   }, [])
 
   useEffect(() => {
+    if (window.location.pathname === pagePaths['original-reconciliation']) {
+      window.history.replaceState({}, '', `${pagePaths.reconciliation}?view=original`)
+    }
     if (!Object.values(pagePaths).includes(window.location.pathname)) {
       window.history.replaceState({}, '', pagePaths.overview)
     }
-    const handlePopState = () => setPage(pageFromPath(window.location.pathname))
+    const handlePopState = () => {
+      setPage(pageFromPath(window.location.pathname))
+      setReconciliationView(new URLSearchParams(window.location.search).get('view') === 'original' ? 'original' : 'monthly')
+    }
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
   }, [navigate])
@@ -828,15 +850,22 @@ function App() {
       )
     }
     if (page === 'reconciliation') {
-      return <Reconciliation data={reconciliation} confirmed={confirmedCandidates} selectedMonth={selectedMonth} onMonthChange={changeMonth} onGenerate={generateDraft} generating={draftBusy} onNavigate={navigate} />
-    }
-    if (page === 'original-reconciliation') {
       return (
-        <OriginalReconciliationPage
-          candidates={candidates}
-          onNavigate={navigate}
-          onOpenCandidate={openCandidate}
-        />
+        <>
+          <div className="reconciliation-view-tabs" role="tablist" aria-label="对账视图">
+            <button aria-selected={reconciliationView === 'monthly'} className={reconciliationView === 'monthly' ? 'active' : ''} role="tab" type="button" onClick={() => changeReconciliationView('monthly')}>月度状态</button>
+            <button aria-selected={reconciliationView === 'original'} className={reconciliationView === 'original' ? 'active' : ''} role="tab" type="button" onClick={() => changeReconciliationView('original')}>原口径明细</button>
+          </div>
+          {reconciliationView === 'monthly' ? (
+            <Reconciliation data={reconciliation} confirmed={confirmedCandidates} selectedMonth={selectedMonth} onMonthChange={changeMonth} onGenerate={generateDraft} generating={draftBusy} onNavigate={navigate} />
+          ) : (
+            <OriginalReconciliationPage
+              candidates={candidates}
+              onNavigate={(nextPage) => nextPage === 'reconciliation' ? changeReconciliationView('monthly') : navigate(nextPage)}
+              onOpenCandidate={openCandidate}
+            />
+          )}
+        </>
       )
     }
     if (page === 'company-reports') {
