@@ -5,19 +5,25 @@ Updated: 2026-09-02
 ## Authoritative fact-layer vertical-slice checkpoint (2026-09-02)
 
 Primary integration ownership is recorded on branch
-`ai/chatgpt/company-mybank-production-import` at base `4041588`. The owned change set is limited
-to MYbank schema 0032 cutover compatibility, backup/restore inventory compatibility, focused
-tests, and the authoritative data-layer architecture/task records. Company Reporting v1 remains
-a read-only consumer; its implementation is not being modified in this slice.
+`ai/chatgpt/company-mybank-production-import`. Production now runs Core revision
+`87f88d81267434a90cb335751de97c2fe77d1f26` at schema `20260902_0033`. The representative
+official company statement slice imported one encrypted Evidence lineage, one statement, nine
+transaction facts and observations, and one pending review. Transactional preflight, exact
+replay, conflict rejection, encrypted pre/post-release backups, isolated restores, service
+health, and the read-only company-report contract all passed. Candidate, Journal Entry, and
+Posting counts did not change.
 
 The accepted target is one evidence-to-posting data foundation with independently developed
 modules behind versioned interfaces. Module/file ownership may proceed in parallel, while shared
 contracts, Alembic migrations, integration commits, and production releases remain single-owner.
 This slice proves `Official Source Document -> Evidence -> Managed Account -> Bank Statement ->`
 `Normalized Financial Facts -> pending-review visibility in ACCOUNT_STATEMENT Company Report`.
-The report must not include pending statement amounts as confirmed cash flow. The slice explicitly
-requires zero Candidate, Journal Entry, and Posting deltas; supported statement review, later
-classification, balanced draft, and human posting remain open product work.
+It also found and removed an invalid `candidate_source` dependency from the statement report:
+the authoritative statement layer no longer needs an Accounting Candidate merely to be visible.
+The report shows one pending item and continues to exclude its amounts from confirmed cash flow.
+The current Web workload policy does not yet grant this representative company, so Web policy and
+selector wiring remain separate work. Supported statement review, later classification, balanced
+draft, and human posting are also still open.
 
 ## Company financial dashboard checkpoint (2026-09-01)
 
