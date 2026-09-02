@@ -5236,6 +5236,8 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
         ("internal_read", "get_bank_statement_summary"): "ledgerbridge_reader",
         ("internal_read", "list_bank_statement_transactions"): "ledgerbridge_reader",
     }
+    if revision >= BANK_STATEMENT_REVIEW_API_GRANT_REVISION:
+        executors[("internal_command", "review_bank_statement")] = "ledgerbridge_api"
 
     triggers = _list("bank_statement_triggers")
     actual_trigger_contract = {
