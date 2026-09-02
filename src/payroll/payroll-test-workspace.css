@@ -50,6 +50,22 @@
 .payroll-test-summary button { text-align: left; }
 .payroll-test-summary button[data-active='true'] { border-color: #2563eb; background: #eff6ff; color: #1d4ed8; }
 
+.payroll-material-confirmation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  border: 1px solid #bfdbfe;
+  border-radius: 11px;
+  background: #eff6ff;
+}
+.payroll-material-confirmation > div { display: grid; gap: 4px; }
+.payroll-material-confirmation strong { color: #1e4f91; }
+.payroll-material-confirmation span { color: #5d7190; font-size: 13px; }
+.payroll-material-radio { display: flex; align-items: center; gap: 7px; color: #1d4ed8; font-weight: 700; }
+.payroll-material-radio input { min-height: auto; width: 18px; height: 18px; }
+
 .payroll-test-message { padding: 12px 14px; border-radius: 10px; }
 .payroll-test-message.success { background: #ecfdf5; color: #047857; }
 .payroll-test-message.error { background: #fef2f2; color: #b91c1c; }
@@ -270,6 +286,7 @@
   .payroll-test-editor { align-items: stretch; flex-direction: column; }
   .payroll-test-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .payroll-test-material-actions { justify-content: space-between; }
+  .payroll-material-confirmation { align-items: stretch; flex-direction: column; }
   .payroll-history-summary > header { align-items: stretch; flex-direction: column; }
   .payroll-history-summary-controls { align-items: stretch; flex-direction: column; }
   .payroll-summary-title-row { flex-direction: column; }

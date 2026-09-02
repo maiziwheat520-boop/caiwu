@@ -2,9 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   ArrowClockwise,
-  Calculator,
   CheckCircle,
-  ClockCounterClockwise,
   FileArrowDown,
   FilePlus,
   ListChecks,
@@ -29,25 +27,23 @@ import type {
   PayrollTestWorkspaceReadResponse,
 } from '../types'
 import './payroll-legacy-workbench.css'
+import type { PayrollConfirmedMaterials } from './PayrollTestWorkspaceActionsPanel'
 
 type Props = {
   testWorkspace: PayrollTestWorkspaceReadResponse
   csrfToken: string
+  confirmedMaterials?: PayrollConfirmedMaterials | null
 }
 
 type TaskId =
-  | 'fill'
+  | 'generate'
   | 'normal'
   | 'supplemental'
-  | 'summary'
-  | 'pending'
   | 'verify'
   | 'rules'
   | 'history'
 
 type EditableRule = Omit<PayrollLegacyEmployeeRule, 'payment_channel'> & {
-  employee_name: string
-  account_masked: string
   payment_channel: '' | PayrollLegacyEmployeeRule['payment_channel']
 }
 
@@ -71,12 +67,10 @@ const tasks: Array<{
   description: string
   icon: typeof Table
 }> = [
-  { id: 'fill', label: '填入主表', description: '读取原工资表，合并人工调整并保存计算结果。', icon: Table },
+  { id: 'generate', label: '生成当月工资', description: '用唯一确认素材、工资规则和上月待办生成工资表。', icon: Table },
   { id: 'normal', label: '生成网商银行代发表', description: '按五家公司分别生成最终代发表。', icon: FileArrowDown },
-  { id: 'supplemental', label: '生成补发代发草稿', description: '只包含明确标记为补发的正向调整。', icon: FilePlus },
-  { id: 'summary', label: '更新工资汇总', description: '保存人数、应发、实发和渠道汇总。', icon: Calculator },
-  { id: 'pending', label: '检查上月待办', description: '逐项决定并入主表、另行补发或忽略。', icon: ClockCounterClockwise },
-  { id: 'verify', label: '核对本月已发', description: '用实际回单逐人比对草稿金额和账户。', icon: Receipt },
+  { id: 'supplemental', label: '生成补发代发表', description: '只包含明确标记为补发的正向调整。', icon: FilePlus },
+  { id: 'verify', label: '复核本月已发并更新汇总', description: '先核对七份实际流水，全部匹配后更新汇总。', icon: Receipt },
   { id: 'rules', label: '管理工资规则', description: '编辑固定待遇、渠道、工种、地点和可休天数。', icon: SlidersHorizontal },
   { id: 'history', label: '检查规则与历史', description: '检查来源异常、缺失材料和跨月变化。', icon: ListChecks },
 ]
@@ -135,33 +129,14 @@ const money = (cents: number) => new Intl.NumberFormat('zh-CN', {
   currency: 'CNY',
 }).format(cents / 100)
 
-const isChannel = (value: string): value is PayrollLegacyEmployeeRule['payment_channel'] =>
-  channels.includes(value as (typeof channels)[number])
-
 const reviewRuleDefinition = (type: PayrollLegacyReviewRuleType) =>
   reviewRuleDefinitions.find((definition) => definition.rule_type === type)!
 
 const activeBatchFrom = (workspace: PayrollLegacyWorkspace | null, period?: string) =>
   workspace?.batches.find((batch) => batch.period === (period ?? workspace.active_period)) ?? null
 
-function rulesFromBatch(workspace: PayrollLegacyWorkspace, batch: PayrollLegacyBatch): EditableRule[] {
-  const saved = new Map(workspace.rules.employees.map((rule) => [rule.employee_id, rule]))
-  return batch.lines.map((line) => {
-    const rule = saved.get(line.employee_id)
-    return {
-      employee_id: line.employee_id,
-      employee_name: line.employee_name,
-      account_masked: line.account_masked,
-      fixed_base_salary_cents: rule?.fixed_base_salary_cents ?? line.base_salary_cents,
-      fixed_allowance_cents: rule?.fixed_allowance_cents ?? line.allowance_cents,
-      night_shift_rate_cents: rule?.night_shift_rate_cents ?? line.night_shift_rate_cents ?? 0,
-      rest_days: rule?.rest_days ?? line.rest_days ?? 0,
-      payment_channel: rule?.payment_channel ?? (isChannel(line.payment_channel) ? line.payment_channel : ''),
-      payment_kind: rule?.payment_kind ?? line.payment_kind ?? 'NORMAL',
-      job_group: rule?.job_group ?? line.job_group ?? '',
-      location: rule?.location ?? line.location ?? '',
-    }
-  })
+function rulesFromWorkspace(workspace: PayrollLegacyWorkspace): EditableRule[] {
+  return workspace.rules.employees.map((rule) => ({ ...rule }))
 }
 
 function receiptsFromBatch(batch: PayrollLegacyBatch): ReceiptInput[] {
@@ -193,31 +168,14 @@ function evidenceSlotsFromBatch(batch: PayrollLegacyBatch): EvidenceSlot[] {
   })
 }
 
-export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
-  const payrollSheets = testWorkspace.data.materials.filter(
-    (material) => material.material_type === 'PAYROLL_SHEET' && material.period !== null,
-  )
-  const supportingMaterials = testWorkspace.data.materials.filter(
-    (material) => material.material_type !== 'PAYROLL_SHEET' && material.period !== null,
-  )
-  const sourcePeriods = [...new Set(payrollSheets.flatMap(
-    (material) => material.period ? [material.period] : [],
-  ))].sort((left, right) => right.localeCompare(left))
-  const [sourcePeriod, setSourcePeriod] = useState(sourcePeriods[0] ?? '')
-  const periodPayrollSheets = payrollSheets.filter((material) => material.period === sourcePeriod)
-  const periodSupportingMaterials = supportingMaterials.filter(
-    (material) => material.period === sourcePeriod,
-  )
+export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMaterials = null }: Props) {
   const [workspace, setWorkspace] = useState<PayrollLegacyWorkspace | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null)
-  const [task, setTask] = useState<TaskId>('fill')
+  const [task, setTask] = useState<TaskId>('generate')
   const [period, setPeriod] = useState('')
-  const [mainMaterialId, setMainMaterialId] = useState(
-    periodPayrollSheets[0]?.material_id ?? '',
-  )
-  const [supporting, setSupporting] = useState<Record<string, string>>({})
+  const [generationPeriod, setGenerationPeriod] = useState<string>(confirmedMaterials?.period ?? '2026-08')
   const [adjustments, setAdjustments] = useState<PayrollLegacyAdjustment[]>([])
   const [rules, setRules] = useState<EditableRule[]>([])
   const [reviewRules, setReviewRules] = useState<PayrollLegacyReviewRule[]>([])
@@ -232,7 +190,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
     const batch = activeBatchFrom(nextWorkspace, nextPeriod)
     setWorkspace(nextWorkspace)
     setPeriod(nextPeriod)
-    setRules(batch ? rulesFromBatch(nextWorkspace, batch) : [])
+    setRules(rulesFromWorkspace(nextWorkspace))
     setReviewRules(nextWorkspace.rules.review_rules ?? [])
     setReceipts(batch ? receiptsFromBatch(batch) : [])
     setEvidenceSlots(batch ? evidenceSlotsFromBatch(batch) : emptyEvidenceSlots())
@@ -267,12 +225,12 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
 
   const activeBatch = activeBatchFrom(workspace, period)
   const previousOpenItems = useMemo(() => {
-    if (!workspace || !period) return []
+    if (!workspace || !generationPeriod) return []
     return workspace.batches
-      .filter((batch) => batch.period < period)
+      .filter((batch) => batch.period < generationPeriod)
       .sort((left, right) => right.period.localeCompare(left.period))[0]
       ?.pending_items.filter((item) => item.status === 'OPEN') ?? []
-  }, [period, workspace])
+  }, [generationPeriod, workspace])
 
   const execute = async (action: PayrollLegacyAction, payload: Record<string, unknown>) => {
     if (busy) return
@@ -302,21 +260,28 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
     }
   }
 
-  const fillMain = () => {
-    if (!mainMaterialId) return
-    void execute('FILL_MAIN', {
-      main_material_id: mainMaterialId,
-      supporting_material_ids: supporting,
+  const generateMonthlyPayroll = () => {
+    if (!confirmedMaterials || confirmedMaterials.period !== generationPeriod) return
+    void execute('GENERATE_MONTHLY_PAYROLL', {
+      period: generationPeriod,
+      supporting_material_ids: confirmedMaterials.material_ids,
       adjustments,
+      pending_resolutions: previousOpenItems.map((item) => ({
+        pending_id: item.pending_id,
+        ...pendingDecisions[item.pending_id],
+      })),
     })
   }
 
   const saveRules = () => {
-    if (!activeBatch) return
     void execute('SAVE_RULES', {
-      period: activeBatch.period,
+      period: generationPeriod,
       employee_rules: rules.map((rule) => ({
         employee_id: rule.employee_id,
+        employee_name: rule.employee_name,
+        account_id: rule.account_id,
+        account_masked: rule.account_masked,
+        disbursement_company: rule.disbursement_company,
         fixed_base_salary_cents: rule.fixed_base_salary_cents,
         fixed_allowance_cents: rule.fixed_allowance_cents,
         night_shift_rate_cents: rule.night_shift_rate_cents,
@@ -326,7 +291,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
         job_group: rule.job_group,
         location: rule.location,
       })),
-      review_rules: reviewRules,
+      ...(reviewRules.length > 0 || workspace ? { review_rules: reviewRules } : {}),
     })
   }
 
@@ -339,7 +304,9 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
       (rule.rule_type === 'HISTORY_CHANGE_REVIEW' || rule.threshold_cents === 0)
     ))
   const rulesComplete = reviewRulesComplete && rules.length > 0 && rules.every(
-    (rule) => rule.payment_channel && rule.job_group.trim() && rule.location.trim(),
+    (rule) => rule.employee_name.trim() && /^\*{4}(?:\d{4}|\?{4})$/.test(rule.account_masked) &&
+      rule.disbursement_company.trim() && rule.payment_channel &&
+      rule.job_group.trim() && rule.location.trim(),
   )
   const evidenceRefs = evidenceSlots.map((item) => item.evidence_ref.trim())
   const evidenceComplete = evidenceRefs.every(
@@ -348,7 +315,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
   const receiptsComplete = evidenceComplete && receipts.length > 0 && receipts.every(
     (receipt) => receipt.status && receipt.amount !== '' && Number(receipt.amount) >= 0,
   )
-  const pendingComplete = previousOpenItems.length > 0 && previousOpenItems.every((item) => {
+  const pendingComplete = previousOpenItems.length === 0 || previousOpenItems.every((item) => {
     const resolution = pendingDecisions[item.pending_id]
     return resolution?.decision && resolution.reason.trim()
   })
@@ -357,6 +324,25 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
     setRules((current) => current.map((rule) => rule.employee_id === employeeId
       ? { ...rule, ...patch }
       : rule))
+  }
+
+  const addEmployeeRule = () => {
+    const suffix = Date.now().toString(36)
+    setRules((current) => [...current, {
+      employee_id: `employee_${suffix}`,
+      employee_name: '',
+      account_id: `account_${suffix}`,
+      account_masked: '****????',
+      disbursement_company: '',
+      fixed_base_salary_cents: 0,
+      fixed_allowance_cents: 0,
+      night_shift_rate_cents: 0,
+      rest_days: 0,
+      payment_channel: '',
+      payment_kind: 'NORMAL',
+      job_group: '',
+      location: '',
+    }])
   }
 
   const updateReviewRule = (ruleId: string, patch: Partial<PayrollLegacyReviewRule>) => {
@@ -379,20 +365,6 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
     }])
   }
 
-  const selectedMaterial = payrollSheets.find((material) => material.material_id === mainMaterialId)
-  const selectSourcePeriod = (nextPeriod: string) => {
-    setSourcePeriod(nextPeriod)
-    setMainMaterialId(
-      payrollSheets.find((material) => material.period === nextPeriod)?.material_id ?? '',
-    )
-    setSupporting({})
-    if (workspace?.batches.some((batch) => batch.period === nextPeriod)) {
-      applyWorkspace(workspace, nextPeriod)
-    } else {
-      setAdjustments([])
-    }
-  }
-
   return (
     <section className="payroll-legacy-workbench" aria-labelledby="payroll-legacy-heading">
       <header className="payroll-legacy-header">
@@ -404,11 +376,11 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
         <div className="payroll-legacy-safety">
           <CheckCircle size={18} weight="fill" />
           <span>可编辑、可计算、可恢复</span>
-          <small>不可付款 · 不可提交银行</small>
+          <small>{testWorkspace.data.materials.length} 份测试素材 · 不可付款 · 不可提交银行</small>
         </div>
       </header>
 
-      <nav className="payroll-legacy-taskbar" aria-label="原工资软件八项功能">
+      <nav className="payroll-legacy-taskbar" aria-label="工资软件六项功能">
         {tasks.map((item) => {
           const Icon = item.icon
           return (
@@ -429,15 +401,15 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
       </nav>
 
       {loading ? (
-        <div className="payroll-legacy-loading"><ArrowClockwise size={20} />正在读取已保存工资主表</div>
+        <div className="payroll-legacy-loading"><ArrowClockwise size={20} />正在读取工资规则和月度结果</div>
       ) : (
         <div className="payroll-legacy-body">
           <div className="payroll-legacy-toolbar">
             <div>
-              <strong>{workspace ? `工资主表已保存 · 版本 ${workspace.revision}` : '尚未建立网页工资主表'}</strong>
-              <span>{workspace ? `${workspace.batches.length} 个账期 · 当前 ${workspace.active_period}` : '请选择原工资表开始导入'}</span>
+              <strong>{workspace ? `工资工作区版本 ${workspace.revision}` : '尚未建立工资规则'}</strong>
+              <span>{workspace ? `${workspace.rules.employees.length} 条独立员工规则 · ${workspace.batches.length} 个已生成账期` : '先管理工资规则，再确认素材生成工资'}</span>
             </div>
-            {workspace ? (
+            {workspace && workspace.batches.length > 0 ? (
               <label>
                 <span>查看已保存月份</span>
                 <select value={period} onChange={(event) => applyWorkspace(workspace, event.target.value)}>
@@ -450,70 +422,51 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
             </button>
           </div>
 
-          {task === 'fill' ? (
+          {task === 'generate' ? (
             <div className="payroll-task-panel">
               <div className="payroll-task-heading">
-                <div><span>01</span><h3>选择来源并填入主表</h3></div>
-                <p>服务端会重新解析加密保存的 XLS/XLSX；浏览器不能自行提交工资明细。</p>
+                <div><span>01</span><h3>生成当月工资</h3></div>
+                <p>不再导入外部工资表；以独立工资规则、下方唯一确认的三类素材和上月待办生成当月工资。</p>
               </div>
               <div className="payroll-source-form">
                 <label>
                   <span>工资月份</span>
-                  <select value={sourcePeriod} onChange={(event) => selectSourcePeriod(event.target.value)}>
-                    {sourcePeriods.map((candidate) => (
-                      <option key={candidate} value={candidate}>{candidate}</option>
-                    ))}
+                  <select value={generationPeriod} onChange={(event) => setGenerationPeriod(event.target.value)}>
+                    <option value="2026-07">2026-07</option>
+                    <option value="2026-08">2026-08</option>
                   </select>
                 </label>
-                <label>
-                  <span>选择原工资表版本</span>
-                  <select value={mainMaterialId} onChange={(event) => setMainMaterialId(event.target.value)}>
-                    {periodPayrollSheets.map((material, index) => (
-                      <option key={material.material_id} value={material.material_id}>
-                        版本 {index + 1} · {material.routing_status === 'AUTO_TEST' ? '可自动测试' : '需要人工复核'}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {(['attendance', 'aunt_attendance', 'review_statistics'] as const).map((role) => (
-                  <label key={role}>
-                    <span>{{ attendance: '考勤表', aunt_attendance: '阿姨考勤', review_statistics: '复核统计' }[role]}</span>
-                    <select
-                      value={supporting[role] ?? ''}
-                      onChange={(event) => setSupporting((current) => {
-                        const next = { ...current }
-                        if (event.target.value) next[role] = event.target.value
-                        else delete next[role]
-                        return next
-                      })}
-                    >
-                      <option value="">本月未提供</option>
-                      {periodSupportingMaterials.map((material) => (
-                        <option key={material.material_id} value={material.material_id}>
-                          {material.material_type}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ))}
               </div>
-              {selectedMaterial?.routing_status === 'REVIEW_REQUIRED' ? (
-                <div className="payroll-inline-warning"><Warning size={17} />这份工资表需要人工核对；可进入主表编辑，但阻断异常解决前不能生成代发草稿。</div>
-              ) : null}
-              {activeBatch?.period === sourcePeriod ? (
+              {confirmedMaterials?.period === generationPeriod ? (
+                <div className="payroll-confirmed-materials" aria-label="已确认工资素材">
+                  <strong>{generationPeriod} 三类素材已唯一确认</strong>
+                  <span>考勤表 {confirmedMaterials.material_ids.attendance.slice(-8).toUpperCase()}</span>
+                  <span>阿姨考勤表 {confirmedMaterials.material_ids.aunt_attendance.slice(-8).toUpperCase()}</span>
+                  <span>好评统计 {confirmedMaterials.material_ids.review_statistics.slice(-8).toUpperCase()}</span>
+                </div>
+              ) : <div className="payroll-inline-warning"><Warning size={17} />请在下方素材库选择这个月份，并为考勤表、阿姨考勤表、好评统计各唯一确认一个版本。</div>}
+              {activeBatch?.period === generationPeriod ? (
                 <AdjustmentEditor
                   lines={activeBatch.lines}
                   adjustments={adjustments}
                   onChange={setAdjustments}
                 />
               ) : null}
-              <button type="button" className="primary" disabled={!mainMaterialId || busy} onClick={fillMain}>
-                {busy ? '正在解析并保存' : '导入主表并计算'}
+              <div className="payroll-rule-section-title"><strong>上月待办并入本次生成</strong><span>有待办时必须逐项决定；没有待办可直接生成。</span></div>
+              {previousOpenItems.length ? previousOpenItems.map((item) => (
+                <div className="payroll-pending-row" key={item.pending_id}>
+                  <div><strong>{item.employee_id}</strong><span>{item.source_period} · {item.direction === 'ADD' ? '少发' : '多发'} {money(item.amount_cents)}</span></div>
+                  <select aria-label={`${item.employee_id}处理决定`} value={pendingDecisions[item.pending_id]?.decision ?? ''} onChange={(event) => setPendingDecisions((current) => ({ ...current, [item.pending_id]: { decision: event.target.value as 'ADD_TO_MAIN' | 'SUPPLEMENT' | 'IGNORE', reason: current[item.pending_id]?.reason ?? '' } }))}><option value="">请选择</option><option value="ADD_TO_MAIN">并入本月工资</option><option value="SUPPLEMENT">另行补发</option><option value="IGNORE">忽略并留痕</option></select>
+                  <input aria-label={`${item.employee_id}处理原因`} value={pendingDecisions[item.pending_id]?.reason ?? ''} onChange={(event) => setPendingDecisions((current) => ({ ...current, [item.pending_id]: { decision: current[item.pending_id]?.decision ?? '', reason: event.target.value } }))} placeholder="填写处理原因" />
+                </div>
+              )) : <p className="payroll-empty-task">上一账期没有未解决的少发或多发事项。</p>}
+              <button type="button" className="primary" disabled={!workspace || workspace.rules.employees.length === 0 || confirmedMaterials?.period !== generationPeriod || !pendingComplete || busy} onClick={generateMonthlyPayroll}>
+                {busy ? '正在生成' : '确认并生成当月工资表'}
               </button>
             </div>
           ) : null}
 
-          {task === 'rules' && activeBatch ? (
+          {task === 'rules' ? (
             <div className="payroll-task-panel">
               <div className="payroll-task-heading"><div><span>07</span><h3>工资计算与审查规则</h3></div><p>规则保存后刷新仍会保留；停用或删除的审查规则不会参与下一次检查。</p></div>
               <section className="payroll-review-rules" aria-labelledby="payroll-review-rules-heading">
@@ -554,14 +507,16 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
                   )
                 }) : <p className="payroll-empty-task">当前没有审查规则；可新增需要的检查项目。</p>}
               </section>
-              <div className="payroll-rule-section-title"><strong>员工工资计算规则</strong><span>固定待遇、渠道和岗位信息会用于重新计算当前主表。</span></div>
+              <div className="payroll-rule-section-title"><strong>员工工资计算规则</strong><span>规则独立长期保存，只影响以后生成的工资，不改已生成历史。</span><button type="button" className="secondary" onClick={addEmployeeRule}>新增员工规则</button></div>
               <div className="payroll-rule-table" role="table" aria-label="工资规则">
                 <div className="payroll-rule-row header" role="row">
-                  <span>员工 / 账户</span><span>固定工资</span><span>固定津贴</span><span>渠道</span><span>类型</span><span>夜班标准</span><span>可休天数</span><span>工种</span><span>地点</span>
+                  <span>员工</span><span>账户尾号</span><span>代发公司</span><span>固定工资</span><span>固定津贴</span><span>渠道</span><span>类型</span><span>夜班标准</span><span>可休天数</span><span>工种</span><span>地点</span><span>操作</span>
                 </div>
                 {rules.map((rule) => (
                   <div className="payroll-rule-row" role="row" key={rule.employee_id}>
-                    <strong>{rule.employee_name}<small>{rule.account_masked}</small></strong>
+                    <input aria-label={`${rule.employee_id}员工姓名`} value={rule.employee_name} onChange={(event) => updateRule(rule.employee_id, { employee_name: event.target.value })} placeholder="姓名" />
+                    <input aria-label={`${rule.employee_id}账户尾号`} value={rule.account_masked.replace('****', '')} maxLength={4} onChange={(event) => updateRule(rule.employee_id, { account_masked: `****${event.target.value.replace(/[^0-9?]/g, '').slice(0, 4)}` })} placeholder="4 位尾号" />
+                    <input aria-label={`${rule.employee_id}代发公司`} value={rule.disbursement_company} onChange={(event) => updateRule(rule.employee_id, { disbursement_company: event.target.value })} placeholder="网商代发公司" />
                     <MoneyInput label={`${rule.employee_name}固定工资`} cents={rule.fixed_base_salary_cents} onChange={(value) => updateRule(rule.employee_id, { fixed_base_salary_cents: value })} />
                     <MoneyInput label={`${rule.employee_name}固定津贴`} cents={rule.fixed_allowance_cents} onChange={(value) => updateRule(rule.employee_id, { fixed_allowance_cents: value })} />
                     <select aria-label={`${rule.employee_name}发放渠道`} value={rule.payment_channel} onChange={(event) => updateRule(rule.employee_id, { payment_channel: event.target.value as EditableRule['payment_channel'] })}><option value="">请选择</option>{channels.map((channel) => <option key={channel}>{channel}</option>)}</select>
@@ -570,10 +525,11 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
                     <input aria-label={`${rule.employee_name}可休天数`} type="number" min="0" max="31" value={rule.rest_days} onChange={(event) => updateRule(rule.employee_id, { rest_days: Number(event.target.value) })} />
                     <input aria-label={`${rule.employee_name}工种`} value={rule.job_group} onChange={(event) => updateRule(rule.employee_id, { job_group: event.target.value })} placeholder="必须确认" />
                     <input aria-label={`${rule.employee_name}地点`} value={rule.location} onChange={(event) => updateRule(rule.employee_id, { location: event.target.value })} placeholder="必须确认" />
+                    <button type="button" className="danger" onClick={() => setRules((current) => current.filter((item) => item.employee_id !== rule.employee_id))}>删除</button>
                   </div>
                 ))}
               </div>
-              <div className="payroll-main-total"><span>重新计算后实发合计</span><strong>{money(activeBatch.lines.reduce((sum, line) => sum + line.net_pay_cents, 0))}</strong></div>
+              <div className="payroll-main-total"><span>当前规则固定工资合计</span><strong>{money(rules.reduce((sum, rule) => sum + rule.fixed_base_salary_cents + rule.fixed_allowance_cents, 0))}</strong></div>
               <button type="button" className="primary" disabled={!rulesComplete || busy} onClick={saveRules}>保存全部工资规则</button>
             </div>
           ) : null}
@@ -581,33 +537,23 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
           {task === 'normal' && activeBatch ? (
             <SimpleAction
               title="生成网商银行代发表"
-              detail="以工资主表为准，按五家公司拆分网商银行代发表；代发表是工资核算的最终产品。测试环境只生成文件，不提交银行。"
+              detail="以系统生成的工资表为准，按五家公司拆分最终代发表；下方同时预览五份代发表和工资发放表。"
               button="生成五份网商银行代发表"
               busy={busy}
               onRun={() => void execute('GENERATE_NORMAL_DRAFT', { period: activeBatch.period })}
-            />
+            >
+              <NormalDraftPreview batch={activeBatch} />
+            </SimpleAction>
           ) : null}
 
           {task === 'supplemental' && activeBatch ? (
             <SimpleAction
-              title="生成补发代发草稿"
+              title="生成补发代发表"
               detail="只提取明确标为 SUPPLEMENT 的正向人工调整，不自动猜测补发金额。"
-              button="生成不可付款补发草稿"
+              button="生成补发代发表预览"
               busy={busy}
               onRun={() => void execute('GENERATE_SUPPLEMENTAL_DRAFT', { period: activeBatch.period })}
             />
-          ) : null}
-
-          {task === 'summary' && activeBatch ? (
-            <SimpleAction
-              title="更新工资汇总"
-              detail="按当前已保存主表重算人数、应发、实发与各发放渠道金额。"
-              button="计算并保存汇总"
-              busy={busy}
-              onRun={() => void execute('UPDATE_SUMMARY', { period: activeBatch.period })}
-            >
-              {activeBatch.summary ? <SummaryView batch={activeBatch} /> : null}
-            </SimpleAction>
           ) : null}
 
           {task === 'history' && activeBatch ? (
@@ -627,23 +573,9 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
             </SimpleAction>
           ) : null}
 
-          {task === 'pending' && activeBatch ? (
-            <div className="payroll-task-panel">
-              <div className="payroll-task-heading"><div><span>05</span><h3>检查上月待办</h3></div><p>每一项都必须明确决定和填写原因。</p></div>
-              {previousOpenItems.length ? previousOpenItems.map((item) => (
-                <div className="payroll-pending-row" key={item.pending_id}>
-                  <div><strong>{item.employee_id}</strong><span>{item.source_period} · {item.direction === 'ADD' ? '少发' : '多发'} {money(item.amount_cents)}</span></div>
-                  <select aria-label={`${item.employee_id}处理决定`} value={pendingDecisions[item.pending_id]?.decision ?? ''} onChange={(event) => setPendingDecisions((current) => ({ ...current, [item.pending_id]: { decision: event.target.value as 'ADD_TO_MAIN' | 'SUPPLEMENT' | 'IGNORE', reason: current[item.pending_id]?.reason ?? '' } }))}><option value="">请选择</option><option value="ADD_TO_MAIN">并入本月主表</option><option value="SUPPLEMENT">另行补发</option><option value="IGNORE">忽略并留痕</option></select>
-                  <input aria-label={`${item.employee_id}处理原因`} value={pendingDecisions[item.pending_id]?.reason ?? ''} onChange={(event) => setPendingDecisions((current) => ({ ...current, [item.pending_id]: { decision: current[item.pending_id]?.decision ?? '', reason: event.target.value } }))} placeholder="填写处理原因" />
-                </div>
-              )) : <p className="payroll-empty-task">上一账期没有未解决的少发或多发事项。</p>}
-              <button type="button" className="primary" disabled={!pendingComplete || busy} onClick={() => void execute('CHECK_PREVIOUS_PENDING', { period: activeBatch.period, resolutions: previousOpenItems.map((item) => ({ pending_id: item.pending_id, ...pendingDecisions[item.pending_id] })) })}>保存上月待办决定</button>
-            </div>
-          ) : null}
-
           {task === 'verify' && activeBatch ? (
             <div className="payroll-task-panel">
-              <div className="payroll-task-heading"><div><span>06</span><h3>按三类发放流水核对本月已发</h3></div><p>工资主表是理论应发基准；五份网商银行流水、中国银行实际发放流水和李勇微信转账记录的实际到账合计必须与它相等。</p></div>
+              <div className="payroll-task-heading"><div><span>04</span><h3>复核本月已发并更新汇总</h3></div><p>系统生成工资表是理论应发基准；先核对五份网商流水、一份中国银行流水和李勇微信转账，逐人及总额全部一致后才更新汇总。</p></div>
               <div className="payroll-evidence-collection">
                 <div>
                   <strong>账单收集完整度</strong>
@@ -691,12 +623,13 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken }: Props) {
                   <span>理论 {money(activeBatch.verification.theoretical_total_cents)} · 实际 {money(activeBatch.verification.actual_total_cents)} · 差额 {money(activeBatch.verification.difference_cents)}</span>
                 </div>
               ) : null}
-              <button type="button" className="primary" disabled={!receiptsComplete || busy} onClick={() => void execute('VERIFY_CURRENT_PAID', { period: activeBatch.period, evidence_documents: evidenceSlots.map(({ evidence_type, evidence_ref }) => ({ evidence_type, evidence_ref: evidence_ref.trim() })), receipts: receipts.map((receipt) => ({ employee_id: receipt.employee_id, account_id: receipt.account_id, payment_channel: receipt.payment_channel, amount_cents: Math.round(Number(receipt.amount) * 100), status: receipt.status })) })}>保存本月已发核对</button>
+              {activeBatch.summary ? <SummaryView batch={activeBatch} /> : <p className="payroll-empty-task">汇总尚未更新；必须先完成匹配复核。</p>}
+              <button type="button" className="primary" disabled={!receiptsComplete || busy} onClick={() => void execute('VERIFY_AND_UPDATE_SUMMARY', { period: activeBatch.period, evidence_documents: evidenceSlots.map(({ evidence_type, evidence_ref }) => ({ evidence_type, evidence_ref: evidence_ref.trim() })), receipts: receipts.map((receipt) => ({ employee_id: receipt.employee_id, account_id: receipt.account_id, payment_channel: receipt.payment_channel, amount_cents: Math.round(Number(receipt.amount) * 100), status: receipt.status })) })}>先复核本月已发，匹配后更新汇总</button>
             </div>
           ) : null}
 
-          {!activeBatch && task !== 'fill' ? (
-            <div className="payroll-empty-task">请先用“填入主表”导入一个工资账期。</div>
+          {!activeBatch && !new Set<TaskId>(['generate', 'rules']).has(task) ? (
+            <div className="payroll-empty-task">请先用“生成当月工资”建立一个工资账期。</div>
           ) : null}
 
           {activeBatch ? <MainTable batch={activeBatch} /> : null}
@@ -745,7 +678,7 @@ function AdjustmentEditor({ lines, adjustments, onChange }: { lines: PayrollLega
       <div className="payroll-adjustment-form">
         <select aria-label="调整员工" value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}>{lines.map((line) => <option key={line.employee_id} value={line.employee_id}>{line.employee_name}</option>)}</select>
         <input aria-label="调整金额" type="number" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="正数增加，负数扣减" />
-        <select aria-label="调整去向" value={disposition} onChange={(event) => setDisposition(event.target.value as 'MAIN' | 'SUPPLEMENT')}><option value="MAIN">并入主表</option><option value="SUPPLEMENT">另行补发</option></select>
+        <select aria-label="调整去向" value={disposition} onChange={(event) => setDisposition(event.target.value as 'MAIN' | 'SUPPLEMENT')}><option value="MAIN">并入当月工资</option><option value="SUPPLEMENT">另行补发</option></select>
         <input aria-label="调整原因" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="必填原因" />
         <button type="button" className="secondary" onClick={add}>加入调整</button>
       </div>
@@ -756,13 +689,58 @@ function AdjustmentEditor({ lines, adjustments, onChange }: { lines: PayrollLega
 
 function SummaryView({ batch }: { batch: PayrollLegacyBatch }) {
   if (!batch.summary) return null
-  return <div className="payroll-summary-strip"><span>{batch.summary.employee_count} 人</span><span>应发 {money(batch.summary.gross_pay_cents)}</span><strong>实发 {money(batch.summary.net_pay_cents)}</strong></div>
+  return (
+    <section className="payroll-monthly-summary" aria-labelledby="payroll-location-summary-heading">
+      <div className="payroll-summary-strip"><span>总汇总 · {batch.summary.employee_count} 人</span><span>应发 {money(batch.summary.gross_pay_cents)}</span><strong>实发 {money(batch.summary.net_pay_cents)}</strong></div>
+      {batch.summary.by_location?.length ? (
+        <div>
+          <h4 id="payroll-location-summary-heading">各店当月工资汇总</h4>
+          <div className="payroll-location-summary-grid">
+            {batch.summary.by_location.map((item) => (
+              <article key={item.location}>
+                <span>{item.location} · {item.employee_count} 人</span>
+                <small>应发 {money(item.gross_pay_cents)}</small>
+                <strong>实发 {money(item.net_pay_cents)}</strong>
+              </article>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function NormalDraftPreview({ batch }: { batch: PayrollLegacyBatch }) {
+  const drafts = batch.drafts.filter((draft) => draft.draft_type === 'normal_bank_payroll')
+  return (
+    <div className="payroll-output-previews">
+      <section aria-label="网商银行代发表预览">
+        <h4>五家公司代发表预览</h4>
+        {drafts.length ? drafts.map((draft) => (
+          <article key={draft.draft_id}>
+            <div><strong>{draft.disbursement_company ?? '网商银行代发'}</strong><span>{draft.lines.length} 人 · {money(draft.total_amount_cents)}</span></div>
+            <div className="payroll-mini-table">
+              {draft.lines.map((line) => <span key={line.employee_id}>{line.employee_id} · {line.account_masked} · {money(line.amount_cents)}</span>)}
+            </div>
+          </article>
+        )) : <p className="payroll-empty-task">点击生成后在这里显示五份代发表。</p>}
+      </section>
+      <section aria-label="工资发放表预览">
+        <h4>工资发放表</h4>
+        <div className="payroll-mini-table">
+          {batch.lines.map((line) => (
+            <span key={line.employee_id}>{line.employee_name} · {line.payment_channel} · {line.disbursement_company ?? line.location ?? '发放主体待确认'} · {money(line.net_pay_cents)}</span>
+          ))}
+        </div>
+      </section>
+    </div>
+  )
 }
 
 function MainTable({ batch }: { batch: PayrollLegacyBatch }) {
   return (
     <div className="payroll-main-table">
-      <div className="payroll-main-table-heading"><div><span>当前保存结果</span><h3>{batch.period} 工资主表</h3></div><strong>{batch.lines.length} 人 · {money(batch.lines.reduce((sum, line) => sum + line.net_pay_cents, 0))}</strong></div>
+      <div className="payroll-main-table-heading"><div><span>系统生成结果</span><h3>{batch.period} 工资表</h3></div><strong>{batch.lines.length} 人 · {money(batch.lines.reduce((sum, line) => sum + line.net_pay_cents, 0))}</strong></div>
       <div className="payroll-main-table-scroll">
         <table>
           <thead><tr><th>员工</th><th>账户</th><th>基本工资</th><th>津贴</th><th>奖金</th><th>扣款</th><th>社保</th><th>公积金</th><th>个税</th><th>实发</th><th>渠道</th></tr></thead>
@@ -770,7 +748,7 @@ function MainTable({ batch }: { batch: PayrollLegacyBatch }) {
         </table>
       </div>
       {batch.source_exceptions.length ? <div className="payroll-blockers"><Warning size={17} /><span>{batch.source_exceptions.length} 个来源阻断/复核项；解决前不会生成代发草稿。</span></div> : null}
-      {batch.drafts.length ? <div className="payroll-draft-list">{batch.drafts.map((draft) => <div key={draft.draft_id}><span>{draft.draft_type === 'normal_bank_payroll' ? '正常代发草稿' : '补发草稿'} · {draft.lines.length} 人</span><strong>{money(draft.total_amount_cents)}</strong><small>不可付款 / 不可提交</small></div>)}</div> : null}
+      {batch.drafts.length ? <div className="payroll-draft-list">{batch.drafts.map((draft) => <div key={draft.draft_id}><span>{draft.draft_type === 'normal_bank_payroll' ? `${draft.disbursement_company ?? '网商银行'}代发表` : '补发代发表'} · {draft.lines.length} 人</span><strong>{money(draft.total_amount_cents)}</strong><small>仅预览 / 不可提交</small></div>)}</div> : null}
     </div>
   )
 }

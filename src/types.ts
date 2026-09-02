@@ -855,12 +855,14 @@ export type PayrollTestWorkspaceCommandResult<T> = {
 
 export type PayrollLegacyAction =
   | 'FILL_MAIN'
+  | 'GENERATE_MONTHLY_PAYROLL'
   | 'GENERATE_NORMAL_DRAFT'
   | 'GENERATE_SUPPLEMENTAL_DRAFT'
   | 'UPDATE_SUMMARY'
   | 'SAVE_RULES'
   | 'CHECK_RULES_AND_HISTORY'
   | 'VERIFY_CURRENT_PAID'
+  | 'VERIFY_AND_UPDATE_SUMMARY'
   | 'CHECK_PREVIOUS_PENDING'
 
 export type PayrollLegacyLine = PayrollTestMaterialPreviewLine & {
@@ -869,6 +871,7 @@ export type PayrollLegacyLine = PayrollTestMaterialPreviewLine & {
   rest_days?: number
   job_group?: string
   location?: string
+  disbursement_company?: string
 }
 
 export type PayrollLegacyAdjustment = {
@@ -898,6 +901,7 @@ export type PayrollLegacyDraft = {
   batch_id: string
   pay_period: string
   version: number
+  disbursement_company?: string
   lines: PayrollLegacyDraftLine[]
   total_amount_cents: number
   warning: string
@@ -971,7 +975,7 @@ export type PayrollLegacyBatch = {
   batch_id: string
   period: string
   revision: number
-  main_material_id: string
+  main_material_id?: string
   supporting_material_ids: Record<string, string>
   lines: PayrollLegacyLine[]
   adjustments: PayrollLegacyAdjustment[]
@@ -986,6 +990,12 @@ export type PayrollLegacyBatch = {
     gross_pay_cents: number
     net_pay_cents: number
     by_payment_channel: Array<{ payment_channel: string; amount_cents: number }>
+    by_location?: Array<{
+      location: string
+      employee_count: number
+      gross_pay_cents: number
+      net_pay_cents: number
+    }>
     payable: false
     submission_supported: false
   }
@@ -1004,6 +1014,10 @@ export type PayrollLegacyBatch = {
 
 export type PayrollLegacyEmployeeRule = {
   employee_id: string
+  employee_name: string
+  account_id: string
+  account_masked: string
+  disbursement_company: string
   fixed_base_salary_cents: number
   fixed_allowance_cents: number
   night_shift_rate_cents: number

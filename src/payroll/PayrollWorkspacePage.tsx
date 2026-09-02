@@ -14,7 +14,10 @@ import type {
 import { ErrorState, LoadingState, PageHeader } from '../shared/PagePrimitives'
 import { PayrollLegacyWorkbench } from './PayrollLegacyWorkbench'
 import { PayrollHistorySummary } from './PayrollHistorySummary'
-import { PayrollTestWorkspaceActionsPanel } from './PayrollTestWorkspaceActionsPanel'
+import {
+  PayrollTestWorkspaceActionsPanel,
+  type PayrollConfirmedMaterials,
+} from './PayrollTestWorkspaceActionsPanel'
 
 const currency = new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY' })
 
@@ -108,6 +111,7 @@ async function readViews(): Promise<PayrollLiveViews> {
 export function PayrollWorkspacePage() {
   const [status, setStatus] = useState<PayrollReadResponse<PayrollStatusData> | null>(null)
   const [testWorkspace, setTestWorkspace] = useState<PayrollTestWorkspaceReadResponse | null>(null)
+  const [confirmedMaterials, setConfirmedMaterials] = useState<PayrollConfirmedMaterials | null>(null)
   const [views, setViews] = useState<PayrollLiveViews | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -252,7 +256,12 @@ export function PayrollWorkspacePage() {
       ) : null}
 
       {!loading && !error && testWorkspace && csrfToken ? (
-        <PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken={csrfToken} />
+        <PayrollLegacyWorkbench
+          key={confirmedMaterials?.period ?? 'payroll-unconfirmed'}
+          testWorkspace={testWorkspace}
+          csrfToken={csrfToken}
+          confirmedMaterials={confirmedMaterials}
+        />
       ) : null}
 
       {!loading && !error && status && !status.data.live_data_ready ? (
@@ -261,7 +270,7 @@ export function PayrollWorkspacePage() {
             <Info size={20} weight="fill" />
             <div>
               <strong>{testWorkspaceReady ? '七、八月工资测试账本已就绪' : testWorkspace ? '测试账本已创建，暂无七、八月工资素材' : '七、八月工资测试账本尚未就绪'}</strong>
-              <span>{testWorkspaceReady ? '只接入 2026 年 7 月和 8 月；素材库只展示考勤表、阿姨考勤表和好评统计，工资主表与代发表不进入素材库。' : testWorkspace ? '工作区已就绪，但当前没有 2026 年 7 月或 8 月的工资表素材。' : '七、八月素材仍保留在来源库中；测试账本接通后会自动显示，当前不会虚报已入账。'}</span>
+              <span>{testWorkspaceReady ? '只接入 2026 年 7 月和 8 月；素材库只展示考勤表、阿姨考勤表和好评统计，生成的工资表与代发表不进入素材库。' : testWorkspace ? '工作区已就绪，但当前没有 2026 年 7 月或 8 月的工资表素材。' : '七、八月素材仍保留在来源库中；测试账本接通后会自动显示，当前不会虚报已入账。'}</span>
             </div>
             <Badge color={testWorkspace ? 'blue' : 'amber'}>{testWorkspaceReady ? '七八月测试账本' : testWorkspace ? '暂无七八月素材' : '待接通'}</Badge>
           </div>
@@ -270,6 +279,7 @@ export function PayrollWorkspacePage() {
               workspace={testWorkspace}
               csrfToken={csrfToken}
               onWorkspaceChange={setTestWorkspace}
+              onConfirmedMaterials={setConfirmedMaterials}
             />
           ) : null}
           {status.data.setup_summary?.provider_connected ? (
@@ -305,6 +315,7 @@ export function PayrollWorkspacePage() {
             workspace={testWorkspace}
             csrfToken={csrfToken}
             onWorkspaceChange={setTestWorkspace}
+            onConfirmedMaterials={setConfirmedMaterials}
           />
         ) : null
       ) : null}
