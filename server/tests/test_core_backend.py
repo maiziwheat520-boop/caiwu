@@ -808,6 +808,7 @@ def build_state(
     evidence_unlock_path: str | None = None,
     personal_finance_enabled: bool = True,
     personal_finance_statement_refs: tuple[str, ...] | None = None,
+    candidate_business_unit_refs: tuple[str, ...] | None = None,
 ) -> CoreBackedState:
     return CoreBackedState(
         client,  # type: ignore[arg-type]
@@ -823,6 +824,7 @@ def build_state(
         authentication_generation=4,
         entity_ref=ENTITY_ID,
         business_unit_ref="unit-demo-a",
+        candidate_business_unit_refs=candidate_business_unit_refs,
         personal_finance_entity_ref=ENTITY_ID if personal_finance_enabled else None,
         personal_finance_statement_ref=(
             STATEMENT_ID
@@ -837,6 +839,41 @@ def build_state(
 
 
 class CoreBackedAdapterTests(unittest.TestCase):
+    def test_candidates_page_across_each_explicitly_allowed_business_unit(self) -> None:
+        client = FakeCoreClient()
+        state = build_state(
+            client,
+            candidate_business_unit_refs=("unit-demo-a", "review-2026-alipay-annual"),
+        )
+
+        first = state.list_candidates(status="PENDING", month=None, cursor=None)
+        second = state.list_candidates(
+            status="PENDING", month=None, cursor=first["next_cursor"]  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(
+            client.calls[0][1],
+            "/internal/v1/candidates?status=PENDING&business_unit=unit-demo-a",
+        )
+        self.assertEqual(
+            client.calls[1][1],
+            "/internal/v1/candidates?status=PENDING&business_unit=review-2026-alipay-annual",
+        )
+        self.assertIsNone(second["next_cursor"])
+
+    def test_candidates_reject_a_forged_cross_business_unit_cursor(self) -> None:
+        state = build_state(
+            FakeCoreClient(),
+            candidate_business_unit_refs=("unit-demo-a", "review-2026-alipay-annual"),
+        )
+        forged = CoreBackedState._encode_candidate_cursor(2, None)
+
+        with self.assertRaises(CoreBackendError) as raised:
+            state.list_candidates(status=None, month=None, cursor=forged)
+
+        self.assertEqual(raised.exception.status, 400)
+        self.assertEqual(raised.exception.payload["code"], "INVALID_CURSOR")
+
     def test_classification_group_scope_and_atomic_batch_cross_the_core_boundary(self) -> None:
         client = ClassificationCoreClient()
         state = build_state(client)

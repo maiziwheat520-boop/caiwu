@@ -264,6 +264,7 @@ class CoreBackedState:
         authentication_generation: int,
         entity_ref: str,
         business_unit_ref: str,
+        candidate_business_unit_refs: tuple[str, ...] | None = None,
         personal_finance_entity_ref: str | None = None,
         personal_finance_statement_ref: str | None = None,
         personal_finance_statement_refs: tuple[str, ...] | None = None,
@@ -291,6 +292,17 @@ class CoreBackedState:
         self.authentication_generation = authentication_generation
         self.entity_ref = str(uuid.UUID(entity_ref))
         self.business_unit_ref = _bounded(business_unit_ref, maximum=100)
+        supplied_candidate_units = candidate_business_unit_refs or (self.business_unit_ref,)
+        if not supplied_candidate_units or len(supplied_candidate_units) > 8:
+            raise ValueError("between one and eight candidate business units are required")
+        self.candidate_business_unit_refs = tuple(
+            _bounded(value, maximum=100) for value in supplied_candidate_units
+        )
+        if (
+            self.business_unit_ref not in self.candidate_business_unit_refs
+            or len(set(self.candidate_business_unit_refs)) != len(self.candidate_business_unit_refs)
+        ):
+            raise ValueError("candidate business units must be unique and include CORE_BUSINESS_UNIT_REF")
         supplied_statement_refs = personal_finance_statement_refs or ()
         if personal_finance_statement_ref and supplied_statement_refs:
             raise ValueError(
@@ -380,13 +392,14 @@ class CoreBackedState:
         month: str | None,
         cursor: str | None,
     ) -> dict[str, object]:
+        unit_index, core_cursor = self._candidate_cursor(cursor)
         query = {
             key: value
             for key, value in {
                 "status": status,
                 "month": month,
-                "business_unit": self.business_unit_ref,
-                "cursor": cursor,
+                "business_unit": self.candidate_business_unit_refs[unit_index],
+                "cursor": core_cursor,
             }.items()
             if value is not None
         }
@@ -394,10 +407,51 @@ class CoreBackedState:
         items = payload.get("items")
         if not isinstance(items, list):
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        next_core_cursor = payload.get("next_cursor")
+        if next_core_cursor is not None and not isinstance(next_core_cursor, str):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        next_cursor = None
+        if next_core_cursor is not None:
+            next_cursor = (
+                next_core_cursor
+                if len(self.candidate_business_unit_refs) == 1
+                else self._encode_candidate_cursor(unit_index, next_core_cursor)
+            )
+        elif unit_index + 1 < len(self.candidate_business_unit_refs):
+            next_cursor = self._encode_candidate_cursor(unit_index + 1, None)
         return {
             "items": [_candidate_from_core(item) for item in items],
-            "next_cursor": payload.get("next_cursor"),
+            "next_cursor": next_cursor,
         }
+
+    def _candidate_cursor(self, cursor: str | None) -> tuple[int, str | None]:
+        if cursor is None:
+            return 0, None
+        if len(self.candidate_business_unit_refs) == 1:
+            return 0, cursor
+        try:
+            padding = "=" * (-len(cursor) % 4)
+            decoded = json.loads(base64.urlsafe_b64decode(cursor + padding))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise CoreBackendError(400, _problem(400, "INVALID_CURSOR")) from error
+        if (
+            not isinstance(decoded, dict)
+            or set(decoded) != {"v", "unit", "cursor"}
+            or decoded["v"] != 1
+            or type(decoded["unit"]) is not int
+            or not 0 <= decoded["unit"] < len(self.candidate_business_unit_refs)
+            or decoded["cursor"] is not None and not isinstance(decoded["cursor"], str)
+        ):
+            raise CoreBackendError(400, _problem(400, "INVALID_CURSOR"))
+        return decoded["unit"], decoded["cursor"]
+
+    @staticmethod
+    def _encode_candidate_cursor(unit_index: int, core_cursor: str | None) -> str:
+        raw = json.dumps(
+            {"v": 1, "unit": unit_index, "cursor": core_cursor},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
     def candidate_detail(self, candidate_id: str) -> dict[str, object] | None:
         candidate_ref = str(uuid.UUID(candidate_id))

@@ -2167,6 +2167,14 @@ def run() -> None:
             if raw_personal_statement_refs
             else None
         )
+        raw_candidate_business_units = os.environ.get(
+            "CORE_CANDIDATE_BUSINESS_UNIT_REFS", ""
+        ).strip()
+        candidate_business_unit_refs = (
+            tuple(part.strip() for part in raw_candidate_business_units.split(","))
+            if raw_candidate_business_units
+            else None
+        )
         try:
             timeout_seconds = float(os.environ.get("CORE_TIMEOUT_SECONDS", "10"))
             client = CoreHttpClient(
@@ -2199,6 +2207,7 @@ def run() -> None:
                 authentication_generation=int(required["CORE_AUTHENTICATION_GENERATION"]),
                 entity_ref=required["CORE_ENTITY_REF"],
                 business_unit_ref=required["CORE_BUSINESS_UNIT_REF"],
+                candidate_business_unit_refs=candidate_business_unit_refs,
                 personal_finance_entity_ref=os.environ.get(
                     "CORE_PERSONAL_ENTITY_REF", ""
                 ).strip()
