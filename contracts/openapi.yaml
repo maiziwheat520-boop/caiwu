@@ -1188,7 +1188,7 @@ components:
       properties:
         action:
           type: string
-          enum: [FILL_MAIN, GENERATE_NORMAL_DRAFT, GENERATE_SUPPLEMENTAL_DRAFT, UPDATE_SUMMARY, SAVE_RULES, CHECK_RULES_AND_HISTORY, VERIFY_CURRENT_PAID, CHECK_PREVIOUS_PENDING]
+          enum: [FILL_MAIN, GENERATE_MONTHLY_PAYROLL, GENERATE_NORMAL_DRAFT, GENERATE_SUPPLEMENTAL_DRAFT, UPDATE_SUMMARY, SAVE_RULES, CHECK_RULES_AND_HISTORY, VERIFY_CURRENT_PAID, VERIFY_AND_UPDATE_SUMMARY, CHECK_PREVIOUS_PENDING]
         expected_revision:
           type: integer
           minimum: 0
@@ -1222,7 +1222,7 @@ components:
       properties:
         action:
           type: string
-          enum: [FILL_MAIN, GENERATE_NORMAL_DRAFT, GENERATE_SUPPLEMENTAL_DRAFT, UPDATE_SUMMARY, SAVE_RULES, CHECK_RULES_AND_HISTORY, VERIFY_CURRENT_PAID, CHECK_PREVIOUS_PENDING]
+          enum: [FILL_MAIN, GENERATE_MONTHLY_PAYROLL, GENERATE_NORMAL_DRAFT, GENERATE_SUPPLEMENTAL_DRAFT, UPDATE_SUMMARY, SAVE_RULES, CHECK_RULES_AND_HISTORY, VERIFY_CURRENT_PAID, VERIFY_AND_UPDATE_SUMMARY, CHECK_PREVIOUS_PENDING]
         replayed:
           type: boolean
         workspace:
@@ -1345,7 +1345,7 @@ components:
     PayrollLegacyBatch:
       type: object
       additionalProperties: false
-      required: [batch_id, period, revision, main_material_id, supporting_material_ids, lines, adjustments, source_exceptions, drafts, summary, verification, pending_items, checks]
+      required: [batch_id, period, revision, supporting_material_ids, lines, adjustments, source_exceptions, drafts, summary, verification, pending_items, checks]
       properties:
         batch_id:
           $ref: "#/components/schemas/PayrollResourceRef"
