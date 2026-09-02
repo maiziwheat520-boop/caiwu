@@ -33,6 +33,12 @@ EVIDENCE_ID = "20000000-0000-4000-8000-000000000003"
 ENTITY_ID = "10000000-0000-4000-8000-000000000001"
 STATEMENT_ID = "70000000-0000-4000-8000-000000000007"
 SECOND_STATEMENT_ID = "70000000-0000-4000-8000-000000000009"
+
+
+def _decode_assertion(value: str) -> dict[str, object]:
+    encoded = value.split(".")[1]
+    padding = "=" * (-len(encoded) % 4)
+    return json.loads(base64.urlsafe_b64decode(encoded + padding))
 ACCOUNT_ID = "80000000-0000-4000-8000-000000000008"
 SECOND_ACCOUNT_ID = "80000000-0000-4000-8000-000000000010"
 ASSERTION_KEY = b"synthetic-web-core-assertion-key-0001"
@@ -559,6 +565,14 @@ class FakeCoreClient:
         headers: dict[str, str] | None = None,
     ) -> dict[str, object]:
         self.calls.append((method, path, body, dict(headers or {})))
+        if method == "POST" and path.startswith("/internal/v1/bank-statements/"):
+            return {
+                "contract_version": "ledgerbridge.bank-statement-review.v1",
+                "statement_ref": STATEMENT_ID,
+                "decision": "CONFIRMED",
+                "revision": 2,
+                "created": True,
+            }
         if method == "POST":
             return {
                 "contract_version": "ledgerbridge.candidate-decision.v1",
@@ -1401,6 +1415,32 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 for item in reversed(core_personal_finance()["items"])
             ],
         )
+
+    def test_bank_statement_review_binds_server_entity_and_signed_revision(self) -> None:
+        client = FakeCoreClient()
+        operation_id = str(uuid.uuid4())
+
+        status, payload = build_state(client).review_bank_statement(
+            STATEMENT_ID,
+            operation_id,
+            {
+                "expected_revision": 1,
+                "decision": "CONFIRMED",
+                "reason": "人工确认正式账单",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["revision"], 2)
+        method, path, body, headers = client.calls[-1]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, f"/internal/v1/bank-statements/{STATEMENT_ID}/reviews")
+        self.assertEqual(headers["Idempotency-Key"], operation_id)
+        assert body is not None
+        self.assertEqual(json.loads(body)["entity_ref"], ENTITY_ID)
+        claims = _decode_assertion(headers["X-LedgerBridge-User-Assertion"])
+        self.assertEqual(claims["resource_ref"], STATEMENT_ID)
+        self.assertEqual(claims["expected_revision"], 1)
 
     def test_personal_bank_transactions_merge_multiple_server_bound_statements(self) -> None:
         client = MultipleStatementsCoreClient()

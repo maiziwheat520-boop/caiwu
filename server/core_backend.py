@@ -674,6 +674,47 @@ class CoreBackedState:
             pages.append(page)
         return _merge_personal_bank_transactions(pages)
 
+    def review_bank_statement(
+        self,
+        statement_ref: str,
+        idempotency_key: str,
+        request: dict[str, object],
+    ) -> tuple[int, dict[str, object]]:
+        try:
+            canonical_ref = str(uuid.UUID(statement_ref))
+            operation_id = str(uuid.UUID(idempotency_key))
+        except ValueError:
+            return 422, _problem(422, "INVALID_BANK_STATEMENT_REVIEW")
+        if self.personal_finance_entity_ref is None:
+            return 503, _problem(503, "PERSONAL_BANK_FACTS_UNAVAILABLE")
+        revision = request.get("expected_revision")
+        if type(revision) is not int:
+            return 422, _problem(422, "INVALID_BANK_STATEMENT_REVIEW")
+        path = f"/internal/v1/bank-statements/{canonical_ref}/reviews"
+        forwarded = {**request, "entity_ref": self.personal_finance_entity_ref}
+        body = json.dumps(forwarded, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        assertion = self._resource_user_assertion(
+            path=path,
+            body=body,
+            resource_ref=canonical_ref,
+            operation_id=operation_id,
+            expected_revision=revision,
+        )
+        try:
+            payload = self.client.json(
+                "POST",
+                path,
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": operation_id,
+                    "X-LedgerBridge-User-Assertion": assertion,
+                },
+            )
+        except CoreBackendError as error:
+            return error.status, error.payload
+        return 200, payload
+
     def append_decision(
         self,
         candidate_id: str,
@@ -1540,6 +1581,7 @@ class CoreBackedState:
         body: bytes,
         resource_ref: str,
         operation_id: str,
+        expected_revision: int | None = None,
     ) -> str:
         issued_at = int(time.time())
         claims = {
@@ -1559,6 +1601,8 @@ class CoreBackedState:
             "expires_at": issued_at + 45,
             "jti": str(uuid.uuid4()),
         }
+        if expected_revision is not None:
+            claims["expected_revision"] = expected_revision
         encoded = _b64url(
             json.dumps(
                 claims,

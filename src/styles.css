@@ -371,6 +371,8 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
 .personal-bank-fact-metric strong { margin-top: 5px; color: #2b405c; font-size: 14px; font-variant-numeric: tabular-nums; }
 .personal-bank-fact-metric p { margin: 5px 0 0; color: #748298; font-size: 9px; line-height: 1.4; }
 .personal-bank-facts-review { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 10px 18px; border-block: 1px solid #e5ebf3; color: #5b6e86; background: #f7f9fc; font-size: 10px; }
+.personal-bank-statement-review { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; width: 100%; }
+.personal-bank-statement-review > button { margin-left: auto; }
 .personal-bank-transaction-list { display: grid; width: 100%; min-width: 0; max-height: 720px; overflow-x: hidden; overflow-y: auto; }
 .personal-bank-transaction-row { display: grid; grid-template-columns: 145px 145px minmax(0, 1fr) 160px; align-items: center; gap: 14px; box-sizing: border-box; width: 100%; min-width: 0; min-height: 68px; overflow: hidden; padding: 11px 18px; border-bottom: 1px solid #edf0f5; }
 .personal-bank-transaction-row > * { min-width: 0; }

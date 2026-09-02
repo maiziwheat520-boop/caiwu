@@ -49,6 +49,9 @@ FLOW_COOKIE_NAME = "__Host-ledgerbridge_auth_flow"
 MONTH_PATTERN = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
 CANDIDATE_PATH = re.compile(r"^/api/v1/candidates/([0-9a-f-]{36})$")
 DECISION_PATH = re.compile(r"^/api/v1/candidates/([0-9a-f-]{36})/decisions$")
+BANK_STATEMENT_REVIEW_PATH = re.compile(
+    r"^/api/v1/personal-finance/bank-statements/([0-9a-f-]{36})/reviews$"
+)
 CLASSIFICATION_BATCH_PATH = re.compile(
     r"^/api/v1/candidate-classification-groups/(cg_[0-9a-f]{32})/decisions$"
 )
@@ -1470,6 +1473,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         if self._auth_post(path):
             return
         decision_match = DECISION_PATH.fullmatch(path)
+        bank_statement_review = BANK_STATEMENT_REVIEW_PATH.fullmatch(path)
         classification_batch_match = CLASSIFICATION_BATCH_PATH.fullmatch(path)
         draft_match = DRAFT_CREATE_PATH.fullmatch(path)
         evidence_unlock = path == EVIDENCE_UNLOCK_PATH
@@ -1479,6 +1483,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         payroll_legacy_command = path == PAYROLL_LEGACY_COMMAND_PATH
         if (
             decision_match is None
+            and bank_statement_review is None
             and classification_batch_match is None
             and draft_match is None
             and not evidence_unlock
@@ -1758,6 +1763,26 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 return
             status, payload = self.preview_server.state.append_decision(
                 decision_match.group(1), idempotency_key.lower(), validated
+            )
+            self._send_json(status, payload)
+            return
+        if bank_statement_review is not None:
+            if set(request) != {"expected_revision", "decision", "reason"}:
+                self._send_json(422, _problem(422, "INVALID_BANK_STATEMENT_REVIEW", "账单审核请求字段无效"))
+                return
+            revision = request.get("expected_revision")
+            if (
+                isinstance(revision, bool)
+                or not isinstance(revision, int)
+                or revision < 1
+                or request.get("decision") not in {"CONFIRMED", "REJECTED"}
+                or not isinstance(request.get("reason"), str)
+                or not str(request["reason"]).strip()
+            ):
+                self._send_json(422, _problem(422, "INVALID_BANK_STATEMENT_REVIEW", "账单审核内容无效"))
+                return
+            status, payload = self.preview_server.state.review_bank_statement(
+                bank_statement_review.group(1), idempotency_key.lower(), request
             )
             self._send_json(status, payload)
             return

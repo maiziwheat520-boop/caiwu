@@ -19,6 +19,8 @@ import type {
   OriginalReconciliation,
   PasskeyAdditionResult,
   PersonalBankTransactionsResponse,
+  PersonalBankStatement,
+  PersonalBankStatementReviewReceipt,
   PayrollBatchListData,
   PayrollCommandResult,
   PayrollDashboardData,
@@ -288,6 +290,28 @@ export const api = {
 
   getPersonalBankTransactions: () =>
     requestJson<PersonalBankTransactionsResponse>('/api/v1/personal-finance/bank-transactions'),
+
+  reviewPersonalBankStatement: ({ statement, decision, reason, csrfToken }: {
+    statement: PersonalBankStatement
+    decision: 'CONFIRMED' | 'REJECTED'
+    reason: string
+    csrfToken: string
+  }) => requestJson<PersonalBankStatementReviewReceipt>(
+    `/api/v1/personal-finance/bank-statements/${encodeURIComponent(statement.statement_ref)}/reviews`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': createOperationId(),
+        'X-CSRF-Token': csrfToken,
+      },
+      body: JSON.stringify({
+        expected_revision: statement.review_revision,
+        decision,
+        reason,
+      }),
+    },
+  ),
 
   listCandidates: ({ status, cursor }: { status?: string; cursor?: string } = {}) => {
     const query = new URLSearchParams()

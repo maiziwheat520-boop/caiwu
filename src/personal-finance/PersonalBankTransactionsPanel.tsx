@@ -40,10 +40,11 @@ async function loadAllPersonalBankTransactions() {
   return result
 }
 
-export function PersonalBankTransactionsPanel() {
+export function PersonalBankTransactionsPanel({ csrfToken }: { csrfToken: string }) {
   const [data, setData] = useState<PersonalBankTransactionsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [reviewBusy, setReviewBusy] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -90,12 +91,18 @@ export function PersonalBankTransactionsPanel() {
           <Bank size={28} />
           <div><strong>尚无正式银行流水</strong><span>受控导入完成后，银行交易会显示在这里。</span></div>
         </div>
-      ) : data ? <PersonalBankFacts data={data} /> : null}
+      ) : data ? <PersonalBankFacts data={data} csrfToken={csrfToken} reviewBusy={reviewBusy} setReviewBusy={setReviewBusy} reload={load} /> : null}
     </section>
   )
 }
 
-function PersonalBankFacts({ data }: { data: PersonalBankTransactionsResponse }) {
+function PersonalBankFacts({ data, csrfToken, reviewBusy, setReviewBusy, reload }: {
+  data: PersonalBankTransactionsResponse
+  csrfToken: string
+  reviewBusy: string | null
+  setReviewBusy: (value: string | null) => void
+  reload: () => Promise<void>
+}) {
   const summary = data.summary
   const statementsByRef = new Map(data.statements.map((statement) => [statement.statement_ref, statement]))
   const periodStart = data.statements.reduce((value, statement) => value < statement.period_start ? value : statement.period_start, data.statements[0].period_start)
@@ -108,7 +115,7 @@ function PersonalBankFacts({ data }: { data: PersonalBankTransactionsResponse })
         <FormalMetric icon={<CloudArrowUp size={19} />} label="银行流出" value={currency.format(minorToMajor(summary.cash_outflow_minor))} detail="账户现金流，不是会计费用" tone="expense" />
         <FormalMetric icon={<ArrowsClockwise size={19} />} label="净现金流" value={currency.format(minorToMajor(summary.net_cash_flow_minor))} detail="流入减流出" />
       </div>
-      <StatementStatuses statements={data.statements} />
+      <StatementStatuses statements={data.statements} csrfToken={csrfToken} reviewBusy={reviewBusy} setReviewBusy={setReviewBusy} reload={reload} />
       <div className="personal-bank-transaction-list" aria-label="正式银行流水明细">
         {data.items.map((item) => {
           const statement = statementsByRef.get(item.statement_ref)
@@ -125,9 +132,16 @@ function PersonalBankFacts({ data }: { data: PersonalBankTransactionsResponse })
   )
 }
 
-function StatementStatuses({ statements }: { statements: PersonalBankStatement[] }) {
+function StatementStatuses({ statements, csrfToken, reviewBusy, setReviewBusy, reload }: {
+  statements: PersonalBankStatement[]
+  csrfToken: string
+  reviewBusy: string | null
+  setReviewBusy: (value: string | null) => void
+  reload: () => Promise<void>
+}) {
+  const pendingCount = statements.filter((statement) => statement.review_status === 'PENDING').length
   return (
-    <div className="personal-bank-facts-review" role="status">
+    <div className="personal-bank-facts-review" aria-label={`银行账单待确认 ${pendingCount}`}>
       {statements.map((statement) => {
         const statusLabel = {
           CONFIRMED: '已确认',
@@ -135,11 +149,29 @@ function StatementStatuses({ statements }: { statements: PersonalBankStatement[]
           REJECTED: '已拒绝',
         }[statement.review_status]
         const institution = institutionLabels[statement.institution_code] ?? '银行账户'
-        return [
-          <span key={`${statement.statement_ref}:account`}>{institution} · 尾号 {statement.account_suffix}</span>,
-          <span key={`${statement.statement_ref}:status`}>账单审核：{statusLabel}</span>,
-          <span key={`${statement.statement_ref}:revision`}>审核版本 {statement.review_revision}</span>,
-        ]
+        return <div className="personal-bank-statement-review" key={statement.statement_ref}>
+          <span>{institution} · 尾号 {statement.account_suffix}</span>
+          <span>账单审核：{statusLabel}</span>
+          <span>审核版本 {statement.review_revision}</span>
+          {statement.review_status === 'PENDING' ? <Button
+            disabled={reviewBusy !== null}
+            size="1"
+            onClick={async () => {
+              setReviewBusy(statement.statement_ref)
+              try {
+                await api.reviewPersonalBankStatement({
+                  statement,
+                  decision: 'CONFIRMED',
+                  reason: 'Web 审核：确认银行账单',
+                  csrfToken,
+                })
+                await reload()
+              } finally {
+                setReviewBusy(null)
+              }
+            }}
+          >{reviewBusy === statement.statement_ref ? '正在确认…' : '确认账单'}</Button> : null}
+        </div>
       })}
     </div>
   )

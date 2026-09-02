@@ -518,6 +518,14 @@ export type PersonalBankTransactionsResponse = {
   items: PersonalBankTransaction[]
 }
 
+export type PersonalBankStatementReviewReceipt = {
+  contract_version: 'ledgerbridge.bank-statement-review.v1'
+  statement_ref: string
+  decision: 'CONFIRMED' | 'REJECTED'
+  revision: number
+  created: boolean
+}
+
 export type OriginalReconciliationColumn = {
   column: string
   ordinal: number

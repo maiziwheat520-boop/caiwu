@@ -64,6 +64,8 @@ import type {
   EvidenceReference,
   Notice,
   Page,
+  PersonalBankStatement,
+  PersonalBankTransactionsResponse,
   Reconciliation as ReconciliationData,
   ReviewEvent,
   Session,
@@ -354,6 +356,7 @@ function App() {
   const [accountingDimensions, setAccountingDimensions] = useState<AccountingDimensions | null>(null)
   const [accountingDimensionsError, setAccountingDimensionsError] = useState<string | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
+  const [personalBankData, setPersonalBankData] = useState<PersonalBankTransactionsResponse | null>(null)
 
   const navigate = useCallback((nextPage: Page, replace = false) => {
     const nextPath = pagePaths[nextPage]
@@ -402,16 +405,22 @@ function App() {
         (value) => ({ status: 'fulfilled' as const, value }),
         () => ({ status: 'rejected' as const }),
       )
+      const personalBankRequest = api.getPersonalBankTransactions().then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        () => ({ status: 'rejected' as const }),
+      )
       const [
         candidateData,
         reconciliationData,
         connectionData,
         classificationGroupResult,
+        personalBankResult,
       ] = await Promise.all([
         api.listCandidates(),
         api.getReconciliation(selectedMonth),
         api.listConnections(),
         classificationGroupRequest,
+        personalBankRequest,
       ])
       const remainingCandidates = candidateData.next_cursor
         ? await listRemainingCandidatePages(candidateData.next_cursor)
@@ -432,6 +441,7 @@ function App() {
       candidateCursorRef.current = null
       setReconciliation(reconciliationData)
       setConnections(connectionData)
+      setPersonalBankData(personalBankResult.status === 'fulfilled' ? personalBankResult.value : null)
       businessDataLoadedRef.current = true
       return true
     } catch (error) {
@@ -481,6 +491,8 @@ function App() {
   const changeMonth = (month: string) => setSelectedMonth(month)
 
   const pendingCandidates = candidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
+  const pendingBankStatements = personalBankData?.statements.filter((statement) => statement.review_status === 'PENDING') ?? []
+  const pendingReviewCount = pendingCandidates.length + pendingBankStatements.length
   const confirmedCandidates = candidates.filter((candidate) => candidate.status === 'CONFIRMED')
 
   const updateCandidate = async (
@@ -792,12 +804,18 @@ function App() {
       )
     }
     if (page === 'personal-finance') {
-      return <PersonalFinanceOverview candidates={candidates} onNavigate={navigate} onOpenCandidate={openCandidate} />
+      return <PersonalFinanceOverview candidates={candidates} onNavigate={navigate} onOpenCandidate={openCandidate} csrfToken={session?.csrf_token ?? ''} />
     }
     if (page === 'review') {
       return (
         <ReviewQueue
           candidates={pendingCandidates}
+          bankStatements={pendingBankStatements}
+          csrfToken={session?.csrf_token ?? ''}
+          onBankStatementReviewed={async () => {
+            const refreshed = await api.getPersonalBankTransactions()
+            setPersonalBankData(refreshed)
+          }}
           classificationGroups={classificationGroups}
           classificationGroupsAvailable={classificationGroupsAvailable}
           onOpenCandidate={openCandidate}
@@ -873,8 +891,8 @@ function App() {
               >
                 <Icon size={19} weight={page === item.id ? 'fill' : 'regular'} />
                 <span>{item.label}</span>
-                {item.id === 'review' && pendingCandidates.length > 0 ? (
-                  <span className="nav-count">{pendingCandidates.length}</span>
+                {item.id === 'review' && pendingReviewCount > 0 ? (
+                  <span className="nav-count">{pendingReviewCount}</span>
                 ) : null}
               </button>
             )
@@ -948,7 +966,7 @@ function App() {
             >
               <span className="bottom-icon-wrap">
                 <Icon size={21} weight={page === item.id ? 'fill' : 'regular'} />
-                {item.id === 'review' && pendingCandidates.length > 0 ? <i>{pendingCandidates.length}</i> : null}
+                {item.id === 'review' && pendingReviewCount > 0 ? <i>{pendingReviewCount}</i> : null}
               </span>
               {item.label}
             </button>
@@ -1521,10 +1539,11 @@ function StatusLine({ icon, label, detail, tone }: { icon: React.ReactNode; labe
   )
 }
 
-function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate }: {
+function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate, csrfToken }: {
   candidates: Candidate[]
   onNavigate: (page: Page) => void
   onOpenCandidate: (candidate: Candidate) => void
+  csrfToken: string
 }) {
   const pending = candidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
   const personalSelection = selectPersonalFinanceEntries(candidates)
@@ -1576,7 +1595,7 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate }: {
         action={<Button onClick={() => onNavigate('review')}><ListChecks size={17} />处理待审核</Button>}
       />
 
-      <PersonalBankTransactionsPanel />
+      <PersonalBankTransactionsPanel csrfToken={csrfToken} />
 
       <section className="panel personal-posting-status" aria-label="个人财务入账状态">
         <div>
@@ -1686,8 +1705,11 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate }: {
 }
 
 
-function ReviewQueue({ candidates, classificationGroups, classificationGroupsAvailable, onOpenCandidate, onUpdate, onRefresh, busyId, batchBusy, onBatchConfirm }: {
+function ReviewQueue({ candidates, bankStatements, csrfToken, onBankStatementReviewed, classificationGroups, classificationGroupsAvailable, onOpenCandidate, onUpdate, onRefresh, busyId, batchBusy, onBatchConfirm }: {
   candidates: Candidate[]
+  bankStatements: PersonalBankStatement[]
+  csrfToken: string
+  onBankStatementReviewed: () => Promise<void>
   classificationGroups: ClassificationGroup[]
   classificationGroupsAvailable: boolean
   onOpenCandidate: (candidate: Candidate) => void
@@ -1697,6 +1719,7 @@ function ReviewQueue({ candidates, classificationGroups, classificationGroupsAva
   batchBusy: boolean
   onBatchConfirm: (candidates: Candidate[]) => void
 }) {
+  const [bankReviewBusy, setBankReviewBusy] = useState<string | null>(null)
   const [sourceFilter, setSourceFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState<'all' | 'conflict' | 'incomplete' | 'ready'>('all')
   const [transferObjectFilter, setTransferObjectFilter] = useState('all')
@@ -1763,6 +1786,32 @@ function ReviewQueue({ candidates, classificationGroups, classificationGroupsAva
         description="高置信度且无风险的账单可批量确认，其余只保留真正需要判断的项目。"
         action={<div className="review-header-actions"><Button disabled={batchBusy || bulkEligible.length === 0} onClick={() => onBatchConfirm(bulkEligible)}><ListChecks size={17} />一键审批 {bulkEligible.length} 条</Button><Button disabled={batchBusy} variant="outline" color="gray" onClick={onRefresh}><ArrowsClockwise size={17} />刷新</Button></div>}
       />
+      {bankStatements.length > 0 ? (
+        <section className="panel" aria-label={`银行账单待确认 ${bankStatements.length}`}>
+          <div className="panel-heading">
+            <div><h2>银行账单待确认</h2><p>这些正式流水已经入库，确认只终结账单审核，不会自动生成或过账会计凭证。</p></div>
+            <Badge color="amber">{bankStatements.length} 份</Badge>
+          </div>
+          <div className="personal-bank-facts-review">
+            {bankStatements.map((statement) => (
+              <div className="personal-bank-statement-review" key={statement.statement_ref}>
+                <span>{({ abc: '中国农业银行', boc: '中国银行', ccb: '中国建设银行', mybank: '网商银行' } as Record<string, string>)[statement.institution_code] ?? '银行账户'} · 尾号 {statement.account_suffix}</span>
+                <span>{statement.period_start} 至 {statement.period_end}</span>
+                <span>{statement.transaction_count} 笔 · 审核版本 {statement.review_revision}</span>
+                <Button disabled={bankReviewBusy !== null || !csrfToken} size="1" onClick={async () => {
+                  setBankReviewBusy(statement.statement_ref)
+                  try {
+                    await api.reviewPersonalBankStatement({ statement, decision: 'CONFIRMED', reason: 'Web 审核：确认银行账单', csrfToken })
+                    await onBankStatementReviewed()
+                  } finally {
+                    setBankReviewBusy(null)
+                  }
+                }}>{bankReviewBusy === statement.statement_ref ? '正在确认…' : '确认账单'}</Button>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
       {evidenceReminderCount > 0 ? (
         <div className="evidence-reminder" role="status">
           <Warning size={19} />
@@ -1791,7 +1840,7 @@ function ReviewQueue({ candidates, classificationGroups, classificationGroupsAva
         <div className="queue-summary">
           <div>
             <span>阻断优先</span>
-            <strong>{filtered.length} 条待处理</strong>
+            <strong>{filtered.length + bankStatements.length} 条待处理</strong>
           </div>
           <div className="status-filters" role="group" aria-label="处理状态筛选">
             {([
@@ -1822,8 +1871,8 @@ function ReviewQueue({ candidates, classificationGroups, classificationGroupsAva
         {filtered.length === 0 ? (
           <div className="empty-state">
             <CheckCircle size={34} weight="light" />
-            <h2>当前筛选下没有待审核项</h2>
-            <p>新的财务候选会在这里出现。</p>
+            <h2>{bankStatements.length > 0 ? '候选交易已处理完' : '当前筛选下没有待审核项'}</h2>
+            <p>{bankStatements.length > 0 ? '上方仍有银行账单需要确认。' : '新的财务候选会在这里出现。'}</p>
           </div>
         ) : filtered.map((candidate) => (
           <article className={`candidate-card ${candidate.conflict ? 'has-conflict' : candidate.incomplete || candidate.reviewRisks.length > 0 ? 'is-incomplete' : 'is-ready'}`} key={candidate.id}>
