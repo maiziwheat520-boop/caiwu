@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 from pathlib import Path
@@ -59,6 +60,11 @@ def scope_alipay_annual_manifest(
     source_evidence = source_manifest.parent / evidence.source_file
     if not source_evidence.is_file() or source_evidence.is_symlink():
         raise AnnualManifestScopeError("source evidence is not a regular file")
+    if (
+        source_evidence.stat().st_size != evidence.plaintext_size
+        or _digest(source_evidence) != evidence.plaintext_sha256
+    ):
+        raise AnnualManifestScopeError("source evidence identity does not match manifest")
     output_directory.mkdir(mode=0o700, parents=False)
     try:
         target_evidence = output_directory / evidence.source_file
@@ -77,6 +83,14 @@ def scope_alipay_annual_manifest(
 
 def _scoped(account_ref: UUID, kind: str, source_ref: UUID) -> UUID:
     return uuid5(_NAMESPACE, f"alipay-account:{account_ref}:{kind}:{source_ref}")
+
+
+def _digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def main() -> int:

@@ -45,7 +45,7 @@ def _source(tmp_path: Path) -> Path:
                         "display_name": "alipay.csv",
                         "declared_media_type": "text/csv",
                         "plaintext_sha256": (
-                            "065d842b3175de9cc40bcc8f35c3aff9b0f64e8af9e1d2dad629187fc37cb6ce"
+                            "1005e6263bca76e1111eb003c394d63970e99f77131350293628ffc7ef99e967"
                         ),
                         "plaintext_size": 26,
                     }
