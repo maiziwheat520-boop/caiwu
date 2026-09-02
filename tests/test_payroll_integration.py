@@ -394,6 +394,20 @@ def test_source_never_guesses_or_reencodes_employee_and_account_ids(
     _assert_error("PAYROLL_IDENTITY_INVALID", lambda: _pull(source, publication))
 
 
+def test_source_accepts_opaque_account_digest_with_scattered_digits() -> None:
+    publication = _publication()
+    batch = cast(dict[str, object], publication["payroll_batch"])
+    line = cast(list[dict[str, object]], batch["lines"])[0]
+    line["account_id"] = "account_9f99f99999f99999f9f99f99"
+    source, _ = _source(publication)
+
+    result = _pull(source, publication)
+
+    result_batch = cast(dict[str, object], result.payload["payroll_batch"])
+    result_line = cast(list[dict[str, object]], result_batch["lines"])[0]
+    assert result_line["account_id"] == "account_9f99f99999f99999f9f99f99"
+
+
 def test_source_rejects_payload_tampering_and_publication_id_mismatch() -> None:
     publication = _publication()
     verification = cast(list[dict[str, object]], publication["verification_results"])[0]

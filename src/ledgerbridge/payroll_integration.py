@@ -2758,7 +2758,9 @@ def _require_stable_identifier(value: object, field: str, *, account: bool = Fal
             "PAYROLL_IDENTITY_INVALID",
             f"payroll {field} is not a stable opaque identifier",
         )
-    if account and sum(character.isdigit() for character in value) >= 12:
+    # Opaque digests may contain many scattered hexadecimal digits. Only a long
+    # contiguous digit run resembles an embedded raw account number.
+    if account and re.search(r"\d{12,}", value) is not None:
         raise PayrollIntegrationError(
             "PAYROLL_IDENTITY_INVALID",
             "payroll account_id resembles a raw account number",
