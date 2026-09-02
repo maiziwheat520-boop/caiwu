@@ -20,7 +20,7 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedCompanyRef, setSelectedCompanyRef] = useState('')
-  const [basis, setBasis] = useState<'CONFIRMED_CANDIDATE' | 'POSTED_LEDGER'>('CONFIRMED_CANDIDATE')
+  const [basis, setBasis] = useState<CompanyReportLayer['basis']>('CONFIRMED_CANDIDATE')
   const [fromMonth, setFromMonth] = useState('')
   const [toMonth, setToMonth] = useState('')
   const [appliedRange, setAppliedRange] = useState<{ fromMonth: string; toMonth: string } | null>(null)
@@ -31,6 +31,11 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
     try {
       const response = await api.getCompanyReports(appliedRange ?? {})
       setReports(response)
+      const statementLayer = response.layers.find((layer) => layer.basis === 'ACCOUNT_STATEMENT')
+      setBasis(statementLayer?.items.some((item) => (
+        item.metrics.basis === 'ACCOUNT_STATEMENT'
+        && item.metrics.confirmed_transaction_count > 0
+      )) ? 'ACCOUNT_STATEMENT' : 'CONFIRMED_CANDIDATE')
       setFromMonth(response.from_month)
       setToMonth(response.to_month)
     } catch (loadError) {
@@ -144,7 +149,6 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
     <>
       {header}
       {toolbar}
-      <CompanyBankStatementReviewPanel csrfToken={csrfToken} />
       <section className="company-report-basis-note" aria-label="公司报表口径说明">
         <Info size={18} />
         <div>
@@ -166,9 +170,15 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
           <div>
             <span className="eyebrow">{reports.from_month} 至 {reports.to_month}</span>
             <h2>{activeCompany?.name}</h2>
-            <p>{basis === 'CONFIRMED_CANDIDATE' ? '测试口径：按已确认候选金额正负统计，未正式入账。' : '正式口径：仅统计已过账账本。'}</p>
+            <p>{basisDescription(basis)}</p>
           </div>
           <div className="company-basis-switch" role="group" aria-label="汇总口径">
+            <button
+              type="button"
+              aria-pressed={basis === 'ACCOUNT_STATEMENT'}
+              className={basis === 'ACCOUNT_STATEMENT' ? 'active' : ''}
+              onClick={() => setBasis('ACCOUNT_STATEMENT')}
+            >账户流水</button>
             <button
               type="button"
               aria-pressed={basis === 'CONFIRMED_CANDIDATE'}
@@ -195,6 +205,7 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
             currencyCode={activeCompany?.currencyCode ?? 'CNY'}
             tone="income"
             unavailable={!dashboard.available}
+            emptyMessage={basis === 'ACCOUNT_STATEMENT' ? '账户流水尚未完成收支类型分类，当前仅展示现金流总额。' : undefined}
           />
           <CategoryShareChart
             title="支出类型占比"
@@ -202,9 +213,11 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
             currencyCode={activeCompany?.currencyCode ?? 'CNY'}
             tone="expense"
             unavailable={!dashboard.available}
+            emptyMessage={basis === 'ACCOUNT_STATEMENT' ? '账户流水尚未完成收支类型分类，当前仅展示现金流总额。' : undefined}
           />
         </div>
       </section>
+      <CompanyBankStatementReviewPanel csrfToken={csrfToken} />
       <div className="company-report-list">
         {activeCompany ? [[activeCompanyRef, activeCompany] as const].map(([companyRef, identity]) => (
           <CompanyReportCard
@@ -233,16 +246,17 @@ function isReportMonth(value: string) {
 
 function compositionFor(
   reports: CompanyReportsResponse,
-  basis: 'CONFIRMED_CANDIDATE' | 'POSTED_LEDGER',
+  basis: CompanyReportLayer['basis'],
   companyRef: string,
 ) {
+  if (basis === 'ACCOUNT_STATEMENT') return undefined
   return reports.compositions
     ?.find((layer) => layer.basis === basis)
     ?.items.find((item) => item.company_ref === companyRef)
 }
 
 function dashboardSummary(
-  basis: 'CONFIRMED_CANDIDATE' | 'POSTED_LEDGER',
+  basis: CompanyReportLayer['basis'],
   report: CompanyReportCompany | undefined,
   composition: CompanyReportCompositionItem | undefined,
 ) {
@@ -255,6 +269,17 @@ function dashboardSummary(
       netMinor: metrics?.confirmed_net_minor ?? 0,
       incomeComposition: composition?.basis === basis ? composition.positive : undefined,
       expenseComposition: composition?.basis === basis ? composition.negative : undefined,
+    }
+  }
+  if (basis === 'ACCOUNT_STATEMENT') {
+    const metrics = statementMetrics(report)
+    return {
+      available: metrics !== null,
+      incomeMinor: metrics?.cash_inflow_minor ?? 0,
+      expenseMinor: metrics?.cash_outflow_minor ?? 0,
+      netMinor: metrics?.net_cash_flow_minor ?? 0,
+      incomeComposition: undefined,
+      expenseComposition: undefined,
     }
   }
   const metrics = postedMetrics(report)
@@ -283,12 +308,19 @@ function visibleCategorySlices(composition: CompanyReportCategoryComposition) {
   ]
 }
 
-function CategoryShareChart({ title, composition, currencyCode, tone, unavailable }: {
+function basisDescription(basis: CompanyReportLayer['basis']) {
+  if (basis === 'ACCOUNT_STATEMENT') return '账户流水口径：按已确认银行流水统计现金流，不等同于会计收入、费用或利润。'
+  if (basis === 'CONFIRMED_CANDIDATE') return '测试口径：按已确认候选金额正负统计，未正式入账。'
+  return '正式口径：仅统计已过账账本。'
+}
+
+function CategoryShareChart({ title, composition, currencyCode, tone, unavailable, emptyMessage }: {
   title: string
   composition: CompanyReportCategoryComposition | undefined
   currencyCode: string
   tone: 'income' | 'expense'
   unavailable: boolean
+  emptyMessage?: string
 }) {
   const items = composition ? visibleCategorySlices(composition) : []
   return (
@@ -297,7 +329,7 @@ function CategoryShareChart({ title, composition, currencyCode, tone, unavailabl
       {unavailable ? (
         <p className="company-category-empty">正式账簿尚未接入，未显示任何 0 值。</p>
       ) : items.length === 0 || !composition ? (
-        <p className="company-category-empty">当前期间没有可展示的类型金额。</p>
+        <p className="company-category-empty">{emptyMessage ?? '当前期间没有可展示的类型金额。'}</p>
       ) : (
         <div className="company-category-list">
           {items.map((item) => (

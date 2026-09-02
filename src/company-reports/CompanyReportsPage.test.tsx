@@ -97,6 +97,40 @@ describe('CompanyReportsPage', () => {
     expect(within(dashboard).getByRole('img', { name: '其他收入 25.0%' })).toBeInTheDocument()
   })
 
+  it('defaults to confirmed account cash flow when statement facts are available', async () => {
+    const response = structuredClone(reports)
+    const statement = structuredClone(response.layers[0].items[0])
+    statement.metrics = {
+      basis: 'ACCOUNT_STATEMENT',
+      cash_inflow_minor: 616021531,
+      cash_outflow_minor: 593078786,
+      net_cash_flow_minor: 22942745,
+      confirmed_transaction_count: 1042,
+      statement_count: 6,
+    }
+    statement.pending_review_count = 0
+    statement.attribution_pending_count = 0
+    response.layers.push({
+      contract_version: 'ledgerbridge.company-report.v1',
+      basis: 'ACCOUNT_STATEMENT',
+      from_month: response.from_month,
+      to_month: response.to_month,
+      items: [statement],
+    })
+    vi.spyOn(api, 'getCompanyReports').mockResolvedValue(response)
+
+    render(<CompanyReportsPage csrfToken="csrf-test" />)
+
+    const dashboard = await screen.findByRole('region', {
+      name: 'LedgerBridge controlled reconciliation 财务汇总',
+    })
+    expect(screen.getByRole('button', { name: '账户流水' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(dashboard).getByText('¥6,160,215.31')).toBeInTheDocument()
+    expect(within(dashboard).getByText('¥5,930,787.86')).toBeInTheDocument()
+    expect(within(dashboard).getByText('¥229,427.45')).toBeInTheDocument()
+    expect(within(dashboard).getAllByText('账户流水尚未完成收支类型分类，当前仅展示现金流总额。')).toHaveLength(2)
+  })
+
   it('switches companies and requests an applied month range', async () => {
     const response = structuredClone(reports)
     response.layers[0].items[0].company_name = '薇旭公司'
