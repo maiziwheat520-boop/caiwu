@@ -147,6 +147,35 @@ describe('CompanyReportsPage', () => {
     }))
   })
 
+  it('lists all five server-authorized companies without browser scope requests', async () => {
+    const response = structuredClone(reports)
+    response.layers[0].items[0].company_name = '公司一'
+    response.compositions![0].items[0].company_name = '公司一'
+    for (let ordinal = 2; ordinal <= 5; ordinal += 1) {
+      const company = structuredClone(response.layers[0].items[0])
+      company.company_ref = `${ordinal}0000000-0000-4000-8000-00000000000${ordinal}`
+      company.company_name = `公司${['零', '一', '二', '三', '四', '五'][ordinal]}`
+      response.layers[0].items.push(company)
+      const composition = structuredClone(response.compositions![0].items[0])
+      composition.company_ref = company.company_ref
+      composition.company_name = company.company_name
+      response.compositions![0].items.push(composition)
+    }
+    const getReports = vi.spyOn(api, 'getCompanyReports').mockResolvedValue(response)
+
+    render(<CompanyReportsPage />)
+
+    const selector = await screen.findByRole('combobox', { name: '选择公司' })
+    expect(within(selector).getAllByRole('option')).toHaveLength(5)
+    expect(within(selector).getByRole('option', { name: '公司五' })).toBeInTheDocument()
+    fireEvent.change(selector, {
+      target: { value: '50000000-0000-4000-8000-000000000005' },
+    })
+    expect(screen.getByRole('region', { name: '公司五 财务汇总' })).toBeInTheDocument()
+    expect(getReports).toHaveBeenCalledTimes(1)
+    expect(getReports).toHaveBeenCalledWith({})
+  })
+
   it('uses posted ledger totals and categories after switching to the formal basis', async () => {
     const response = structuredClone(reports)
     const postedReport = structuredClone(response.layers[0].items[0])
