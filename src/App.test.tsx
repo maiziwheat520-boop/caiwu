@@ -2624,7 +2624,7 @@ describe('LedgerBridge Web API client', () => {
     expect(within(lanes).getByRole('tab', { name: /往来款/ })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: '旧表项目取数来源' })).toBeInTheDocument()
 
-    fireEvent.click(within(workflow).getByRole('button', { name: '前往待审核' }))
+    fireEvent.click(within(workflow).getByRole('button', { name: '查看未识别流水' }))
     expect(`${window.location.pathname}${window.location.hash}`).toBe('/overview#review')
   })
 

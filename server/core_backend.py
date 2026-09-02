@@ -1054,6 +1054,15 @@ class CoreBackedState:
             business_unit_ref=self.business_unit_ref,
         )
 
+    def cash_reconciliation(self, month: str) -> dict[str, object]:
+        payload = self.client.json(
+            "GET",
+            f"/internal/v1/cash-reconciliations/{month}",
+        )
+        if payload.get("contract_version") != "ledgerbridge.cash-reconciliation.v1":
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        return payload
+
     def connections(self) -> list[dict[str, str]]:
         checked_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         return [

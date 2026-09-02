@@ -455,6 +455,11 @@ export const api = {
     )
   },
 
+  getCashReconciliation: (accountingMonth: string) =>
+    requestJson<import('./types').CashReconciliation>(
+      `/api/v1/cash-reconciliations/${encodeURIComponent(accountingMonth)}`,
+    ),
+
   createWorkbookDraft: ({ accountingMonth, expectedRevision, csrfToken }: {
     accountingMonth: string
     expectedRevision: number
