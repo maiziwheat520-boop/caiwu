@@ -79,7 +79,7 @@ describe('CompanyReportsPage', () => {
 
     expect(await screen.findByText('待完成公司归属')).toBeInTheDocument()
     expect(screen.getByText(/216 条已确认来源待账户或经济性质归属/)).toBeInTheDocument()
-    expect(screen.getByText('正式账簿尚未接入')).toBeInTheDocument()
+    expect(screen.getByText('会计账簿尚未接入')).toBeInTheDocument()
   })
 
   it('shows totals and ranked category shares for the selected test company', async () => {
@@ -124,7 +124,7 @@ describe('CompanyReportsPage', () => {
     const dashboard = await screen.findByRole('region', {
       name: 'LedgerBridge controlled reconciliation 财务汇总',
     })
-    expect(screen.getByRole('button', { name: '账户流水' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: '正式银行流水' })).toHaveAttribute('aria-pressed', 'true')
     expect(within(dashboard).getByText('¥6,160,215.31')).toBeInTheDocument()
     expect(within(dashboard).getByText('¥5,930,787.86')).toBeInTheDocument()
     expect(within(dashboard).getByText('¥229,427.45')).toBeInTheDocument()
@@ -132,6 +132,8 @@ describe('CompanyReportsPage', () => {
     const statementSummary = screen.getByRole('region', {
       name: 'LedgerBridge controlled reconciliation 账户流水汇总',
     })
+    expect(within(statementSummary).getByText('正式银行流水')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('正式数据')).toBeInTheDocument()
     expect(within(statementSummary).getByText('账户流入')).toBeInTheDocument()
     expect(within(statementSummary).getByText('账户流出')).toBeInTheDocument()
     expect(within(statementSummary).getByText('净现金流')).toBeInTheDocument()

@@ -152,8 +152,8 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
       <section className="company-report-basis-note" aria-label="公司报表口径说明">
         <Info size={18} />
         <div>
-          <strong>三层事实彼此独立，不合并计算</strong>
-          <span>已确认候选用于当前测试收支汇总，账户流水用于现金流核对；两者均不与正式账簿混算。</span>
+          <strong>正式数据的不同处理阶段分开展示</strong>
+          <span>银行账单和其流水是正式业务数据；已确认事项与会计已过账结果分开计算。</span>
         </div>
       </section>
       {genericCompanyOnly ? (
@@ -178,13 +178,13 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
               aria-pressed={basis === 'ACCOUNT_STATEMENT'}
               className={basis === 'ACCOUNT_STATEMENT' ? 'active' : ''}
               onClick={() => setBasis('ACCOUNT_STATEMENT')}
-            >账户流水</button>
+            >正式银行流水</button>
             <button
               type="button"
               aria-pressed={basis === 'CONFIRMED_CANDIDATE'}
               className={basis === 'CONFIRMED_CANDIDATE' ? 'active' : ''}
               onClick={() => setBasis('CONFIRMED_CANDIDATE')}
-            >测试口径</button>
+            >已确认事项</button>
             <button
               type="button"
               aria-pressed={basis === 'POSTED_LEDGER'}
@@ -309,9 +309,9 @@ function visibleCategorySlices(composition: CompanyReportCategoryComposition) {
 }
 
 function basisDescription(basis: CompanyReportLayer['basis']) {
-  if (basis === 'ACCOUNT_STATEMENT') return '账户流水口径：按已确认银行流水统计现金流，不等同于会计收入、费用或利润。'
-  if (basis === 'CONFIRMED_CANDIDATE') return '测试口径：按已确认候选金额正负统计，未正式入账。'
-  return '正式口径：仅统计已过账账本。'
+  if (basis === 'ACCOUNT_STATEMENT') return '正式银行流水：按已确认的正式账单统计现金流，不等同于会计收入、费用或利润。'
+  if (basis === 'CONFIRMED_CANDIDATE') return '已确认事项：按已审核的业务事项金额正负统计，尚未生成会计过账分录。'
+  return '会计账簿：仅统计已过账分录。'
 }
 
 function CategoryShareChart({ title, composition, currencyCode, tone, unavailable, emptyMessage }: {
@@ -327,7 +327,7 @@ function CategoryShareChart({ title, composition, currencyCode, tone, unavailabl
     <section className={`company-category-card ${tone}`} aria-label={title}>
       <header><h3>{title}</h3><span>{composition?.fact_count ?? 0} 条</span></header>
       {unavailable ? (
-        <p className="company-category-empty">正式账簿尚未接入，未显示任何 0 值。</p>
+        <p className="company-category-empty">会计账簿尚未接入，未显示任何 0 值。</p>
       ) : items.length === 0 || !composition ? (
         <p className="company-category-empty">{emptyMessage ?? '当前期间没有可展示的类型金额。'}</p>
       ) : (
@@ -440,8 +440,8 @@ function CompanyReportCard({ companyRef, companyName, currencyCode, postedLedger
       {statementData ? (
         <section className="company-test-summary" aria-label={`${companyName} 账户流水汇总`}>
           <header>
-            <div><strong>已确认账户流水</strong><span>来自已确认银行账单，用于现金流核对，不等同于会计收入、费用或利润。</span></div>
-            <Badge color="blue">现金流口径</Badge>
+            <div><strong>正式银行流水</strong><span>来自已确认的正式银行账单；当前为现金流统计，尚未生成会计过账分录。</span></div>
+            <Badge color="blue">正式数据</Badge>
           </header>
           <div className="company-test-totals">
             <ReportTotal label="账户流入" value={reportMoney(statementData.cash_inflow_minor, currencyCode)} />
@@ -454,20 +454,20 @@ function CompanyReportCard({ companyRef, companyName, currencyCode, postedLedger
           </div>
         </section>
       ) : candidateData ? (
-        <section className="company-test-summary" aria-label={`${companyName} 测试汇总`}>
+        <section className="company-test-summary" aria-label={`${companyName} 已确认事项汇总`}>
           <header>
-            <div><strong>测试汇总·未正式入账</strong><span>来自已确认候选事项，不冒充正式账簿。</span></div>
-            <Badge color="amber">测试口径</Badge>
+            <div><strong>已确认业务事项</strong><span>来自已审核的正式数据，尚未生成会计过账分录。</span></div>
+            <Badge color="amber">已确认</Badge>
           </header>
           <div className="company-test-totals">
-            <ReportTotal label="测试汇总收入" value={reportMoney(candidateData.confirmed_positive_minor, currencyCode)} />
-            <ReportTotal label="测试汇总支出" value={reportMoney(Math.abs(candidateData.confirmed_negative_minor), currencyCode)} />
-            <ReportTotal label="测试汇总净额" value={reportMoney(candidateData.confirmed_net_minor, currencyCode)} emphasis />
+            <ReportTotal label="已确认收入" value={reportMoney(candidateData.confirmed_positive_minor, currencyCode)} />
+            <ReportTotal label="已确认支出" value={reportMoney(Math.abs(candidateData.confirmed_negative_minor), currencyCode)} />
+            <ReportTotal label="已确认净额" value={reportMoney(candidateData.confirmed_net_minor, currencyCode)} emphasis />
           </div>
         </section>
       ) : null}
 
-      {!postedHasEntries ? <p className="company-formal-empty">{postedAvailable ? '正式账簿尚无入账金额' : '正式账簿尚未接入'}</p> : null}
+      {!postedHasEntries ? <p className="company-formal-empty">{postedAvailable ? '正式数据已接入，尚无会计过账分录' : '会计账簿尚未接入'}</p> : null}
       {postedHasEntries ? (
         <section className="company-report-totals" aria-label={`${companyName} 正式财务总额`}>
           <ReportTotal label="正式收入" value={postedMoney(postedData.revenue_minor)} />
@@ -480,7 +480,7 @@ function CompanyReportCard({ companyRef, companyName, currencyCode, postedLedger
         <div>
           <span>已确认来源</span>
           <strong>已确认来源 {candidateData?.confirmed_count ?? 0} 条</strong>
-          <small>{candidateData?.source_count ?? 0} 个来源；上方仅作测试收支汇总，未正式入账</small>
+          <small>{candidateData?.source_count ?? 0} 个正式数据来源；尚未生成会计过账分录</small>
         </div>
         <div>
           <span>账户流水</span>
