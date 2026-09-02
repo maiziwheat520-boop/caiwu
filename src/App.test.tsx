@@ -1060,6 +1060,33 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.getByText('3 条')).toBeInTheDocument()
   })
 
+  it('keeps overview metrics on the selected month and presents reconciliation blockers separately', async () => {
+    const historicalConfirmed: ApiCandidate = {
+      ...candidates[3],
+      id: 'candidate-historical-confirmed',
+      short_id: 'C-HIST',
+      accounting_month: '2026-05',
+      business_unit: '2026年5月对账复核',
+      business_unit_ref: 'unit-historical-review',
+      amount_minor: 54160537,
+    }
+    installFetch({ items: [historicalConfirmed] })
+    renderApp()
+
+    expect(await screen.findByRole('heading', { name: '当前没有待审核事项' })).toBeInTheDocument()
+    expect(screen.getByText('2026 年 8 月对账')).toBeInTheDocument()
+    const overview = screen.getByRole('region', { name: '本月概览' })
+    expect(within(overview).getByText('¥0.00')).toBeInTheDocument()
+    expect(within(overview).getByText('0 家')).toBeInTheDocument()
+    expect(screen.queryByText('2026年5月对账复核')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '开始审核' })).not.toBeInTheDocument()
+    const readiness = screen.getByRole('heading', { name: '本月候选审核' }).closest('section')!
+    expect(screen.getAllByText('暂无本月候选')).toHaveLength(2)
+    expect(within(readiness).getByText('月度对账')).toBeInTheDocument()
+    expect(within(readiness).getByText('相同凭证号金额不同')).toBeInTheDocument()
+    expect(screen.queryByText('100%')).not.toBeInTheDocument()
+  })
+
   it('shows a request error and retries the full projection load', async () => {
     const fetchMock = installFetch({ failSessionOnce: true })
     renderApp()
@@ -1858,7 +1885,7 @@ describe('LedgerBridge Web API client', () => {
   it('renders a real empty state when the API returns no candidates', async () => {
     installFetch({ items: [] })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '当前没有待审核事项' })
     fireEvent.click(screen.getAllByText('待审核')[0])
     expect(screen.getByText('当前筛选下没有待审核项')).toBeInTheDocument()
   })
@@ -2095,7 +2122,7 @@ describe('LedgerBridge Web API client', () => {
       personalBankResponse: personalBankTransactions(),
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '当前没有待审核事项' })
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
 
     const formal = await screen.findByRole('region', { name: '个人正式银行流水' })
@@ -2187,7 +2214,7 @@ describe('LedgerBridge Web API client', () => {
     }
     installFetch({ items: [testCandidate], failPersonalBank: true })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '当前没有待审核事项' })
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
 
     expect(await screen.findByRole('alert')).toHaveTextContent('正式银行流水暂不可用')
@@ -2292,7 +2319,7 @@ describe('LedgerBridge Web API client', () => {
     ]
     installFetch({ items: personalCandidates })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '当前没有待审核事项' })
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
 
     const summary = screen.getByRole('region', { name: '个人财务收支概览' })
@@ -2316,7 +2343,7 @@ describe('LedgerBridge Web API client', () => {
     }))
     installFetch({ items: unassignedCandidates })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '当前没有待审核事项' })
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
 
     const unassigned = screen.getByRole('region', { name: '个人财务归属待校准' })

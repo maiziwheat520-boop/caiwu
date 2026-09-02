@@ -516,6 +516,9 @@ function App() {
   const pendingBankStatements = personalBankData?.statements.filter((statement) => statement.review_status === 'PENDING') ?? []
   const pendingReviewCount = pendingCandidates.length + pendingBankStatements.length
   const confirmedCandidates = candidates.filter((candidate) => candidate.status === 'CONFIRMED')
+  const overviewMonthCandidates = candidates.filter((candidate) => candidate.accountingMonth === selectedMonth)
+  const overviewMonthPending = overviewMonthCandidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
+  const overviewMonthConfirmed = overviewMonthCandidates.filter((candidate) => candidate.status === 'CONFIRMED')
 
   const updateCandidate = async (
     candidate: Candidate,
@@ -817,7 +820,9 @@ function App() {
       return (
         <Overview
           pending={pendingCandidates}
-          confirmed={confirmedCandidates}
+          monthPending={overviewMonthPending}
+          monthConfirmed={overviewMonthConfirmed}
+          accountingMonth={selectedMonth}
           reconciliation={reconciliation}
           connections={connections}
           onNavigate={navigate}
@@ -1270,31 +1275,41 @@ function AuthScreen({ status, onAuthenticated, onRecoveryCancelled }: {
 
 function Overview({
   pending,
-  confirmed,
+  monthPending,
+  monthConfirmed,
+  accountingMonth,
   reconciliation,
   connections,
   onNavigate,
   onOpenCandidate,
 }: {
   pending: Candidate[]
-  confirmed: Candidate[]
+  monthPending: Candidate[]
+  monthConfirmed: Candidate[]
+  accountingMonth: string
   reconciliation: ReconciliationData | null
   connections: ConnectionStatus[]
   onNavigate: (page: Page) => void
   onOpenCandidate: (candidate: Candidate) => void
 }) {
-  const confirmedTotal = confirmed.reduce((total, candidate) => total + candidate.amount, 0)
-  const candidates = [...pending, ...confirmed]
+  const confirmedTotal = monthConfirmed.reduce((total, candidate) => total + candidate.amount, 0)
+  const monthCandidates = [...monthPending, ...monthConfirmed]
   const conflictCount = pending.filter((candidate) => candidate.conflict).length
-  const businessUnits = Array.from(new Set([
-    ...candidates.map((candidate) => candidate.businessUnit),
-    ...(reconciliation?.business_units.map((unit) => unit.name) ?? []),
-  ])).sort((left, right) => left.localeCompare(right, 'zh-CN'))
+  const businessUnits = Array.from(new Set(monthCandidates.map((candidate) => candidate.businessUnit)))
+    .sort((left, right) => left.localeCompare(right, 'zh-CN'))
   const connectedCount = connections.filter((connection) => connection.state === 'CONNECTED').length
-  const candidateTotal = candidates.length
-  const reviewProgress = candidateTotal > 0 ? Math.round((confirmed.length / candidateTotal) * 100) : 100
+  const candidateTotal = monthCandidates.length
+  const reviewProgress = candidateTotal > 0 ? Math.round((monthConfirmed.length / candidateTotal) * 100) : 0
+  const reconciliationBlockers = reconciliation?.blockers ?? []
+  const reconciliationDetail = reconciliation === null
+    ? '对账状态尚未返回'
+    : reconciliationBlockers.length > 0
+      ? reconciliationBlockers.map((blocker) => blocker.message).join('；')
+      : reconciliation.ready
+        ? '已满足草稿生成条件'
+        : '尚未满足草稿生成条件'
   const unitStates = businessUnits.map((unit) => {
-    const unresolved = pending.filter((candidate) => candidate.businessUnit === unit)
+    const unresolved = monthPending.filter((candidate) => candidate.businessUnit === unit)
     const conflicts = unresolved.filter((candidate) => candidate.conflict).length
     const incomplete = unresolved.filter((candidate) => candidate.incomplete && !candidate.conflict).length
     if (conflicts > 0) return { unit, detail: `${conflicts} 条冲突`, tone: 'warn', icon: <Warning size={17} /> }
@@ -1305,16 +1320,16 @@ function Overview({
   return (
     <>
       <PageHeader
-        eyebrow="2026 年 8 月"
-        title="早上好，今天有几项需要确认"
-        description="消息只会形成候选数据。经过你确认后，才会进入月度对账草稿。"
-        action={<Button onClick={() => onNavigate('review')}><ListChecks size={17} />开始审核</Button>}
+        eyebrow={`${accountingMonthLabel(accountingMonth)}对账`}
+        title={pending.length > 0 ? '早上好，今天有几项需要确认' : '当前没有待审核事项'}
+        description="待审核队列覆盖全部月份；金额、营业单元与对账状态按上方月份统计。"
+        action={pending.length > 0 ? <Button onClick={() => onNavigate('review')}><ListChecks size={17} />开始审核</Button> : undefined}
       />
 
       <section className="metric-grid" aria-label="本月概览">
-        <Metric primary label="今日处理队列" value={`${pending.length} 条`} detail={conflictCount > 0 ? `优先处理 ${conflictCount} 条冲突候选` : '当前没有冲突候选'} tone={pending.length > 0 ? 'attention' : undefined} icon={<ListChecks size={20} />} />
-        <Metric label="本月已确认" value={currency.format(confirmedTotal)} detail={`${confirmed.length} 条可用于草稿`} icon={<CheckCircle size={20} />} />
-        <Metric label="覆盖营业单元" value={`${businessUnits.length} 家`} detail={businessUnits.length > 0 ? businessUnits.join('、') : '尚无营业单元数据'} icon={<Database size={20} />} />
+        <Metric primary label="全部待审核" value={`${pending.length} 条`} detail={conflictCount > 0 ? `优先处理 ${conflictCount} 条冲突候选` : '包含待归属月份的候选'} tone={pending.length > 0 ? 'attention' : undefined} icon={<ListChecks size={20} />} />
+        <Metric label="本月已确认" value={currency.format(confirmedTotal)} detail={`${monthConfirmed.length} 条可用于本月草稿`} icon={<CheckCircle size={20} />} />
+        <Metric label="本月候选营业单元" value={`${businessUnits.length} 家`} detail={businessUnits.length > 0 ? businessUnits.join('、') : '本月暂无候选营业单元'} icon={<Database size={20} />} />
         <Metric label="数据连接" value={`${connectedCount} / ${connections.length}`} detail={connections.length > 0 ? `${connections.length - connectedCount} 项未连接或状态异常` : '尚未返回连接状态'} tone={connections.length > 0 && connectedCount < connections.length ? 'attention' : undefined} icon={<CloudArrowUp size={20} />} />
       </section>
 
@@ -1342,21 +1357,28 @@ function Overview({
                 <CaretRight className="row-caret" size={17} />
               </button>
             ))}
+            {pending.length === 0 ? <StatusLine icon={<Check size={17} />} label="待审核队列" detail="当前没有待审核候选" tone="ok" /> : null}
           </div>
         </section>
 
         <section className="panel readiness-panel">
           <div className="panel-heading">
             <div>
-              <h2>候选处理进度</h2>
-              <p>{reconciliation?.ready ? '本月草稿已满足生成条件' : `仍有 ${reconciliation?.blockers.length ?? pending.length} 个阻断项`}</p>
+              <h2>本月候选审核</h2>
+              <p>{candidateTotal > 0 ? `${monthConfirmed.length} / ${candidateTotal} 条已确认` : '暂无本月候选'}</p>
             </div>
-            <span className="readiness-score">{reviewProgress}%</span>
+            <span className="readiness-score">{candidateTotal > 0 ? `${reviewProgress}%` : '—'}</span>
           </div>
-          <div className="progress-track" role="progressbar" aria-label="候选处理进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={reviewProgress}><span style={{ width: `${reviewProgress}%` }} /></div>
+          <div className="progress-track" role="progressbar" aria-label="本月候选审核完成度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={reviewProgress} aria-valuetext={candidateTotal > 0 ? `${reviewProgress}%` : '暂无本月候选'}><span style={{ width: `${reviewProgress}%` }} /></div>
           <div className="readiness-list">
+            <StatusLine
+              icon={reconciliationBlockers.length > 0 ? <Warning size={17} /> : reconciliation?.ready ? <Check size={17} /> : <Info size={17} />}
+              label="月度对账"
+              detail={reconciliationDetail}
+              tone={reconciliationBlockers.length > 0 ? 'warn' : reconciliation?.ready ? 'ok' : 'info'}
+            />
             {unitStates.map((state) => <StatusLine key={state.unit} icon={state.icon} label={state.unit} detail={state.detail} tone={state.tone} />)}
-            {unitStates.length === 0 ? <StatusLine icon={<Check size={17} />} label="本月" detail="暂无候选" tone="ok" /> : null}
+            {unitStates.length === 0 ? <StatusLine icon={<Check size={17} />} label="本月候选" detail="暂无本月候选" tone="ok" /> : null}
           </div>
           <Button className="full-button" variant="soft" onClick={() => onNavigate('reconciliation')}>查看月度对账</Button>
         </section>
