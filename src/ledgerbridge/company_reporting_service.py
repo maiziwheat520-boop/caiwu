@@ -221,14 +221,21 @@ class DatabaseCompanyReportingService:
 
     @staticmethod
     def _validated_grants(grants: Sequence[EntityGrant]) -> tuple[EntityGrant, ...]:
-        if len(grants) > MAX_REPORT_COMPANIES:
+        reporting_grants = tuple(
+            grant
+            for grant in grants
+            if grant.business_unit_refs
+            or grant.business_unit_ids
+            or grant.allow_unassigned_candidates
+        )
+        if len(reporting_grants) > MAX_REPORT_COMPANIES:
             raise InternalReadBackendUnavailable("company report grant limit exceeded")
 
-        entity_refs = [grant.entity_ref for grant in grants]
+        entity_refs = [grant.entity_ref for grant in reporting_grants]
         if len(entity_refs) != len(set(entity_refs)):
             raise InternalReadBackendUnavailable("company report grants duplicate an entity")
 
-        for grant in grants:
+        for grant in reporting_grants:
             if len(grant.business_unit_ids) > MAX_REPORT_BUSINESS_UNITS:
                 raise InternalReadBackendUnavailable("company report unit limit exceeded")
             if grant.business_unit_refs or grant.business_unit_ids:
@@ -242,10 +249,7 @@ class DatabaseCompanyReportingService:
                     raise InternalReadBackendUnavailable(
                         "company report grants require immutable unit bindings"
                     )
-            elif not grant.allow_unassigned_candidates:
-                raise InternalReadBackendUnavailable("company report grant has no scope")
-
-        return tuple(sorted(grants, key=lambda grant: grant.entity_ref.int))
+        return tuple(sorted(reporting_grants, key=lambda grant: grant.entity_ref.int))
 
     @staticmethod
     def _audit_horizon(session: Session) -> tuple[int, bytes]:

@@ -22,6 +22,7 @@ from ledgerbridge.internal_read_service import InternalReadBackendUnavailable
 COMPANY_A = UUID("10000000-0000-4000-8000-000000000001")
 COMPANY_B = UUID("10000000-0000-4000-8000-000000000002")
 COMPANY_UNKNOWN = UUID("10000000-0000-4000-8000-000000000099")
+PERSON_WITH_REGISTRY_ACCESS = UUID("10000000-0000-4000-8000-000000000098")
 UNIT_A = UUID("11000000-0000-4000-8000-000000000001")
 UNIT_B = UUID("11000000-0000-4000-8000-000000000002")
 
@@ -368,6 +369,35 @@ def test_collection_omits_granted_non_company_entities() -> None:
         if "company_reporting_read.get_company_report_v1_as_of" in call[0]
     ]
     assert len(report_calls) == 2
+
+
+def test_collection_ignores_registry_only_grants_without_reporting_scope() -> None:
+    session = _Session({COMPANY_A: [{"report": _report()}]})
+    principal = _principal(
+        (
+            _grant(COMPANY_A, "unit-a", UNIT_A),
+            EntityGrant(
+                entity_ref=PERSON_WITH_REGISTRY_ACCESS,
+                allow_account_registry=True,
+            ),
+        )
+    )
+
+    page = _service(session).report(
+        principal,
+        basis=CompanyReportBasis.CONFIRMED_CANDIDATE,
+        from_month="2026-01",
+        to_month="2026-09",
+    )
+
+    assert [item.company_ref for item in page.items] == [COMPANY_A]
+    report_calls = [
+        call
+        for call in session.calls
+        if "company_reporting_read.get_company_report_v1_as_of" in call[0]
+    ]
+    assert len(report_calls) == 1
+    assert report_calls[0][1]["entity_ref"] == COMPANY_A
 
 
 def test_candidate_statement_and_posted_bases_are_returned_without_cross_layer_mixing() -> None:
