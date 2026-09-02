@@ -1,10 +1,10 @@
 # Task: Atomic company statement batch import
 
-- Status: full-range source capability verified locally; production execution pending
+- Status: five complete range statements imported and verified in production
 - Date: 2026-09-02
 - Integration owner: Codex
 - Branch: `ai/chatgpt/company-mybank-production-import`
-- Production baseline: Core `87f88d81267434a90cb335751de97c2fe77d1f26`, schema `20260902_0033`
+- Production release: Core `5d03d93fe43670ec4136754050eab06e4dab2b0c`, schema `20260902_0034`
 
 ## Goal
 
@@ -59,22 +59,32 @@ input. The daily sources remain retained privately and are not imported again.
 - Private statement files, credentials, identifiers, plans, manifests, and receipts remain ignored
   and outside Git.
 
-## Production gate
+## Production result
 
-1. Build and deploy one immutable Core release containing the batch operator capability; schema
-   remains `20260902_0033`.
-2. Create a fresh encrypted backup at that exact revision and pass isolated restore.
-3. Build the five-file range batch against the deployed revision and fresh backup proof. The new
-   official XLSX files are already plaintext exports and require no archive retry.
-4. Finalize all five private plans inside the one-shot container.
-5. Run the complete batch against the isolated restored database with `commit=false`; verify the
-   database and encrypted artifact inventory return to the initial state.
-6. Execute production once; verify five new statements/reviews/Evidence objects, 1,433 new
-   transactions, and 1,442 new observations, with all prohibited deltas remaining zero.
-7. Execute the same production batch again and require every item to report `created=false` with
-   zero database, audit, and artifact delta.
-8. Create a post-import encrypted backup, pass isolated restore, verify service health/restart
-   counts, and only then remove temporary plaintext workbooks from the exact private batch path.
+- Immutable release `5d03d93fe43670ec4136754050eab06e4dab2b0c` and schema
+  `20260902_0034` were deployed and verified before data mutation.
+- One five-file `commit=false` preflight passed against the pre-import encrypted backup and isolated
+  restore proof.
+- Production used one guarded transaction per statement, with an immediate exact completed replay
+  and a fresh encrypted backup/isolated restore proof before the next item. This avoided weakening
+  the append-only evidence/audit constraints after the multi-item transaction path failed closed.
+- All five production receipts report `created=true`; all five immediate replays report
+  `created=false`, exact zero count delta, and rejected fact-conflict probes.
+- The accepted delta is five statements, five reviews, five encrypted Evidence objects, 1,433 new
+  transaction facts, and 1,442 observations. The nine existing facts for suffix `3678` were reused
+  and received new observations; no prior fact or audit row was deleted.
+- Final production totals are 11 statements, 2,447 transaction facts, 2,456 observations, 30
+  encrypted Evidence objects/blobs, and 11 reviews. Candidate is unchanged at 259 with zero latest
+  pending; Journal Entry and Posting remain zero.
+- Final encrypted backup `20260902T093041Z-5d03d93fe436` passed isolated restore with report
+  `restore-rehearsal-20260902T093113Z.json`. API, worker, internal reader, and PostgreSQL are healthy
+  with zero restart counts.
+- Private preflight and five production receipts are retained mode `0600` outside Git. The official
+  user-supplied files were not modified.
+
+The remaining engineering follow-up is a small refactor of the optional multi-item outer
+transaction runner so its deferred audit/evidence checks share one transaction scope. It is not a
+data-repair task and does not affect the five completed imports.
 
 ## Rollback
 

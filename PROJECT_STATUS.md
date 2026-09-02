@@ -12,9 +12,15 @@ rows; nine exact facts already exist from the representative slice, so the priva
 an expected delta of 1,433 facts and 1,442 observations. PostgreSQL still performs full exact-fact
 comparison for every overlapping serial and rejects the whole transaction on any conflict.
 
-Local validation passes 1,302 tests with 212 environment/platform skips. Deployment, fresh
-backup/restore, isolated five-file preflight, production commit, exact replay, count reconciliation,
-and post-import backup/restore remain pending.
+Local validation passes 1,302 tests with 212 environment/platform skips. Core revision
+`5d03d93fe43670ec4136754050eab06e4dab2b0c` and schema `20260902_0034` are deployed. The complete
+five-file preflight passed, followed by five guarded production imports and immediate exact
+zero-delta replays. Production added five statements/reviews/encrypted Evidence objects, 1,433
+transaction facts, and 1,442 observations; the resulting totals are 11 statements, 2,447 facts,
+and 2,456 observations. Candidate remains 259 with zero pending, while Journal Entry and Posting
+remain zero. The final encrypted backup
+`20260902T093041Z-5d03d93fe436` passed isolated restore, and API, worker, reader, and database are
+healthy with zero restart counts.
 
 ### Earlier daily-batch checkpoint
 
