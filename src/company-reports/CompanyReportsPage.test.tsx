@@ -184,6 +184,18 @@ describe('CompanyReportsPage', () => {
     expect(within(dashboard).getAllByText('¥220.00')).toHaveLength(2)
     expect(within(dashboard).getByText('未分类')).toBeInTheDocument()
 
+    fireEvent.change(screen.getByRole('combobox', { name: '选择公司' }), {
+      target: { value: '__all_companies__' },
+    })
+    const allCompaniesDashboard = screen.getByRole('region', { name: '全部公司 财务汇总' })
+    expect(within(allCompaniesDashboard).getByRole('heading', { name: '全部公司汇总' })).toBeInTheDocument()
+    expect(within(allCompaniesDashboard).getByText('2 家公司合并展示')).toBeInTheDocument()
+    expect(within(allCompaniesDashboard).getByText('¥320.00')).toBeInTheDocument()
+    expect(within(allCompaniesDashboard).getByText('¥80.00')).toBeInTheDocument()
+    expect(within(allCompaniesDashboard).getByText('¥240.00')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '薇旭公司' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '景怡公司' })).toBeInTheDocument()
+
     fireEvent.change(screen.getByLabelText('开始月份'), { target: { value: '2026-03' } })
     fireEvent.change(screen.getByLabelText('结束月份'), { target: { value: '2026-05' } })
     fireEvent.click(screen.getByRole('button', { name: '应用期间' }))
@@ -212,7 +224,8 @@ describe('CompanyReportsPage', () => {
     render(<CompanyReportsPage csrfToken="csrf-test" />)
 
     const selector = await screen.findByRole('combobox', { name: '选择公司' })
-    expect(within(selector).getAllByRole('option')).toHaveLength(5)
+    expect(within(selector).getAllByRole('option')).toHaveLength(6)
+    expect(within(selector).getByRole('option', { name: '全部公司' })).toBeInTheDocument()
     expect(within(selector).getByRole('option', { name: '公司五' })).toBeInTheDocument()
     fireEvent.change(selector, {
       target: { value: '50000000-0000-4000-8000-000000000005' },

@@ -15,6 +15,8 @@ import type {
 import { ErrorState, LoadingState, PageHeader } from '../shared/PagePrimitives'
 import { CompanyBankStatementReviewPanel } from './CompanyBankStatementReviewPanel'
 
+const ALL_COMPANIES = '__all_companies__'
+
 export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
   const [reports, setReports] = useState<CompanyReportsResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -78,13 +80,19 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
   }))
 
   const companies = [...companyIndex.entries()]
-  const activeCompanyRef = companyIndex.has(selectedCompanyRef)
+  const showAllCompanies = selectedCompanyRef === ALL_COMPANIES
+  const activeCompanyRef = showAllCompanies
+    ? ALL_COMPANIES
+    : companyIndex.has(selectedCompanyRef)
     ? selectedCompanyRef
     : companies[0]?.[0] ?? ''
-  const activeCompany = companyIndex.get(activeCompanyRef)
-  const activeComposition = compositionFor(reports, basis, activeCompanyRef)
-  const activeReport = companyFor(layerFor(reports.layers, basis), activeCompanyRef)
-  const dashboard = dashboardSummary(basis, activeReport, activeComposition)
+  const activeCompany = showAllCompanies ? null : companyIndex.get(activeCompanyRef)
+  const activeCurrencyCode = activeCompany?.currencyCode ?? companies[0]?.[1].currencyCode ?? 'CNY'
+  const activeComposition = showAllCompanies ? undefined : compositionFor(reports, basis, activeCompanyRef)
+  const activeReport = showAllCompanies ? undefined : companyFor(layerFor(reports.layers, basis), activeCompanyRef)
+  const dashboard = showAllCompanies
+    ? allCompaniesDashboard(reports, basis, companies.map(([companyRef]) => companyRef))
+    : dashboardSummary(basis, activeReport, activeComposition)
   const rangeInvalid = !isReportMonth(fromMonth)
     || !isReportMonth(toMonth)
     || fromMonth > toMonth
@@ -100,6 +108,7 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
           disabled={companies.length === 0}
           onChange={(event) => setSelectedCompanyRef(event.target.value)}
         >
+          <option value={ALL_COMPANIES}>全部公司</option>
           {companies.map(([companyRef, identity]) => (
             <option key={companyRef} value={companyRef}>{identity.name}</option>
           ))}
@@ -165,11 +174,12 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
           </div>
         </section>
       ) : null}
-      <section className="company-financial-dashboard" aria-label={`${activeCompany?.name ?? '公司'} 财务汇总`}>
+      <section className="company-financial-dashboard" aria-label={`${showAllCompanies ? '全部公司' : activeCompany?.name ?? '公司'} 财务汇总`}>
         <header className="company-dashboard-header">
           <div>
             <span className="eyebrow">{reports.from_month} 至 {reports.to_month}</span>
-            <h2>{activeCompany?.name}</h2>
+            <h2>{showAllCompanies ? '全部公司汇总' : activeCompany?.name}</h2>
+            {showAllCompanies ? <span>{companies.length} 家公司合并展示</span> : null}
             <p>{basisDescription(basis)}</p>
           </div>
           <div className="company-basis-switch" role="group" aria-label="汇总口径">
@@ -194,15 +204,15 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
           </div>
         </header>
         <div className="company-dashboard-totals">
-          <ReportTotal label="总收入" value={dashboard.available ? reportMoney(dashboard.incomeMinor, activeCompany?.currencyCode ?? 'CNY') : '待接正式账簿'} />
-          <ReportTotal label="总支出" value={dashboard.available ? reportMoney(dashboard.expenseMinor, activeCompany?.currencyCode ?? 'CNY') : '待接正式账簿'} />
-          <ReportTotal label="净额" value={dashboard.available ? reportMoney(dashboard.netMinor, activeCompany?.currencyCode ?? 'CNY') : '待接正式账簿'} emphasis />
+          <ReportTotal label="总收入" value={dashboard.available ? reportMoney(dashboard.incomeMinor, activeCurrencyCode) : '待接正式账簿'} />
+          <ReportTotal label="总支出" value={dashboard.available ? reportMoney(dashboard.expenseMinor, activeCurrencyCode) : '待接正式账簿'} />
+          <ReportTotal label="净额" value={dashboard.available ? reportMoney(dashboard.netMinor, activeCurrencyCode) : '待接正式账簿'} emphasis />
         </div>
         <div className="company-composition-grid">
           <CategoryShareChart
             title="收入类型占比"
             composition={dashboard.incomeComposition}
-            currencyCode={activeCompany?.currencyCode ?? 'CNY'}
+            currencyCode={activeCurrencyCode}
             tone="income"
             unavailable={!dashboard.available}
             emptyMessage={basis === 'ACCOUNT_STATEMENT' ? '账户流水尚未完成收支类型分类，当前仅展示现金流总额。' : undefined}
@@ -210,7 +220,7 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
           <CategoryShareChart
             title="支出类型占比"
             composition={dashboard.expenseComposition}
-            currencyCode={activeCompany?.currencyCode ?? 'CNY'}
+            currencyCode={activeCurrencyCode}
             tone="expense"
             unavailable={!dashboard.available}
             emptyMessage={basis === 'ACCOUNT_STATEMENT' ? '账户流水尚未完成收支类型分类，当前仅展示现金流总额。' : undefined}
@@ -219,7 +229,7 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
       </section>
       <CompanyBankStatementReviewPanel csrfToken={csrfToken} />
       <div className="company-report-list">
-        {activeCompany ? [[activeCompanyRef, activeCompany] as const].map(([companyRef, identity]) => (
+        {(showAllCompanies ? companies : activeCompany ? [[activeCompanyRef, activeCompany] as const] : []).map(([companyRef, identity]) => (
           <CompanyReportCard
             key={companyRef}
             companyRef={companyRef}
@@ -228,7 +238,7 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
             postedLedgerStatus={reports.posted_ledger_status}
             layers={reports.layers}
           />
-        )) : null}
+        ))}
       </div>
     </>
   )
@@ -290,6 +300,49 @@ function dashboardSummary(
     netMinor: metrics?.profit_minor ?? 0,
     incomeComposition: composition?.basis === basis ? composition.revenue : undefined,
     expenseComposition: composition?.basis === basis ? composition.expense : undefined,
+  }
+}
+
+function allCompaniesDashboard(
+  reports: CompanyReportsResponse,
+  basis: CompanyReportLayer['basis'],
+  companyRefs: string[],
+) {
+  const layer = layerFor(reports.layers, basis)
+  const summaries = companyRefs.map((companyRef) => dashboardSummary(
+    basis,
+    companyFor(layer, companyRef),
+    compositionFor(reports, basis, companyRef),
+  ))
+  return {
+    available: summaries.some((summary) => summary.available),
+    incomeMinor: summaries.reduce((total, summary) => total + summary.incomeMinor, 0),
+    expenseMinor: summaries.reduce((total, summary) => total + summary.expenseMinor, 0),
+    netMinor: summaries.reduce((total, summary) => total + summary.netMinor, 0),
+    incomeComposition: mergeCategoryCompositions(summaries.map((summary) => summary.incomeComposition)),
+    expenseComposition: mergeCategoryCompositions(summaries.map((summary) => summary.expenseComposition)),
+  }
+}
+
+function mergeCategoryCompositions(
+  compositions: Array<CompanyReportCategoryComposition | undefined>,
+): CompanyReportCategoryComposition | undefined {
+  const available = compositions.filter((composition): composition is CompanyReportCategoryComposition => composition !== undefined)
+  if (available.length === 0) return undefined
+  const categories = new Map<string, CompanyReportCategorySlice>()
+  available.forEach((composition) => composition.items.forEach((item) => {
+    const key = `${item.category_code ?? ''}:${item.category_label ?? ''}`
+    const current = categories.get(key)
+    categories.set(key, {
+      ...item,
+      amount_minor: (current?.amount_minor ?? 0) + item.amount_minor,
+      fact_count: (current?.fact_count ?? 0) + item.fact_count,
+    })
+  }))
+  return {
+    total_minor: available.reduce((total, composition) => total + composition.total_minor, 0),
+    fact_count: available.reduce((total, composition) => total + composition.fact_count, 0),
+    items: [...categories.values()].sort((left, right) => right.amount_minor - left.amount_minor),
   }
 }
 
