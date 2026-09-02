@@ -7,7 +7,7 @@ import hmac
 import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -25,7 +25,11 @@ from ledgerbridge.account_registry import (
     AccountRegistryPlanResult,
 )
 from ledgerbridge.artifacts import ArtifactStore, PublishedArtifact
-from ledgerbridge.bank_statement_contract import BankStatement, parser_spec
+from ledgerbridge.bank_statement_contract import (
+    BankStatement,
+    BankStatementParserProfile,
+    parser_spec,
+)
 from ledgerbridge.bank_statement_cutover_plan import (
     BankStatementExistingAccountPlan,
     BankStatementPlanError,
@@ -954,6 +958,42 @@ def _expected_after_existing_account(
     )
 
 
+def _expected_before_existing_account(
+    completed: ProductionCounts,
+    plan: ExistingAccountStatementPlan,
+) -> ProductionCounts:
+    """Reverse exactly one existing-account statement delta for batch replay."""
+
+    transaction_count = plan.expected_transaction_count
+    evidence_delta = int(_creates_new_evidence(plan))
+    try:
+        return ProductionCounts(
+            evidence_objects=completed.evidence_objects - evidence_delta,
+            encrypted_object_identities=(completed.encrypted_object_identities - evidence_delta),
+            encrypted_blob_versions=completed.encrypted_blob_versions - evidence_delta,
+            managed_accounts=completed.managed_accounts,
+            managed_account_lifecycles=completed.managed_account_lifecycles,
+            account_registry_operations=completed.account_registry_operations,
+            managed_account_aliases=completed.managed_account_aliases,
+            account_business_unit_assignments=(completed.account_business_unit_assignments),
+            fact_business_unit_allocation_sets=(completed.fact_business_unit_allocation_sets),
+            fact_business_unit_allocation_items=(completed.fact_business_unit_allocation_items),
+            bank_statements=completed.bank_statements - 1,
+            bank_statement_transactions=(completed.bank_statement_transactions - transaction_count),
+            bank_statement_observations=(completed.bank_statement_observations - transaction_count),
+            bank_statement_reviews=completed.bank_statement_reviews - 1,
+            candidates=completed.candidates,
+            latest_pending_candidates=completed.latest_pending_candidates,
+            audit_events=(completed.audit_events - 2 - 2 * transaction_count - 2 * evidence_delta),
+            journal_entries=completed.journal_entries,
+            postings=completed.postings,
+        )
+    except ValueError:
+        raise MyBankStatementCutoverError(
+            "completed statement batch inventory is invalid"
+        ) from None
+
+
 def _registry_result_matches(
     result: AccountRegistryPlanResult,
     plan: MyBankStatementCutoverPlan,
@@ -1152,6 +1192,143 @@ def run_transactional_database_bank_statement_existing_account_import(
         acceptance=acceptance,
         logger=logger,
     )
+
+
+def run_transactional_database_bank_statement_existing_account_batch_import(
+    engine: Engine,
+    plans: Sequence[BankStatementExistingAccountPlan],
+    *,
+    gates: MyBankStatementCutoverGates,
+    safety_proof: MyBankCutoverSafetyProof,
+    key_file: Path,
+    artifact_root: Path,
+    commit: bool,
+    acceptance: (
+        Callable[[tuple[MyBankStatementCutoverReceipt, ...], Connection], None] | None
+    ) = None,
+    logger: logging.Logger | None = None,
+) -> tuple[MyBankStatementCutoverReceipt, ...]:
+    """Import a bounded statement batch under one database rollback boundary.
+
+    The verified pre-import backup is checked once against the initial database
+    inventory. Each item then receives the exact inventory produced by the
+    preceding item as its count gate, while retaining its own replay and fact
+    conflict checks. A failure aborts every staged encrypted artifact and rolls
+    back every database change in the batch.
+    """
+
+    batch = tuple(plans)
+    if type(commit) is not bool or not 1 <= len(batch) <= 100:
+        raise MyBankStatementCutoverError("transactional statement batch is invalid")
+    evidence_refs = {plan.evidence_ref for plan in batch}
+    source_digests = {plan.expected_sha256 for plan in batch}
+    statement_scopes = {
+        (plan.managed_account_ref, plan.period_start, plan.period_end) for plan in batch
+    }
+    if any(
+        len(values) != len(batch) for values in (evidence_refs, source_digests, statement_scopes)
+    ):
+        raise MyBankStatementCutoverError("statement batch contains duplicate identities")
+
+    verify_mybank_cutover_safety_proof(safety_proof, gates=gates)
+    boundaries: list[_DatabaseEvidenceBoundary] = []
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            expected_completed = gates.expected_before
+            for plan in batch:
+                expected_completed = _expected_after_existing_account(expected_completed, plan)
+            initial_counts = _read_production_counts(connection)
+            if initial_counts not in (gates.expected_before, expected_completed):
+                raise MyBankStatementCutoverError("statement batch initial counts changed")
+            completed_replay = initial_counts == expected_completed
+            receipts: list[MyBankStatementCutoverReceipt] = []
+            for plan in batch:
+                before = _read_production_counts(connection)
+                expected_before = (
+                    _expected_before_existing_account(before, plan) if completed_replay else before
+                )
+                item_gates = replace(
+                    gates,
+                    expected_before=expected_before,
+                    verify_fact_conflict=False,
+                )
+                boundary = _DatabaseEvidenceBoundary(
+                    connection,
+                    plan=plan,
+                    key_file=key_file,
+                    artifact_root=artifact_root,
+                )
+                boundaries.append(boundary)
+
+                def parser(
+                    source_path: Path,
+                    *,
+                    expected_sha256: str,
+                    managed_account_suffix: str,
+                    _profile: BankStatementParserProfile = plan.parser_profile,
+                ) -> BankStatement:
+                    return parse_bank_statement(
+                        _profile,
+                        source_path,
+                        expected_sha256=expected_sha256,
+                        managed_account_suffix=managed_account_suffix,
+                    )
+
+                runner = MyBankExistingAccountStatementRunner(
+                    parser=parser,
+                    evidence_writer=boundary.write,
+                    account_authorizer=_DatabaseExistingAccountAuthorizer(boundary),
+                    statement_importer=_DatabaseStatementImporter(
+                        boundary,
+                        plan,
+                        commit_publication=False,
+                    ),
+                    counts_reader=lambda: _read_production_counts(connection),
+                    schema_reader=lambda: _read_schema_revision(connection),
+                    logger=logger,
+                )
+                receipt = runner.run(plan, gates=item_gates)
+                if gates.verify_fact_conflict:
+                    statement = parser(
+                        plan.source_path,
+                        expected_sha256=plan.expected_sha256,
+                        managed_account_suffix=plan.account_suffix,
+                    )
+                    _run_database_fact_conflict_probe(
+                        connection,
+                        plan=plan,
+                        statement=statement,
+                    )
+                    if _read_production_counts(connection) != receipt.after_counts:
+                        raise MyBankStatementCutoverError(
+                            "statement batch fact conflict changed database counts"
+                        )
+                    receipt = replace(receipt, fact_conflict_rejected=True)
+                if receipts and receipt.before_counts != receipts[-1].after_counts:
+                    raise MyBankStatementCutoverError(
+                        "statement batch item inventories are not contiguous"
+                    )
+                receipts.append(receipt)
+
+            result = tuple(receipts)
+            if acceptance is not None:
+                acceptance(result, connection)
+            if commit:
+                transaction.commit()
+                for boundary in boundaries:
+                    boundary.commit_publication()
+            else:
+                transaction.rollback()
+                for boundary in reversed(boundaries):
+                    boundary.abort_publication()
+            return result
+        except BaseException:
+            if transaction.is_active:
+                transaction.rollback()
+            for boundary in reversed(boundaries):
+                boundary.abort_publication()
+            raise
 
 
 def _run_transactional_database_existing_account_import(

@@ -2,6 +2,25 @@
 
 Updated: 2026-09-02
 
+## Atomic company statement batch checkpoint (2026-09-02)
+
+The existing-account statement cutover now supports a bounded ordered batch under one
+database transaction. One verified encrypted backup and isolated-restore inventory anchors the
+initial state; each item inherits the exact accepted inventory from the preceding item and still
+runs its own source validation, encrypted Evidence publication, immediate idempotent replay, and
+overlapping-fact conflict probe. Any item or final acceptance failure rolls back every database
+change and aborts every staged encrypted publication. A fully completed batch may be replayed as
+an exact zero-delta operation.
+
+The operator command binds the private manifest digest, ordered item ids, every finalized plan
+digest, common revision, backup, restore report, key, and artifact root. Both preflight and
+production receipts are private mode-0600 artifacts; receipt validation occurs inside the
+transaction before commit. A post-commit receipt-write failure has a distinct committed-state
+exit instead of being reported as a rollback. No migration or ledger-posting capability was
+added. Production execution remains pending a fresh revision-bound backup/restore, isolated
+18-item preflight, committed import, exact batch replay, count reconciliation, and post-import
+backup/restore. See `docs/tasks/2026-09-02-company-statement-batch-import.md`.
+
 ## Authoritative fact-layer vertical-slice checkpoint (2026-09-02)
 
 Primary integration ownership is recorded on branch

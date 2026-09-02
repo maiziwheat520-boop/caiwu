@@ -26,6 +26,7 @@ from ledgerbridge.mybank_statement_cutover import (
 from ledgerbridge.mybank_statement_cutover import (
     ProductionCounts,
     production_counts_from_cutover_inventory,
+    run_transactional_database_bank_statement_existing_account_batch_import,
     run_transactional_database_bank_statement_existing_account_import,
 )
 from ledgerbridge.mybank_statement_cutover import (
@@ -41,6 +42,7 @@ __all__ = [
     "BankStatementExistingAccountRunner",
     "ProductionCounts",
     "production_counts_from_cutover_inventory",
+    "run_transactional_database_bank_statement_existing_account_batch_import",
     "run_transactional_database_bank_statement_existing_account_import",
     "verify_bank_statement_cutover_safety_proof",
 ]
