@@ -220,12 +220,14 @@ class PayrollLegacyFeatureCommand(BaseModel):
     schema_version: Literal["payroll-legacy-feature-command-request/v1"]
     action: Literal[
         "FILL_MAIN",
+        "GENERATE_MONTHLY_PAYROLL",
         "GENERATE_NORMAL_DRAFT",
         "GENERATE_SUPPLEMENTAL_DRAFT",
         "UPDATE_SUMMARY",
         "SAVE_RULES",
         "CHECK_RULES_AND_HISTORY",
         "VERIFY_CURRENT_PAID",
+        "VERIFY_AND_UPDATE_SUMMARY",
         "CHECK_PREVIOUS_PENDING",
     ]
     expected_revision: int = Field(strict=True, ge=0)
