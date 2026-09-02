@@ -181,6 +181,32 @@ def test_company_report_page_selects_exactly_one_financial_basis(
         assert business_units[0].metrics.basis is basis
 
 
+def test_confirmed_account_statement_can_expose_attributed_business_units() -> None:
+    basis = CompanyReportBasis.ACCOUNT_STATEMENT
+    month = _month(
+        basis,
+        business_unit_breakdown_status="AVAILABLE",
+        business_units=[_business_unit(basis)],
+    )
+    item = _company(
+        basis,
+        business_unit_breakdown_status="AVAILABLE",
+        months=[month],
+    )
+
+    page = CompanyReportPage.model_validate(
+        {
+            "basis": basis.value,
+            "from_month": "2026-08",
+            "to_month": "2026-08",
+            "items": [item],
+        }
+    )
+
+    assert page.items[0].business_unit_breakdown_status.value == "AVAILABLE"
+    assert page.items[0].months[0].business_units is not None
+
+
 def test_company_report_rejects_mixed_metric_bases_in_one_page() -> None:
     for payload in (
         _company(CompanyReportBasis.ACCOUNT_STATEMENT),

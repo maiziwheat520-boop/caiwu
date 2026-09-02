@@ -168,6 +168,7 @@ class CompanyReportMonth(_CompanyReportAggregate):
             ),
             CompanyReportBasis.ACCOUNT_STATEMENT: frozenset(
                 {
+                    BusinessUnitBreakdownStatus.AVAILABLE,
                     BusinessUnitBreakdownStatus.EMPTY,
                     BusinessUnitBreakdownStatus.UNAVAILABLE_ATTRIBUTION_PENDING,
                     BusinessUnitBreakdownStatus.UNAVAILABLE_MISSING_SNAPSHOT,
