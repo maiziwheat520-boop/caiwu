@@ -869,7 +869,7 @@ function App() {
       )
     }
     if (page === 'company-reports') {
-      return <CompanyReportsPage />
+      return <CompanyReportsPage csrfToken={session?.csrf_token ?? ''} />
     }
     if (page === 'payroll') {
       return <PayrollWorkspacePage />

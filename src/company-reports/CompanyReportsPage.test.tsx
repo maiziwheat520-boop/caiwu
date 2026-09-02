@@ -75,7 +75,7 @@ describe('CompanyReportsPage', () => {
   it('makes missing company attribution explicit instead of presenting a complete report', async () => {
     vi.spyOn(api, 'getCompanyReports').mockResolvedValue(reports)
 
-    render(<CompanyReportsPage />)
+    render(<CompanyReportsPage csrfToken="csrf-test" />)
 
     expect(await screen.findByText('待完成公司归属')).toBeInTheDocument()
     expect(screen.getByText(/216 条已确认来源待账户或经济性质归属/)).toBeInTheDocument()
@@ -85,7 +85,7 @@ describe('CompanyReportsPage', () => {
   it('shows totals and ranked category shares for the selected test company', async () => {
     vi.spyOn(api, 'getCompanyReports').mockResolvedValue(reports)
 
-    render(<CompanyReportsPage />)
+    render(<CompanyReportsPage csrfToken="csrf-test" />)
 
     const dashboard = await screen.findByRole('region', {
       name: 'LedgerBridge controlled reconciliation 财务汇总',
@@ -128,7 +128,7 @@ describe('CompanyReportsPage', () => {
     response.compositions![0].items.push(secondComposition)
     const getReports = vi.spyOn(api, 'getCompanyReports').mockResolvedValue(response)
 
-    render(<CompanyReportsPage />)
+    render(<CompanyReportsPage csrfToken="csrf-test" />)
     await screen.findByRole('region', { name: '薇旭公司 财务汇总' })
     fireEvent.change(screen.getByRole('combobox', { name: '选择公司' }), {
       target: { value: secondReport.company_ref },
@@ -163,7 +163,7 @@ describe('CompanyReportsPage', () => {
     }
     const getReports = vi.spyOn(api, 'getCompanyReports').mockResolvedValue(response)
 
-    render(<CompanyReportsPage />)
+    render(<CompanyReportsPage csrfToken="csrf-test" />)
 
     const selector = await screen.findByRole('combobox', { name: '选择公司' })
     expect(within(selector).getAllByRole('option')).toHaveLength(5)
@@ -220,7 +220,7 @@ describe('CompanyReportsPage', () => {
     })
     vi.spyOn(api, 'getCompanyReports').mockResolvedValue(response)
 
-    render(<CompanyReportsPage />)
+    render(<CompanyReportsPage csrfToken="csrf-test" />)
     await screen.findByRole('region', { name: 'LedgerBridge controlled reconciliation 财务汇总' })
     fireEvent.click(screen.getByRole('button', { name: '正式账簿' }))
 

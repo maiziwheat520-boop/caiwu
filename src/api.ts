@@ -21,6 +21,8 @@ import type {
   PersonalBankTransactionsResponse,
   PersonalBankStatement,
   PersonalBankStatementReviewReceipt,
+  CompanyBankStatement,
+  CompanyBankStatementsResponse,
   PayrollBatchListData,
   PayrollCommandResult,
   PayrollDashboardData,
@@ -298,6 +300,31 @@ export const api = {
     csrfToken: string
   }) => requestJson<PersonalBankStatementReviewReceipt>(
     `/api/v1/personal-finance/bank-statements/${encodeURIComponent(statement.statement_ref)}/reviews`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': createOperationId(),
+        'X-CSRF-Token': csrfToken,
+      },
+      body: JSON.stringify({
+        expected_revision: statement.review_revision,
+        decision,
+        reason,
+      }),
+    },
+  ),
+
+  getCompanyBankStatements: () =>
+    requestJson<CompanyBankStatementsResponse>('/api/v1/company-bank-statements'),
+
+  reviewCompanyBankStatement: ({ statement, decision, reason, csrfToken }: {
+    statement: CompanyBankStatement
+    decision: 'CONFIRMED' | 'REJECTED'
+    reason: string
+    csrfToken: string
+  }) => requestJson<PersonalBankStatementReviewReceipt>(
+    `/api/v1/company-bank-statements/${encodeURIComponent(statement.statement_ref)}/reviews`,
     {
       method: 'POST',
       headers: {

@@ -526,6 +526,15 @@ export type PersonalBankStatementReviewReceipt = {
   created: boolean
 }
 
+export type CompanyBankStatement = PersonalBankStatement & {
+  company_name: string
+}
+
+export type CompanyBankStatementsResponse = {
+  contract_version: 'ledgerbridge.company-bank-statements-bff.v1'
+  statements: CompanyBankStatement[]
+}
+
 export type OriginalReconciliationColumn = {
   column: string
   ordinal: number
