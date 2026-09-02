@@ -1312,6 +1312,7 @@ def run_transactional_database_bank_statement_existing_account_batch_import(
                 receipts.append(receipt)
 
             result = tuple(receipts)
+            connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
             if acceptance is not None:
                 acceptance(result, connection)
             if commit:
@@ -1517,6 +1518,8 @@ class _DatabaseStatementImporter:
                 result, statement, self._plan
             ):
                 raise MyBankStatementCutoverError("statement import receipt conflicts")
+            if expected_created:
+                _validate_and_redefer_transaction_constraints(session)
             session.commit()
             if self._commit_publication:
                 self._boundary.commit_publication()
@@ -1532,6 +1535,13 @@ class _DatabaseStatementImporter:
             raise
         finally:
             session.close()
+
+
+def _validate_and_redefer_transaction_constraints(session: Session) -> None:
+    """Validate one item's deferred rows while its audit subtransaction is current."""
+
+    session.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+    session.execute(text("SET CONSTRAINTS ALL DEFERRED"))
 
 
 class _DatabaseAccountRegistrar:

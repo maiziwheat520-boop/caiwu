@@ -69,6 +69,7 @@ class _Transaction:
 class _Connection:
     def __init__(self) -> None:
         self.transaction = _Transaction()
+        self.statements: list[str] = []
 
     def __enter__(self) -> _Connection:
         return self
@@ -78,6 +79,9 @@ class _Connection:
 
     def begin(self) -> _Transaction:
         return self.transaction
+
+    def execute(self, statement: object) -> None:
+        self.statements.append(str(statement))
 
 
 class _Engine:
@@ -223,6 +227,7 @@ def test_batch_advances_item_count_gates_and_preflight_rolls_back(
     assert observed == [before, receipts[0].after_counts]
     assert receipts[1].before_counts == receipts[0].after_counts
     assert all(receipt.fact_conflict_rejected for receipt in receipts)
+    assert engine.connection.statements == ["SET CONSTRAINTS ALL IMMEDIATE"]
     assert engine.connection.transaction.rolled_back is True
     assert all(boundary.aborted is True for boundary in boundaries)  # type: ignore[attr-defined]
 
@@ -333,3 +338,18 @@ def test_eighteen_item_acceptance_failure_aborts_the_whole_batch(
     assert engine.connection.transaction.committed is False
     assert len(boundaries) == 18
     assert all(boundary.aborted is True for boundary in boundaries)  # type: ignore[attr-defined]
+
+
+def test_item_deferred_constraints_are_validated_then_redeferred() -> None:
+    statements: list[str] = []
+
+    class Session:
+        def execute(self, statement: object) -> None:
+            statements.append(str(statement))
+
+    cutover._validate_and_redefer_transaction_constraints(Session())  # type: ignore[arg-type]
+
+    assert statements == [
+        "SET CONSTRAINTS ALL IMMEDIATE",
+        "SET CONSTRAINTS ALL DEFERRED",
+    ]
