@@ -4,8 +4,6 @@ import {
   ArrowClockwise,
   CheckCircle,
   FileArrowDown,
-  FilePlus,
-  ListChecks,
   Receipt,
   SlidersHorizontal,
   Table,
@@ -38,10 +36,8 @@ type Props = {
 type TaskId =
   | 'generate'
   | 'normal'
-  | 'supplemental'
   | 'verify'
   | 'rules'
-  | 'history'
 
 type EditableRule = Omit<PayrollLegacyEmployeeRule, 'payment_channel'> & {
   payment_channel: '' | PayrollLegacyEmployeeRule['payment_channel']
@@ -68,11 +64,9 @@ const tasks: Array<{
   icon: typeof Table
 }> = [
   { id: 'generate', label: '生成当月工资', description: '用唯一确认素材、工资规则和上月待办生成工资表。', icon: Table },
-  { id: 'normal', label: '生成网商银行代发表', description: '按五家公司分别生成最终代发表。', icon: FileArrowDown },
-  { id: 'supplemental', label: '生成补发代发表', description: '只包含明确标记为补发的正向调整。', icon: FilePlus },
+  { id: 'normal', label: '查看代发表与发放表', description: '预览五家公司代发表及工资发放表。', icon: FileArrowDown },
   { id: 'verify', label: '复核本月已发并更新汇总', description: '先核对七份实际流水，全部匹配后更新汇总。', icon: Receipt },
   { id: 'rules', label: '管理工资规则', description: '编辑固定待遇、渠道、工种、地点和可休天数。', icon: SlidersHorizontal },
-  { id: 'history', label: '检查规则与历史', description: '检查来源异常、缺失材料和跨月变化。', icon: ListChecks },
 ]
 
 const channels = ['MYBANK', 'BOC', 'WECHAT'] as const
@@ -171,6 +165,7 @@ function evidenceSlotsFromBatch(batch: PayrollLegacyBatch): EvidenceSlot[] {
 export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMaterials = null }: Props) {
   const [workspace, setWorkspace] = useState<PayrollLegacyWorkspace | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadFailed, setLoadFailed] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null)
   const [task, setTask] = useState<TaskId>('generate')
@@ -199,12 +194,14 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
 
   const load = useCallback(async () => {
     setLoading(true)
+    setLoadFailed(false)
     try {
       const result = await api.getPayrollLegacyWorkspace()
       applyWorkspace(result.data)
     } catch (error) {
       if (!(error instanceof ApiError) || error.status !== 404) {
         setMessage({ tone: 'error', text: '工资功能工作区暂时无法读取' })
+        setLoadFailed(true)
       }
       setWorkspace(null)
       setPeriod('')
@@ -384,7 +381,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
         </div>
       </header>
 
-      <nav className="payroll-legacy-taskbar" aria-label="工资软件六项功能">
+      <nav className="payroll-legacy-taskbar" aria-label="工资工作流程">
         {tasks.map((item) => {
           const Icon = item.icon
           return (
@@ -470,7 +467,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
             </div>
           ) : null}
 
-          {task === 'rules' ? (
+          {task === 'rules' && !loadFailed ? (
             <div className="payroll-task-panel">
               <div className="payroll-task-heading"><div><span>07</span><h3>工资计算与审查规则</h3></div><p>规则保存后刷新仍会保留；停用或删除的审查规则不会参与下一次检查。</p></div>
               {rules.length === 0 ? (
@@ -567,33 +564,6 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
             </SimpleAction>
           ) : null}
 
-          {task === 'supplemental' && activeBatch ? (
-            <SimpleAction
-              title="生成补发代发表"
-              detail="只提取明确标为 SUPPLEMENT 的正向人工调整，不自动猜测补发金额。"
-              button="生成补发代发表预览"
-              busy={busy}
-              onRun={() => void execute('GENERATE_SUPPLEMENTAL_DRAFT', { period: activeBatch.period })}
-            />
-          ) : null}
-
-          {task === 'history' && activeBatch ? (
-            <SimpleAction
-              title="检查规则与历史"
-              detail="检查来源阻断项、缺失辅助材料和上一账期的人员与金额变化。"
-              button="执行规则与历史检查"
-              busy={busy}
-              onRun={() => void execute('CHECK_RULES_AND_HISTORY', { period: activeBatch.period })}
-            >
-              {activeBatch.checks ? (
-                <div className="payroll-check-result">
-                  <strong>当前问题 {activeBatch.checks.current_issues.length} 项</strong>
-                  <span>历史变化 {activeBatch.checks.history_issues.length} 项</span>
-                </div>
-              ) : null}
-            </SimpleAction>
-          ) : null}
-
           {task === 'verify' && activeBatch ? (
             <div className="payroll-task-panel">
               <div className="payroll-task-heading"><div><span>04</span><h3>复核本月已发并更新汇总</h3></div><p>系统生成工资表是理论应发基准；先核对五份网商流水、一份中国银行流水和李勇微信转账，逐人及总额全部一致后才更新汇总。</p></div>
@@ -653,7 +623,8 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
             <div className="payroll-empty-task">请先用“生成当月工资”建立一个工资账期。</div>
           ) : null}
 
-          {activeBatch ? <MainTable batch={activeBatch} /> : null}
+          {loadFailed ? <div className="payroll-empty-task payroll-load-failed">工资规则读取失败，已保存规则不会被当作空白覆盖。请刷新重试。</div> : null}
+          {activeBatch ? <MonthlyPayrollLedger batch={activeBatch} /> : null}
           {message ? <p className={`payroll-legacy-message ${message.tone}`} role={message.tone === 'error' ? 'alert' : 'status'}>{message.text}</p> : null}
         </div>
       )}
@@ -758,18 +729,82 @@ function NormalDraftPreview({ batch }: { batch: PayrollLegacyBatch }) {
   )
 }
 
-function MainTable({ batch }: { batch: PayrollLegacyBatch }) {
+function MonthlyPayrollLedger({ batch }: { batch: PayrollLegacyBatch }) {
+  const locations = Array.from(new Set(batch.lines.map((line) => line.location ?? '地点待确认')))
+  const [selectedLocation, setSelectedLocation] = useState(locations[0] ?? '')
+  const [expandedEmployee, setExpandedEmployee] = useState<string | null>(null)
+  const verification = batch.verification?.schema_version === 'payroll-current-paid-verification/v2'
+    ? batch.verification
+    : null
+  const actualByEmployee = new Map(verification?.results.map((item) => [item.employee_id, item]) ?? [])
+  const theoreticalTotal = batch.lines.reduce((sum, line) => sum + line.net_pay_cents, 0)
+  const actualTotal = verification?.actual_total_cents ?? null
+  const adjustmentTotal = batch.adjustments.reduce((sum, item) => sum + item.amount_cents, 0)
+  const selectedLines = batch.lines.filter((line) => (line.location ?? '地点待确认') === selectedLocation)
+  const locationActual = (location: string) => {
+    const lines = batch.lines.filter((line) => (line.location ?? '地点待确认') === location)
+    if (!verification) return null
+    return lines.reduce((sum, line) => sum + (actualByEmployee.get(line.employee_id)?.actual_amount_cents ?? 0), 0)
+  }
+  const explanationFor = (line: PayrollLegacyLine, difference: number | null) => {
+    const reasons = batch.adjustments
+      .filter((item) => item.employee_id === line.employee_id)
+      .map((item) => item.reason)
+    if (reasons.length) return reasons.join('；')
+    if (difference === 0) return line.payment_channel === 'BOC' ? '中国银行发放' : '已核对'
+    return difference === null ? '等待发放流水' : '差额待提供凭证'
+  }
   return (
-    <div className="payroll-main-table">
-      <div className="payroll-main-table-heading"><div><span>系统生成结果</span><h3>{batch.period} 工资表</h3></div><strong>{batch.lines.length} 人 · {money(batch.lines.reduce((sum, line) => sum + line.net_pay_cents, 0))}</strong></div>
-      <div className="payroll-main-table-scroll">
-        <table>
-          <thead><tr><th>员工</th><th>账户</th><th>基本工资</th><th>津贴</th><th>奖金</th><th>扣款</th><th>社保</th><th>公积金</th><th>个税</th><th>实发</th><th>渠道</th></tr></thead>
-          <tbody>{batch.lines.map((line) => <tr key={line.employee_id}><td>{line.employee_name}</td><td>{line.account_masked}</td><td>{money(line.base_salary_cents)}</td><td>{money(line.allowance_cents)}</td><td>{money(line.bonus_cents)}</td><td>{money(line.deduction_cents)}</td><td>{money(line.social_insurance_cents)}</td><td>{money(line.housing_fund_cents)}</td><td>{money(line.individual_income_tax_cents)}</td><td><strong>{money(line.net_pay_cents)}</strong></td><td>{line.payment_channel === 'UNASSIGNED' ? '待确认' : line.payment_channel}</td></tr>)}</tbody>
-        </table>
+    <section className="payroll-ledger" aria-labelledby="payroll-ledger-heading">
+      <div className="payroll-ledger-heading">
+        <div><span>系统生成结果</span><h3 id="payroll-ledger-heading">月度工资账本</h3><small>{batch.period} 工资表 · 版本 {batch.revision}</small></div>
+        <strong>{batch.lines.length} 人</strong>
+      </div>
+      <div className="payroll-ledger-equation" aria-label="工资发放核对总览">
+        <div><span>理论工资</span><strong>{money(theoreticalTotal)}</strong></div>
+        <b>+</b>
+        <div><span>已纳入调整</span><strong className={adjustmentTotal < 0 ? 'negative' : ''}>{money(adjustmentTotal)}</strong></div>
+        <b>→</b>
+        <div><span>实际发放（统计口径）</span><strong className="actual">{actualTotal === null ? '等待核对' : money(actualTotal)}</strong></div>
+        <b>·</b>
+        <div><span>未解释差额</span><strong className={verification?.totals_match ? 'matched' : 'attention'}>{verification ? money(verification.difference_cents) : '—'}</strong></div>
+        <div className={`payroll-ledger-status ${verification?.totals_match ? 'matched' : 'pending'}`}>{verification?.totals_match ? '已对上' : '待核对'}</div>
+      </div>
+      <div className="payroll-ledger-layout">
+        <aside aria-label="门店工资列表">
+          <strong>门店列表</strong>
+          <small>统计按实际发放金额</small>
+          {locations.map((location) => {
+            const actual = locationActual(location)
+            return <button type="button" key={location} className={location === selectedLocation ? 'active' : ''} onClick={() => setSelectedLocation(location)}><span>{location}</span><b>{actual === null ? '待核对' : money(actual)}</b></button>
+          })}
+        </aside>
+        <div className="payroll-ledger-detail">
+          <div className="payroll-ledger-detail-heading"><div><strong>{selectedLocation} · 员工工资明细</strong><span>{verification ? '以实际发放为统计口径' : '实际发放待流水核对'}</span></div><span>{selectedLines.length} 人</span></div>
+          <div className="payroll-ledger-table-scroll">
+            <table>
+              <thead><tr><th>员工</th><th>计算构成</th><th>理论工资</th><th>实际发放</th><th>差额</th><th>说明 / 状态</th></tr></thead>
+              <tbody>{selectedLines.map((line) => {
+                const result = actualByEmployee.get(line.employee_id)
+                const actual = result?.actual_amount_cents ?? null
+                const difference = result?.difference_cents ?? null
+                const expanded = expandedEmployee === line.employee_id
+                return <tr key={line.employee_id} className={expanded ? 'expanded' : ''}>
+                  <td><button type="button" className="payroll-row-toggle" aria-expanded={expanded} onClick={() => setExpandedEmployee(expanded ? null : line.employee_id)}>{line.employee_name}<small>{line.account_masked} · {line.payment_channel === 'UNASSIGNED' ? '渠道待确认' : line.payment_channel}</small></button></td>
+                  <td><span>基本 {money(line.base_salary_cents)}</span><small>津贴/奖金 {money(line.allowance_cents + line.bonus_cents)}</small>{expanded ? <small>扣款/社保/公积金/个税 {money(line.deduction_cents + line.social_insurance_cents + line.housing_fund_cents + line.individual_income_tax_cents)}</small> : null}</td>
+                  <td>{money(line.net_pay_cents)}</td>
+                  <td className="actual">{actual === null ? '—' : money(actual)}</td>
+                  <td className={difference === 0 ? 'matched' : difference === null ? '' : 'attention'}>{difference === null ? '—' : money(difference)}</td>
+                  <td><span>{explanationFor(line, difference)}</span><small>{difference === 0 ? '已解释' : difference === null ? '等待流水' : '需要凭证'}</small></td>
+                </tr>
+              })}</tbody>
+              <tfoot><tr><td colSpan={2}>合计（{selectedLines.length} 人）</td><td>{money(selectedLines.reduce((sum, line) => sum + line.net_pay_cents, 0))}</td><td className="actual">{verification ? money(locationActual(selectedLocation) ?? 0) : '—'}</td><td colSpan={2}></td></tr></tfoot>
+            </table>
+          </div>
+        </div>
       </div>
       {batch.source_exceptions.length ? <div className="payroll-blockers"><Warning size={17} /><span>{batch.source_exceptions.length} 个来源阻断/复核项；解决前不会生成代发草稿。</span></div> : null}
-      {batch.drafts.length ? <div className="payroll-draft-list">{batch.drafts.map((draft) => <div key={draft.draft_id}><span>{draft.draft_type === 'normal_bank_payroll' ? `${draft.disbursement_company ?? '网商银行'}代发表` : '补发代发表'} · {draft.lines.length} 人</span><strong>{money(draft.total_amount_cents)}</strong><small>仅预览 / 不可提交</small></div>)}</div> : null}
-    </div>
+      {batch.checks ? <details className="payroll-ledger-audit"><summary>自动复核记录</summary><span>当前问题 {batch.checks.current_issues.length} 项 · 跨月变化 {batch.checks.history_issues.length} 项</span></details> : null}
+    </section>
   )
 }
