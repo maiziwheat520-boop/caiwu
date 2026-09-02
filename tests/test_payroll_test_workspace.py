@@ -596,6 +596,160 @@ def legacy_channel_verification_payload():
     }
 
 
+def legacy_payment_detail_verification_payload():
+    payload = legacy_workspace_payload()
+    batch = payload["batches"][0]
+    batch["payment_details"] = [
+        {
+            "payment_detail_id": "payment_emp_preview_001_mybank",
+            "payee_kind": "EMPLOYEE",
+            "payee_id": "emp_preview_001",
+            "payee_label": "示例员工甲",
+            "employee_id": "emp_preview_001",
+            "account_id": "acct_preview_001",
+            "account_masked": "****0138",
+            "payment_channel": "MYBANK",
+            "disbursement_company": "测试公司甲",
+            "amount_cents": 450000,
+            "payroll_scope": "PAYROLL",
+            "memo": "工资内付款",
+        },
+        {
+            "payment_detail_id": "payment_emp_preview_001_wechat",
+            "payee_kind": "EMPLOYEE",
+            "payee_id": "emp_preview_001",
+            "payee_label": "示例员工甲",
+            "employee_id": "emp_preview_001",
+            "account_id": "acct_preview_001_wechat",
+            "account_masked": "****2468",
+            "payment_channel": "WECHAT",
+            "disbursement_company": "非网商发放",
+            "amount_cents": 50000,
+            "payroll_scope": "PAYROLL",
+            "memo": "工资内拆分付款",
+        },
+        {
+            "payment_detail_id": "payment_external_001",
+            "payee_kind": "EXTERNAL_RECIPIENT",
+            "payee_id": "recipient_external_001",
+            "payee_label": "测试外部收款人",
+            "account_id": "acct_external_001",
+            "account_masked": "****7788",
+            "payment_channel": "MYBANK",
+            "disbursement_company": "测试公司甲",
+            "amount_cents": 200000,
+            "payroll_scope": "OUTSIDE_PAYROLL",
+            "memo": "主表外代发测试款",
+        },
+    ]
+    documents = legacy_channel_verification_payload()["evidence_documents"]
+    evidence_summary = legacy_channel_verification_payload()["evidence_summary"]
+    batch["verification"] = {
+        "schema_version": "payroll-current-paid-verification/v3",
+        "company_id": "company_demo",
+        "batch_id": "batch_demo_2026_08",
+        "period": "2026-08",
+        "evidence_documents": documents,
+        "evidence_summary": evidence_summary,
+        "theoretical_total_cents": 500000,
+        "actual_total_cents": 490000,
+        "approved_no_supplement_total_cents": 10000,
+        "reconciled_total_cents": 500000,
+        "difference_cents": -10000,
+        "totals_match": False,
+        "reconciliation_complete": True,
+        "outside_payroll_expected_total_cents": 200000,
+        "outside_payroll_actual_total_cents": 200000,
+        "outside_payroll_totals_match": True,
+        "by_payment_channel": [
+            {
+                "payment_channel": "MYBANK",
+                "expected_amount_cents": 450000,
+                "actual_amount_cents": 450000,
+                "approved_no_supplement_cents": 0,
+                "reconciled_amount_cents": 450000,
+                "difference_cents": 0,
+                "totals_match": True,
+                "reconciliation_complete": True,
+            },
+            {
+                "payment_channel": "BOC",
+                "expected_amount_cents": 0,
+                "actual_amount_cents": 0,
+                "approved_no_supplement_cents": 0,
+                "reconciled_amount_cents": 0,
+                "difference_cents": 0,
+                "totals_match": True,
+                "reconciliation_complete": True,
+            },
+            {
+                "payment_channel": "WECHAT",
+                "expected_amount_cents": 50000,
+                "actual_amount_cents": 40000,
+                "approved_no_supplement_cents": 10000,
+                "reconciled_amount_cents": 50000,
+                "difference_cents": -10000,
+                "totals_match": False,
+                "reconciliation_complete": True,
+            },
+        ],
+        "overall_status": "MATCHED_WITH_APPROVED_EXCEPTIONS",
+        "results": [
+            {
+                "payment_detail_id": "payment_emp_preview_001_mybank",
+                "payee_kind": "EMPLOYEE",
+                "payee_id": "emp_preview_001",
+                "payee_label": "示例员工甲",
+                "employee_id": "emp_preview_001",
+                "payroll_scope": "PAYROLL",
+                "account_id": "acct_preview_001",
+                "payment_channel": "MYBANK",
+                "expected_amount_cents": 450000,
+                "actual_amount_cents": 450000,
+                "difference_cents": 0,
+                "approved_no_supplement_cents": 0,
+                "resolution_reason": None,
+                "status": "MATCHED",
+            },
+            {
+                "payment_detail_id": "payment_emp_preview_001_wechat",
+                "payee_kind": "EMPLOYEE",
+                "payee_id": "emp_preview_001",
+                "payee_label": "示例员工甲",
+                "employee_id": "emp_preview_001",
+                "payroll_scope": "PAYROLL",
+                "account_id": "acct_preview_001_wechat",
+                "payment_channel": "WECHAT",
+                "expected_amount_cents": 50000,
+                "actual_amount_cents": 40000,
+                "difference_cents": -10000,
+                "approved_no_supplement_cents": 10000,
+                "resolution_reason": "经人工复核批准不再补发",
+                "status": "APPROVED_NO_SUPPLEMENT",
+            },
+            {
+                "payment_detail_id": "payment_external_001",
+                "payee_kind": "EXTERNAL_RECIPIENT",
+                "payee_id": "recipient_external_001",
+                "payee_label": "测试外部收款人",
+                "payroll_scope": "OUTSIDE_PAYROLL",
+                "account_id": "acct_external_001",
+                "payment_channel": "MYBANK",
+                "expected_amount_cents": 200000,
+                "actual_amount_cents": 200000,
+                "difference_cents": 0,
+                "approved_no_supplement_cents": 0,
+                "resolution_reason": None,
+                "status": "MATCHED",
+            },
+        ],
+        "verified_at": "2026-09-01T02:00:00.000Z",
+        "payable": False,
+        "submission_supported": False,
+    }
+    return payload
+
+
 def test_legacy_feature_workspace_read_and_command_preserve_safe_provider_state():
     entity, adapter = source(legacy_workspace_payload())
     read = adapter.read_legacy_features(
@@ -711,6 +865,51 @@ def test_legacy_feature_workspace_accepts_complete_channel_and_total_reconciliat
     assert verification["evidence_summary"][0]["received_count"] == 5
 
 
+def test_legacy_feature_workspace_accepts_split_external_and_approved_payment_details():
+    payload = legacy_payment_detail_verification_payload()
+    entity, adapter = source(payload)
+
+    read = adapter.read_legacy_features(
+        entity_ref=entity,
+        test_batch_id="batch_demo",
+        provider_headers={},
+    ).payload_copy()
+
+    batch = read["batches"][0]
+    assert len(batch["payment_details"]) == 3
+    assert batch["verification"]["theoretical_total_cents"] == 500000
+    assert batch["verification"]["outside_payroll_expected_total_cents"] == 200000
+    assert batch["verification"]["reconciliation_complete"] is True
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload["batches"][0]["payment_details"][1].update(amount_cents=49999),
+        lambda payload: payload["batches"][0]["verification"].update(
+            approved_no_supplement_total_cents=9999
+        ),
+        lambda payload: payload["batches"][0]["verification"].update(
+            outside_payroll_expected_total_cents=0
+        ),
+        lambda payload: payload["batches"][0]["verification"]["results"][1].update(
+            resolution_reason=None
+        ),
+    ],
+)
+def test_legacy_feature_workspace_rejects_payment_detail_reconciliation_drift(mutate):
+    payload = legacy_payment_detail_verification_payload()
+    mutate(payload)
+    entity, adapter = source(payload)
+
+    with pytest.raises(PayrollIntegrationError):
+        adapter.read_legacy_features(
+            entity_ref=entity,
+            test_batch_id="batch_demo",
+            provider_headers={},
+        )
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -795,9 +994,7 @@ def test_test_workspace_preview_accepts_renamed_wage_input_content_rows():
         lambda payload: payload.update(canonical_name="2026.7_考勤表"),
         lambda payload: payload.update(period="2026-06"),
         lambda payload: payload["preview_rows"][0]["values"].append("多余列"),
-        lambda payload: payload["preview_rows"][0]["values"].__setitem__(
-            2, "6222021234567890123"
-        ),
+        lambda payload: payload["preview_rows"][0]["values"].__setitem__(2, "6222021234567890123"),
     ],
 )
 def test_test_workspace_wage_input_preview_fails_closed_on_contract_drift(mutate):
