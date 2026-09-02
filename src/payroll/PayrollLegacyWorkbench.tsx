@@ -761,9 +761,9 @@ function MonthlyPayrollLedger({ batch }: { batch: PayrollLegacyBatch }) {
         <strong>{batch.lines.length} 人</strong>
       </div>
       <div className="payroll-ledger-equation" aria-label="工资发放核对总览">
-        <div><span>理论工资</span><strong>{money(theoreticalTotal)}</strong></div>
-        <b>+</b>
-        <div><span>已纳入调整</span><strong className={adjustmentTotal < 0 ? 'negative' : ''}>{money(adjustmentTotal)}</strong></div>
+        <div><span>理论工资（含调整）</span><strong>{money(theoreticalTotal)}</strong></div>
+        <b>·</b>
+        <div><span>其中人工调整</span><strong className={adjustmentTotal < 0 ? 'negative' : ''}>{money(adjustmentTotal)}</strong></div>
         <b>→</b>
         <div><span>实际发放（统计口径）</span><strong className="actual">{actualTotal === null ? '等待核对' : money(actualTotal)}</strong></div>
         <b>·</b>
