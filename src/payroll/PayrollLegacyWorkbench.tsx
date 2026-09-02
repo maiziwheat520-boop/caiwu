@@ -179,7 +179,6 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
   const [adjustments, setAdjustments] = useState<PayrollLegacyAdjustment[]>([])
   const [rules, setRules] = useState<EditableRule[]>([])
   const [reviewRules, setReviewRules] = useState<PayrollLegacyReviewRule[]>([])
-  const [ruleSourceFile, setRuleSourceFile] = useState<File | null>(null)
   const [evidenceSlots, setEvidenceSlots] = useState<EvidenceSlot[]>(emptyEvidenceSlots)
   const [receipts, setReceipts] = useState<ReceiptInput[]>([])
   const [pendingDecisions, setPendingDecisions] = useState<Record<string, {
@@ -297,24 +296,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
     })
   }
 
-  const importRules = async () => {
-    if (!ruleSourceFile || busy) return
-    if (!ruleSourceFile.name.toLowerCase().endsWith('.xlsx') || ruleSourceFile.size > 2 * 1024 * 1024) {
-      setMessage({ tone: 'error', text: '请选择不超过 2MB 的旧工资表 .xlsx 文件' })
-      return
-    }
-    const bytes = new Uint8Array(await ruleSourceFile.arrayBuffer())
-    let binary = ''
-    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
-    }
-    await execute('IMPORT_RULES', {
-      period: '2026-07',
-      source_filename: ruleSourceFile.name,
-      source_file_base64: window.btoa(binary),
-    })
-    setRuleSourceFile(null)
-  }
+  const initializeRules = () => void execute('INITIALIZE_RULES', { period: '2026-07' })
 
   const reviewRuleIds = new Set(reviewRules.map((rule) => rule.rule_id))
   const reviewRuleTypes = new Set(reviewRules.map((rule) => rule.rule_type))
@@ -494,15 +476,11 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
               {rules.length === 0 ? (
                 <section className="payroll-rule-import" aria-labelledby="payroll-rule-import-heading">
                   <div>
-                    <strong id="payroll-rule-import-heading">一次性建立七月工资规则基线</strong>
-                    <span>仅在系统首次切换时，从原软件迁移 2026 年 7 月长期规则。完成后入口自动关闭，往后只在本网页保存和修改，不再依赖 Excel。</span>
+                    <strong id="payroll-rule-import-heading">启用七月工资规则基线</strong>
+                    <span>七月规则已经内置在系统中。启用后入口自动关闭，往后只在本网页保存和修改，不再读取或依赖 Excel 工资表。</span>
                   </div>
-                  <label className="payroll-rule-file">
-                    <span>{ruleSourceFile?.name ?? '选择七月规则源（.xlsx）'}</span>
-                    <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => setRuleSourceFile(event.target.files?.[0] ?? null)} />
-                  </label>
-                  <button type="button" className="primary" disabled={!ruleSourceFile || busy} onClick={() => void importRules()}>
-                    {busy ? '正在建立基线' : '建立规则基线'}
+                  <button type="button" className="primary" disabled={busy} onClick={initializeRules}>
+                    {busy ? '正在启用' : '启用内置规则'}
                   </button>
                 </section>
               ) : (

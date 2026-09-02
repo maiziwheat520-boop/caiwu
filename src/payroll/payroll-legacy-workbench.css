@@ -213,7 +213,7 @@
 
 .payroll-rule-import {
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) auto auto;
+  grid-template-columns: minmax(280px, 1fr) auto;
   gap: 16px;
   align-items: center;
   padding: 18px;
@@ -225,20 +225,6 @@
 .payroll-rule-import > div { display: grid; gap: 6px; }
 .payroll-rule-import strong { color: #12345b; }
 .payroll-rule-import span { color: #5c718d; }
-.payroll-rule-file { position: relative; cursor: pointer; }
-.payroll-rule-file > span {
-  display: block;
-  max-width: 260px;
-  padding: 10px 14px;
-  overflow: hidden;
-  border: 1px solid #a9bfdc;
-  border-radius: 10px;
-  background: white;
-  color: #183b66;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.payroll-rule-file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .payroll-rule-baseline-status {
   display: flex;
   justify-content: space-between;
@@ -253,7 +239,6 @@
 
 @media (max-width: 980px) {
   .payroll-rule-import { grid-template-columns: 1fr; align-items: stretch; }
-  .payroll-rule-file > span { max-width: none; }
 }
 .payroll-review-rules-heading,
 .payroll-rule-section-title {
