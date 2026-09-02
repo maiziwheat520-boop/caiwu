@@ -15,6 +15,7 @@ export function CompanyBankStatementReviewPanel({ csrfToken }: { csrfToken: stri
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busyRef, setBusyRef] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -57,15 +58,23 @@ export function CompanyBankStatementReviewPanel({ csrfToken }: { csrfToken: stri
   }
 
   const pending = data?.statements.filter((item) => item.review_status === 'PENDING').length ?? 0
+  const showStatements = pending > 0 || expanded
   return (
     <section className="panel company-bank-review" aria-label="公司账单确认">
       <div className="panel-heading">
         <div><h2>公司账单确认</h2><p>6 份正式账单逐项确认；公司归属由服务端固定，不接受页面传入。</p></div>
-        <Badge color={pending > 0 ? 'amber' : 'green'}>{pending > 0 ? `待确认 ${pending}` : '全部已确认'}</Badge>
+        <div className="company-bank-review-actions">
+          <Badge color={pending > 0 ? 'amber' : 'green'}>{pending > 0 ? `待确认 ${pending}` : '全部已确认'}</Badge>
+          {data && pending === 0 ? (
+            <Button size="1" variant="soft" onClick={() => setExpanded((current) => !current)}>
+              {expanded ? '收起账单明细' : `查看 ${data.statements.length} 份账单明细`}
+            </Button>
+          ) : null}
+        </div>
       </div>
       {loading ? <p className="company-bank-review-state">正在读取公司账单…</p> : null}
       {error ? <div className="company-bank-review-error" role="alert"><Warning size={18} /><span>{error}</span><Button size="1" variant="soft" onClick={() => void load()}>重试公司流水</Button></div> : null}
-      {data ? (
+      {data && showStatements ? (
         <div className="company-bank-statement-list">
           {data.statements.map((statement) => {
             const status = statusLabel(statement.review_status)
