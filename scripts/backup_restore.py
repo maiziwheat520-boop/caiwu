@@ -817,10 +817,20 @@ BANK_STATEMENT_SECURITY_DEFINER_FUNCTIONS = frozenset(
 )
 BANK_STATEMENT_TRIGGER_CONTRACT = {
     "cash_reconciliation_rule_append_only": (
-        "cash_reconciliation_rule", False, 27, False, False, "r1_bank_statement_append_only",
+        "cash_reconciliation_rule",
+        False,
+        27,
+        False,
+        False,
+        "r1_bank_statement_append_only",
     ),
     "cash_reconciliation_adjustment_append_only": (
-        "cash_reconciliation_adjustment", False, 27, False, False, "r1_bank_statement_append_only",
+        "cash_reconciliation_adjustment",
+        False,
+        27,
+        False,
+        False,
+        "r1_bank_statement_append_only",
     ),
     "managed_account_append_only": (
         "managed_account",
@@ -2321,6 +2331,7 @@ BOC_ABC_BANK_STATEMENT_IMPORT_REVISION = "20260902_0031"
 MYBANK_COMPANY_DAILY_STATEMENT_PROFILE_REVISION = "20260902_0032"
 STATEMENT_REPORT_FACT_INDEPENDENCE_REVISION = "20260902_0033"
 BANK_STATEMENT_REVIEW_API_GRANT_REVISION = "20260902_0035"
+CASH_RECONCILIATION_REVISION = "20260903_0036"
 MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
     {
         ACCOUNT_REGISTRY_SECURITY_REVISION,
@@ -2336,6 +2347,7 @@ MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
         "20260902_0034",
         STATEMENT_REPORT_FACT_INDEPENDENCE_REVISION,
         BANK_STATEMENT_REVIEW_API_GRANT_REVISION,
+        CASH_RECONCILIATION_REVISION,
     }
 )
 COMPANY_REPORTING_SCHEMA = "company_reporting_read"
