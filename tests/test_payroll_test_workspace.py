@@ -623,6 +623,54 @@ def test_legacy_feature_workspace_read_and_command_preserve_safe_provider_state(
     assert command.payload_copy()["workspace"]["revision"] == 1
 
 
+def test_legacy_feature_workspace_accepts_independent_rules_before_a_monthly_batch():
+    payload = legacy_workspace_payload()
+    payload["batches"] = []
+    entity, adapter = source(payload)
+
+    read = adapter.read_legacy_features(
+        entity_ref=entity,
+        test_batch_id="batch_demo",
+        provider_headers={},
+    )
+
+    assert read.payload_copy()["batches"] == []
+
+
+def test_legacy_feature_workspace_accepts_generated_monthly_payroll_without_main_material():
+    payload = legacy_workspace_payload()
+    payload["batches"][0].pop("main_material_id")
+    entity, adapter = source(payload)
+
+    read = adapter.read_legacy_features(
+        entity_ref=entity,
+        test_batch_id="batch_demo",
+        provider_headers={},
+    )
+
+    assert "main_material_id" not in read.payload_copy()["batches"][0]
+
+
+def test_legacy_feature_command_accepts_the_merged_verification_and_summary_action():
+    command_payload = {
+        "action": "VERIFY_AND_UPDATE_SUMMARY",
+        "replayed": False,
+        "workspace": legacy_workspace_payload(),
+    }
+    entity, adapter = source(command_payload)
+
+    command = adapter.execute_legacy_feature(
+        entity_ref=entity,
+        test_batch_id="batch_demo",
+        expected_workspace_revision=0,
+        expected_action="VERIFY_AND_UPDATE_SUMMARY",
+        provider_headers={},
+        body=b"{}",
+    )
+
+    assert command.payload_copy()["action"] == "VERIFY_AND_UPDATE_SUMMARY"
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

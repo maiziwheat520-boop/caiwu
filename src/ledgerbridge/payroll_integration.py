@@ -48,12 +48,14 @@ LEGACY_REVIEW_RULE_SEVERITIES = frozenset({"BLOCKING", "REVIEW"})
 LEGACY_FEATURE_ACTIONS = frozenset(
     {
         "FILL_MAIN",
+        "GENERATE_MONTHLY_PAYROLL",
         "GENERATE_NORMAL_DRAFT",
         "GENERATE_SUPPLEMENTAL_DRAFT",
         "UPDATE_SUMMARY",
         "SAVE_RULES",
         "CHECK_RULES_AND_HISTORY",
         "VERIFY_CURRENT_PAID",
+        "VERIFY_AND_UPDATE_SUMMARY",
         "CHECK_PREVIOUS_PENDING",
     }
 )
@@ -3483,27 +3485,26 @@ def _validate_legacy_feature_workspace(
     batch_ids: set[str] = set()
     for batch_value in _require_list(value.get("batches"), "legacy batches"):
         batch = _require_object(batch_value, "legacy batch")
-        _require_exact_keys(
-            batch,
-            frozenset(
-                {
-                    "batch_id",
-                    "period",
-                    "revision",
-                    "main_material_id",
-                    "supporting_material_ids",
-                    "lines",
-                    "adjustments",
-                    "source_exceptions",
-                    "drafts",
-                    "summary",
-                    "verification",
-                    "pending_items",
-                    "checks",
-                }
-            ),
-            "legacy batch",
+        required_batch_fields = frozenset(
+            {
+                "batch_id",
+                "period",
+                "revision",
+                "supporting_material_ids",
+                "lines",
+                "adjustments",
+                "source_exceptions",
+                "drafts",
+                "summary",
+                "verification",
+                "pending_items",
+                "checks",
+            }
         )
+        if not required_batch_fields.issubset(batch) or set(batch) - (
+            required_batch_fields | {"main_material_id"}
+        ):
+            _invalid_response("payroll legacy batch fields do not match the v1 allowlist")
         batch_id = _require_stable_identifier(batch.get("batch_id"), "legacy batch_id")
         period = _require_period(batch.get("period"), "legacy batch period")
         if batch_id in batch_ids or period in periods:
@@ -3511,7 +3512,8 @@ def _validate_legacy_feature_workspace(
         batch_ids.add(batch_id)
         periods.add(period)
         _require_positive_integer(batch.get("revision"), "legacy batch revision")
-        _require_stable_identifier(batch.get("main_material_id"), "main_material_id")
+        if "main_material_id" in batch:
+            _require_stable_identifier(batch.get("main_material_id"), "main_material_id")
         supporting = _require_object(
             batch.get("supporting_material_ids"), "supporting material ids"
         )
@@ -3632,7 +3634,7 @@ def _validate_legacy_feature_workspace(
                 batch=batch,
                 expected_company_id=expected_company_id,
             )
-    if active_period not in periods:
+    if periods and active_period not in periods:
         _invalid_response("payroll legacy active period has no batch")
 
     events = _require_list(value.get("audit_events"), "legacy audit events")
