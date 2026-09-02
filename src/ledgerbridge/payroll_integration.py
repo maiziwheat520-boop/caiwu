@@ -64,6 +64,7 @@ MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_SAFE_INTEGER = (2**53) - 1
 _PUBLICATION_ID = re.compile(r"^publication_[a-f0-9]{24}$")
 _STABLE_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9._:-]{2,127}$")
+_OPAQUE_ACCOUNT_ID = re.compile(r"^account_[a-f0-9]{24}$")
 _ALLOWED_CHANNELS = frozenset({"mybank", "bank_of_china", "wechat", "cash"})
 _TOP_LEVEL_FIELDS = frozenset(
     {
@@ -2760,7 +2761,11 @@ def _require_stable_identifier(value: object, field: str, *, account: bool = Fal
         )
     # Opaque digests may contain many scattered hexadecimal digits. Only a long
     # contiguous digit run resembles an embedded raw account number.
-    if account and re.search(r"\d{12,}", value) is not None:
+    if (
+        account
+        and _OPAQUE_ACCOUNT_ID.fullmatch(value) is None
+        and re.search(r"\d{12,}", value) is not None
+    ):
         raise PayrollIntegrationError(
             "PAYROLL_IDENTITY_INVALID",
             "payroll account_id resembles a raw account number",
