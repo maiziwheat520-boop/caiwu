@@ -82,6 +82,7 @@ PAYROLL_COMMAND_ROLES = {
 ACCOUNTING_DIMENSIONS_CORE_PATH = "/internal/v1/accounting-dimensions"
 CLASSIFICATION_GROUPS_CORE_PATH = "/internal/v1/candidate-classification-groups"
 PERSONAL_FINANCE_CORE_PATH = "/internal/v1/personal-finance"
+COMPANY_BANK_REVIEW_WORKLOAD_PRINCIPAL = "workload:ledgerbridge-company-bank-review"
 CLASSIFICATION_GROUP_REF = re.compile(r"^cg_[0-9a-f]{32}$")
 CLASSIFICATION_RISK_CODES = frozenset(
     {
@@ -252,6 +253,8 @@ class CoreBackedState:
         client: CoreHttpClient,
         *,
         company_report_client: CoreHttpClient | None = None,
+        company_bank_review_client: CoreHttpClient | None = None,
+        company_bank_statement_mappings: tuple[tuple[str, str, str], ...] = (),
         assertion_key: bytes,
         assertion_issuer: str,
         assertion_audience: str,
@@ -278,6 +281,7 @@ class CoreBackedState:
             raise ValueError("Core policy and authentication generations must be positive")
         self.client = client
         self.company_report_client = company_report_client
+        self.company_bank_review_client = company_bank_review_client
         self.assertion_key = assertion_key
         self.assertion_issuer = _bounded(assertion_issuer)
         self.assertion_audience = _bounded(assertion_audience)
@@ -312,6 +316,19 @@ class CoreBackedState:
             self.personal_finance_statement_refs
         ):
             raise ValueError("personal statement refs must be unique")
+        if company_bank_statement_mappings and len(company_bank_statement_mappings) != 6:
+            raise ValueError("exactly six company bank statements must be configured")
+        normalized_company_statements: list[tuple[str, str, str]] = []
+        for statement_ref, company_ref, company_name in company_bank_statement_mappings:
+            canonical_name = _bounded(company_name, maximum=200)
+            normalized_company_statements.append(
+                (str(uuid.UUID(statement_ref)), str(uuid.UUID(company_ref)), canonical_name)
+            )
+        if len({item[0] for item in normalized_company_statements}) != len(
+            normalized_company_statements
+        ):
+            raise ValueError("company statement refs must be unique")
+        self.company_bank_statement_mappings = tuple(normalized_company_statements)
         self.payroll_commands_enabled = payroll_commands_enabled
         self.payroll_test_workspace_enabled = payroll_test_workspace_enabled
         if payroll_test_workspace_enabled and (
@@ -710,6 +727,80 @@ class CoreBackedState:
         )
         try:
             payload = self.client.json(
+                "POST",
+                path,
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": operation_id,
+                    "X-LedgerBridge-User-Assertion": assertion,
+                },
+            )
+        except CoreBackendError as error:
+            return error.status, error.payload
+        return 200, payload
+
+    def company_bank_statements(self) -> dict[str, object]:
+        if self.company_bank_review_client is None or not self.company_bank_statement_mappings:
+            raise CoreBackendError(503, _problem(503, "COMPANY_BANK_REVIEW_UNAVAILABLE"))
+        statements: list[dict[str, object]] = []
+        for statement_ref, company_ref, company_name in self.company_bank_statement_mappings:
+            query = urlencode({"entity_ref": company_ref})
+            try:
+                payload = self.company_bank_review_client.json(
+                    "GET",
+                    f"/internal/v1/company-bank-statements/{statement_ref}?{query}",
+                )
+                page = _personal_bank_transactions_from_core(payload)
+            except CoreBackendError as error:
+                raise CoreBackendError(
+                    503, _problem(503, "COMPANY_BANK_REVIEW_UNAVAILABLE")
+                ) from error
+            statement = page.get("statement")
+            if not isinstance(statement, dict) or statement.get("statement_ref") != statement_ref:
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+            statements.append({**statement, "company_name": company_name})
+        return {
+            "contract_version": "ledgerbridge.company-bank-statements-bff.v1",
+            "statements": statements,
+        }
+
+    def review_company_bank_statement(
+        self,
+        statement_ref: str,
+        idempotency_key: str,
+        request: dict[str, object],
+    ) -> tuple[int, dict[str, object]]:
+        try:
+            canonical_ref = str(uuid.UUID(statement_ref))
+            operation_id = str(uuid.UUID(idempotency_key))
+        except ValueError:
+            return 422, _problem(422, "INVALID_BANK_STATEMENT_REVIEW")
+        mapping = next(
+            (item for item in self.company_bank_statement_mappings if item[0] == canonical_ref),
+            None,
+        )
+        if self.company_bank_review_client is None or mapping is None:
+            return 404, _problem(404, "COMPANY_BANK_STATEMENT_NOT_FOUND")
+        revision = request.get("expected_revision")
+        if type(revision) is not int:
+            return 422, _problem(422, "INVALID_BANK_STATEMENT_REVIEW")
+        path = f"/internal/v1/bank-statements/{canonical_ref}/reviews"
+        body = json.dumps(
+            {**request, "entity_ref": mapping[1]},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        assertion = self._resource_user_assertion(
+            path=path,
+            body=body,
+            resource_ref=canonical_ref,
+            operation_id=operation_id,
+            expected_revision=revision,
+            workload_principal=COMPANY_BANK_REVIEW_WORKLOAD_PRINCIPAL,
+        )
+        try:
+            payload = self.company_bank_review_client.json(
                 "POST",
                 path,
                 body=body,
@@ -1590,6 +1681,7 @@ class CoreBackedState:
         resource_ref: str,
         operation_id: str,
         expected_revision: int | None = None,
+        workload_principal: str | None = None,
     ) -> str:
         issued_at = int(time.time())
         claims = {
@@ -1603,7 +1695,7 @@ class CoreBackedState:
             "body_sha256": hashlib.sha256(body).hexdigest(),
             "resource_ref": resource_ref,
             "operation_id": operation_id,
-            "workload_principal": self.workload_principal,
+            "workload_principal": workload_principal or self.workload_principal,
             "policy_generation": self.policy_generation,
             "issued_at": issued_at,
             "expires_at": issued_at + 45,

@@ -571,6 +571,15 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
 .company-report-toolbar .company-report-apply { border-color: #285f9f; color: white; background: #285f9f; }
 .company-report-toolbar .company-report-apply:hover { background: #204f86; }
 .company-report-toolbar > p { grid-column: 1 / -1; margin: 0; color: #9b6510; font-size: 10px; }
+.company-bank-review { margin-bottom: 18px; }
+.company-bank-review-state { padding: 18px; color: #66768b; }
+.company-bank-review-error { display: flex; align-items: center; gap: 10px; margin: 0 18px 18px; padding: 12px; border-radius: 9px; color: #8f3f47; background: #fff0f1; }
+.company-bank-review-error span { flex: 1; }
+.company-bank-statement-list { display: grid; gap: 1px; border-top: 1px solid #e5eaf1; background: #e5eaf1; }
+.company-bank-statement-list article { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 14px; padding: 14px 18px; background: white; }
+.company-bank-statement-list article > div { display: grid; gap: 3px; }
+.company-bank-statement-list article > div:nth-of-type(2) { justify-items: end; }
+.company-bank-statement-list span { color: #6a788a; font-size: .85rem; }
 .company-report-basis-note { display: flex; align-items: flex-start; gap: 11px; margin-bottom: 18px; padding: 14px 16px; border: 1px solid #bfd2ee; border-radius: 12px; color: #315d9c; background: #f3f8ff; }
 .company-report-basis-note svg { flex: 0 0 auto; margin-top: 1px; }
 .company-report-basis-note strong, .company-report-basis-note span { display: block; }

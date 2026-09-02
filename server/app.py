@@ -52,6 +52,9 @@ DECISION_PATH = re.compile(r"^/api/v1/candidates/([0-9a-f-]{36})/decisions$")
 BANK_STATEMENT_REVIEW_PATH = re.compile(
     r"^/api/v1/personal-finance/bank-statements/([0-9a-f-]{36})/reviews$"
 )
+COMPANY_BANK_STATEMENT_REVIEW_PATH = re.compile(
+    r"^/api/v1/company-bank-statements/([0-9a-f-]{36})/reviews$"
+)
 CLASSIFICATION_BATCH_PATH = re.compile(
     r"^/api/v1/candidate-classification-groups/(cg_[0-9a-f]{32})/decisions$"
 )
@@ -110,13 +113,11 @@ def _build_company_report_client(
     try:
         return CoreHttpClient(
             base_url=os.environ.get(
-                "CORE_COMPANY_REPORT_BASE_URL",
-                default_base_url,
+                "CORE_COMPANY_REPORT_BASE_URL", default_base_url
             ).strip()
             or default_base_url,
             ca_file=os.environ.get(
-                "CORE_COMPANY_REPORT_CA_FILE",
-                default_ca_file,
+                "CORE_COMPANY_REPORT_CA_FILE", default_ca_file
             ).strip()
             or default_ca_file,
             certificate_file=certificate_file,
@@ -125,6 +126,74 @@ def _build_company_report_client(
         )
     except (OSError, ValueError):
         return None
+
+
+def _build_company_bank_review_client(
+    *,
+    default_ca_file: str,
+    timeout_seconds: float,
+) -> CoreHttpClient | None:
+    certificate_file = os.environ.get("CORE_COMPANY_BANK_REVIEW_CERT_FILE", "").strip()
+    private_key_file = os.environ.get("CORE_COMPANY_BANK_REVIEW_KEY_FILE", "").strip()
+    if not certificate_file or not private_key_file:
+        return None
+    try:
+        return CoreHttpClient(
+            base_url=os.environ.get(
+                "CORE_COMPANY_BANK_REVIEW_BASE_URL",
+                "https://internal-ingress:8445",
+            ).strip()
+            or "https://internal-ingress:8445",
+            ca_file=os.environ.get(
+                "CORE_COMPANY_BANK_REVIEW_CA_FILE", default_ca_file
+            ).strip()
+            or default_ca_file,
+            certificate_file=certificate_file,
+            private_key_file=private_key_file,
+            timeout_seconds=timeout_seconds,
+        )
+    except (OSError, ValueError):
+        return None
+
+
+def _company_bank_statement_mappings() -> tuple[tuple[str, str, str], ...]:
+    mapping_file = os.environ.get("CORE_COMPANY_BANK_STATEMENTS_FILE", "").strip()
+    source = "CORE_COMPANY_BANK_STATEMENTS_JSON"
+    if mapping_file:
+        source = "CORE_COMPANY_BANK_STATEMENTS_FILE"
+        try:
+            raw = Path(mapping_file).read_text(encoding="utf-8")
+        except OSError as error:
+            raise SystemExit(f"Refusing unreadable {source}") from error
+    else:
+        raw = os.environ.get("CORE_COMPANY_BANK_STATEMENTS_JSON", "").strip()
+    if not raw:
+        return ()
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list) or len(parsed) != 6:
+            raise ValueError
+        result: list[tuple[str, str, str]] = []
+        for index, item in enumerate(parsed, start=1):
+            if not isinstance(item, dict) or not set(item).issubset(
+                {"statement_ref", "entity_ref", "company_name"}
+            ) or not {"statement_ref", "entity_ref"}.issubset(item):
+                raise ValueError
+            if not isinstance(item["statement_ref"], str) or not isinstance(item["entity_ref"], str):
+                raise ValueError
+            company_name = item.get("company_name", f"公司 {index}")
+            if not isinstance(company_name, str) or not company_name.strip():
+                raise ValueError
+            result.append(
+                (
+                    str(uuid.UUID(item["statement_ref"])),
+                    str(uuid.UUID(item["entity_ref"])),
+                    company_name.strip(),
+                )
+            )
+        return tuple(result)
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        raise SystemExit(f"Refusing invalid {source}") from error
 
 
 def _problem(status: int, code: str, title: str, detail: str = "") -> dict[str, object]:
@@ -1138,6 +1207,19 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 return
             self._send_json(200, state.personal_bank_transactions())
             return
+        if path == "/api/v1/company-bank-statements":
+            if query:
+                self._send_json(
+                    400,
+                    _problem(
+                        400,
+                        "INVALID_COMPANY_BANK_QUERY",
+                        "公司账单范围由服务端受保护配置决定",
+                    ),
+                )
+                return
+            self._send_json(200, state.company_bank_statements())
+            return
         if path == "/api/v1/company-reports":
             params = parse_qs(query, keep_blank_values=True)
             if (
@@ -1506,6 +1588,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             return
         decision_match = DECISION_PATH.fullmatch(path)
         bank_statement_review = BANK_STATEMENT_REVIEW_PATH.fullmatch(path)
+        company_bank_statement_review = COMPANY_BANK_STATEMENT_REVIEW_PATH.fullmatch(path)
         classification_batch_match = CLASSIFICATION_BATCH_PATH.fullmatch(path)
         draft_match = DRAFT_CREATE_PATH.fullmatch(path)
         evidence_unlock = path == EVIDENCE_UNLOCK_PATH
@@ -1516,6 +1599,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         if (
             decision_match is None
             and bank_statement_review is None
+            and company_bank_statement_review is None
             and classification_batch_match is None
             and draft_match is None
             and not evidence_unlock
@@ -1818,6 +1902,26 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             )
             self._send_json(status, payload)
             return
+        if company_bank_statement_review is not None:
+            if set(request) != {"expected_revision", "decision", "reason"}:
+                self._send_json(422, _problem(422, "INVALID_BANK_STATEMENT_REVIEW", "账单审核请求字段无效"))
+                return
+            revision = request.get("expected_revision")
+            if (
+                isinstance(revision, bool)
+                or not isinstance(revision, int)
+                or revision < 1
+                or request.get("decision") not in {"CONFIRMED", "REJECTED"}
+                or not isinstance(request.get("reason"), str)
+                or not str(request["reason"]).strip()
+            ):
+                self._send_json(422, _problem(422, "INVALID_BANK_STATEMENT_REVIEW", "账单审核内容无效"))
+                return
+            status, payload = self.preview_server.state.review_company_bank_statement(
+                company_bank_statement_review.group(1), idempotency_key.lower(), request
+            )
+            self._send_json(status, payload)
+            return
         month = draft_match.group(1)
         if not MONTH_PATTERN.fullmatch(month):
             self._send_json(400, _problem(400, "INVALID_ACCOUNTING_MONTH", "归属月份格式无效"))
@@ -2077,9 +2181,15 @@ def run() -> None:
                 default_ca_file=required["CORE_CA_FILE"],
                 timeout_seconds=timeout_seconds,
             )
+            company_bank_review_client = _build_company_bank_review_client(
+                default_ca_file=required["CORE_CA_FILE"],
+                timeout_seconds=timeout_seconds,
+            )
             state = CoreBackedState(
                 client,
                 company_report_client=company_report_client,
+                company_bank_review_client=company_bank_review_client,
+                company_bank_statement_mappings=_company_bank_statement_mappings(),
                 assertion_key=required["CORE_USER_ASSERTION_KEY"].encode("utf-8"),
                 assertion_issuer=required["CORE_ASSERTION_ISSUER"],
                 assertion_audience=required["CORE_ASSERTION_AUDIENCE"],
