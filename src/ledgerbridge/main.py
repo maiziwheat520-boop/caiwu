@@ -38,6 +38,9 @@ from ledgerbridge.dispatch import (
     DispatchService,
 )
 from ledgerbridge.imports import EvidenceImporter, EvidenceIngestionError, IngestMetadata
+from ledgerbridge.internal_bank_statement_review_routes import (
+    router as internal_bank_statement_review_router,
+)
 from ledgerbridge.internal_candidate_command_routes import (
     router as internal_candidate_command_router,
 )
@@ -89,6 +92,7 @@ app.include_router(internal_read_router)
 app.include_router(company_reporting_router)
 app.include_router(personal_finance_router)
 app.include_router(internal_candidate_command_router)
+app.include_router(internal_bank_statement_review_router)
 app.include_router(internal_evidence_unlock_router)
 app.include_router(internal_payroll_router)
 app.include_router(original_reconciliation_router)
