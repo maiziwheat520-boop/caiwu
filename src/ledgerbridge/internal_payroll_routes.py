@@ -225,7 +225,7 @@ class PayrollLegacyFeatureCommand(BaseModel):
         "GENERATE_SUPPLEMENTAL_DRAFT",
         "UPDATE_SUMMARY",
         "SAVE_RULES",
-        "IMPORT_RULES",
+        "INITIALIZE_RULES",
         "CHECK_RULES_AND_HISTORY",
         "VERIFY_CURRENT_PAID",
         "VERIFY_AND_UPDATE_SUMMARY",
