@@ -129,6 +129,16 @@ describe('CompanyReportsPage', () => {
     expect(within(dashboard).getByText('¥5,930,787.86')).toBeInTheDocument()
     expect(within(dashboard).getByText('¥229,427.45')).toBeInTheDocument()
     expect(within(dashboard).getAllByText('账户流水尚未完成收支类型分类，当前仅展示现金流总额。')).toHaveLength(2)
+    const statementSummary = screen.getByRole('region', {
+      name: 'LedgerBridge controlled reconciliation 账户流水汇总',
+    })
+    expect(within(statementSummary).getByText('账户流入')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('账户流出')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('净现金流')).toBeInTheDocument()
+    expect(screen.queryByText('测试汇总收入')).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', {
+      name: 'LedgerBridge controlled reconciliation 正式财务总额',
+    })).not.toBeInTheDocument()
   })
 
   it('switches companies and requests an applied month range', async () => {
