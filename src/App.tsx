@@ -1685,8 +1685,6 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate, csrf
         action={<Button onClick={() => onNavigate('review')}><ListChecks size={17} />处理待审核</Button>}
       />
 
-      <PersonalBankTransactionsPanel csrfToken={csrfToken} />
-
       <section className="panel personal-posting-status" aria-label="个人财务入账状态">
         <div>
           <span>入账链路</span>
@@ -1782,6 +1780,8 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate, csrf
           ) : <p className="personal-finance-empty">暂无已确认归属月份的收支数据。</p>}
         </section>
       </div>
+
+      <PersonalBankTransactionsPanel csrfToken={csrfToken} />
 
       <section className="panel report-entry-panel personal-finance-actions">
         <div><h2>材料与对账去向</h2><p>查看原始账单、凭证、待补材料和月度对账。</p></div>

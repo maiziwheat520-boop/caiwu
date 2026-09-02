@@ -2077,7 +2077,7 @@ describe('LedgerBridge Web API client', () => {
     expect(within(screen.getByRole('region', { name: '待补账单清单' })).getByText('1 项')).toBeInTheDocument()
   })
 
-  it('shows formal bank facts above and separately from Candidate test calculations', async () => {
+  it('shows the personal overview before collapsed formal bank details', async () => {
     const testCandidate: ApiCandidate = {
       ...candidates[3],
       id: 'candidate-test-personal',
@@ -2103,11 +2103,15 @@ describe('LedgerBridge Web API client', () => {
     expect(await within(formal).findByText('2 笔')).toBeInTheDocument()
     expect(within(formal).getByText('网商银行 · 尾号 7968')).toBeInTheDocument()
     expect(within(formal).getByText('账单审核：已确认')).toBeInTheDocument()
-    expect(within(formal).getByText('正式对方甲')).toBeInTheDocument()
-    expect(within(formal).getByText('正式对方乙')).toBeInTheDocument()
+    expect(within(formal).queryByText('正式对方甲')).not.toBeInTheDocument()
+    expect(within(formal).queryByText('正式对方乙')).not.toBeInTheDocument()
     expect(within(formal).getByText('账户现金流，不是营业收入')).toBeInTheDocument()
     expect(within(testSummary).getByText('测试收入')).toBeInTheDocument()
-    expect(formal.compareDocumentPosition(testSummary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(testSummary.compareDocumentPosition(formal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    fireEvent.click(within(formal).getByRole('button', { name: '查看流水明细（2 笔）' }))
+    expect(within(formal).getByText('正式对方甲')).toBeInTheDocument()
+    expect(within(formal).getByText('正式对方乙')).toBeInTheDocument()
   })
 
   it('shows multiple formal bank statements in one reconciled list', async () => {
@@ -2147,7 +2151,14 @@ describe('LedgerBridge Web API client', () => {
     expect(within(formal).getByText(/2 份账单/)).toBeInTheDocument()
     expect(within(formal).getByText('网商银行 · 尾号 7968')).toBeInTheDocument()
     expect(within(formal).getByText('中国建设银行 · 尾号 7564')).toBeInTheDocument()
+    expect(within(formal).queryByText('建行正式对方')).not.toBeInTheDocument()
+
+    fireEvent.click(within(formal).getByRole('button', { name: '查看流水明细（3 笔）' }))
     expect(within(formal).getByText('建行正式对方')).toBeInTheDocument()
+    fireEvent.change(within(formal).getByLabelText('银行账户筛选'), { target: { value: secondStatementRef } })
+    expect(within(formal).getByText('符合条件 1 笔')).toBeInTheDocument()
+    expect(within(formal).getByText('建行正式对方')).toBeInTheDocument()
+    expect(within(formal).queryByText('正式对方甲')).not.toBeInTheDocument()
   })
 
   it('repairs fixed-column PDF layout noise without changing formal transaction facts', async () => {
@@ -2165,6 +2176,7 @@ describe('LedgerBridge Web API client', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
 
     const formal = await screen.findByRole('region', { name: '个人正式银行流水' })
+    fireEvent.click(within(formal).getByRole('button', { name: '查看流水明细（2 笔）' }))
     expect(await within(formal).findByText('陈莹')).toBeInTheDocument()
     expect(within(formal).queryByText('陈莹 6')).not.toBeInTheDocument()
     expect(within(formal).getByText('跨行转账 · 手机银行 · 中国工商银行 · 对方尾号 7442')).toBeInTheDocument()
