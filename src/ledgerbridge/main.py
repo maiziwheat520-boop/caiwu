@@ -27,10 +27,11 @@ from ledgerbridge.auth import (
     AuthenticatedPrincipal,
     authorize_principal,
 )
-from ledgerbridge.company_reporting_routes import router as company_reporting_router
+from ledgerbridge.cash_reconciliation_routes import router as cash_reconciliation_router
 from ledgerbridge.company_bank_statement_routes import (
     router as company_bank_statement_router,
 )
+from ledgerbridge.company_reporting_routes import router as company_reporting_router
 from ledgerbridge.config import Settings, get_settings
 from ledgerbridge.connectors import Connector
 from ledgerbridge.db import get_session, get_session_factory
@@ -100,6 +101,7 @@ app.include_router(internal_bank_statement_review_router)
 app.include_router(internal_evidence_unlock_router)
 app.include_router(internal_payroll_router)
 app.include_router(original_reconciliation_router)
+app.include_router(cash_reconciliation_router)
 
 
 class UploadReadTimeoutError(TimeoutError):

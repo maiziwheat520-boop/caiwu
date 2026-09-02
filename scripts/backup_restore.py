@@ -724,7 +724,12 @@ R1_CUTOVER_INVENTORY_TABLES = tuple(
         | set(COUNTERPARTY_PROTECTED_TABLES)
         | set(BANK_STATEMENT_TABLES)
         | set(ACCOUNT_REGISTRY_TABLES)
-        | {"journal_entry", "posting"}
+        | {
+            "journal_entry",
+            "posting",
+            "cash_reconciliation_rule",
+            "cash_reconciliation_adjustment",
+        }
     )
 )
 _R1_CUTOVER_ROW_COUNTS_SQL = ", ".join(
@@ -769,6 +774,8 @@ BANK_STATEMENT_FUNCTION_SIGNATURES = {
         "p_statement_ref uuid, p_entity_ref uuid, p_audit_horizon_sequence bigint, "
         "p_audit_horizon_hash bytea, p_after_row integer, p_limit integer"
     ),
+    ("internal_read", "cash_reconciliation_rules_v1"): "",
+    ("internal_read", "cash_reconciliation_month_v1"): "p_month date",
 }
 BANK_STATEMENT_FUNCTION_RESULTS = {
     ("public", "r1_bank_statement_append_only"): "trigger",
@@ -792,6 +799,8 @@ BANK_STATEMENT_FUNCTION_RESULTS = {
         "counterparty_institution character varying, transaction_serial character varying, "
         "transaction_name character varying)"
     ),
+    ("internal_read", "cash_reconciliation_rules_v1"): "jsonb",
+    ("internal_read", "cash_reconciliation_month_v1"): "jsonb",
 }
 BANK_STATEMENT_SECURITY_DEFINER_FUNCTIONS = frozenset(
     {
@@ -802,9 +811,17 @@ BANK_STATEMENT_SECURITY_DEFINER_FUNCTIONS = frozenset(
         ("internal_command", "review_bank_statement"),
         ("internal_read", "get_bank_statement_summary"),
         ("internal_read", "list_bank_statement_transactions"),
+        ("internal_read", "cash_reconciliation_rules_v1"),
+        ("internal_read", "cash_reconciliation_month_v1"),
     }
 )
 BANK_STATEMENT_TRIGGER_CONTRACT = {
+    "cash_reconciliation_rule_append_only": (
+        "cash_reconciliation_rule", False, 27, False, False, "r1_bank_statement_append_only",
+    ),
+    "cash_reconciliation_adjustment_append_only": (
+        "cash_reconciliation_adjustment", False, 27, False, False, "r1_bank_statement_append_only",
+    ),
     "managed_account_append_only": (
         "managed_account",
         False,

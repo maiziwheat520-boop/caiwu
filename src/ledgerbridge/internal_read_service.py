@@ -33,6 +33,7 @@ from ledgerbridge.candidate_contract import (
     ReviewSummary,
     SourceProjection,
 )
+from ledgerbridge.cash_reconciliation import CashReconciliationProjection
 from ledgerbridge.counterparty import CounterpartyClass
 from ledgerbridge.encrypted_artifacts import (
     EncryptedArtifactError,
@@ -503,6 +504,33 @@ class DatabaseInternalReadService:
                 "personal-finance",
             ),
         )
+
+    def get_cash_reconciliation(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        month: str,
+    ) -> CashReconciliationProjection:
+        authorize_read(principal, Capability.RECONCILIATION_READ)
+        require_capability(principal, Capability.LEDGER_READ)
+        try:
+            with self._session_factory() as session:
+                payload = session.execute(
+                    text(
+                        "SELECT internal_read.cash_reconciliation_month_v1("
+                        "to_date(:month || '-01', 'YYYY-MM-DD')) AS projection"
+                    ),
+                    {"month": month},
+                ).scalar_one()
+            return CashReconciliationProjection.model_validate(payload)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise InternalReadBackendUnavailable(
+                "cash reconciliation projection contract is invalid"
+            ) from exc
+        except SQLAlchemyError as exc:
+            raise InternalReadBackendUnavailable(
+                "cash reconciliation projection read failed"
+            ) from exc
 
     def get_accounting_dimensions(
         self,
