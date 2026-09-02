@@ -23,10 +23,18 @@ const PAGE_SIZE = 25
 
 type Filter = 'ALL' | '2026-07' | '2026-08'
 
+export type PayrollMaterialRole = 'attendance' | 'aunt_attendance' | 'review_statistics'
+
+export type PayrollConfirmedMaterials = {
+  period: '2026-07' | '2026-08'
+  material_ids: Record<PayrollMaterialRole, string>
+}
+
 type Props = {
   workspace: PayrollTestWorkspaceReadResponse
   csrfToken: string
   onWorkspaceChange: (workspace: PayrollTestWorkspaceReadResponse) => void
+  onConfirmedMaterials?: (selection: PayrollConfirmedMaterials) => void
 }
 
 type Draft = {
@@ -47,6 +55,13 @@ function materialTypeLabel(value: string | null): string {
   return MATERIAL_TYPES.find((item) => item.value === value)?.label ?? '工资表素材'
 }
 
+function materialRole(value: string | null): PayrollMaterialRole | null {
+  if (value === 'ATTENDANCE_SHEET') return 'attendance'
+  if (value === 'AUNT_ATTENDANCE_SHEET') return 'aunt_attendance'
+  if (value === 'REVIEW_STATISTICS' || value === 'ADJUSTMENT_SOURCE') return 'review_statistics'
+  return null
+}
+
 function standardMaterialName(material: PayrollTestWorkspaceMaterial): string {
   const period = material.period
     ? `${material.period.slice(0, 4)}.${Number(material.period.slice(5))}`
@@ -64,6 +79,7 @@ export function PayrollTestWorkspaceActionsPanel({
   workspace,
   csrfToken,
   onWorkspaceChange,
+  onConfirmedMaterials,
 }: Props) {
   const [filter, setFilter] = useState<Filter>('ALL')
   const [page, setPage] = useState(0)
@@ -73,6 +89,7 @@ export function PayrollTestWorkspaceActionsPanel({
   const [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null)
   const [validation, setValidation] = useState<PayrollTestBatchValidationResult | null>(null)
   const [preview, setPreview] = useState<PayrollInputMaterialPreview | null>(null)
+  const [selected, setSelected] = useState<Partial<Record<PayrollMaterialRole, string>>>({})
 
   const inputMaterials = useMemo(
     () => workspace.data.materials
@@ -110,6 +127,25 @@ export function PayrollTestWorkspaceActionsPanel({
   const changeFilter = (next: Filter) => {
     setFilter(next)
     setPage(0)
+    setSelected({})
+    setMessage(null)
+  }
+
+  const confirmSelection = () => {
+    if (
+      filter === 'ALL' || !selected.attendance ||
+      !selected.aunt_attendance || !selected.review_statistics
+    ) return
+    const selection: PayrollConfirmedMaterials = {
+      period: filter,
+      material_ids: {
+        attendance: selected.attendance,
+        aunt_attendance: selected.aunt_attendance,
+        review_statistics: selected.review_statistics,
+      },
+    }
+    onConfirmedMaterials?.(selection)
+    setMessage({ tone: 'success', text: `${filter} 三类工资素材已唯一确认，可生成当月工资。` })
   }
 
   const refresh = async () => {
@@ -192,7 +228,7 @@ export function PayrollTestWorkspaceActionsPanel({
         <div>
           <span className="payroll-test-eyebrow">测试数据，不会发薪</span>
           <h2 id="payroll-test-actions-heading">七、八月工资表素材</h2>
-          <p>素材库只保留考勤表、阿姨考勤表和好评统计；导入后按月份和类型自动命名。工资主表与代发表不进入素材库。</p>
+          <p>素材库只保留考勤表、阿姨考勤表和好评统计；导入后按月份和类型自动命名。生成的工资表与代发表不进入素材库。</p>
         </div>
         <button className="payroll-test-primary" type="button" disabled={busy} onClick={validate}>
           {busy ? '处理中…' : '检查七八月素材'}
@@ -211,16 +247,32 @@ export function PayrollTestWorkspaceActionsPanel({
         </button>
       </div>
 
+      <div className="payroll-material-confirmation" aria-label="唯一素材确认">
+        <div>
+          <strong>{filter === 'ALL' ? '先选择 7 月或 8 月' : `确认 ${filter} 唯一工资素材`}</strong>
+          <span>每类只能单选一个版本；确认后才会用于生成当月工资。</span>
+        </div>
+        <button
+          className="payroll-test-primary"
+          type="button"
+          disabled={filter === 'ALL' || !selected.attendance || !selected.aunt_attendance || !selected.review_statistics}
+          onClick={confirmSelection}
+        >
+          确认这三份素材
+        </button>
+      </div>
+
       {message ? <div className={`payroll-test-message ${message.tone}`} role="status">{message.text}</div> : null}
 
       <div className="payroll-test-materials" aria-label="工资表素材">
         {visible.map((material) => {
           const editing = editingId === material.material_id && draft !== null
+          const role = materialRole(material.material_type)
           return (
             <article key={material.material_id}>
               <div className="payroll-test-material-main">
                 <strong>{displayNames.get(material.material_id) ?? standardMaterialName(material)}</strong>
-                <span>用于生成工资主表 · 材料编号 {material.material_id.slice(-8).toUpperCase()}</span>
+                <span>用于生成当月工资 · 材料编号 {material.material_id.slice(-8).toUpperCase()}</span>
               </div>
               {editing ? (
                 <div className="payroll-test-editor">
@@ -253,6 +305,18 @@ export function PayrollTestWorkspaceActionsPanel({
                 </div>
               ) : (
                 <div className="payroll-test-material-actions">
+                  {role && material.period === filter ? (
+                    <label className="payroll-material-radio">
+                      <input
+                        type="radio"
+                        name={`payroll-material-${filter}-${role}`}
+                        aria-label={`选择${displayNames.get(material.material_id) ?? standardMaterialName(material)}`}
+                        checked={selected[role] === material.material_id}
+                        onChange={() => setSelected((current) => ({ ...current, [role]: material.material_id }))}
+                      />
+                      选为本月唯一{materialTypeLabel(material.material_type).replace('（旧分类）', '')}
+                    </label>
+                  ) : null}
                   <span data-routing={material.routing_status}>已识别为工资表素材</span>
                   <button type="button" disabled={busy} onClick={() => previewMaterial(material.material_id)}>
                     查看内容

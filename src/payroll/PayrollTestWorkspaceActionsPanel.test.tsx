@@ -80,6 +80,44 @@ const validation: PayrollTestBatchValidationResult = {
 afterEach(() => vi.restoreAllMocks())
 
 describe('PayrollTestWorkspaceActionsPanel', () => {
+  it('single-selects and explicitly confirms exactly one material for each monthly role', () => {
+    const onConfirmedMaterials = vi.fn()
+    const selectionWorkspace: PayrollTestWorkspaceReadResponse = {
+      ...workspace,
+      data: {
+        ...workspace.data,
+        materials: [
+          ...workspace.data.materials,
+          material('material_attendance_2026_08', '2026-08', 'ATTENDANCE_SHEET'),
+          material('material_aunt_2026_08', '2026-08', 'AUNT_ATTENDANCE_SHEET'),
+        ],
+      },
+    }
+    render(
+      <PayrollTestWorkspaceActionsPanel
+        workspace={selectionWorkspace}
+        csrfToken="csrf-test-token"
+        onWorkspaceChange={vi.fn()}
+        onConfirmedMaterials={onConfirmedMaterials}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '2026 年 8 月 4' }))
+    fireEvent.click(screen.getByLabelText('选择2026.8_考勤表'))
+    fireEvent.click(screen.getByLabelText('选择2026.8_阿姨考勤表'))
+    fireEvent.click(screen.getByLabelText('选择2026.8_好评统计（版本 2）'))
+    fireEvent.click(screen.getByRole('button', { name: '确认这三份素材' }))
+
+    expect(onConfirmedMaterials).toHaveBeenCalledWith({
+      period: '2026-08',
+      material_ids: {
+        attendance: 'material_attendance_2026_08',
+        aunt_attendance: 'material_aunt_2026_08',
+        review_statistics: 'material_review_2026_08',
+      },
+    })
+  })
+
   it('shows only July/August wage inputs with the original standard names', () => {
     render(
       <PayrollTestWorkspaceActionsPanel
