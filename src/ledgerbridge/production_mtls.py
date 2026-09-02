@@ -14,9 +14,9 @@ import stat
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Final, Literal
+from typing import Annotated, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from ledgerbridge.config import Settings
 from ledgerbridge.internal_read_auth import VerifiedMtlsPrincipal
@@ -60,12 +60,57 @@ class MtlsWorkloadPolicy(BaseModel):
         return self
 
 
+class MtlsWorkloadIdentity(BaseModel):
+    """One exact certificate serial and proxy-attested SAN principal binding."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    certificate_serial: str = Field(pattern=r"^[0-9A-F]{2,40}$")
+    principal: WorkloadPrincipal
+
+
+class MtlsWorkloadPolicyV2(BaseModel):
+    """A bounded set of independently authorized mTLS workload identities."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: Literal["ledgerbridge.mtls-workload-policy.v2"] = (
+        "ledgerbridge.mtls-workload-policy.v2"
+    )
+    policy_generation: int = Field(ge=1)
+    identities: tuple[MtlsWorkloadIdentity, ...] = Field(min_length=1, max_length=16)
+
+    @model_validator(mode="after")
+    def identities_are_unique_and_generation_bound(self) -> MtlsWorkloadPolicyV2:
+        serials = [identity.certificate_serial for identity in self.identities]
+        principal_refs = [identity.principal.principal_ref for identity in self.identities]
+        san_uris = [identity.principal.san_uri for identity in self.identities]
+        if len(serials) != len(set(serials)):
+            raise ValueError("mTLS policy certificate serials must be unique")
+        if len(principal_refs) != len(set(principal_refs)):
+            raise ValueError("mTLS policy principal refs must be unique")
+        if len(san_uris) != len(set(san_uris)):
+            raise ValueError("mTLS policy SAN URIs must be unique")
+        if any(
+            identity.principal.policy_generation != self.policy_generation
+            for identity in self.identities
+        ):
+            raise ValueError("mTLS policy generation does not match principal generation")
+        return self
+
+
+type LoadedMtlsWorkloadPolicy = MtlsWorkloadPolicy | MtlsWorkloadPolicyV2
+_MTLS_POLICY_ADAPTER: TypeAdapter[LoadedMtlsWorkloadPolicy] = TypeAdapter(
+    Annotated[LoadedMtlsWorkloadPolicy, Field(discriminator="version")]
+)
+
+
 class UnixSocketMtlsVerifier:
     """Accept the proxy assertion only over the protected Unix-socket transport."""
 
     def __init__(
         self,
-        policy: MtlsWorkloadPolicy,
+        policy: LoadedMtlsWorkloadPolicy,
         *,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -98,9 +143,8 @@ class UnixSocketMtlsVerifier:
         serial = _single(values, _SERIAL_HEADER)
         if verified != b"SUCCESS":
             return None
-        if san != self._policy.principal.san_uri.encode("ascii"):
-            return None
-        if serial != self._policy.certificate_serial.encode("ascii"):
+        identity = _resolve_identity(self._policy, san=san, serial=serial)
+        if identity is None:
             return None
 
         now = self._clock()
@@ -108,7 +152,7 @@ class UnixSocketMtlsVerifier:
             return None
         issued_at = now.astimezone(UTC)
         return VerifiedMtlsPrincipal(
-            principal=self._policy.principal,
+            principal=identity.principal,
             issued_at=issued_at,
             expires_at=issued_at + MTLS_ASSERTION_LIFETIME,
             policy_generation=self._policy.policy_generation,
@@ -144,7 +188,7 @@ def load_mtls_workload_policy(
     *,
     expected_policy_generation: int,
     require_root_owner: bool = True,
-) -> MtlsWorkloadPolicy:
+) -> LoadedMtlsWorkloadPolicy:
     """Read one small, stable, non-symlink policy file without following links."""
 
     if not path.is_absolute():
@@ -182,12 +226,37 @@ def load_mtls_workload_policy(
 
     try:
         payload = json.loads(content.decode("utf-8"), object_pairs_hook=_unique_object)
-        policy = MtlsWorkloadPolicy.model_validate(payload)
+        policy = _MTLS_POLICY_ADAPTER.validate_python(payload)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise MtlsPolicyError("mTLS policy content is invalid") from exc
     if policy.policy_generation != expected_policy_generation:
         raise MtlsPolicyError("mTLS policy generation is stale")
     return policy
+
+
+def _resolve_identity(
+    policy: LoadedMtlsWorkloadPolicy,
+    *,
+    san: bytes | None,
+    serial: bytes | None,
+) -> MtlsWorkloadIdentity | None:
+    identities = (
+        (
+            MtlsWorkloadIdentity(
+                certificate_serial=policy.certificate_serial,
+                principal=policy.principal,
+            ),
+        )
+        if isinstance(policy, MtlsWorkloadPolicy)
+        else policy.identities
+    )
+    matches = [
+        identity
+        for identity in identities
+        if san == identity.principal.san_uri.encode("ascii")
+        and serial == identity.certificate_serial.encode("ascii")
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _single(values: Mapping[bytes, list[bytes]], name: bytes) -> bytes | None:

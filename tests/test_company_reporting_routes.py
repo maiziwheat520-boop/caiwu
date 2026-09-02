@@ -167,7 +167,7 @@ def _principal(*, capability: bool = True) -> WorkloadPrincipal:
         principal_ref="workload:company-report-route-test",
         san_uri="spiffe://ledgerbridge.test/company-report-route-test",
         policy_generation=7,
-        capabilities=(frozenset({Capability.LEDGER_READ}) if capability else frozenset()),
+        capabilities=(frozenset({Capability.COMPANY_REPORT_READ}) if capability else frozenset()),
         grants=(
             EntityGrant(
                 entity_ref=COMPANY,
@@ -250,7 +250,7 @@ def test_closed_gate_precedes_authentication_and_service_construction() -> None:
     assert calls == 0
 
 
-def test_ledger_capability_precedes_query_validation_and_service_construction() -> None:
+def test_company_report_capability_precedes_query_validation_and_service_construction() -> None:
     calls = 0
 
     def unexpected_service() -> object:
@@ -262,6 +262,28 @@ def test_ledger_capability_precedes_query_validation_and_service_construction() 
         principal=_principal(capability=False),
         service_factory=unexpected_service,
     ).get("/internal/v1/company-reports?unknown=1")
+
+    _assert_problem(response, 403, "CAPABILITY_REQUIRED")
+    assert calls == 0
+
+
+def test_ledger_read_does_not_transitively_authorize_company_reports() -> None:
+    calls = 0
+
+    def unexpected_service() -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("ledger-only principal must not build the report service")
+
+    ledger_only = _principal().model_copy(
+        update={"capabilities": frozenset({Capability.LEDGER_READ})}
+    )
+    response = _client(
+        principal=ledger_only,
+        service_factory=unexpected_service,
+    ).get(
+        "/internal/v1/company-reports?from_month=2026-08&to_month=2026-08&basis=CONFIRMED_CANDIDATE"
+    )
 
     _assert_problem(response, 403, "CAPABILITY_REQUIRED")
     assert calls == 0
@@ -279,7 +301,7 @@ def test_collection_scope_precedes_query_validation_and_service_construction() -
         principal_ref="workload:no-company-scope",
         san_uri="spiffe://ledgerbridge.test/no-company-scope",
         policy_generation=7,
-        capabilities=frozenset({Capability.LEDGER_READ}),
+        capabilities=frozenset({Capability.COMPANY_REPORT_READ}),
         grants=(),
     )
     response = _client(

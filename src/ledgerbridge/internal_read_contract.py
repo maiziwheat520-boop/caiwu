@@ -30,6 +30,7 @@ class Capability(StrEnum):
     EVIDENCE_READ = "evidence:read"
     RECONCILIATION_READ = "reconciliation:read"
     LEDGER_READ = "ledger:read"
+    COMPANY_REPORT_READ = "company-report:read"
     CANDIDATE_CREATE = "candidate:create"
     CANDIDATE_DECIDE = "candidate:decide"
     CANDIDATE_SUPERSEDE = "candidate:supersede"
@@ -54,6 +55,7 @@ READ_CAPABILITIES = frozenset(
         Capability.EVIDENCE_READ,
         Capability.RECONCILIATION_READ,
         Capability.LEDGER_READ,
+        Capability.COMPANY_REPORT_READ,
         Capability.ACCOUNT_REGISTRY_READ,
     }
 )
@@ -67,8 +69,8 @@ READ_ROUTE_CAPABILITIES: Mapping[str, Capability] = {
     "GET /internal/v1/evidence/{id}/content": Capability.EVIDENCE_READ,
     "GET /internal/v1/reconciliations/{month}": Capability.RECONCILIATION_READ,
     "GET /internal/v1/ledger-summary": Capability.LEDGER_READ,
-    "GET /internal/v1/company-reports": Capability.LEDGER_READ,
-    "GET /internal/v1/company-report-composition": Capability.LEDGER_READ,
+    "GET /internal/v1/company-reports": Capability.COMPANY_REPORT_READ,
+    "GET /internal/v1/company-report-composition": Capability.COMPANY_REPORT_READ,
     "GET /internal/v1/personal-finance": Capability.LEDGER_READ,
 }
 
@@ -401,7 +403,11 @@ def authorize_collection_read(
 ) -> None:
     """Authorize a collection whose query must union only the principal's grants."""
 
-    if capability not in {Capability.CANDIDATE_READ, Capability.LEDGER_READ}:
+    if capability not in {
+        Capability.CANDIDATE_READ,
+        Capability.LEDGER_READ,
+        Capability.COMPANY_REPORT_READ,
+    }:
         raise AuthorizationDenied("capability has no collection read contract")
     require_capability(principal, capability)
     if not principal.grants:

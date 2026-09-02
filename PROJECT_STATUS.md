@@ -2,6 +2,28 @@
 
 Updated: 2026-09-02
 
+## Dedicated multi-company report principal checkpoint (2026-09-02)
+
+Production baselines were rechecked as Core `5d03d93fe43670ec4136754050eab06e4dab2b0c`,
+Web `e210833f199cec5caafada7ad95f4e533c816c4c`, schema `20260902_0034`, and
+policy generation 5. Core now has a backward-compatible v2 mTLS policy model
+that can bind the existing Web certificate and a separate company-report
+certificate to distinct principals. The report principal has only
+`company-report:read`; it cannot use Candidate, evidence, ledger-summary,
+payroll, or command routes. The internal ingress binds the primary identity to
+TLS port 8443 and the report identity to port 8444, so crossing a certificate
+and port fails authentication.
+
+The private policy candidate builder preserves the existing primary authority,
+requires exactly five unique company grants with immutable business-unit
+bindings, advances generation by exactly one, and creates a new mode-0600 file
+without overwriting production policy. Web's dedicated report client consumes
+port 8444 while its browser API continues to reject `company_ref`; the browser
+selector is populated only from the server-authorized collection. No
+certificate, private company grant file, policy activation, migration, data
+write, or deployment is included in this branch. See
+`docs/tasks/2026-09-02-company-report-multi-principal.md`.
+
 ## Atomic company statement batch checkpoint (2026-09-02)
 
 Five complete official MYbank company range statements now supersede the incomplete daily batch
