@@ -2466,7 +2466,7 @@ describe('LedgerBridge Web API client', () => {
     expect(await screen.findByRole('region', { name: '演示公司 财务汇总' })).toBeInTheDocument()
     expect(screen.getByText('已确认来源 61 条')).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: '演示公司 正式财务总额' })).not.toBeInTheDocument()
-    expect(screen.getByText('正式账簿尚未接入')).toBeInTheDocument()
+    expect(screen.getByText('会计账簿尚未接入')).toBeInTheDocument()
   })
 
   it('prioritizes confirmed account cash flow when the posted ledger is empty', async () => {
@@ -2503,15 +2503,16 @@ describe('LedgerBridge Web API client', () => {
     renderApp()
 
     const statementSummary = await screen.findByRole('region', { name: '演示公司 账户流水汇总' })
-    expect(within(statementSummary).getByText('已确认账户流水')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('正式银行流水')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('正式数据')).toBeInTheDocument()
     expect(within(statementSummary).getByText('¥2,000.00')).toBeInTheDocument()
     expect(within(statementSummary).getByText('¥800.00')).toBeInTheDocument()
     expect(within(statementSummary).getByText('¥1,200.00')).toBeInTheDocument()
     expect(within(statementSummary).getByText(/12 条/)).toBeInTheDocument()
     expect(within(statementSummary).getByText('2 份账单')).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: '演示公司 测试汇总' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '演示公司 已确认事项汇总' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: '演示公司 正式财务总额' })).not.toBeInTheDocument()
-    expect(screen.getByText('正式账簿尚无入账金额')).toBeInTheDocument()
+    expect(screen.getByText('正式数据已接入，尚无会计过账分录')).toBeInTheDocument()
   })
 
   it('warns when Core only returns the generic company placeholder', async () => {
