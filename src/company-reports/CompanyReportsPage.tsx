@@ -15,6 +15,8 @@ import type {
 import { ErrorState, LoadingState, PageHeader } from '../shared/PagePrimitives'
 import { CompanyBankStatementReviewPanel } from './CompanyBankStatementReviewPanel'
 
+const ALL_COMPANIES = '__all_companies__'
+
 export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
   const [reports, setReports] = useState<CompanyReportsResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -78,13 +80,19 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
   }))
 
   const companies = [...companyIndex.entries()]
-  const activeCompanyRef = companyIndex.has(selectedCompanyRef)
+  const showAllCompanies = selectedCompanyRef === ALL_COMPANIES
+  const activeCompanyRef = showAllCompanies
+    ? ALL_COMPANIES
+    : companyIndex.has(selectedCompanyRef)
     ? selectedCompanyRef
     : companies[0]?.[0] ?? ''
-  const activeCompany = companyIndex.get(activeCompanyRef)
-  const activeComposition = compositionFor(reports, basis, activeCompanyRef)
-  const activeReport = companyFor(layerFor(reports.layers, basis), activeCompanyRef)
-  const dashboard = dashboardSummary(basis, activeReport, activeComposition)
+  const activeCompany = showAllCompanies ? null : companyIndex.get(activeCompanyRef)
+  const activeCurrencyCode = activeCompany?.currencyCode ?? companies[0]?.[1].currencyCode ?? 'CNY'
+  const activeComposition = showAllCompanies ? undefined : compositionFor(reports, basis, activeCompanyRef)
+  const activeReport = showAllCompanies ? undefined : companyFor(layerFor(reports.layers, basis), activeCompanyRef)
+  const dashboard = showAllCompanies
+    ? allCompaniesDashboard(reports, basis, companies.map(([companyRef]) => companyRef))
+    : dashboardSummary(basis, activeReport, activeComposition)
   const rangeInvalid = !isReportMonth(fromMonth)
     || !isReportMonth(toMonth)
     || fromMonth > toMonth
@@ -100,6 +108,7 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
           disabled={companies.length === 0}
           onChange={(event) => setSelectedCompanyRef(event.target.value)}
         >
+          <option value={ALL_COMPANIES}>全部公司</option>
           {companies.map(([companyRef, identity]) => (
             <option key={companyRef} value={companyRef}>{identity.name}</option>
           ))}
@@ -152,8 +161,8 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
       <section className="company-report-basis-note" aria-label="公司报表口径说明">
         <Info size={18} />
         <div>
-          <strong>三层事实彼此独立，不合并计算</strong>
-          <span>已确认候选用于当前测试收支汇总，账户流水用于现金流核对；两者均不与正式账簿混算。</span>
+          <strong>正式数据的不同处理阶段分开展示</strong>
+          <span>银行账单和其流水是正式业务数据；已确认事项与会计已过账结果分开计算。</span>
         </div>
       </section>
       {genericCompanyOnly ? (
@@ -165,11 +174,12 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
           </div>
         </section>
       ) : null}
-      <section className="company-financial-dashboard" aria-label={`${activeCompany?.name ?? '公司'} 财务汇总`}>
+      <section className="company-financial-dashboard" aria-label={`${showAllCompanies ? '全部公司' : activeCompany?.name ?? '公司'} 财务汇总`}>
         <header className="company-dashboard-header">
           <div>
             <span className="eyebrow">{reports.from_month} 至 {reports.to_month}</span>
-            <h2>{activeCompany?.name}</h2>
+            <h2>{showAllCompanies ? '全部公司汇总' : activeCompany?.name}</h2>
+            {showAllCompanies ? <span>{companies.length} 家公司合并展示</span> : null}
             <p>{basisDescription(basis)}</p>
           </div>
           <div className="company-basis-switch" role="group" aria-label="汇总口径">
@@ -178,13 +188,13 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
               aria-pressed={basis === 'ACCOUNT_STATEMENT'}
               className={basis === 'ACCOUNT_STATEMENT' ? 'active' : ''}
               onClick={() => setBasis('ACCOUNT_STATEMENT')}
-            >账户流水</button>
+            >正式银行流水</button>
             <button
               type="button"
               aria-pressed={basis === 'CONFIRMED_CANDIDATE'}
               className={basis === 'CONFIRMED_CANDIDATE' ? 'active' : ''}
               onClick={() => setBasis('CONFIRMED_CANDIDATE')}
-            >测试口径</button>
+            >已确认事项</button>
             <button
               type="button"
               aria-pressed={basis === 'POSTED_LEDGER'}
@@ -194,15 +204,15 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
           </div>
         </header>
         <div className="company-dashboard-totals">
-          <ReportTotal label="总收入" value={dashboard.available ? reportMoney(dashboard.incomeMinor, activeCompany?.currencyCode ?? 'CNY') : '待接正式账簿'} />
-          <ReportTotal label="总支出" value={dashboard.available ? reportMoney(dashboard.expenseMinor, activeCompany?.currencyCode ?? 'CNY') : '待接正式账簿'} />
-          <ReportTotal label="净额" value={dashboard.available ? reportMoney(dashboard.netMinor, activeCompany?.currencyCode ?? 'CNY') : '待接正式账簿'} emphasis />
+          <ReportTotal label="总收入" value={dashboard.available ? reportMoney(dashboard.incomeMinor, activeCurrencyCode) : '待接正式账簿'} />
+          <ReportTotal label="总支出" value={dashboard.available ? reportMoney(dashboard.expenseMinor, activeCurrencyCode) : '待接正式账簿'} />
+          <ReportTotal label="净额" value={dashboard.available ? reportMoney(dashboard.netMinor, activeCurrencyCode) : '待接正式账簿'} emphasis />
         </div>
         <div className="company-composition-grid">
           <CategoryShareChart
             title="收入类型占比"
             composition={dashboard.incomeComposition}
-            currencyCode={activeCompany?.currencyCode ?? 'CNY'}
+            currencyCode={activeCurrencyCode}
             tone="income"
             unavailable={!dashboard.available}
             emptyMessage={basis === 'ACCOUNT_STATEMENT' ? '账户流水尚未完成收支类型分类，当前仅展示现金流总额。' : undefined}
@@ -210,7 +220,7 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
           <CategoryShareChart
             title="支出类型占比"
             composition={dashboard.expenseComposition}
-            currencyCode={activeCompany?.currencyCode ?? 'CNY'}
+            currencyCode={activeCurrencyCode}
             tone="expense"
             unavailable={!dashboard.available}
             emptyMessage={basis === 'ACCOUNT_STATEMENT' ? '账户流水尚未完成收支类型分类，当前仅展示现金流总额。' : undefined}
@@ -219,7 +229,7 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
       </section>
       <CompanyBankStatementReviewPanel csrfToken={csrfToken} />
       <div className="company-report-list">
-        {activeCompany ? [[activeCompanyRef, activeCompany] as const].map(([companyRef, identity]) => (
+        {(showAllCompanies ? companies : activeCompany ? [[activeCompanyRef, activeCompany] as const] : []).map(([companyRef, identity]) => (
           <CompanyReportCard
             key={companyRef}
             companyRef={companyRef}
@@ -228,7 +238,7 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
             postedLedgerStatus={reports.posted_ledger_status}
             layers={reports.layers}
           />
-        )) : null}
+        ))}
       </div>
     </>
   )
@@ -293,6 +303,49 @@ function dashboardSummary(
   }
 }
 
+function allCompaniesDashboard(
+  reports: CompanyReportsResponse,
+  basis: CompanyReportLayer['basis'],
+  companyRefs: string[],
+) {
+  const layer = layerFor(reports.layers, basis)
+  const summaries = companyRefs.map((companyRef) => dashboardSummary(
+    basis,
+    companyFor(layer, companyRef),
+    compositionFor(reports, basis, companyRef),
+  ))
+  return {
+    available: summaries.some((summary) => summary.available),
+    incomeMinor: summaries.reduce((total, summary) => total + summary.incomeMinor, 0),
+    expenseMinor: summaries.reduce((total, summary) => total + summary.expenseMinor, 0),
+    netMinor: summaries.reduce((total, summary) => total + summary.netMinor, 0),
+    incomeComposition: mergeCategoryCompositions(summaries.map((summary) => summary.incomeComposition)),
+    expenseComposition: mergeCategoryCompositions(summaries.map((summary) => summary.expenseComposition)),
+  }
+}
+
+function mergeCategoryCompositions(
+  compositions: Array<CompanyReportCategoryComposition | undefined>,
+): CompanyReportCategoryComposition | undefined {
+  const available = compositions.filter((composition): composition is CompanyReportCategoryComposition => composition !== undefined)
+  if (available.length === 0) return undefined
+  const categories = new Map<string, CompanyReportCategorySlice>()
+  available.forEach((composition) => composition.items.forEach((item) => {
+    const key = `${item.category_code ?? ''}:${item.category_label ?? ''}`
+    const current = categories.get(key)
+    categories.set(key, {
+      ...item,
+      amount_minor: (current?.amount_minor ?? 0) + item.amount_minor,
+      fact_count: (current?.fact_count ?? 0) + item.fact_count,
+    })
+  }))
+  return {
+    total_minor: available.reduce((total, composition) => total + composition.total_minor, 0),
+    fact_count: available.reduce((total, composition) => total + composition.fact_count, 0),
+    items: [...categories.values()].sort((left, right) => right.amount_minor - left.amount_minor),
+  }
+}
+
 function visibleCategorySlices(composition: CompanyReportCategoryComposition) {
   if (composition.items.length <= 8) return composition.items
   const visible = composition.items.slice(0, 7)
@@ -309,9 +362,9 @@ function visibleCategorySlices(composition: CompanyReportCategoryComposition) {
 }
 
 function basisDescription(basis: CompanyReportLayer['basis']) {
-  if (basis === 'ACCOUNT_STATEMENT') return '账户流水口径：按已确认银行流水统计现金流，不等同于会计收入、费用或利润。'
-  if (basis === 'CONFIRMED_CANDIDATE') return '测试口径：按已确认候选金额正负统计，未正式入账。'
-  return '正式口径：仅统计已过账账本。'
+  if (basis === 'ACCOUNT_STATEMENT') return '正式银行流水：按已确认的正式账单统计现金流，不等同于会计收入、费用或利润。'
+  if (basis === 'CONFIRMED_CANDIDATE') return '已确认事项：按已审核的业务事项金额正负统计，尚未生成会计过账分录。'
+  return '会计账簿：仅统计已过账分录。'
 }
 
 function CategoryShareChart({ title, composition, currencyCode, tone, unavailable, emptyMessage }: {
@@ -327,7 +380,7 @@ function CategoryShareChart({ title, composition, currencyCode, tone, unavailabl
     <section className={`company-category-card ${tone}`} aria-label={title}>
       <header><h3>{title}</h3><span>{composition?.fact_count ?? 0} 条</span></header>
       {unavailable ? (
-        <p className="company-category-empty">正式账簿尚未接入，未显示任何 0 值。</p>
+        <p className="company-category-empty">会计账簿尚未接入，未显示任何 0 值。</p>
       ) : items.length === 0 || !composition ? (
         <p className="company-category-empty">{emptyMessage ?? '当前期间没有可展示的类型金额。'}</p>
       ) : (
@@ -437,38 +490,50 @@ function CompanyReportCard({ companyRef, companyName, currencyCode, postedLedger
         <Badge color="blue">{currencyCode}</Badge>
       </header>
 
-      {candidateData || statementData ? (
-        <section className="company-test-summary" aria-label={`${companyName} 测试汇总`}>
+      {statementData ? (
+        <section className="company-test-summary" aria-label={`${companyName} 账户流水汇总`}>
           <header>
-            <div><strong>测试汇总·未正式入账</strong><span>来自已导入且已确认的候选事项，不冒充正式账簿。</span></div>
-            <Badge color="amber">测试口径</Badge>
+            <div><strong>正式银行流水</strong><span>来自已确认的正式银行账单；当前为现金流统计，尚未生成会计过账分录。</span></div>
+            <Badge color="blue">正式数据</Badge>
           </header>
           <div className="company-test-totals">
-            <ReportTotal label="测试汇总收入" value={reportMoney(candidateData?.confirmed_positive_minor ?? 0, currencyCode)} />
-            <ReportTotal label="测试汇总支出" value={reportMoney(Math.abs(candidateData?.confirmed_negative_minor ?? 0), currencyCode)} />
-            <ReportTotal label="测试汇总净额" value={reportMoney(candidateData?.confirmed_net_minor ?? 0, currencyCode)} emphasis />
+            <ReportTotal label="账户流入" value={reportMoney(statementData.cash_inflow_minor, currencyCode)} />
+            <ReportTotal label="账户流出" value={reportMoney(statementData.cash_outflow_minor, currencyCode)} />
+            <ReportTotal label="净现金流" value={reportMoney(statementData.net_cash_flow_minor, currencyCode)} emphasis />
           </div>
-          {statementData ? (
-            <div className="company-statement-summary">
-              <span>账户流水净额 <strong>{reportMoney(statementData.net_cash_flow_minor, currencyCode)}</strong></span>
-              <small>{statementData.confirmed_transaction_count} 条流水·{statementData.statement_count} 份账单</small>
-            </div>
-          ) : null}
+          <div className="company-statement-summary">
+            <span>已确认流水 <strong>{statementData.confirmed_transaction_count} 条</strong></span>
+            <small>{statementData.statement_count} 份账单</small>
+          </div>
+        </section>
+      ) : candidateData ? (
+        <section className="company-test-summary" aria-label={`${companyName} 已确认事项汇总`}>
+          <header>
+            <div><strong>已确认业务事项</strong><span>来自已审核的正式数据，尚未生成会计过账分录。</span></div>
+            <Badge color="amber">已确认</Badge>
+          </header>
+          <div className="company-test-totals">
+            <ReportTotal label="已确认收入" value={reportMoney(candidateData.confirmed_positive_minor, currencyCode)} />
+            <ReportTotal label="已确认支出" value={reportMoney(Math.abs(candidateData.confirmed_negative_minor), currencyCode)} />
+            <ReportTotal label="已确认净额" value={reportMoney(candidateData.confirmed_net_minor, currencyCode)} emphasis />
+          </div>
         </section>
       ) : null}
 
-      {!postedHasEntries ? <p className="company-formal-empty">{postedAvailable ? '正式账簿尚无入账金额' : '正式账簿尚未接入'}</p> : null}
-      <section className="company-report-totals" aria-label={`${companyName} 正式财务总额`}>
-        <ReportTotal label="正式收入" value={postedMoney(postedData?.revenue_minor)} />
-        <ReportTotal label="正式费用" value={postedMoney(postedData?.expense_minor)} />
-        <ReportTotal label="正式利润" value={postedMoney(postedData?.profit_minor)} emphasis />
-      </section>
+      {!postedHasEntries ? <p className="company-formal-empty">{postedAvailable ? '正式数据已接入，尚无会计过账分录' : '会计账簿尚未接入'}</p> : null}
+      {postedHasEntries ? (
+        <section className="company-report-totals" aria-label={`${companyName} 正式财务总额`}>
+          <ReportTotal label="正式收入" value={postedMoney(postedData.revenue_minor)} />
+          <ReportTotal label="正式费用" value={postedMoney(postedData.expense_minor)} />
+          <ReportTotal label="正式利润" value={postedMoney(postedData.profit_minor)} emphasis />
+        </section>
+      ) : null}
 
       <section className="company-report-layers" aria-label={`${companyName} 三层事实`}>
         <div>
           <span>已确认来源</span>
           <strong>已确认来源 {candidateData?.confirmed_count ?? 0} 条</strong>
-          <small>{candidateData?.source_count ?? 0} 个来源；上方仅作测试收支汇总，未正式入账</small>
+          <small>{candidateData?.source_count ?? 0} 个正式数据来源；尚未生成会计过账分录</small>
         </div>
         <div>
           <span>账户流水</span>
@@ -551,11 +616,20 @@ function CompanyReportMonthCard({ month, currencyCode, candidate, statement, pos
         <div><span>归属月份</span><h3>{reportMonthLabel(month)}</h3></div>
         <small>{candidateData?.confirmed_count ?? 0} 条来源 · {statementData?.confirmed_transaction_count ?? 0} 条流水 · {postedAvailable ? `${postedData.posted_entry_count} 条入账` : '待接正式账簿'}</small>
       </header>
-      <div className="company-month-totals">
-        <span>正式收入 <strong>{postedMoney(postedData?.revenue_minor)}</strong></span>
-        <span>正式费用 <strong>{postedMoney(postedData?.expense_minor)}</strong></span>
-        <span>正式利润 <strong>{postedMoney(postedData?.profit_minor)}</strong></span>
-      </div>
+      {statementData ? (
+        <div className="company-month-totals">
+          <span>账户流入 <strong>{reportMoney(statementData.cash_inflow_minor, currencyCode)}</strong></span>
+          <span>账户流出 <strong>{reportMoney(statementData.cash_outflow_minor, currencyCode)}</strong></span>
+          <span>净现金流 <strong>{reportMoney(statementData.net_cash_flow_minor, currencyCode)}</strong></span>
+        </div>
+      ) : null}
+      {postedAvailable && postedData && postedData.posted_entry_count > 0 ? (
+        <div className="company-month-totals company-month-formal-totals">
+          <span>正式收入 <strong>{postedMoney(postedData.revenue_minor)}</strong></span>
+          <span>正式费用 <strong>{postedMoney(postedData.expense_minor)}</strong></span>
+          <span>正式利润 <strong>{postedMoney(postedData.profit_minor)}</strong></span>
+        </div>
+      ) : null}
       {!postedAvailable ? (
         <p className="company-breakdown-state warning">正式账簿接口暂不可用；未显示任何 0 值。</p>
       ) : null}

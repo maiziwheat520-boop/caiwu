@@ -1060,6 +1060,33 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.getByText('3 条')).toBeInTheDocument()
   })
 
+  it('keeps overview metrics on the selected month and presents reconciliation blockers separately', async () => {
+    const historicalConfirmed: ApiCandidate = {
+      ...candidates[3],
+      id: 'candidate-historical-confirmed',
+      short_id: 'C-HIST',
+      accounting_month: '2026-05',
+      business_unit: '2026年5月对账复核',
+      business_unit_ref: 'unit-historical-review',
+      amount_minor: 54160537,
+    }
+    installFetch({ items: [historicalConfirmed] })
+    renderApp()
+
+    expect(await screen.findByRole('heading', { name: '当前没有待审核事项' })).toBeInTheDocument()
+    expect(screen.getByText('2026 年 8 月对账')).toBeInTheDocument()
+    const overview = screen.getByRole('region', { name: '本月概览' })
+    expect(within(overview).getByText('¥0.00')).toBeInTheDocument()
+    expect(within(overview).getByText('0 家')).toBeInTheDocument()
+    expect(screen.queryByText('2026年5月对账复核')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '开始审核' })).not.toBeInTheDocument()
+    const readiness = screen.getByRole('heading', { name: '本月候选审核' }).closest('section')!
+    expect(screen.getAllByText('暂无本月候选')).toHaveLength(2)
+    expect(within(readiness).getByText('月度对账')).toBeInTheDocument()
+    expect(within(readiness).getByText('相同凭证号金额不同')).toBeInTheDocument()
+    expect(screen.queryByText('100%')).not.toBeInTheDocument()
+  })
+
   it('shows a request error and retries the full projection load', async () => {
     const fetchMock = installFetch({ failSessionOnce: true })
     renderApp()
@@ -1858,7 +1885,7 @@ describe('LedgerBridge Web API client', () => {
   it('renders a real empty state when the API returns no candidates', async () => {
     installFetch({ items: [] })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '当前没有待审核事项' })
     fireEvent.click(screen.getAllByText('待审核')[0])
     expect(screen.getByText('当前筛选下没有待审核项')).toBeInTheDocument()
   })
@@ -2077,7 +2104,7 @@ describe('LedgerBridge Web API client', () => {
     expect(within(screen.getByRole('region', { name: '待补账单清单' })).getByText('1 项')).toBeInTheDocument()
   })
 
-  it('shows formal bank facts above and separately from Candidate test calculations', async () => {
+  it('shows the personal overview before collapsed formal bank details', async () => {
     const testCandidate: ApiCandidate = {
       ...candidates[3],
       id: 'candidate-test-personal',
@@ -2095,7 +2122,7 @@ describe('LedgerBridge Web API client', () => {
       personalBankResponse: personalBankTransactions(),
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '当前没有待审核事项' })
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
 
     const formal = await screen.findByRole('region', { name: '个人正式银行流水' })
@@ -2103,11 +2130,15 @@ describe('LedgerBridge Web API client', () => {
     expect(await within(formal).findByText('2 笔')).toBeInTheDocument()
     expect(within(formal).getByText('网商银行 · 尾号 7968')).toBeInTheDocument()
     expect(within(formal).getByText('账单审核：已确认')).toBeInTheDocument()
-    expect(within(formal).getByText('正式对方甲')).toBeInTheDocument()
-    expect(within(formal).getByText('正式对方乙')).toBeInTheDocument()
+    expect(within(formal).queryByText('正式对方甲')).not.toBeInTheDocument()
+    expect(within(formal).queryByText('正式对方乙')).not.toBeInTheDocument()
     expect(within(formal).getByText('账户现金流，不是营业收入')).toBeInTheDocument()
     expect(within(testSummary).getByText('测试收入')).toBeInTheDocument()
-    expect(formal.compareDocumentPosition(testSummary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(testSummary.compareDocumentPosition(formal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    fireEvent.click(within(formal).getByRole('button', { name: '查看流水明细（2 笔）' }))
+    expect(within(formal).getByText('正式对方甲')).toBeInTheDocument()
+    expect(within(formal).getByText('正式对方乙')).toBeInTheDocument()
   })
 
   it('shows multiple formal bank statements in one reconciled list', async () => {
@@ -2147,7 +2178,14 @@ describe('LedgerBridge Web API client', () => {
     expect(within(formal).getByText(/2 份账单/)).toBeInTheDocument()
     expect(within(formal).getByText('网商银行 · 尾号 7968')).toBeInTheDocument()
     expect(within(formal).getByText('中国建设银行 · 尾号 7564')).toBeInTheDocument()
+    expect(within(formal).queryByText('建行正式对方')).not.toBeInTheDocument()
+
+    fireEvent.click(within(formal).getByRole('button', { name: '查看流水明细（3 笔）' }))
     expect(within(formal).getByText('建行正式对方')).toBeInTheDocument()
+    fireEvent.change(within(formal).getByLabelText('银行账户筛选'), { target: { value: secondStatementRef } })
+    expect(within(formal).getByText('符合条件 1 笔')).toBeInTheDocument()
+    expect(within(formal).getByText('建行正式对方')).toBeInTheDocument()
+    expect(within(formal).queryByText('正式对方甲')).not.toBeInTheDocument()
   })
 
   it('repairs fixed-column PDF layout noise without changing formal transaction facts', async () => {
@@ -2165,6 +2203,7 @@ describe('LedgerBridge Web API client', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
 
     const formal = await screen.findByRole('region', { name: '个人正式银行流水' })
+    fireEvent.click(within(formal).getByRole('button', { name: '查看流水明细（2 笔）' }))
     expect(await within(formal).findByText('陈莹')).toBeInTheDocument()
     expect(within(formal).queryByText('陈莹 6')).not.toBeInTheDocument()
     expect(within(formal).getByText('跨行转账 · 手机银行 · 中国工商银行 · 对方尾号 7442')).toBeInTheDocument()
@@ -2187,7 +2226,7 @@ describe('LedgerBridge Web API client', () => {
     }
     installFetch({ items: [testCandidate], failPersonalBank: true })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '当前没有待审核事项' })
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
 
     expect(await screen.findByRole('alert')).toHaveTextContent('正式银行流水暂不可用')
@@ -2292,7 +2331,7 @@ describe('LedgerBridge Web API client', () => {
     ]
     installFetch({ items: personalCandidates })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '当前没有待审核事项' })
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
 
     const summary = screen.getByRole('region', { name: '个人财务收支概览' })
@@ -2316,7 +2355,7 @@ describe('LedgerBridge Web API client', () => {
     }))
     installFetch({ items: unassignedCandidates })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '当前没有待审核事项' })
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
 
     const unassigned = screen.getByRole('region', { name: '个人财务归属待校准' })
@@ -2426,13 +2465,11 @@ describe('LedgerBridge Web API client', () => {
 
     expect(await screen.findByRole('region', { name: '演示公司 财务汇总' })).toBeInTheDocument()
     expect(screen.getByText('已确认来源 61 条')).toBeInTheDocument()
-    const formalTotals = screen.getByRole('region', { name: '演示公司 正式财务总额' })
-    expect(within(formalTotals).getAllByText('待接正式账簿')).toHaveLength(3)
-    expect(within(formalTotals).queryByText('¥0.00')).not.toBeInTheDocument()
-    expect(screen.getByText('正式账簿尚未接入')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '演示公司 正式财务总额' })).not.toBeInTheDocument()
+    expect(screen.getByText('会计账簿尚未接入')).toBeInTheDocument()
   })
 
-  it('prioritizes confirmed test totals and account cash flow when the posted ledger is empty', async () => {
+  it('prioritizes confirmed account cash flow when the posted ledger is empty', async () => {
     window.history.replaceState({}, '', '/company-reports')
     const reports = companyReports(true)
     const candidateCompany = reports.layers[0].items[0]
@@ -2465,15 +2502,17 @@ describe('LedgerBridge Web API client', () => {
 
     renderApp()
 
-    const testSummary = await screen.findByRole('region', { name: '演示公司 测试汇总' })
-    expect(within(testSummary).getByText('测试汇总·未正式入账')).toBeInTheDocument()
-    expect(within(testSummary).getByText('¥1,500.00')).toBeInTheDocument()
-    expect(within(testSummary).getByText('¥600.00')).toBeInTheDocument()
-    expect(within(testSummary).getByText('¥900.00')).toBeInTheDocument()
-    expect(within(testSummary).getByText(/账户流水净额/)).toBeInTheDocument()
-    expect(within(testSummary).getByText('¥1,200.00')).toBeInTheDocument()
-    expect(within(testSummary).getByText('12 条流水·2 份账单')).toBeInTheDocument()
-    expect(screen.getByText('正式账簿尚无入账金额')).toBeInTheDocument()
+    const statementSummary = await screen.findByRole('region', { name: '演示公司 账户流水汇总' })
+    expect(within(statementSummary).getByText('正式银行流水')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('正式数据')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('¥2,000.00')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('¥800.00')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('¥1,200.00')).toBeInTheDocument()
+    expect(within(statementSummary).getByText(/12 条/)).toBeInTheDocument()
+    expect(within(statementSummary).getByText('2 份账单')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '演示公司 已确认事项汇总' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '演示公司 正式财务总额' })).not.toBeInTheDocument()
+    expect(screen.getByText('正式数据已接入，尚无会计过账分录')).toBeInTheDocument()
   })
 
   it('warns when Core only returns the generic company placeholder', async () => {
