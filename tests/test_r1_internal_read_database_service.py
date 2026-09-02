@@ -874,6 +874,10 @@ def test_database_reader_rejects_multiple_scopes_and_missing_cursor_signer() -> 
     )
     with pytest.raises(InternalReadBackendUnavailable, match="one bound"):
         _service(_Session({})).list_candidates(multi)
+    scoped = _service(_Session({})).list_candidates(
+        multi, business_unit="unit-demo-a"
+    )
+    assert scoped.items == ()
 
     unassigned = _principal().model_copy(
         update={

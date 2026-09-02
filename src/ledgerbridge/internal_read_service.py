@@ -625,11 +625,16 @@ class DatabaseInternalReadService:
                 raise InternalReadBackendUnavailable(
                     "database grants require explicit business-unit ref/UUID bindings"
                 )
-            if len(grant.business_unit_bindings) > 1:
+            selected_bindings = tuple(
+                (ref, value)
+                for ref, value in grant.business_unit_bindings
+                if business_unit is None or ref == business_unit
+            )
+            if business_unit is None and len(selected_bindings) > 1:
                 raise InternalReadBackendUnavailable(
                     "database candidate pagination requires one bound business unit"
                 )
-            scopes_by_grant.extend((grant, value) for _, value in grant.business_unit_bindings)
+            scopes_by_grant.extend((grant, value) for _, value in selected_bindings)
             if grant.allow_unassigned_candidates:
                 scopes_by_grant.append((grant, None))
         if len(scopes_by_grant) > 1:
