@@ -89,6 +89,10 @@ describe('OriginalReconciliationPage', () => {
     expect(within(lanes).getByRole('tab', { name: /支出/ })).toBeInTheDocument()
     expect(within(lanes).getByRole('tab', { name: /往来款/ })).toBeInTheDocument()
     expect(screen.getByText('往来款不计入收入或支出')).toBeInTheDocument()
+    const workflow = screen.getByRole('region', { name: '本月对账流程' })
+    expect(within(workflow).getByText('账单账户匹配')).toBeInTheDocument()
+    expect(within(workflow).getByText('待 Core 提供稳定事项编号与账户引用；不按摘要猜账户')).toBeInTheDocument()
+    expect(within(workflow).getByText('已暂停')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /上传|提交历史表格|截图导入/ })).not.toBeInTheDocument()
   })
 
@@ -114,7 +118,7 @@ describe('OriginalReconciliationPage', () => {
     fireEvent.click(screen.getByRole('tab', { name: /往来款/ }))
     expect(screen.getByText('C-CURRENT')).toBeInTheDocument()
     expect(screen.getAllByText('往来款').length).toBeGreaterThan(0)
-    fireEvent.click(screen.getByRole('button', { name: '打开事项 C-CURRENT' }))
+    fireEvent.click(screen.getByRole('button', { name: '核对事项与凭证 C-CURRENT' }))
     expect(onOpenCandidate).toHaveBeenCalledWith(juneCandidates[2])
   })
 
@@ -181,7 +185,7 @@ describe('OriginalReconciliationPage', () => {
     render(<OriginalReconciliationPage candidates={[...juneCandidates, ...externalCandidates]} onNavigate={vi.fn()} onOpenCandidate={vi.fn()} />)
 
     expect(await screen.findByLabelText('选择对账月份')).toHaveValue('2026-06')
-    expect(screen.getByText(/3 笔已由 Core 确认的旧表事项/)).toBeInTheDocument()
+    expect(screen.getByText(/3 笔由 Core 识别的旧表事项/)).toBeInTheDocument()
     expect(screen.queryByText('C-BANK')).not.toBeInTheDocument()
     expect(screen.queryByText('C-PLATFORM')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('tab', { name: /支出/ }))
@@ -205,6 +209,9 @@ describe('OriginalReconciliationPage', () => {
     expect(within(sourceRegistry).getByText('相邻工资表已核对最终数据（权威源）')).toBeInTheDocument()
     expect(within(sourceRegistry).getByText('陈展武（老爸）、林素美（老妈）')).toBeInTheDocument()
     expect(within(sourceRegistry).getByText(/26\.6、26\.7 消杀均记景怡公账支出/)).toBeInTheDocument()
+    expect(within(sourceRegistry).getByText('取数规则已登记，逐笔账户尚未绑定')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '月度闭环' })).toHaveTextContent('正式关账仍需 Core 月结命令')
+    expect(screen.getByRole('button', { name: '导出本月审核清单' })).toBeEnabled()
   })
 
   it('uses reviewed Core category codes and never infers classification from summaries', () => {

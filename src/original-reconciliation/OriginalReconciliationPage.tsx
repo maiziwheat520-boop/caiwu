@@ -5,7 +5,9 @@ import {
   ArrowUp,
   ArrowsLeftRight,
   CaretRight,
+  CheckCircle,
   ClockCounterClockwise,
+  DownloadSimple,
   Info,
   ListChecks,
   Receipt,
@@ -20,6 +22,12 @@ import {
   legacyItemSourceRules,
   ORIGINAL_RECONCILIATION_SOURCE_SYSTEM,
 } from './statementSourceRegistry'
+import {
+  buildOriginalReviewCsv,
+  buildOriginalWorkflowSummary,
+  type OriginalWorkflowItem,
+} from './workflowState'
+import './OriginalReconciliationPage.css'
 
 type FlowKind = 'income' | 'expense' | 'current' | 'unclassified'
 
@@ -178,6 +186,7 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
     && candidate.status !== 'SUPERSEDED'
   ))
   const classifiedCandidates = monthCandidates.map(classifyCandidate)
+  const workflowItems: OriginalWorkflowItem[] = classifiedCandidates
   const grouped = classifiedCandidates.reduce<Record<FlowKind, ClassifiedCandidate[]>>((result, item) => {
     result[item.flowKind].push(item)
     return result
@@ -203,6 +212,18 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
     || gapLabels.length
     || data.projection_gaps.length
   ))
+  const workflow = buildOriginalWorkflowSummary(workflowItems, data)
+
+  const exportReviewList = () => {
+    const csv = buildOriginalReviewCsv(selectedMonth, workflowItems)
+    const blob = new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `原口径对账-${selectedMonth}-审核清单.csv`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
 
   return (
     <>
@@ -245,11 +266,36 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
         </div>
       </section>
 
+      <section className="panel original-workflow-progress" aria-label="本月对账流程">
+        <div className="original-workflow-progress-heading">
+          <div>
+            <h2>本月对账流程</h2>
+            <p>逐项显示事项来源、业务归类、账户匹配、凭证、审核和月度闭环状态。</p>
+          </div>
+          <Badge color={workflow.closeReady ? 'green' : 'amber'}>
+            {workflow.closeReady ? '已闭环' : `${workflow.blockers.length} 项阻断`}
+          </Badge>
+        </div>
+        <div className="original-workflow-stage-list">
+          {workflow.stages.map((stage) => (
+            <article className={`original-workflow-stage ${stage.state.toLowerCase()}`} key={stage.id}>
+              <header>
+                <strong>{stage.label}</strong>
+                <Badge color={stage.state === 'COMPLETE' ? 'green' : stage.state === 'PAUSED' ? 'gray' : 'amber'}>
+                  {stage.state === 'COMPLETE' ? '完成' : stage.state === 'PAUSED' ? '已暂停' : '待处理'}
+                </Badge>
+              </header>
+              <p>{stage.detail}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
       <section className="panel statement-workbench" aria-label="收支与往来事项">
         <div className="panel-heading statement-workbench-heading">
           <div>
             <h2>{selectedMonthLabel}</h2>
-            <p>{monthCandidates.length} 笔已由 Core 确认的旧表事项，选择业务性质后逐笔核对</p>
+            <p>{monthCandidates.length} 笔由 Core 识别的旧表事项，选择业务性质后逐笔核对</p>
           </div>
           <Button onClick={() => onNavigate('review')}><ListChecks size={16} />前往待审核</Button>
         </div>
@@ -317,18 +363,27 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
                   <div className="statement-item-context">
                     <span>{item.candidate.businessUnit || '公司 / 门店待补'}</span>
                     <small>{sourceLabel(item.candidate)}</small>
+                    <div className="statement-item-evidence">
+                      <Receipt size={13} />
+                      <span>{item.candidate.evidence.length > 0 ? `已关联 ${item.candidate.evidence.length} 份凭证` : '待关联凭证'}</span>
+                      {item.candidate.evidence.length > 0 ? (
+                        <small title={item.candidate.evidence.map((evidence) => evidence.original_filename ?? evidence.id).join('、')}>
+                          {item.candidate.evidence.map((evidence) => evidence.original_filename ?? evidence.id).join('、')}
+                        </small>
+                      ) : null}
+                    </div>
                   </div>
                   <div className="statement-item-amount">
                     <strong>{amountLabel(item)}</strong>
                     <span>{item.candidate.shortId}</span>
                   </div>
                   <Button
-                    aria-label={`打开事项 ${item.candidate.shortId}`}
+                    aria-label={`核对事项与凭证 ${item.candidate.shortId}`}
                     size="1"
                     variant="soft"
                     onClick={() => onOpenCandidate(item.candidate)}
                   >
-                    打开<CaretRight size={14} />
+                    核对事项与凭证<CaretRight size={14} />
                   </Button>
                 </article>
               )
@@ -337,7 +392,7 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
               <div className="empty-state compact-empty statement-empty">
                 <Receipt size={30} />
                 <h3>{monthCandidates.length === 0 ? '本月还没有已映射的旧表事项' : `本月没有${flowLabels[selectedFlow]}事项`}</h3>
-                <p>{monthCandidates.length === 0 ? '只有 Core 受控旧表导入已确认的项目会显示；整份银行或平台账单不会自动进入。' : '切换上方业务性质查看本月其他事项。'}</p>
+                <p>{monthCandidates.length === 0 ? '只有 Core 受控来源中识别为旧表事项的项目会显示；整份银行或平台账单不会自动进入。' : '切换上方业务性质查看本月其他事项。'}</p>
               </div>
             ) : null}
           </div>
@@ -366,6 +421,13 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
               <span>{rule.statementAccount}</span>
             </article>
           ))}
+        </div>
+        <div className="statement-account-contract-note" role="status">
+          <Warning size={18} />
+          <div>
+            <strong>取数规则已登记，逐笔账户尚未绑定</strong>
+            <span>当前事项只有 Core 类别，没有稳定旧表项目编号和账户引用；本页不会按摘要、金额或文件名猜测账户。</span>
+          </div>
         </div>
         <div className="current-account-registry-note">
           <ArrowsLeftRight size={18} />
@@ -399,6 +461,30 @@ export function OriginalReconciliationPage({ candidates, onNavigate, onOpenCandi
           </div>
         </section>
       ) : null}
+
+      <section className="panel original-close-panel" aria-label="月度闭环">
+        <div className="original-close-heading">
+          <div>
+            <h2>{selectedMonthLabel}闭环检查</h2>
+            <p>{workflow.closeReady ? '本月事项、凭证、账户匹配与 Core 完整性均已验证。' : '阻断项清零前不显示已关账；本页也不会用导出文件代替正式月结。'}</p>
+          </div>
+          <div className="original-close-actions">
+            <Button variant="outline" color="gray" disabled={workflow.itemCount === 0} onClick={exportReviewList}>
+              <DownloadSimple size={16} />导出本月审核清单
+            </Button>
+            <Button variant="soft" color="gray" onClick={() => onNavigate('review')}>
+              <ListChecks size={16} />处理待审核事项
+            </Button>
+          </div>
+        </div>
+        {workflow.closeReady ? (
+          <div className="current-account-rule"><CheckCircle size={17} /><span>本月已完成正式闭环</span></div>
+        ) : (
+          <ul className="original-close-blockers">
+            {workflow.blockers.map((blocker) => <li key={blocker}><Warning size={15} /><span>{blocker}</span></li>)}
+          </ul>
+        )}
+      </section>
     </>
   )
 }
