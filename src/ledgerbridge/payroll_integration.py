@@ -3883,6 +3883,9 @@ def _validate_legacy_feature_tree(
                     _require_stable_identifier(nested, key)
                 elif key == "account_id":
                     _require_stable_identifier(nested, key, account=True)
+                    # Already validated as an opaque account identifier; scanning
+                    # its digest as ordinary prose would create false positives.
+                    continue
                 elif key.endswith(("_minor", "_cents")):
                     _require_minor_integer(nested, key)
                 elif (

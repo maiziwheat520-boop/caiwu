@@ -637,6 +637,24 @@ def test_legacy_feature_workspace_accepts_independent_rules_before_a_monthly_bat
     assert read.payload_copy()["batches"] == []
 
 
+def test_legacy_feature_workspace_accepts_opaque_account_digest():
+    payload = legacy_workspace_payload()
+    payload["rules"]["employees"][0]["account_id"] = (
+        "account_9f99f99999f99999f9f99f99"
+    )
+    entity, adapter = source(payload)
+
+    read = adapter.read_legacy_features(
+        entity_ref=entity,
+        test_batch_id="batch_demo",
+        provider_headers={},
+    )
+
+    assert read.payload_copy()["rules"]["employees"][0]["account_id"].startswith(
+        "account_"
+    )
+
+
 def test_legacy_feature_workspace_accepts_generated_monthly_payroll_without_main_material():
     payload = legacy_workspace_payload()
     payload["batches"][0].pop("main_material_id")
