@@ -793,15 +793,43 @@ export type PayrollLegacyAdjustment = {
   reason: string
   disposition: 'MAIN' | 'SUPPLEMENT'
   source_pending_id?: string
+  source_batch_id?: string
+  source_period?: string
+  source_payment_detail_id?: string
+}
+
+export type PayrollLegacyPaymentDetail = {
+  payment_detail_id: string
+  payee_kind: 'EMPLOYEE' | 'EXTERNAL_RECIPIENT'
+  payee_id: string
+  payee_label: string
+  employee_id?: string
+  account_id: string
+  account_masked: string
+  payment_channel: 'MYBANK' | 'BOC' | 'WECHAT'
+  disbursement_company: string
+  amount_cents: number
+  payroll_scope: 'PAYROLL' | 'OUTSIDE_PAYROLL'
+  memo: string
 }
 
 export type PayrollLegacyDraftLine = {
-  employee_id: string
+  payment_detail_id?: string
+  payee_kind?: 'EMPLOYEE' | 'EXTERNAL_RECIPIENT'
+  payee_id?: string
+  payee_label?: string
+  employee_id?: string
   account_id: string
   account_masked: string
   amount_cents: number
   payment_channel: string
+  payroll_scope?: 'PAYROLL' | 'OUTSIDE_PAYROLL'
   memo: string
+  source_period?: string
+  source_batch_id?: string
+  source_payment_detail_id?: string
+  source_adjustment_item_code?: string
+  source_pending_id?: string
 }
 
 export type PayrollLegacyDraft = {
@@ -815,6 +843,8 @@ export type PayrollLegacyDraft = {
   disbursement_company?: string
   lines: PayrollLegacyDraftLine[]
   total_amount_cents: number
+  payroll_amount_cents?: number
+  outside_payroll_amount_cents?: number
   warning: string
   payable: false
   submission_supported: false
@@ -826,6 +856,7 @@ export type PayrollLegacyPendingItem = {
   source_period: string
   employee_id: string
   account_id: string
+  payment_detail_id?: string
   amount_cents: number
   direction: 'ADD' | 'DEDUCT'
   reason: string
@@ -845,7 +876,7 @@ export type PayrollLegacyEvidenceDocument = {
   evidence_ref: string
 }
 
-export type PayrollLegacyCurrentPaidVerification = {
+export type PayrollLegacyCurrentPaidVerificationV2 = {
   schema_version: 'payroll-current-paid-verification/v2'
   company_id: string
   batch_id: string
@@ -882,6 +913,63 @@ export type PayrollLegacyCurrentPaidVerification = {
   submission_supported: false
 }
 
+export type PayrollLegacyPaymentDetailVerification = {
+  schema_version: 'payroll-current-paid-verification/v3'
+  company_id: string
+  batch_id: string
+  period: string
+  evidence_documents: PayrollLegacyEvidenceDocument[]
+  evidence_summary: Array<{
+    evidence_type: PayrollLegacyEvidenceType
+    required_count: number
+    received_count: number
+  }>
+  theoretical_total_cents: number
+  actual_total_cents: number
+  approved_no_supplement_total_cents: number
+  reconciled_total_cents: number
+  difference_cents: number
+  totals_match: boolean
+  reconciliation_complete: boolean
+  outside_payroll_expected_total_cents: number
+  outside_payroll_actual_total_cents: number
+  outside_payroll_totals_match: boolean
+  by_payment_channel: Array<{
+    payment_channel: 'MYBANK' | 'BOC' | 'WECHAT'
+    expected_amount_cents: number
+    actual_amount_cents: number
+    approved_no_supplement_cents: number
+    reconciled_amount_cents: number
+    difference_cents: number
+    totals_match: boolean
+    reconciliation_complete: boolean
+  }>
+  overall_status: 'MATCHED' | 'MATCHED_WITH_APPROVED_EXCEPTIONS' | 'ATTENTION_REQUIRED'
+  results: Array<{
+    payment_detail_id: string
+    payee_kind: 'EMPLOYEE' | 'EXTERNAL_RECIPIENT'
+    payee_id: string
+    payee_label: string
+    employee_id?: string
+    payroll_scope: 'PAYROLL' | 'OUTSIDE_PAYROLL'
+    account_id: string
+    payment_channel: 'MYBANK' | 'BOC' | 'WECHAT'
+    expected_amount_cents: number
+    actual_amount_cents: number
+    difference_cents: number
+    approved_no_supplement_cents: number
+    resolution_reason: string | null
+    status: 'MATCHED' | 'MISSING_RECEIPT' | 'IDENTITY_MISMATCH' | 'PAYMENT_FAILED' | 'UNDERPAID' | 'OVERPAID' | 'APPROVED_NO_SUPPLEMENT'
+  }>
+  verified_at: string
+  payable: false
+  submission_supported: false
+}
+
+export type PayrollLegacyCurrentPaidVerification =
+  | PayrollLegacyCurrentPaidVerificationV2
+  | PayrollLegacyPaymentDetailVerification
+
 export type PayrollLegacyBatch = {
   batch_id: string
   period: string
@@ -890,6 +978,7 @@ export type PayrollLegacyBatch = {
   supporting_material_ids: Record<string, string>
   lines: PayrollLegacyLine[]
   adjustments: PayrollLegacyAdjustment[]
+  payment_details?: PayrollLegacyPaymentDetail[]
   source_exceptions: Array<Record<string, unknown>>
   drafts: PayrollLegacyDraft[]
   summary: null | {

@@ -57,7 +57,15 @@ const legacyWorkspace: PayrollLegacyWorkspace = {
       individual_income_tax_cents: 0, gross_pay_cents: 530000, net_pay_cents: 530000,
       notes: '系统生成', disbursement_company: '测试公司一',
     }],
-    adjustments: [], source_exceptions: [],
+    adjustments: [],
+    payment_details: [{
+      payment_detail_id: 'payment_emp_preview_001', payee_kind: 'EMPLOYEE',
+      payee_id: 'emp_preview_001', payee_label: '示例员工甲', employee_id: 'emp_preview_001',
+      account_id: 'acct_preview_001', account_masked: '****0138', payment_channel: 'MYBANK',
+      disbursement_company: '测试公司一', amount_cents: 530000, payroll_scope: 'PAYROLL',
+      memo: '系统生成',
+    }],
+    source_exceptions: [],
     drafts: Array.from({ length: 5 }, (_, index) => ({
       schema_version: 'payroll-bank-draft/v1' as const, draft_id: `draft_company_${index + 1}`,
       draft_type: 'normal_bank_payroll' as const, company_id: 'company_live_hotel',
@@ -140,6 +148,39 @@ describe('PayrollLegacyWorkbench', () => {
     expect(screen.getByText(/示例员工甲 · MYBANK · 测试公司一/)).toBeInTheDocument()
   })
 
+  it('edits split payments and outside-payroll recipients inside the payroll-list workflow', async () => {
+    mockRead()
+    vi.spyOn(api, 'runPayrollLegacyCommand').mockResolvedValue(commandResult('GENERATE_NORMAL_DRAFT'))
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
+    await screen.findByText('工资工作区版本 1')
+    fireEvent.click(screen.getByRole('button', { name: '生成网商银行代发表' }))
+    fireEvent.click(screen.getByRole('button', { name: '拆分付款' }))
+    fireEvent.click(screen.getByRole('button', { name: '新增主表外收款人' }))
+    const externalName = screen.getByPlaceholderText('收款人名称')
+    const externalRow = externalName.closest('article')!
+    fireEvent.change(externalName, { target: { value: '测试外部收款人' } })
+    fireEvent.change(within(externalRow).getByPlaceholderText('代发公司'), {
+      target: { value: '测试公司一' },
+    })
+    fireEvent.change(within(externalRow).getByRole('spinbutton'), {
+      target: { value: '2000.00' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '生成五份网商银行代发表' }))
+
+    await waitFor(() => expect(api.runPayrollLegacyCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'GENERATE_NORMAL_DRAFT',
+        payload: expect.objectContaining({
+          payment_details: expect.arrayContaining([
+            expect.objectContaining({ payroll_scope: 'OUTSIDE_PAYROLL', amount_cents: 200000 }),
+          ]),
+        }),
+      }),
+    ))
+    const submitted = vi.mocked(api.runPayrollLegacyCommand).mock.calls[0][0]
+    expect((submitted.payload.payment_details as unknown[])).toHaveLength(3)
+  })
+
   it('uses the merged verify-then-update-summary action after seven statements are entered', async () => {
     mockRead()
     const verifiedWorkspace = structuredClone(legacyWorkspace)
@@ -163,11 +204,24 @@ describe('PayrollLegacyWorkbench', () => {
     )
     fireEvent.change(screen.getByLabelText('中国银行实际发放流水'), { target: { value: 'boc_cash_2026_08' } })
     fireEvent.change(screen.getByLabelText('李勇微信实际转账记录'), { target: { value: 'wechat_separate_2026_08' } })
-    fireEvent.change(screen.getByLabelText('emp_preview_001实际到账金额'), { target: { value: '5300.00' } })
-    fireEvent.change(screen.getByLabelText('emp_preview_001回单状态'), { target: { value: 'SUCCEEDED' } })
+    fireEvent.change(screen.getByLabelText('payment_emp_preview_001实际到账金额'), { target: { value: '5200.00' } })
+    fireEvent.change(screen.getByLabelText('payment_emp_preview_001回单状态'), { target: { value: 'SUCCEEDED' } })
+    fireEvent.click(screen.getByLabelText('payment_emp_preview_001批准不补发'))
+    fireEvent.change(screen.getByLabelText('payment_emp_preview_001不补发原因'), {
+      target: { value: '经人工复核批准不再补发' },
+    })
     fireEvent.click(screen.getByRole('button', { name: '先复核本月已发，匹配后更新汇总' }))
     await waitFor(() => expect(api.runPayrollLegacyCommand).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'VERIFY_AND_UPDATE_SUMMARY' }),
+      expect.objectContaining({
+        action: 'VERIFY_AND_UPDATE_SUMMARY',
+        payload: expect.objectContaining({
+          approved_exceptions: [{
+            payment_detail_id: 'payment_emp_preview_001',
+            amount_cents: 10000,
+            reason: '经人工复核批准不再补发',
+          }],
+        }),
+      }),
     ))
     expect(await screen.findByRole('heading', { name: '各店当月工资汇总' })).toBeInTheDocument()
     expect(screen.getByText('主楼 · 1 人')).toBeInTheDocument()

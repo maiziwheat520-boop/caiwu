@@ -21,6 +21,7 @@ import type {
   PayrollLegacyEvidenceDocument,
   PayrollLegacyEvidenceType,
   PayrollLegacyLine,
+  PayrollLegacyPaymentDetail,
   PayrollLegacyReviewRule,
   PayrollLegacyReviewRuleType,
   PayrollLegacyWorkspace,
@@ -48,13 +49,17 @@ type EditableRule = Omit<PayrollLegacyEmployeeRule, 'payment_channel'> & {
 }
 
 type ReceiptInput = {
-  employee_id: string
+  payment_detail_id: string
+  payee_label: string
+  payroll_scope: 'PAYROLL' | 'OUTSIDE_PAYROLL'
   account_id: string
   account_masked: string
   payment_channel: string
   expected_amount_cents: number
   amount: string
   status: '' | 'SUCCEEDED' | 'FAILED'
+  approved_no_supplement: boolean
+  exception_reason: string
 }
 
 type EvidenceSlot = PayrollLegacyEvidenceDocument & {
@@ -139,23 +144,50 @@ function rulesFromWorkspace(workspace: PayrollLegacyWorkspace): EditableRule[] {
   return workspace.rules.employees.map((rule) => ({ ...rule }))
 }
 
-function receiptsFromBatch(batch: PayrollLegacyBatch): ReceiptInput[] {
-  return batch.lines.map((line) => ({
+function paymentDetailsFromBatch(batch: PayrollLegacyBatch): PayrollLegacyPaymentDetail[] {
+  return batch.payment_details?.length ? batch.payment_details : batch.lines
+    .filter((line) => line.net_pay_cents > 0)
+    .map((line) => ({
+    payment_detail_id: `payment_${line.employee_id}`,
+    payee_kind: 'EMPLOYEE',
+    payee_id: line.employee_id,
+    payee_label: line.employee_name,
     employee_id: line.employee_id,
     account_id: line.account_id,
     account_masked: line.account_masked,
-    payment_channel: line.payment_channel,
-    expected_amount_cents: line.net_pay_cents,
+    payment_channel: line.payment_channel as PayrollLegacyPaymentDetail['payment_channel'],
+    disbursement_company: line.disbursement_company ?? line.location ?? '发放主体待确认',
+    amount_cents: line.net_pay_cents,
+    payroll_scope: 'PAYROLL',
+    memo: line.notes,
+  }))
+}
+
+function receiptsFromBatch(batch: PayrollLegacyBatch): ReceiptInput[] {
+  return paymentDetailsFromBatch(batch).map((detail) => ({
+    payment_detail_id: detail.payment_detail_id,
+    payee_label: detail.payee_label,
+    payroll_scope: detail.payroll_scope,
+    account_id: detail.account_id,
+    account_masked: detail.account_masked,
+    payment_channel: detail.payment_channel,
+    expected_amount_cents: detail.amount_cents,
     amount: '',
     status: '' as const,
+    approved_no_supplement: false,
+    exception_reason: '',
   }))
 }
 
 function evidenceSlotsFromBatch(batch: PayrollLegacyBatch): EvidenceSlot[] {
   const slots = emptyEvidenceSlots()
-  if (batch.verification?.schema_version !== 'payroll-current-paid-verification/v2') return slots
+  const verification = batch.verification
+  if (!verification || (
+    verification.schema_version !== 'payroll-current-paid-verification/v2' &&
+    verification.schema_version !== 'payroll-current-paid-verification/v3'
+  )) return slots
   const byType = new Map<PayrollLegacyEvidenceType, PayrollLegacyEvidenceDocument[]>()
-  for (const document of batch.verification.evidence_documents) {
+  for (const document of verification.evidence_documents) {
     const current = byType.get(document.evidence_type) ?? []
     current.push(document)
     byType.set(document.evidence_type, current)
@@ -181,6 +213,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
   const [reviewRules, setReviewRules] = useState<PayrollLegacyReviewRule[]>([])
   const [evidenceSlots, setEvidenceSlots] = useState<EvidenceSlot[]>(emptyEvidenceSlots)
   const [receipts, setReceipts] = useState<ReceiptInput[]>([])
+  const [paymentDetails, setPaymentDetails] = useState<PayrollLegacyPaymentDetail[]>([])
   const [pendingDecisions, setPendingDecisions] = useState<Record<string, {
     decision: '' | 'ADD_TO_MAIN' | 'SUPPLEMENT' | 'IGNORE'
     reason: string
@@ -193,6 +226,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
     setRules(rulesFromWorkspace(nextWorkspace))
     setReviewRules(nextWorkspace.rules.review_rules ?? [])
     setReceipts(batch ? receiptsFromBatch(batch) : [])
+    setPaymentDetails(batch ? paymentDetailsFromBatch(batch) : [])
     setEvidenceSlots(batch ? evidenceSlotsFromBatch(batch) : emptyEvidenceSlots())
     setAdjustments(batch ? batch.adjustments.filter((item) => !item.source_pending_id) : [])
   }, [])
@@ -211,6 +245,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
       setRules([])
       setReviewRules([])
       setReceipts([])
+      setPaymentDetails([])
       setEvidenceSlots(emptyEvidenceSlots())
       setAdjustments([])
     } finally {
@@ -313,7 +348,10 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
     (value) => /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/.test(value),
   ) && new Set(evidenceRefs).size === evidenceSlots.length
   const receiptsComplete = evidenceComplete && receipts.length > 0 && receipts.every(
-    (receipt) => receipt.status && receipt.amount !== '' && Number(receipt.amount) >= 0,
+    (receipt) => receipt.status && receipt.amount !== '' && Number(receipt.amount) >= 0 &&
+      (!receipt.approved_no_supplement || (
+        receipt.payroll_scope === 'PAYROLL' && receipt.exception_reason.trim()
+      )),
   )
   const pendingComplete = previousOpenItems.length === 0 || previousOpenItems.every((item) => {
     const resolution = pendingDecisions[item.pending_id]
@@ -537,11 +575,19 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
           {task === 'normal' && activeBatch ? (
             <SimpleAction
               title="生成网商银行代发表"
-              detail="以系统生成的工资表为准，按五家公司拆分最终代发表；下方同时预览五份代发表和工资发放表。"
+              detail="先确认工资如何拆成付款明细，再按五家公司生成最终代发表；主表外收款人单列，不计入工资理论总额。"
               button="生成五份网商银行代发表"
               busy={busy}
-              onRun={() => void execute('GENERATE_NORMAL_DRAFT', { period: activeBatch.period })}
+              onRun={() => void execute('GENERATE_NORMAL_DRAFT', {
+                period: activeBatch.period,
+                payment_details: paymentDetails,
+              })}
             >
+              <PaymentDetailsEditor
+                lines={activeBatch.lines}
+                details={paymentDetails}
+                onChange={setPaymentDetails}
+              />
               <NormalDraftPreview batch={activeBatch} />
             </SimpleAction>
           ) : null}
@@ -553,7 +599,9 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
               button="生成补发代发表预览"
               busy={busy}
               onRun={() => void execute('GENERATE_SUPPLEMENTAL_DRAFT', { period: activeBatch.period })}
-            />
+            >
+              <SupplementalDraftPreview batch={activeBatch} />
+            </SimpleAction>
           ) : null}
 
           {task === 'history' && activeBatch ? (
@@ -608,23 +656,51 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
                 <>
                   <div className="payroll-receipt-list">
                     {receipts.map((receipt) => (
-                      <div key={receipt.employee_id}>
-                        <span>{receipt.employee_id}<small>{receipt.account_masked} · 应发 {money(receipt.expected_amount_cents)}</small></span>
-                        <input aria-label={`${receipt.employee_id}实际到账金额`} type="number" min="0" step="0.01" value={receipt.amount} onChange={(event) => setReceipts((current) => current.map((item) => item.employee_id === receipt.employee_id ? { ...item, amount: event.target.value } : item))} placeholder="实际到账元" />
-                        <select aria-label={`${receipt.employee_id}回单状态`} value={receipt.status} onChange={(event) => setReceipts((current) => current.map((item) => item.employee_id === receipt.employee_id ? { ...item, status: event.target.value as ReceiptInput['status'] } : item))}><option value="">请选择</option><option value="SUCCEEDED">已成功</option><option value="FAILED">失败</option></select>
+                      <div key={receipt.payment_detail_id}>
+                        <span>{receipt.payee_label}<small>{receipt.account_masked} · {receipt.payment_channel} · 应发 {money(receipt.expected_amount_cents)}{receipt.payroll_scope === 'OUTSIDE_PAYROLL' ? ' · 主表外' : ''}</small></span>
+                        <input aria-label={`${receipt.payment_detail_id}实际到账金额`} type="number" min="0" step="0.01" value={receipt.amount} onChange={(event) => setReceipts((current) => current.map((item) => item.payment_detail_id === receipt.payment_detail_id ? { ...item, amount: event.target.value } : item))} placeholder="实际到账元" />
+                        <select aria-label={`${receipt.payment_detail_id}回单状态`} value={receipt.status} onChange={(event) => setReceipts((current) => current.map((item) => item.payment_detail_id === receipt.payment_detail_id ? { ...item, status: event.target.value as ReceiptInput['status'] } : item))}><option value="">请选择</option><option value="SUCCEEDED">已成功</option><option value="FAILED">失败</option></select>
+                        {receipt.payroll_scope === 'PAYROLL' ? (
+                          <label className="payroll-approved-exception">
+                            <input type="checkbox" aria-label={`${receipt.payment_detail_id}批准不补发`} checked={receipt.approved_no_supplement} onChange={(event) => setReceipts((current) => current.map((item) => item.payment_detail_id === receipt.payment_detail_id ? { ...item, approved_no_supplement: event.target.checked } : item))} />
+                            <span>批准不补发</span>
+                            {receipt.approved_no_supplement ? <input aria-label={`${receipt.payment_detail_id}不补发原因`} value={receipt.exception_reason} onChange={(event) => setReceipts((current) => current.map((item) => item.payment_detail_id === receipt.payment_detail_id ? { ...item, exception_reason: event.target.value } : item))} placeholder="必须填写批准原因" /> : null}
+                          </label>
+                        ) : null}
                       </div>
                     ))}
                   </div>
                 </>
               ) : <p className="payroll-empty-task">当前工资表没有可核对人员。</p>}
-              {activeBatch.verification?.schema_version === 'payroll-current-paid-verification/v2' ? (
+              {activeBatch.verification?.schema_version === 'payroll-current-paid-verification/v3' ? (
+                <div className={`payroll-verification-total ${activeBatch.verification.reconciliation_complete ? 'matched' : 'attention'}`}>
+                  <strong>{activeBatch.verification.reconciliation_complete ? '本月发放已完成复核' : '本月发放仍有未解决差异'}</strong>
+                  <span>工资理论 {money(activeBatch.verification.theoretical_total_cents)} · 实际 {money(activeBatch.verification.actual_total_cents)} · 批准不补发 {money(activeBatch.verification.approved_no_supplement_total_cents)} · 复核口径 {money(activeBatch.verification.reconciled_total_cents)}</span>
+                  <small>主表外应发 {money(activeBatch.verification.outside_payroll_expected_total_cents)} · 实际 {money(activeBatch.verification.outside_payroll_actual_total_cents)}</small>
+                </div>
+              ) : activeBatch.verification?.schema_version === 'payroll-current-paid-verification/v2' ? (
                 <div className={`payroll-verification-total ${activeBatch.verification.totals_match ? 'matched' : 'attention'}`}>
                   <strong>{activeBatch.verification.totals_match ? '理论总额与实际总额一致' : '理论总额与实际总额不一致'}</strong>
                   <span>理论 {money(activeBatch.verification.theoretical_total_cents)} · 实际 {money(activeBatch.verification.actual_total_cents)} · 差额 {money(activeBatch.verification.difference_cents)}</span>
                 </div>
               ) : null}
               {activeBatch.summary ? <SummaryView batch={activeBatch} /> : <p className="payroll-empty-task">汇总尚未更新；必须先完成匹配复核。</p>}
-              <button type="button" className="primary" disabled={!receiptsComplete || busy} onClick={() => void execute('VERIFY_AND_UPDATE_SUMMARY', { period: activeBatch.period, evidence_documents: evidenceSlots.map(({ evidence_type, evidence_ref }) => ({ evidence_type, evidence_ref: evidence_ref.trim() })), receipts: receipts.map((receipt) => ({ employee_id: receipt.employee_id, account_id: receipt.account_id, payment_channel: receipt.payment_channel, amount_cents: Math.round(Number(receipt.amount) * 100), status: receipt.status })) })}>先复核本月已发，匹配后更新汇总</button>
+              <button type="button" className="primary" disabled={!receiptsComplete || busy} onClick={() => void execute('VERIFY_AND_UPDATE_SUMMARY', {
+                period: activeBatch.period,
+                evidence_documents: evidenceSlots.map(({ evidence_type, evidence_ref }) => ({ evidence_type, evidence_ref: evidence_ref.trim() })),
+                receipts: receipts.map((receipt) => ({
+                  payment_detail_id: receipt.payment_detail_id,
+                  account_id: receipt.account_id,
+                  payment_channel: receipt.payment_channel,
+                  amount_cents: Math.round(Number(receipt.amount) * 100),
+                  status: receipt.status,
+                })),
+                approved_exceptions: receipts.filter((receipt) => receipt.approved_no_supplement).map((receipt) => ({
+                  payment_detail_id: receipt.payment_detail_id,
+                  amount_cents: receipt.expected_amount_cents - Math.round(Number(receipt.amount) * 100),
+                  reason: receipt.exception_reason.trim(),
+                })),
+              })}>先复核本月已发，匹配后更新汇总</button>
             </div>
           ) : null}
 
@@ -687,6 +763,90 @@ function AdjustmentEditor({ lines, adjustments, onChange }: { lines: PayrollLega
   )
 }
 
+function PaymentDetailsEditor({ lines, details, onChange }: {
+  lines: PayrollLegacyLine[]
+  details: PayrollLegacyPaymentDetail[]
+  onChange: (value: PayrollLegacyPaymentDetail[]) => void
+}) {
+  const update = (detailId: string, patch: Partial<PayrollLegacyPaymentDetail>) => {
+    onChange(details.map((detail) => detail.payment_detail_id === detailId
+      ? { ...detail, ...patch }
+      : detail))
+  }
+  const split = (detail: PayrollLegacyPaymentDetail) => {
+    if (detail.payee_kind !== 'EMPLOYEE' || detail.amount_cents < 2) return
+    const firstAmount = Math.floor(detail.amount_cents / 2)
+    const suffix = Date.now().toString(36)
+    onChange(details.flatMap((candidate) => candidate.payment_detail_id === detail.payment_detail_id
+      ? [
+        { ...candidate, amount_cents: firstAmount },
+        { ...candidate, payment_detail_id: `${candidate.payment_detail_id}_${suffix}`, amount_cents: candidate.amount_cents - firstAmount },
+      ]
+      : [candidate]))
+  }
+  const addExternal = () => {
+    const suffix = Date.now().toString(36)
+    onChange([...details, {
+      payment_detail_id: `payment_external_${suffix}`,
+      payee_kind: 'EXTERNAL_RECIPIENT',
+      payee_id: `recipient_external_${suffix}`,
+      payee_label: '',
+      account_id: `account_external_${suffix}`,
+      account_masked: '****????',
+      payment_channel: 'MYBANK',
+      disbursement_company: '',
+      amount_cents: 0,
+      payroll_scope: 'OUTSIDE_PAYROLL',
+      memo: '',
+    }])
+  }
+  const payrollAmount = details.filter((detail) => detail.payroll_scope === 'PAYROLL')
+    .reduce((sum, detail) => sum + detail.amount_cents, 0)
+  const outsideAmount = details.filter((detail) => detail.payroll_scope === 'OUTSIDE_PAYROLL')
+    .reduce((sum, detail) => sum + detail.amount_cents, 0)
+  const theoreticalAmount = lines.reduce((sum, line) => sum + line.net_pay_cents, 0)
+  const allocationMatches = lines.every((line) => details
+    .filter((detail) => detail.employee_id === line.employee_id)
+    .reduce((sum, detail) => sum + detail.amount_cents, 0) === line.net_pay_cents)
+
+  return (
+    <section className="payroll-payment-details" aria-labelledby="payroll-payment-details-heading">
+      <div className="payroll-rule-section-title">
+        <strong id="payroll-payment-details-heading">付款明细</strong>
+        <span>一个员工可以拆成多笔；主表外收款人只进入代发表，不改变工资表总额。</span>
+        <button type="button" className="secondary" onClick={addExternal}>新增主表外收款人</button>
+      </div>
+      <div className="payroll-payment-detail-list">
+        {details.map((detail) => (
+          <article key={detail.payment_detail_id}>
+            <div>
+              {detail.payee_kind === 'EXTERNAL_RECIPIENT' ? (
+                <input aria-label={`${detail.payment_detail_id}收款人名称`} value={detail.payee_label} onChange={(event) => update(detail.payment_detail_id, { payee_label: event.target.value })} placeholder="收款人名称" />
+              ) : <strong>{detail.payee_label}</strong>}
+              <small>{detail.payroll_scope === 'PAYROLL' ? '工资内' : '主表外'}</small>
+            </div>
+            <input aria-label={`${detail.payment_detail_id}账户尾号`} value={detail.account_masked.replace('****', '')} maxLength={4} onChange={(event) => update(detail.payment_detail_id, { account_masked: `****${event.target.value.replace(/[^0-9?]/g, '').slice(0, 4)}` })} placeholder="4 位尾号" />
+            <select aria-label={`${detail.payment_detail_id}发放渠道`} value={detail.payment_channel} onChange={(event) => update(detail.payment_detail_id, { payment_channel: event.target.value as PayrollLegacyPaymentDetail['payment_channel'] })}>{channels.map((channel) => <option key={channel}>{channel}</option>)}</select>
+            <input aria-label={`${detail.payment_detail_id}代发公司`} value={detail.disbursement_company} onChange={(event) => update(detail.payment_detail_id, { disbursement_company: event.target.value })} placeholder="代发公司" />
+            <MoneyInput label={`${detail.payment_detail_id}付款金额`} cents={detail.amount_cents} onChange={(amount_cents) => update(detail.payment_detail_id, { amount_cents })} />
+            <input aria-label={`${detail.payment_detail_id}备注`} value={detail.memo} onChange={(event) => update(detail.payment_detail_id, { memo: event.target.value })} placeholder="备注" />
+            <div className="payroll-review-rule-actions">
+              {detail.payee_kind === 'EMPLOYEE' ? <button type="button" className="secondary" onClick={() => split(detail)}>拆分付款</button> : null}
+              <button type="button" className="danger" onClick={() => onChange(details.filter((candidate) => candidate.payment_detail_id !== detail.payment_detail_id))}>移除</button>
+            </div>
+          </article>
+        ))}
+      </div>
+      <div className={`payroll-payment-detail-totals ${allocationMatches && payrollAmount === theoreticalAmount ? 'matched' : 'attention'}`}>
+        <span>工资表理论 {money(theoreticalAmount)}</span>
+        <span>工资内付款 {money(payrollAmount)}</span>
+        <span>主表外付款 {money(outsideAmount)}</span>
+        <strong>{allocationMatches && payrollAmount === theoreticalAmount ? '工资分配一致' : '工资分配尚未对齐'}</strong>
+      </div>
+    </section>
+  )
+}
+
 function SummaryView({ batch }: { batch: PayrollLegacyBatch }) {
   if (!batch.summary) return null
   return (
@@ -712,28 +872,50 @@ function SummaryView({ batch }: { batch: PayrollLegacyBatch }) {
 
 function NormalDraftPreview({ batch }: { batch: PayrollLegacyBatch }) {
   const drafts = batch.drafts.filter((draft) => draft.draft_type === 'normal_bank_payroll')
+  const details = paymentDetailsFromBatch(batch)
+  const payrollAmount = details.filter((detail) => detail.payroll_scope === 'PAYROLL')
+    .reduce((sum, detail) => sum + detail.amount_cents, 0)
+  const outsideAmount = details.filter((detail) => detail.payroll_scope === 'OUTSIDE_PAYROLL')
+    .reduce((sum, detail) => sum + detail.amount_cents, 0)
   return (
     <div className="payroll-output-previews">
       <section aria-label="网商银行代发表预览">
         <h4>五家公司代发表预览</h4>
         {drafts.length ? drafts.map((draft) => (
           <article key={draft.draft_id}>
-            <div><strong>{draft.disbursement_company ?? '网商银行代发'}</strong><span>{draft.lines.length} 人 · {money(draft.total_amount_cents)}</span></div>
+            <div><strong>{draft.disbursement_company ?? '网商银行代发'}</strong><span>{draft.lines.length} 笔 · {money(draft.total_amount_cents)}</span></div>
             <div className="payroll-mini-table">
-              {draft.lines.map((line) => <span key={line.employee_id}>{line.employee_id} · {line.account_masked} · {money(line.amount_cents)}</span>)}
+              {draft.lines.map((line) => <span key={line.payment_detail_id ?? line.employee_id}>{line.payee_label ?? line.employee_id} · {line.payroll_scope === 'OUTSIDE_PAYROLL' ? '主表外' : '工资内'} · {line.account_masked} · {money(line.amount_cents)}</span>)}
             </div>
           </article>
         )) : <p className="payroll-empty-task">点击生成后在这里显示五份代发表。</p>}
       </section>
       <section aria-label="工资发放表预览">
         <h4>工资发放表</h4>
+        <div className="payroll-summary-strip"><span>工资内 {money(payrollAmount)}</span><span>主表外 {money(outsideAmount)}</span><strong>共 {details.length} 笔</strong></div>
         <div className="payroll-mini-table">
-          {batch.lines.map((line) => (
-            <span key={line.employee_id}>{line.employee_name} · {line.payment_channel} · {line.disbursement_company ?? line.location ?? '发放主体待确认'} · {money(line.net_pay_cents)}</span>
+          {details.map((detail) => (
+            <span key={detail.payment_detail_id}>{detail.payee_label} · {detail.payment_channel} · {detail.disbursement_company} · {detail.payroll_scope === 'OUTSIDE_PAYROLL' ? '主表外' : '工资内'} · {money(detail.amount_cents)}</span>
           ))}
         </div>
       </section>
     </div>
+  )
+}
+
+function SupplementalDraftPreview({ batch }: { batch: PayrollLegacyBatch }) {
+  const draft = batch.drafts.find((candidate) => candidate.draft_type === 'supplemental_bank_payroll')
+  return (
+    <section className="payroll-output-previews" aria-label="补发代发表预览">
+      <h4>补发代发表预览</h4>
+      {draft ? (
+        <div className="payroll-mini-table">
+          {draft.lines.map((line) => (
+            <span key={line.payment_detail_id ?? `${line.employee_id}-${line.source_period}`}>{line.payee_label ?? line.employee_id} · 原工资月 {line.source_period ?? batch.period} · {money(line.amount_cents)}</span>
+          ))}
+        </div>
+      ) : <p className="payroll-empty-task">点击生成后在这里显示补发明细及其原工资月。</p>}
+    </section>
   )
 }
 
