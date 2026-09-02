@@ -309,7 +309,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
       binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
     }
     await execute('IMPORT_RULES', {
-      period: '2026-08',
+      period: '2026-07',
       source_filename: ruleSourceFile.name,
       source_file_base64: window.btoa(binary),
     })
@@ -494,11 +494,11 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
               {rules.length === 0 ? (
                 <section className="payroll-rule-import" aria-labelledby="payroll-rule-import-heading">
                   <div>
-                    <strong id="payroll-rule-import-heading">一次性建立八月工资规则基线</strong>
-                    <span>仅在系统首次切换时，从原软件迁移 2026 年 8 月长期规则。完成后入口自动关闭，往后只在本网页保存和修改，不再依赖 Excel。</span>
+                    <strong id="payroll-rule-import-heading">一次性建立七月工资规则基线</strong>
+                    <span>仅在系统首次切换时，从原软件迁移 2026 年 7 月长期规则。完成后入口自动关闭，往后只在本网页保存和修改，不再依赖 Excel。</span>
                   </div>
                   <label className="payroll-rule-file">
-                    <span>{ruleSourceFile?.name ?? '选择八月规则源（.xlsx）'}</span>
+                    <span>{ruleSourceFile?.name ?? '选择七月规则源（.xlsx）'}</span>
                     <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => setRuleSourceFile(event.target.files?.[0] ?? null)} />
                   </label>
                   <button type="button" className="primary" disabled={!ruleSourceFile || busy} onClick={() => void importRules()}>
@@ -507,7 +507,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
                 </section>
               ) : (
                 <div className="payroll-rule-baseline-status">
-                  <strong>八月规则基线已建立</strong>
+                  <strong>七月规则基线已建立</strong>
                   <span>当前规则以网页保存内容为准；Excel 导入入口已关闭。</span>
                 </div>
               )}
