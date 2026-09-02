@@ -7,11 +7,11 @@ import os
 import traceback
 from collections.abc import Callable, Iterator
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from io import BytesIO
 from pathlib import Path
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -974,9 +974,22 @@ def test_existing_account_identity_requires_active_account_and_one_period_bindin
                         "owner_ref": str(ENTITY_REF),
                         "owner_kind": "COMPANY",
                         "lifecycle_status": lifecycle_status,
-                        "assignment_count": assignment_count,
-                        "matching_assignment_count": 1 if assignment_count else 0,
                     }
+                ),
+                _MappingResult(
+                    rows=(
+                        []
+                        if assignment_count == 0
+                        else [
+                            {
+                                "business_unit_id": (
+                                    BUSINESS_UNIT_REF if assignment_count == 1 else uuid4()
+                                ),
+                                "effective_from": date(2026, 5, 1),
+                                "effective_to": None,
+                            }
+                        ]
+                    )
                 ),
             )
         )
@@ -1013,9 +1026,16 @@ def test_existing_account_identity_accepts_exact_active_period_binding(tmp_path:
                         "owner_ref": str(ENTITY_REF),
                         "owner_kind": "COMPANY",
                         "lifecycle_status": "ACTIVE",
-                        "assignment_count": 1,
-                        "matching_assignment_count": 1,
                     }
+                ),
+                _MappingResult(
+                    rows=[
+                        {
+                            "business_unit_id": BUSINESS_UNIT_REF,
+                            "effective_from": date(2026, 5, 1),
+                            "effective_to": None,
+                        }
+                    ]
                 ),
             )
         )

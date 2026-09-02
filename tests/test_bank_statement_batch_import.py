@@ -353,3 +353,61 @@ def test_item_deferred_constraints_are_validated_then_redeferred() -> None:
         "SET CONSTRAINTS ALL IMMEDIATE",
         "SET CONSTRAINTS ALL DEFERRED",
     ]
+
+
+def test_adjacent_same_unit_assignments_cover_a_range_statement() -> None:
+    unit = uuid4()
+
+    assert cutover._assignments_cover_statement_period(
+        (
+            {
+                "business_unit_id": unit,
+                "effective_from": date(2025, 9, 2),
+                "effective_to": date(2026, 8, 21),
+            },
+            {
+                "business_unit_id": unit,
+                "effective_from": date(2026, 8, 21),
+                "effective_to": date(2026, 8, 25),
+            },
+            {
+                "business_unit_id": unit,
+                "effective_from": date(2026, 8, 25),
+                "effective_to": None,
+            },
+        ),
+        business_unit_ref=unit,
+        period_start=date(2025, 9, 2),
+        period_end=date(2026, 9, 2),
+    )
+
+
+def test_assignment_coverage_rejects_gap_or_unit_change() -> None:
+    unit = uuid4()
+    other = uuid4()
+    base = (
+        {
+            "business_unit_id": unit,
+            "effective_from": date(2025, 9, 2),
+            "effective_to": date(2026, 8, 20),
+        },
+        {
+            "business_unit_id": unit,
+            "effective_from": date(2026, 8, 21),
+            "effective_to": None,
+        },
+    )
+    changed = (base[0], {**base[1], "business_unit_id": other})
+
+    assert not cutover._assignments_cover_statement_period(
+        base,
+        business_unit_ref=unit,
+        period_start=date(2025, 9, 2),
+        period_end=date(2026, 9, 2),
+    )
+    assert not cutover._assignments_cover_statement_period(
+        changed,
+        business_unit_ref=unit,
+        period_start=date(2025, 9, 2),
+        period_end=date(2026, 9, 2),
+    )

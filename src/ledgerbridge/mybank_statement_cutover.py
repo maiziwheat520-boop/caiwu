@@ -7,11 +7,12 @@ import hmac
 import json
 import logging
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import date
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol, TypeGuard
+from typing import Protocol, TypeGuard, cast
 from uuid import UUID, uuid5
 from zoneinfo import ZoneInfo
 
@@ -1966,20 +1967,7 @@ def _require_existing_account_identity(
             text(
                 "SELECT ma.managed_account_ref, ma.entity_id, ma.institution_code, "
                 "ma.account_suffix, ma.owner_ref, ma.owner_kind, "
-                "latest.status AS lifecycle_status, "
-                "(SELECT count(*) FROM public.account_business_unit_assignment assignment "
-                "WHERE assignment.owner_entity_id=:entity "
-                "AND assignment.managed_account_ref=ma.managed_account_ref "
-                "AND assignment.effective_from <= :period_start "
-                "AND (assignment.effective_to IS NULL "
-                "OR assignment.effective_to > :period_end)) AS assignment_count "
-                ",(SELECT count(*) FROM public.account_business_unit_assignment assignment "
-                "WHERE assignment.owner_entity_id=:entity "
-                "AND assignment.managed_account_ref=ma.managed_account_ref "
-                "AND assignment.business_unit_id=:unit "
-                "AND assignment.effective_from <= :period_start "
-                "AND (assignment.effective_to IS NULL "
-                "OR assignment.effective_to > :period_end)) AS matching_assignment_count "
+                "latest.status AS lifecycle_status "
                 "FROM public.managed_account ma JOIN LATERAL "
                 "(SELECT status FROM public.managed_account_lifecycle lifecycle "
                 "WHERE lifecycle.managed_account_ref=ma.managed_account_ref "
@@ -1989,9 +1977,6 @@ def _require_existing_account_identity(
             {
                 "account": plan.managed_account_ref,
                 "entity": plan.entity_ref,
-                "unit": plan.business_unit_ref,
-                "period_start": period_start,
-                "period_end": period_end,
             },
         )
         .mappings()
@@ -2010,10 +1995,66 @@ def _require_existing_account_identity(
         raise MyBankStatementCutoverError("managed account conflicts with explicit owner identity")
     if account["lifecycle_status"] != "ACTIVE":
         raise MyBankStatementCutoverError("managed account must be ACTIVE")
-    if int(account["assignment_count"]) != 1 or int(account["matching_assignment_count"]) != 1:
-        raise MyBankStatementCutoverError(
-            "managed account requires one covering business-unit assignment"
+    assignments = (
+        session.execute(
+            text(
+                "SELECT business_unit_id, effective_from, effective_to "
+                "FROM public.account_business_unit_assignment "
+                "WHERE owner_entity_id=:entity AND managed_account_ref=:account "
+                "AND effective_from <= :period_end "
+                "AND (effective_to IS NULL OR effective_to > :period_start) "
+                "ORDER BY effective_from, assignment_ref"
+            ),
+            {
+                "account": plan.managed_account_ref,
+                "entity": plan.entity_ref,
+                "period_start": period_start,
+                "period_end": period_end,
+            },
         )
+        .mappings()
+        .all()
+    )
+    if not _assignments_cover_statement_period(
+        tuple(cast(Mapping[str, object], assignment) for assignment in assignments),
+        business_unit_ref=plan.business_unit_ref,
+        period_start=period_start,
+        period_end=period_end,
+    ):
+        raise MyBankStatementCutoverError(
+            "managed account requires continuous business-unit assignment coverage"
+        )
+
+
+def _assignments_cover_statement_period(
+    assignments: Sequence[Mapping[str, object]],
+    *,
+    business_unit_ref: UUID,
+    period_start: date,
+    period_end: date,
+) -> bool:
+    """Prove one unchanged business-unit identity across adjacent date intervals."""
+
+    if period_start > period_end:
+        return False
+    covered_until = period_start
+    for assignment in assignments:
+        effective_from = assignment.get("effective_from")
+        effective_to = assignment.get("effective_to")
+        if (
+            assignment.get("business_unit_id") != business_unit_ref
+            or not isinstance(effective_from, date)
+            or (effective_to is not None and not isinstance(effective_to, date))
+            or effective_from > covered_until
+        ):
+            return False
+        if effective_to is None:
+            return True
+        if effective_to > covered_until:
+            covered_until = effective_to
+        if covered_until > period_end:
+            return True
+    return False
 
 
 def _run_database_fact_conflict_probe(

@@ -29,6 +29,9 @@ input. The daily sources remain retained privately and are not imported again.
   9/11-column range-export variants. The strict single-day v2 parser is unchanged.
 - A v2 private plan binds the operator-reviewed expected-new-transaction count. PostgreSQL still
   rejects any non-exact overlap; the count gate does not weaken fact comparison.
+- Range authorization accepts only gap-free, adjacent effective-date assignments for the same
+  business unit. A gap or unit change still fails closed; historical coverage is appended rather
+  than rewriting the current assignment.
 
 ## Retained daily-batch contract
 
