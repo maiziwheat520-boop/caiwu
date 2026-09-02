@@ -72,6 +72,7 @@ import type {
 } from './types'
 import { ErrorState, LoadingState, Metric, PageHeader } from './shared/PagePrimitives'
 import { PersonalBankTransactionsPanel } from './personal-finance/PersonalBankTransactionsPanel'
+import { CompanyBankStatementReviewPanel } from './company-reports/CompanyBankStatementReviewPanel'
 
 const CompanyReportsPage = lazy(() => import('./company-reports/CompanyReportsPage')
   .then((module) => ({ default: module.CompanyReportsPage })))
@@ -830,23 +831,26 @@ function App() {
     }
     if (page === 'review') {
       return (
-        <ReviewQueue
-          candidates={pendingCandidates}
-          bankStatements={pendingBankStatements}
-          csrfToken={session?.csrf_token ?? ''}
-          onBankStatementReviewed={async () => {
-            const refreshed = await api.getPersonalBankTransactions()
-            setPersonalBankData(refreshed)
-          }}
-          classificationGroups={classificationGroups}
-          classificationGroupsAvailable={classificationGroupsAvailable}
-          onOpenCandidate={openCandidate}
-          onUpdate={updateCandidate}
-          onRefresh={loadData}
-          busyId={decisionBusyId}
-          batchBusy={batchBusy}
-          onBatchConfirm={bulkConfirmCandidates}
-        />
+        <>
+          <CompanyBankStatementReviewPanel csrfToken={session?.csrf_token ?? ''} />
+          <ReviewQueue
+            candidates={pendingCandidates}
+            bankStatements={pendingBankStatements}
+            csrfToken={session?.csrf_token ?? ''}
+            onBankStatementReviewed={async () => {
+              const refreshed = await api.getPersonalBankTransactions()
+              setPersonalBankData(refreshed)
+            }}
+            classificationGroups={classificationGroups}
+            classificationGroupsAvailable={classificationGroupsAvailable}
+            onOpenCandidate={openCandidate}
+            onUpdate={updateCandidate}
+            onRefresh={loadData}
+            busyId={decisionBusyId}
+            batchBusy={batchBusy}
+            onBatchConfirm={bulkConfirmCandidates}
+          />
+        </>
       )
     }
     if (page === 'reconciliation') {
