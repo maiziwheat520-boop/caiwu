@@ -92,6 +92,10 @@ PAYROLL_LEGACY_ACTIONS = {
     "CHECK_PREVIOUS_PENDING",
 }
 MAX_REQUEST_BYTES = 64 * 1024
+MAX_CURSOR_LENGTH = 512
+# A multi-unit Core cursor wraps one bounded Core cursor in a small JSON envelope
+# and base64url-encodes it.  Keep a separate closed bound for that BFF envelope.
+MAX_WRAPPED_CURSOR_LENGTH = 1024
 JSON_SAFE_INTEGER = 9_007_199_254_740_991
 STATUSES = {"INCOMPLETE", "PENDING", "CONFLICTED", "CONFIRMED", "IGNORED", "SUPERSEDED"}
 
@@ -1269,8 +1273,11 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 self._send_json(400, _problem(400, "INVALID_ACCOUNTING_MONTH", "归属月份格式无效"))
                 return
             opaque_cursors = bool(getattr(state, "opaque_cursors", False))
+            cursor_length_limit = (
+                MAX_WRAPPED_CURSOR_LENGTH if opaque_cursors else MAX_CURSOR_LENGTH
+            )
             if cursor is not None and (
-                len(cursor) > 512
+                len(cursor) > cursor_length_limit
                 or not cursor.isascii()
                 or (not opaque_cursors and not cursor.isdigit())
                 or (opaque_cursors and re.fullmatch(r"[A-Za-z0-9._-]+", cursor) is None)
@@ -1282,7 +1289,11 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         if path == "/api/v1/review-events":
             params = parse_qs(query, keep_blank_values=True)
             cursor = params.get("cursor", [None])[0]
-            if cursor is not None and (len(cursor) > 512 or not cursor.isascii() or not cursor.isdigit()):
+            if cursor is not None and (
+                len(cursor) > MAX_CURSOR_LENGTH
+                or not cursor.isascii()
+                or not cursor.isdigit()
+            ):
                 self._send_json(400, _problem(400, "INVALID_CURSOR", "分页游标无效"))
                 return
             self._send_json(200, state.list_review_events(cursor=cursor))

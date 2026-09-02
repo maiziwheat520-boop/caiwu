@@ -2551,6 +2551,61 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=2)
 
+    def test_core_backed_bff_accepts_its_multi_unit_continuation_cursor(self) -> None:
+        client = FakeCoreClient()
+        client.candidate_next_cursor = "a" * 468
+        state = build_state(
+            client,
+            candidate_business_unit_refs=("unit-demo-a", "review-2026-alipay-annual"),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "index.html").write_text("<main>review</main>", encoding="utf-8")
+            server = create_server(
+                "127.0.0.1",
+                0,
+                temp_dir,
+                state=state,
+                auth_manager=FakeAuthManager(),  # type: ignore[arg-type]
+                mode="core-backed",
+                trusted_proxy_cidrs="127.0.0.1/32",
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_port}"
+                cookie = f"{COOKIE_NAME}=session-token"
+                first_request = urllib.request.Request(
+                    f"{base_url}/api/v1/candidates",
+                    headers={"Cookie": cookie},
+                )
+                with urllib.request.urlopen(first_request, timeout=2) as response:
+                    first_page = json.load(response)
+
+                wrapped_cursor = first_page["next_cursor"]
+                self.assertGreater(len(wrapped_cursor), 512)
+                continuation_request = urllib.request.Request(
+                    f"{base_url}/api/v1/candidates?cursor={wrapped_cursor}",
+                    headers={"Cookie": cookie},
+                )
+                with urllib.request.urlopen(continuation_request, timeout=2) as response:
+                    continuation_page = json.load(response)
+
+                self.assertEqual(response.status, 200)
+                self.assertEqual(continuation_page["items"][0]["source_channel"], "outlook")
+                self.assertIn(f"cursor={client.candidate_next_cursor}", client.calls[-1][1])
+
+                oversized_request = urllib.request.Request(
+                    f"{base_url}/api/v1/candidates?cursor={'a' * 1025}",
+                    headers={"Cookie": cookie},
+                )
+                with self.assertRaises(urllib.error.HTTPError) as rejected:
+                    urllib.request.urlopen(oversized_request, timeout=2)
+                self.assertEqual(rejected.exception.code, 400)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
     def test_core_backed_bff_serves_original_reconciliation_and_rejects_cross_scope(self) -> None:
         client = FakeCoreClient()
         with tempfile.TemporaryDirectory() as temp_dir:
