@@ -518,7 +518,11 @@ def test_cutover_creates_whole_statement_facts_without_candidates(tmp_path: Path
     assert receipt.latest_pending_candidate_delta == 0
 
 
-def test_cutover_accepts_current_integrated_0025_schema(tmp_path: Path) -> None:
+@pytest.mark.parametrize("schema_revision", ("20260830_0025", "20260902_0032"))
+def test_cutover_accepts_reviewed_schema_revision(
+    tmp_path: Path,
+    schema_revision: str,
+) -> None:
     source, digest = _synthetic_source(tmp_path)
     statement = _statement(digest, source.stat().st_size)
     parser = _Parser(statement)
@@ -532,12 +536,12 @@ def test_cutover_accepts_current_integrated_0025_schema(tmp_path: Path) -> None:
             iter((_import_result(created=True), _import_result(created=False)))
         ),
         counts_reader=_CountsReader(iter((_before_counts(), _after_counts(), _after_counts()))),
-        schema_reader=lambda: "20260830_0025",
+        schema_reader=lambda: schema_revision,
     )
 
     receipt = runner.run(
         _plan(source, digest, source.stat().st_size),
-        gates=_gates(schema_revision="20260830_0025"),
+        gates=_gates(schema_revision=schema_revision),
     )
 
     assert receipt.created is True

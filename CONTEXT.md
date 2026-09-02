@@ -34,6 +34,33 @@ _Avoid_: Posted bill, confirmed transaction
 An immutable, source-bound record proving where a financial observation came from.
 _Avoid_: Attachment, mutable file
 
+**Official Source Document**:
+A document exported or issued by a bank, payment platform, employer, or other authoritative
+provider and admitted only with its exact Evidence Object identity. It proves source content;
+it does not by itself approve an accounting classification or posting.
+_Avoid_: Trusted spreadsheet, posted transaction
+
+**Normalized Financial Fact**:
+An append-only structured record derived from an Official Source Document and bound to its
+Accounting Owner, Managed Account, source location, and Evidence Object. It may feed several
+modules without becoming a classified Ledger Draft or a Posted Entry.
+_Avoid_: Imported row, bookkeeping result
+
+**Ledger Draft**:
+A balanced, evidence-linked journal proposal awaiting explicit human approval. Rules and models
+may prepare or explain it but cannot turn it into a Posted Entry.
+_Avoid_: Candidate, automatic posting
+
+**Posted Entry**:
+An immutable, human-authorized journal entry whose postings balance per currency and form the
+formal accounting basis. Corrections use reversal or adjustment entries rather than mutation.
+_Avoid_: Confirmed statement, report row
+
+**Reporting Basis**:
+The explicitly selected fact layer used by one report: review Candidate, account-statement cash
+flow, or Posted Entry. Bases remain visibly separate and are never silently combined.
+_Avoid_: Best available data, unified total
+
 **Accounting Owner**:
 The person or company whose books contain a Managed Account and its resulting facts.
 _Avoid_: Login user, counterparty

@@ -176,10 +176,13 @@ def test_mybank_restore_inventory_accepts_current_integrated_schema_revision() -
     assert inventory.schema_revision == "20260901_0027"
 
 
-def test_bank_statement_restore_inventory_accepts_boc_abc_profile_revision() -> None:
-    inventory = _cutover_inventory(schema_revision="20260902_0031")
+@pytest.mark.parametrize("schema_revision", ("20260902_0031", "20260902_0032"))
+def test_bank_statement_restore_inventory_accepts_reviewed_profile_revision(
+    schema_revision: str,
+) -> None:
+    inventory = _cutover_inventory(schema_revision=schema_revision)
 
-    assert inventory.schema_revision == "20260902_0031"
+    assert inventory.schema_revision == schema_revision
 
 
 def test_account_registry_privilege_probe_uses_catalog_function_oid() -> None:
