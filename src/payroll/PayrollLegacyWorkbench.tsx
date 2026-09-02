@@ -179,6 +179,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
   const [adjustments, setAdjustments] = useState<PayrollLegacyAdjustment[]>([])
   const [rules, setRules] = useState<EditableRule[]>([])
   const [reviewRules, setReviewRules] = useState<PayrollLegacyReviewRule[]>([])
+  const [ruleSourceFile, setRuleSourceFile] = useState<File | null>(null)
   const [evidenceSlots, setEvidenceSlots] = useState<EvidenceSlot[]>(emptyEvidenceSlots)
   const [receipts, setReceipts] = useState<ReceiptInput[]>([])
   const [pendingDecisions, setPendingDecisions] = useState<Record<string, {
@@ -284,6 +285,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
         disbursement_company: rule.disbursement_company,
         fixed_base_salary_cents: rule.fixed_base_salary_cents,
         fixed_allowance_cents: rule.fixed_allowance_cents,
+        fixed_adjustment_cents: rule.fixed_adjustment_cents ?? 0,
         night_shift_rate_cents: rule.night_shift_rate_cents,
         rest_days: rule.rest_days,
         payment_channel: rule.payment_channel,
@@ -293,6 +295,25 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
       })),
       ...(reviewRules.length > 0 || workspace ? { review_rules: reviewRules } : {}),
     })
+  }
+
+  const importRules = async () => {
+    if (!ruleSourceFile || busy) return
+    if (!ruleSourceFile.name.toLowerCase().endsWith('.xlsx') || ruleSourceFile.size > 2 * 1024 * 1024) {
+      setMessage({ tone: 'error', text: '请选择不超过 2MB 的旧工资表 .xlsx 文件' })
+      return
+    }
+    const bytes = new Uint8Array(await ruleSourceFile.arrayBuffer())
+    let binary = ''
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+    }
+    await execute('IMPORT_RULES', {
+      period: generationPeriod,
+      source_filename: ruleSourceFile.name,
+      source_file_base64: window.btoa(binary),
+    })
+    setRuleSourceFile(null)
   }
 
   const reviewRuleIds = new Set(reviewRules.map((rule) => rule.rule_id))
@@ -336,6 +357,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
       disbursement_company: '',
       fixed_base_salary_cents: 0,
       fixed_allowance_cents: 0,
+      fixed_adjustment_cents: 0,
       night_shift_rate_cents: 0,
       rest_days: 0,
       payment_channel: '',
@@ -469,6 +491,19 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
           {task === 'rules' ? (
             <div className="payroll-task-panel">
               <div className="payroll-task-heading"><div><span>07</span><h3>工资计算与审查规则</h3></div><p>规则保存后刷新仍会保留；停用或删除的审查规则不会参与下一次检查。</p></div>
+              <section className="payroll-rule-import" aria-labelledby="payroll-rule-import-heading">
+                <div>
+                  <strong id="payroll-rule-import-heading">从原工资软件导入长期规则</strong>
+                  <span>选择旧工资表后，只读取“员工信息表”和“标准表”。源文件不会进入素材库；每月素材仍只有阿姨考勤表、考勤表和好评表。</span>
+                </div>
+                <label className="payroll-rule-file">
+                  <span>{ruleSourceFile?.name ?? '选择旧工资表（.xlsx）'}</span>
+                  <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => setRuleSourceFile(event.target.files?.[0] ?? null)} />
+                </label>
+                <button type="button" className="primary" disabled={!ruleSourceFile || busy} onClick={() => void importRules()}>
+                  {busy ? '正在导入' : '导入并显示工资规则'}
+                </button>
+              </section>
               <section className="payroll-review-rules" aria-labelledby="payroll-review-rules-heading">
                 <div className="payroll-review-rules-heading">
                   <div><strong id="payroll-review-rules-heading">审查规则管理</strong><span>控制“检查规则与历史”实际执行的项目。</span></div>
@@ -510,7 +545,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
               <div className="payroll-rule-section-title"><strong>员工工资计算规则</strong><span>规则独立长期保存，只影响以后生成的工资，不改已生成历史。</span><button type="button" className="secondary" onClick={addEmployeeRule}>新增员工规则</button></div>
               <div className="payroll-rule-table" role="table" aria-label="工资规则">
                 <div className="payroll-rule-row header" role="row">
-                  <span>员工</span><span>账户尾号</span><span>代发公司</span><span>固定工资</span><span>固定津贴</span><span>渠道</span><span>类型</span><span>夜班标准</span><span>可休天数</span><span>工种</span><span>地点</span><span>操作</span>
+                  <span>员工</span><span>账户尾号</span><span>代发公司</span><span>固定工资</span><span>固定津贴</span><span>固定增减</span><span>渠道</span><span>类型</span><span>夜班标准</span><span>可休天数</span><span>工种</span><span>地点</span><span>操作</span>
                 </div>
                 {rules.map((rule) => (
                   <div className="payroll-rule-row" role="row" key={rule.employee_id}>
@@ -519,6 +554,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
                     <input aria-label={`${rule.employee_id}代发公司`} value={rule.disbursement_company} onChange={(event) => updateRule(rule.employee_id, { disbursement_company: event.target.value })} placeholder="网商代发公司" />
                     <MoneyInput label={`${rule.employee_name}固定工资`} cents={rule.fixed_base_salary_cents} onChange={(value) => updateRule(rule.employee_id, { fixed_base_salary_cents: value })} />
                     <MoneyInput label={`${rule.employee_name}固定津贴`} cents={rule.fixed_allowance_cents} onChange={(value) => updateRule(rule.employee_id, { fixed_allowance_cents: value })} />
+                    <MoneyInput label={`${rule.employee_name}固定增减`} cents={rule.fixed_adjustment_cents ?? 0} onChange={(value) => updateRule(rule.employee_id, { fixed_adjustment_cents: value })} />
                     <select aria-label={`${rule.employee_name}发放渠道`} value={rule.payment_channel} onChange={(event) => updateRule(rule.employee_id, { payment_channel: event.target.value as EditableRule['payment_channel'] })}><option value="">请选择</option>{channels.map((channel) => <option key={channel}>{channel}</option>)}</select>
                     <select aria-label={`${rule.employee_name}发放类型`} value={rule.payment_kind} onChange={(event) => updateRule(rule.employee_id, { payment_kind: event.target.value as PayrollLegacyEmployeeRule['payment_kind'] })}>{paymentKinds.map((kind) => <option key={kind}>{kind}</option>)}</select>
                     <MoneyInput label={`${rule.employee_name}夜班标准`} cents={rule.night_shift_rate_cents} onChange={(value) => updateRule(rule.employee_id, { night_shift_rate_cents: value })} />
@@ -529,7 +565,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
                   </div>
                 ))}
               </div>
-              <div className="payroll-main-total"><span>当前规则固定工资合计</span><strong>{money(rules.reduce((sum, rule) => sum + rule.fixed_base_salary_cents + rule.fixed_allowance_cents, 0))}</strong></div>
+              <div className="payroll-main-total"><span>当前规则固定工资合计</span><strong>{money(rules.reduce((sum, rule) => sum + rule.fixed_base_salary_cents + rule.fixed_allowance_cents + (rule.fixed_adjustment_cents ?? 0), 0))}</strong></div>
               <button type="button" className="primary" disabled={!rulesComplete || busy} onClick={saveRules}>保存全部工资规则</button>
             </div>
           ) : null}

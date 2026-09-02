@@ -852,6 +852,7 @@ export type PayrollLegacyAction =
   | 'GENERATE_SUPPLEMENTAL_DRAFT'
   | 'UPDATE_SUMMARY'
   | 'SAVE_RULES'
+  | 'IMPORT_RULES'
   | 'CHECK_RULES_AND_HISTORY'
   | 'VERIFY_CURRENT_PAID'
   | 'VERIFY_AND_UPDATE_SUMMARY'
@@ -1012,6 +1013,7 @@ export type PayrollLegacyEmployeeRule = {
   disbursement_company: string
   fixed_base_salary_cents: number
   fixed_allowance_cents: number
+  fixed_adjustment_cents?: number
   night_shift_rate_cents: number
   rest_days: number
   payment_channel: 'MYBANK' | 'BOC' | 'WECHAT' | 'CASH'

@@ -196,7 +196,7 @@
 .payroll-adjustments li button { border: 0; color: #a04444; background: none; cursor: pointer; }
 
 .payroll-rule-table { overflow: auto; border: 1px solid #dde4ed; border-radius: 10px; }
-.payroll-rule-row { display: grid; grid-template-columns: minmax(110px, 1fr) 90px minmax(130px, 1.1fr) repeat(2, minmax(95px, .85fr)) minmax(90px, .8fr) minmax(90px, .8fr) minmax(95px, .85fr) 76px minmax(100px, .9fr) minmax(100px, .9fr) 64px; gap: 7px; align-items: center; min-width: 1500px; padding: 8px 10px; border-top: 1px solid #edf0f4; }
+.payroll-rule-row { display: grid; grid-template-columns: minmax(110px, 1fr) 90px minmax(130px, 1.1fr) repeat(3, minmax(95px, .85fr)) minmax(90px, .8fr) minmax(90px, .8fr) minmax(95px, .85fr) 76px minmax(100px, .9fr) minmax(100px, .9fr) 64px; gap: 7px; align-items: center; min-width: 1610px; padding: 8px 10px; border-top: 1px solid #edf0f4; }
 .payroll-rule-row.header { border-top: 0; color: #6a7889; background: #f3f6f9; font-size: 10px; font-weight: 800; }
 .payroll-rule-row strong { color: #233950; font-size: 11px; }
 .payroll-rule-row strong small { display: block; margin-top: 3px; color: #7b8999; font-weight: 500; }
@@ -209,6 +209,40 @@
   border: 1px solid #d8e2ee;
   border-radius: 11px;
   background: #f8fafc;
+}
+
+.payroll-rule-import {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) auto auto;
+  gap: 16px;
+  align-items: center;
+  padding: 18px;
+  border: 1px solid #bfd3ef;
+  border-radius: 14px;
+  background: #f5f9ff;
+}
+
+.payroll-rule-import > div { display: grid; gap: 6px; }
+.payroll-rule-import strong { color: #12345b; }
+.payroll-rule-import span { color: #5c718d; }
+.payroll-rule-file { position: relative; cursor: pointer; }
+.payroll-rule-file > span {
+  display: block;
+  max-width: 260px;
+  padding: 10px 14px;
+  overflow: hidden;
+  border: 1px solid #a9bfdc;
+  border-radius: 10px;
+  background: white;
+  color: #183b66;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.payroll-rule-file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+
+@media (max-width: 980px) {
+  .payroll-rule-import { grid-template-columns: 1fr; align-items: stretch; }
+  .payroll-rule-file > span { max-width: none; }
 }
 .payroll-review-rules-heading,
 .payroll-rule-section-title {
