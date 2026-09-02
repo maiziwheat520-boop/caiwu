@@ -437,32 +437,44 @@ function CompanyReportCard({ companyRef, companyName, currencyCode, postedLedger
         <Badge color="blue">{currencyCode}</Badge>
       </header>
 
-      {candidateData || statementData ? (
+      {statementData ? (
+        <section className="company-test-summary" aria-label={`${companyName} 账户流水汇总`}>
+          <header>
+            <div><strong>已确认账户流水</strong><span>来自已确认银行账单，用于现金流核对，不等同于会计收入、费用或利润。</span></div>
+            <Badge color="blue">现金流口径</Badge>
+          </header>
+          <div className="company-test-totals">
+            <ReportTotal label="账户流入" value={reportMoney(statementData.cash_inflow_minor, currencyCode)} />
+            <ReportTotal label="账户流出" value={reportMoney(statementData.cash_outflow_minor, currencyCode)} />
+            <ReportTotal label="净现金流" value={reportMoney(statementData.net_cash_flow_minor, currencyCode)} emphasis />
+          </div>
+          <div className="company-statement-summary">
+            <span>已确认流水 <strong>{statementData.confirmed_transaction_count} 条</strong></span>
+            <small>{statementData.statement_count} 份账单</small>
+          </div>
+        </section>
+      ) : candidateData ? (
         <section className="company-test-summary" aria-label={`${companyName} 测试汇总`}>
           <header>
-            <div><strong>测试汇总·未正式入账</strong><span>来自已导入且已确认的候选事项，不冒充正式账簿。</span></div>
+            <div><strong>测试汇总·未正式入账</strong><span>来自已确认候选事项，不冒充正式账簿。</span></div>
             <Badge color="amber">测试口径</Badge>
           </header>
           <div className="company-test-totals">
-            <ReportTotal label="测试汇总收入" value={reportMoney(candidateData?.confirmed_positive_minor ?? 0, currencyCode)} />
-            <ReportTotal label="测试汇总支出" value={reportMoney(Math.abs(candidateData?.confirmed_negative_minor ?? 0), currencyCode)} />
-            <ReportTotal label="测试汇总净额" value={reportMoney(candidateData?.confirmed_net_minor ?? 0, currencyCode)} emphasis />
+            <ReportTotal label="测试汇总收入" value={reportMoney(candidateData.confirmed_positive_minor, currencyCode)} />
+            <ReportTotal label="测试汇总支出" value={reportMoney(Math.abs(candidateData.confirmed_negative_minor), currencyCode)} />
+            <ReportTotal label="测试汇总净额" value={reportMoney(candidateData.confirmed_net_minor, currencyCode)} emphasis />
           </div>
-          {statementData ? (
-            <div className="company-statement-summary">
-              <span>账户流水净额 <strong>{reportMoney(statementData.net_cash_flow_minor, currencyCode)}</strong></span>
-              <small>{statementData.confirmed_transaction_count} 条流水·{statementData.statement_count} 份账单</small>
-            </div>
-          ) : null}
         </section>
       ) : null}
 
       {!postedHasEntries ? <p className="company-formal-empty">{postedAvailable ? '正式账簿尚无入账金额' : '正式账簿尚未接入'}</p> : null}
-      <section className="company-report-totals" aria-label={`${companyName} 正式财务总额`}>
-        <ReportTotal label="正式收入" value={postedMoney(postedData?.revenue_minor)} />
-        <ReportTotal label="正式费用" value={postedMoney(postedData?.expense_minor)} />
-        <ReportTotal label="正式利润" value={postedMoney(postedData?.profit_minor)} emphasis />
-      </section>
+      {postedHasEntries ? (
+        <section className="company-report-totals" aria-label={`${companyName} 正式财务总额`}>
+          <ReportTotal label="正式收入" value={postedMoney(postedData.revenue_minor)} />
+          <ReportTotal label="正式费用" value={postedMoney(postedData.expense_minor)} />
+          <ReportTotal label="正式利润" value={postedMoney(postedData.profit_minor)} emphasis />
+        </section>
+      ) : null}
 
       <section className="company-report-layers" aria-label={`${companyName} 三层事实`}>
         <div>
@@ -551,11 +563,20 @@ function CompanyReportMonthCard({ month, currencyCode, candidate, statement, pos
         <div><span>归属月份</span><h3>{reportMonthLabel(month)}</h3></div>
         <small>{candidateData?.confirmed_count ?? 0} 条来源 · {statementData?.confirmed_transaction_count ?? 0} 条流水 · {postedAvailable ? `${postedData.posted_entry_count} 条入账` : '待接正式账簿'}</small>
       </header>
-      <div className="company-month-totals">
-        <span>正式收入 <strong>{postedMoney(postedData?.revenue_minor)}</strong></span>
-        <span>正式费用 <strong>{postedMoney(postedData?.expense_minor)}</strong></span>
-        <span>正式利润 <strong>{postedMoney(postedData?.profit_minor)}</strong></span>
-      </div>
+      {statementData ? (
+        <div className="company-month-totals">
+          <span>账户流入 <strong>{reportMoney(statementData.cash_inflow_minor, currencyCode)}</strong></span>
+          <span>账户流出 <strong>{reportMoney(statementData.cash_outflow_minor, currencyCode)}</strong></span>
+          <span>净现金流 <strong>{reportMoney(statementData.net_cash_flow_minor, currencyCode)}</strong></span>
+        </div>
+      ) : null}
+      {postedAvailable && postedData && postedData.posted_entry_count > 0 ? (
+        <div className="company-month-totals company-month-formal-totals">
+          <span>正式收入 <strong>{postedMoney(postedData.revenue_minor)}</strong></span>
+          <span>正式费用 <strong>{postedMoney(postedData.expense_minor)}</strong></span>
+          <span>正式利润 <strong>{postedMoney(postedData.profit_minor)}</strong></span>
+        </div>
+      ) : null}
       {!postedAvailable ? (
         <p className="company-breakdown-state warning">正式账簿接口暂不可用；未显示任何 0 值。</p>
       ) : null}

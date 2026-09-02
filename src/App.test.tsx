@@ -2426,13 +2426,11 @@ describe('LedgerBridge Web API client', () => {
 
     expect(await screen.findByRole('region', { name: '演示公司 财务汇总' })).toBeInTheDocument()
     expect(screen.getByText('已确认来源 61 条')).toBeInTheDocument()
-    const formalTotals = screen.getByRole('region', { name: '演示公司 正式财务总额' })
-    expect(within(formalTotals).getAllByText('待接正式账簿')).toHaveLength(3)
-    expect(within(formalTotals).queryByText('¥0.00')).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '演示公司 正式财务总额' })).not.toBeInTheDocument()
     expect(screen.getByText('正式账簿尚未接入')).toBeInTheDocument()
   })
 
-  it('prioritizes confirmed test totals and account cash flow when the posted ledger is empty', async () => {
+  it('prioritizes confirmed account cash flow when the posted ledger is empty', async () => {
     window.history.replaceState({}, '', '/company-reports')
     const reports = companyReports(true)
     const candidateCompany = reports.layers[0].items[0]
@@ -2465,14 +2463,15 @@ describe('LedgerBridge Web API client', () => {
 
     renderApp()
 
-    const testSummary = await screen.findByRole('region', { name: '演示公司 测试汇总' })
-    expect(within(testSummary).getByText('测试汇总·未正式入账')).toBeInTheDocument()
-    expect(within(testSummary).getByText('¥1,500.00')).toBeInTheDocument()
-    expect(within(testSummary).getByText('¥600.00')).toBeInTheDocument()
-    expect(within(testSummary).getByText('¥900.00')).toBeInTheDocument()
-    expect(within(testSummary).getByText(/账户流水净额/)).toBeInTheDocument()
-    expect(within(testSummary).getByText('¥1,200.00')).toBeInTheDocument()
-    expect(within(testSummary).getByText('12 条流水·2 份账单')).toBeInTheDocument()
+    const statementSummary = await screen.findByRole('region', { name: '演示公司 账户流水汇总' })
+    expect(within(statementSummary).getByText('已确认账户流水')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('¥2,000.00')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('¥800.00')).toBeInTheDocument()
+    expect(within(statementSummary).getByText('¥1,200.00')).toBeInTheDocument()
+    expect(within(statementSummary).getByText(/12 条/)).toBeInTheDocument()
+    expect(within(statementSummary).getByText('2 份账单')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '演示公司 测试汇总' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '演示公司 正式财务总额' })).not.toBeInTheDocument()
     expect(screen.getByText('正式账簿尚无入账金额')).toBeInTheDocument()
   })
 
