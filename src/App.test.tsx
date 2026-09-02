@@ -1569,7 +1569,7 @@ describe('LedgerBridge Web API client', () => {
     renderApp()
     await screen.findByText('早上好，今天有几项需要确认')
     fireEvent.click(screen.getAllByRole('button', { name: /待审核/ })[0])
-    expect(window.location.pathname).toBe('/review')
+    expect(`${window.location.pathname}${window.location.hash}`).toBe('/overview#review')
 
     fireEvent.change(screen.getByLabelText('搜索候选编号、门店或科目'), { target: { value: '机场店' } })
     expect(screen.getByText('机场店水费，原消息未说明归属月份')).toBeInTheDocument()
@@ -2584,7 +2584,7 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.getByRole('region', { name: '旧表项目取数来源' })).toBeInTheDocument()
 
     fireEvent.click(within(workflow).getByRole('button', { name: '前往待审核' }))
-    expect(window.location.pathname).toBe('/review')
+    expect(`${window.location.pathname}${window.location.hash}`).toBe('/overview#review')
   })
 
   it('keeps projection gaps as secondary todos without presenting them as financial totals', async () => {

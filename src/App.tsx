@@ -88,10 +88,8 @@ const navigation: Array<{ id: Page; label: string; icon: typeof House }> = [
   { id: 'overview', label: '概览', icon: House },
   { id: 'payroll', label: '工资与发放验证', icon: FileXls },
   { id: 'personal-finance', label: '完整个人财务对账', icon: Bank },
-  { id: 'review', label: '待审核', icon: ListChecks },
   { id: 'reconciliation', label: '月度对账', icon: Table },
   { id: 'company-reports', label: '各公司报表', icon: Database },
-  { id: 'files', label: '文件与连接', icon: FolderOpen },
 ]
 
 const pagePaths: Record<Page, string> = {
@@ -108,6 +106,7 @@ const pagePaths: Record<Page, string> = {
 
 function pageFromPath(pathname: string): Page {
   if (pathname === pagePaths['original-reconciliation']) return 'reconciliation'
+  if (pathname === pagePaths.review || pathname === pagePaths.files) return 'overview'
   const entry = Object.entries(pagePaths).find(([, path]) => path === pathname)
   return entry ? entry[0] as Page : 'overview'
 }
@@ -327,6 +326,13 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true)
   const [authError, setAuthError] = useState<string | null>(null)
   const [page, setPage] = useState<Page>(() => pageFromPath(window.location.pathname))
+  const [overviewSection, setOverviewSection] = useState<'summary' | 'review' | 'files'>(() => (
+    window.location.pathname === pagePaths.review || window.location.hash === '#review'
+      ? 'review'
+      : window.location.pathname === pagePaths.files || window.location.hash === '#files'
+        ? 'files'
+        : 'summary'
+  ))
   const [reconciliationView, setReconciliationView] = useState<'monthly' | 'original'>(() => (
     window.location.pathname === pagePaths['original-reconciliation']
       || new URLSearchParams(window.location.search).get('view') === 'original'
@@ -366,11 +372,18 @@ function App() {
   const [personalBankData, setPersonalBankData] = useState<PersonalBankTransactionsResponse | null>(null)
 
   const navigate = useCallback((nextPage: Page, replace = false) => {
-    const nextPath = pagePaths[nextPage]
+    const overviewAnchor = nextPage === 'review' ? '#review' : nextPage === 'files' ? '#files' : ''
+    const nextPath = overviewAnchor ? `${pagePaths.overview}${overviewAnchor}` : pagePaths[nextPage]
     if (window.location.pathname !== nextPath) {
       window.history[replace ? 'replaceState' : 'pushState']({}, '', nextPath)
     }
     setPage(nextPage)
+    if (overviewAnchor) {
+      setPage('overview')
+      setOverviewSection(nextPage === 'review' ? 'review' : 'files')
+    } else if (nextPage === 'overview') {
+      setOverviewSection('summary')
+    }
     if (nextPage === 'reconciliation') setReconciliationView('monthly')
   }, [])
 
@@ -384,6 +397,10 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (window.location.pathname === pagePaths.review || window.location.pathname === pagePaths.files) {
+      const anchor = window.location.pathname === pagePaths.review ? '#review' : '#files'
+      window.history.replaceState({}, '', `${pagePaths.overview}${anchor}`)
+    }
     if (window.location.pathname === pagePaths['original-reconciliation']) {
       window.history.replaceState({}, '', `${pagePaths.reconciliation}?view=original`)
     }
@@ -392,6 +409,7 @@ function App() {
     }
     const handlePopState = () => {
       setPage(pageFromPath(window.location.pathname))
+      setOverviewSection(window.location.hash === '#review' ? 'review' : window.location.hash === '#files' ? 'files' : 'summary')
       setReconciliationView(new URLSearchParams(window.location.search).get('view') === 'original' ? 'original' : 'monthly')
     }
     window.addEventListener('popstate', handlePopState)
@@ -815,15 +833,54 @@ function App() {
 
   const renderPage = () => {
     if (page === 'overview') {
+      if (overviewSection === 'review') {
+        return (
+          <><nav className="reconciliation-view-tabs" aria-label="概览工作区"><button type="button" onClick={() => navigate('overview')}>概览摘要</button><button className="active" type="button" onClick={() => navigate('review')}>待审核</button><button type="button" onClick={() => navigate('files')}>文件与连接</button></nav><div id="review">
+            <CompanyBankStatementReviewPanel csrfToken={session?.csrf_token ?? ''} />
+            <ReviewQueue
+              candidates={pendingCandidates}
+              bankStatements={pendingBankStatements}
+              csrfToken={session?.csrf_token ?? ''}
+              onBankStatementReviewed={async () => {
+                const refreshed = await api.getPersonalBankTransactions()
+                setPersonalBankData(refreshed)
+              }}
+              classificationGroups={classificationGroups}
+              classificationGroupsAvailable={classificationGroupsAvailable}
+              onOpenCandidate={openCandidate}
+              onUpdate={updateCandidate}
+              onRefresh={loadData}
+              busyId={decisionBusyId}
+              batchBusy={batchBusy}
+              onBatchConfirm={bulkConfirmCandidates}
+            />
+          </div></>
+        )
+      }
+      if (overviewSection === 'files') {
+        return (
+          <><nav className="reconciliation-view-tabs" aria-label="概览工作区"><button type="button" onClick={() => navigate('overview')}>概览摘要</button><button type="button" onClick={() => navigate('review')}>待审核</button><button className="active" type="button" onClick={() => navigate('files')}>文件与连接</button></nav><div id="files">
+            <FilesAndConnections candidates={candidates} connections={connections} csrfToken={session?.csrf_token ?? null} onOpenCandidate={openCandidate} onRefresh={loadData} onNotice={setNotice} />
+          </div></>
+        )
+      }
       return (
-        <Overview
-          pending={pendingCandidates}
-          confirmed={confirmedCandidates}
-          reconciliation={reconciliation}
-          connections={connections}
-          onNavigate={navigate}
-          onOpenCandidate={openCandidate}
-        />
+        <>
+          <nav className="reconciliation-view-tabs" aria-label="概览工作区">
+            <button className="active" type="button" onClick={() => navigate('overview')}>概览摘要</button>
+            <button type="button" onClick={() => navigate('review')}>待审核</button>
+            <button type="button" onClick={() => navigate('files')}>文件与连接</button>
+          </nav>
+          <CompanyBankStatementReviewPanel csrfToken={session?.csrf_token ?? ''} />
+          <Overview
+            pending={pendingCandidates}
+            confirmed={confirmedCandidates}
+            reconciliation={reconciliation}
+            connections={connections}
+            onNavigate={navigate}
+            onOpenCandidate={openCandidate}
+          />
+        </>
       )
     }
     if (page === 'personal-finance') {
