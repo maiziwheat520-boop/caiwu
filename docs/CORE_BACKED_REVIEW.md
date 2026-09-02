@@ -15,6 +15,10 @@ Core; Core remains the only business-fact Module.
   browser cannot supply company or date scope, and the BFF never adds the three
   layers together. Only `POSTED_LEDGER` is presented as formal revenue, expense,
   and profit.
+- All three report layers and both category-composition pages use a dedicated
+  read-only mTLS client. Candidate review, evidence, payroll, and every command
+  continue to use the primary Web workload client. The authorized company list
+  remains a dynamic Core projection and is never hard-coded in Web.
 - The BFF treats every Core report page as an exact contract, not as a permissive
   object to trim. It rejects missing or extra fields at the layer, company, month,
   business-unit, metrics, and balance boundaries; unsafe integers; invalid metric
@@ -77,6 +81,10 @@ CORE_BASE_URL=https://<loopback-core-origin>
 CORE_CA_FILE=<trusted CA bundle>
 CORE_CERT_FILE=<Web workload certificate>
 CORE_KEY_FILE=<Web workload private key>
+CORE_COMPANY_REPORT_BASE_URL=<report Core origin; defaults to CORE_BASE_URL>
+CORE_COMPANY_REPORT_CA_FILE=<report CA bundle; defaults to CORE_CA_FILE>
+CORE_COMPANY_REPORT_CERT_FILE=<report-only workload certificate>
+CORE_COMPANY_REPORT_KEY_FILE=<report-only workload private key>
 CORE_USER_ASSERTION_KEY=<runtime secret, 32-256 bytes>
 CORE_ASSERTION_ISSUER=<fixed Web issuer>
 CORE_ASSERTION_AUDIENCE=<fixed Core audience>
@@ -96,6 +104,13 @@ PAYROLL_TEST_BATCH_ID=<server-controlled stable test batch id>
 PAYROLL_TEST_WORKSPACE_AUTOCREATE=0
 PAYROLL_TEST_WORKSPACE_EXPECTED_STORE_REVISION=0
 ```
+
+The company-report certificate and key are intentionally not startup-required.
+If either is absent, unreadable, or invalid, only `/api/v1/company-reports`
+returns 503; Passkey login and the other Core-backed routes continue to start and
+operate. The Compose template expects these files under the existing read-only
+`config` mount at `company-report-core/client.crt` and
+`company-report-core/client.key`, unless container paths are overridden.
 
 VM103 injects the non-secret identity context through those variables: entity
 `a131ef1b-e250-5a6d-82ff-cab68f767997`, user subject `ledgerbridge-owner`,

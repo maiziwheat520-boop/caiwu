@@ -790,12 +790,16 @@ class SecretSafeUnlockCoreClient(FakeCoreClient):
 def build_state(
     client: FakeCoreClient,
     *,
+    company_report_client: FakeCoreClient | None | object = ...,
     evidence_unlock_path: str | None = None,
     personal_finance_enabled: bool = True,
     personal_finance_statement_refs: tuple[str, ...] | None = None,
 ) -> CoreBackedState:
     return CoreBackedState(
         client,  # type: ignore[arg-type]
+        company_report_client=(
+            client if company_report_client is ... else company_report_client
+        ),  # type: ignore[arg-type]
         assertion_key=ASSERTION_KEY,
         assertion_issuer="ledgerbridge-web-test",
         assertion_audience="ledgerbridge-core-test",
@@ -1532,6 +1536,42 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 for basis in ("CONFIRMED_CANDIDATE", "POSTED_LEDGER")
             ],
         )
+
+    def test_company_reports_use_only_the_dedicated_read_only_client(self) -> None:
+        primary_client = FakeCoreClient()
+        report_client = FakeCoreClient()
+        state = build_state(
+            primary_client,
+            company_report_client=report_client,
+        )
+
+        candidates = state.list_candidates(status=None, month=None, cursor=None)
+        report = state.company_reports("2026-01", "2026-08")
+
+        self.assertEqual(report, company_reports_bff())
+        self.assertEqual(candidates["items"][0]["id"], CANDIDATE_ID)  # type: ignore[index]
+        self.assertEqual(
+            primary_client.calls[0][:2],
+            ("GET", "/internal/v1/candidates?business_unit=unit-demo-a"),
+        )
+        self.assertEqual(len(primary_client.calls), 1)
+        self.assertEqual(len(report_client.calls), 5)
+
+    def test_company_reports_are_unavailable_without_the_dedicated_client(self) -> None:
+        primary_client = FakeCoreClient()
+
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(
+                primary_client,
+                company_report_client=None,
+            ).company_reports("2026-01", "2026-08")
+
+        self.assertEqual(raised.exception.status, 503)
+        self.assertEqual(
+            raised.exception.payload["code"],
+            "COMPANY_REPORTS_UNAVAILABLE",
+        )
+        self.assertEqual(primary_client.calls, [])
 
     def test_company_reports_preserve_other_layers_when_posted_ledger_is_unavailable(self) -> None:
         for status in (404, 503):

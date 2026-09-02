@@ -251,6 +251,7 @@ class CoreBackedState:
         self,
         client: CoreHttpClient,
         *,
+        company_report_client: CoreHttpClient | None = None,
         assertion_key: bytes,
         assertion_issuer: str,
         assertion_audience: str,
@@ -276,6 +277,7 @@ class CoreBackedState:
         if policy_generation < 1 or authentication_generation < 1:
             raise ValueError("Core policy and authentication generations must be positive")
         self.client = client
+        self.company_report_client = company_report_client
         self.assertion_key = assertion_key
         self.assertion_issuer = _bounded(assertion_issuer)
         self.assertion_audience = _bounded(assertion_audience)
@@ -569,6 +571,12 @@ class CoreBackedState:
         }
 
     def company_reports(self, from_month: str, to_month: str) -> dict[str, object]:
+        if self.company_report_client is None:
+            raise CoreBackendError(
+                503,
+                _problem(503, "COMPANY_REPORTS_UNAVAILABLE"),
+            )
+        client = self.company_report_client
         layers: list[dict[str, object]] = []
         compositions: list[dict[str, object]] = []
         posted_ledger_status = "AVAILABLE"
@@ -581,7 +589,7 @@ class CoreBackedState:
                 }
             )
             try:
-                payload = self.client.json(
+                payload = client.json(
                     "GET",
                     f"/internal/v1/company-reports?{query}",
                 )
@@ -610,7 +618,7 @@ class CoreBackedState:
                     "basis": basis,
                 }
             )
-            payload = self.client.json(
+            payload = client.json(
                 "GET",
                 f"/internal/v1/company-report-composition?{query}",
             )
