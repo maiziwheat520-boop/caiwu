@@ -71,6 +71,7 @@ _SUPPORTED_SCHEMA_REVISIONS = frozenset(
         "20260902_0031",
         "20260902_0032",
         "20260902_0033",
+        "20260902_0034",
     }
 )
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -933,7 +934,8 @@ def _expected_after_existing_account(
 ) -> ProductionCounts:
     """Expected delta for the plan's explicit evidence mode and existing account."""
 
-    transaction_count = plan.expected_transaction_count
+    transaction_count = _expected_new_transaction_count(plan)
+    observation_count = plan.expected_transaction_count
     evidence_delta = int(_creates_new_evidence(plan))
     return ProductionCounts(
         evidence_objects=before.evidence_objects + evidence_delta,
@@ -948,11 +950,13 @@ def _expected_after_existing_account(
         fact_business_unit_allocation_items=before.fact_business_unit_allocation_items,
         bank_statements=before.bank_statements + 1,
         bank_statement_transactions=before.bank_statement_transactions + transaction_count,
-        bank_statement_observations=before.bank_statement_observations + transaction_count,
+        bank_statement_observations=before.bank_statement_observations + observation_count,
         bank_statement_reviews=before.bank_statement_reviews + 1,
         candidates=before.candidates,
         latest_pending_candidates=before.latest_pending_candidates,
-        audit_events=before.audit_events + 2 + 2 * transaction_count + 2 * evidence_delta,
+        audit_events=(
+            before.audit_events + 2 + transaction_count + observation_count + 2 * evidence_delta
+        ),
         journal_entries=before.journal_entries,
         postings=before.postings,
     )
@@ -964,7 +968,8 @@ def _expected_before_existing_account(
 ) -> ProductionCounts:
     """Reverse exactly one existing-account statement delta for batch replay."""
 
-    transaction_count = plan.expected_transaction_count
+    transaction_count = _expected_new_transaction_count(plan)
+    observation_count = plan.expected_transaction_count
     evidence_delta = int(_creates_new_evidence(plan))
     try:
         return ProductionCounts(
@@ -980,11 +985,17 @@ def _expected_before_existing_account(
             fact_business_unit_allocation_items=(completed.fact_business_unit_allocation_items),
             bank_statements=completed.bank_statements - 1,
             bank_statement_transactions=(completed.bank_statement_transactions - transaction_count),
-            bank_statement_observations=(completed.bank_statement_observations - transaction_count),
+            bank_statement_observations=(completed.bank_statement_observations - observation_count),
             bank_statement_reviews=completed.bank_statement_reviews - 1,
             candidates=completed.candidates,
             latest_pending_candidates=completed.latest_pending_candidates,
-            audit_events=(completed.audit_events - 2 - 2 * transaction_count - 2 * evidence_delta),
+            audit_events=(
+                completed.audit_events
+                - 2
+                - transaction_count
+                - observation_count
+                - 2 * evidence_delta
+            ),
             journal_entries=completed.journal_entries,
             postings=completed.postings,
         )
@@ -992,6 +1003,15 @@ def _expected_before_existing_account(
         raise MyBankStatementCutoverError(
             "completed statement batch inventory is invalid"
         ) from None
+
+
+def _expected_new_transaction_count(plan: ExistingAccountStatementPlan) -> int:
+    if (
+        isinstance(plan, BankStatementExistingAccountPlan)
+        and plan.expected_new_transaction_count is not None
+    ):
+        return plan.expected_new_transaction_count
+    return plan.expected_transaction_count
 
 
 def _registry_result_matches(

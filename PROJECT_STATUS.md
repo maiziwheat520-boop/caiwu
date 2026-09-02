@@ -4,6 +4,20 @@ Updated: 2026-09-02
 
 ## Atomic company statement batch checkpoint (2026-09-02)
 
+Five complete official MYbank company range statements now supersede the incomplete daily batch
+as the production source set. The new v3 parser preserves the strict daily v2 contract while
+admitting the three observed official 9/11-column range-export variants, multi-day ordering,
+header totals, balance-chain checks, and missing-column semantics. The five sources contain 1,442
+rows; nine exact facts already exist from the representative slice, so the private v2 plan binds
+an expected delta of 1,433 facts and 1,442 observations. PostgreSQL still performs full exact-fact
+comparison for every overlapping serial and rejects the whole transaction on any conflict.
+
+Local validation passes 1,302 tests with 212 environment/platform skips. Deployment, fresh
+backup/restore, isolated five-file preflight, production commit, exact replay, count reconciliation,
+and post-import backup/restore remain pending.
+
+### Earlier daily-batch checkpoint
+
 The existing-account statement cutover now supports a bounded ordered batch under one
 database transaction. One verified encrypted backup and isolated-restore inventory anchors the
 initial state; each item inherits the exact accepted inventory from the preceding item and still

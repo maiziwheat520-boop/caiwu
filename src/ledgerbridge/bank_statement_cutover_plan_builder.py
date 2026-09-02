@@ -30,6 +30,12 @@ BANK_STATEMENT_EXISTING_ACCOUNT_DRAFT_SCHEMA: Final = (
 BANK_STATEMENT_EXISTING_ACCOUNT_PLAN_SCHEMA: Final = (
     "ledgerbridge.bank-statement-existing-account-plan.v1"
 )
+BANK_STATEMENT_EXISTING_ACCOUNT_DRAFT_SCHEMA_V2: Final = (
+    "ledgerbridge.bank-statement-existing-account-draft.v2"
+)
+BANK_STATEMENT_EXISTING_ACCOUNT_PLAN_SCHEMA_V2: Final = (
+    "ledgerbridge.bank-statement-existing-account-plan.v2"
+)
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _MAX_PLAN_BYTES = 1024 * 1024
 _MAX_SOURCE_BYTES = 50 * 1024 * 1024
@@ -67,23 +73,24 @@ def finalize_private_bank_statement_plan(draft_path: Path, output_path: Path) ->
     try:
         _require_new_private_json_path(output_path)
         draft = _read_private_json(draft_path)
-        if (
-            set(draft) != _TOP_LEVEL_KEYS
-            or draft.get("schema_version") != BANK_STATEMENT_EXISTING_ACCOUNT_DRAFT_SCHEMA
-        ):
+        schema_version = draft.get("schema_version")
+        if set(draft) != _TOP_LEVEL_KEYS or schema_version not in {
+            BANK_STATEMENT_EXISTING_ACCOUNT_DRAFT_SCHEMA,
+            BANK_STATEMENT_EXISTING_ACCOUNT_DRAFT_SCHEMA_V2,
+        }:
             raise ValueError
         parser = _strict_mapping(draft["parser"], {"profile"})
         source = _strict_mapping(draft["source"], {"path", "account_suffix"})
-        scope = _strict_mapping(
-            draft["scope"],
-            {
-                "evidence_ref",
-                "evidence_mode",
-                "owner_entity_ref",
-                "business_unit_ref",
-                "owner_kind",
-            },
-        )
+        scope_keys = {
+            "evidence_ref",
+            "evidence_mode",
+            "owner_entity_ref",
+            "business_unit_ref",
+            "owner_kind",
+        }
+        if schema_version == BANK_STATEMENT_EXISTING_ACCOUNT_DRAFT_SCHEMA_V2:
+            scope_keys.add("expected_new_transaction_count")
+        scope = _strict_mapping(draft["scope"], scope_keys)
         account = _strict_mapping(draft["account"], {"managed_account_ref"})
         profile = BankStatementParserProfile(_text(parser["profile"]))
         source_path = _absolute_path(source["path"])
@@ -98,7 +105,11 @@ def finalize_private_bank_statement_plan(draft_path: Path, output_path: Path) ->
         )
         ExistingStatementEvidenceMode(_text(scope["evidence_mode"]))
         payload = dict(draft)
-        payload["schema_version"] = BANK_STATEMENT_EXISTING_ACCOUNT_PLAN_SCHEMA
+        payload["schema_version"] = (
+            BANK_STATEMENT_EXISTING_ACCOUNT_PLAN_SCHEMA_V2
+            if schema_version == BANK_STATEMENT_EXISTING_ACCOUNT_DRAFT_SCHEMA_V2
+            else BANK_STATEMENT_EXISTING_ACCOUNT_PLAN_SCHEMA
+        )
         payload["source"] = {
             "path": str(source_path),
             "sha256": statement.source_sha256,
@@ -114,6 +125,16 @@ def finalize_private_bank_statement_plan(draft_path: Path, output_path: Path) ->
                 for month, count in statement.monthly_transaction_counts
             ],
         }
+        if schema_version == BANK_STATEMENT_EXISTING_ACCOUNT_DRAFT_SCHEMA_V2:
+            expected_new = _non_negative_integer(scope["expected_new_transaction_count"])
+            if expected_new > len(statement.transactions):
+                raise ValueError
+            payload["source"]["expected_new_transaction_count"] = expected_new
+            payload["scope"] = {
+                key: value
+                for key, value in scope.items()
+                if key != "expected_new_transaction_count"
+            }
         payload["account"] = {
             "managed_account_ref": _text(account["managed_account_ref"]),
             "institution_code": statement.institution_code,
@@ -157,30 +178,31 @@ def load_private_bank_statement_plan(path: Path) -> LoadedBankStatementPlan:
 
     try:
         payload = _read_private_json(path)
-        if (
-            set(payload) != _TOP_LEVEL_KEYS
-            or payload.get("schema_version") != BANK_STATEMENT_EXISTING_ACCOUNT_PLAN_SCHEMA
-        ):
+        schema_version = payload.get("schema_version")
+        if set(payload) != _TOP_LEVEL_KEYS or schema_version not in {
+            BANK_STATEMENT_EXISTING_ACCOUNT_PLAN_SCHEMA,
+            BANK_STATEMENT_EXISTING_ACCOUNT_PLAN_SCHEMA_V2,
+        }:
             raise ValueError
         target_revision = _text(payload["target_revision"])
         if _REVISION.fullmatch(target_revision) is None:
             raise ValueError
         parser = _strict_mapping(payload["parser"], {"profile"})
-        source = _strict_mapping(
-            payload["source"],
-            {
-                "path",
-                "sha256",
-                "size",
-                "account_suffix",
-                "period_start",
-                "period_end",
-                "transaction_count",
-                "transaction_set_sha256",
-                "parser_facts_sha256",
-                "monthly_transaction_counts",
-            },
-        )
+        source_keys = {
+            "path",
+            "sha256",
+            "size",
+            "account_suffix",
+            "period_start",
+            "period_end",
+            "transaction_count",
+            "transaction_set_sha256",
+            "parser_facts_sha256",
+            "monthly_transaction_counts",
+        }
+        if schema_version == BANK_STATEMENT_EXISTING_ACCOUNT_PLAN_SCHEMA_V2:
+            source_keys.add("expected_new_transaction_count")
+        source = _strict_mapping(payload["source"], source_keys)
         scope = _strict_mapping(
             payload["scope"],
             {
@@ -228,6 +250,11 @@ def load_private_bank_statement_plan(path: Path) -> LoadedBankStatementPlan:
             expected_monthly_transaction_counts=monthly,
             actor=_text(audit["actor"]),
             reason=_text(audit["reason"]),
+            expected_new_transaction_count=(
+                _non_negative_integer(source["expected_new_transaction_count"])
+                if schema_version == BANK_STATEMENT_EXISTING_ACCOUNT_PLAN_SCHEMA_V2
+                else None
+            ),
         )
         backup_directory = _absolute_path(safety["backup_directory"])
         restore_report = _absolute_path(safety["restore_report"])
@@ -320,6 +347,12 @@ def _text(value: object) -> str:
 
 def _integer(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError
+    return value
+
+
+def _non_negative_integer(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError
     return value
 

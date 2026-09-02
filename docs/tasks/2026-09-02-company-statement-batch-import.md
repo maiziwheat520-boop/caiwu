@@ -1,6 +1,6 @@
 # Task: Atomic company statement batch import
 
-- Status: implementation verified locally; production execution pending
+- Status: full-range source capability verified locally; production execution pending
 - Date: 2026-09-02
 - Integration owner: Codex
 - Branch: `ai/chatgpt/company-mybank-production-import`
@@ -14,7 +14,23 @@ Journal Entries, or Postings. The restricted operator workflow resolves each arc
 its registered account credential, decrypts once into a private batch, and persists normalized
 statement facts plus encrypted Evidence through Core.
 
-## Frozen batch contract
+## Superseding full-range batch contract
+
+The operator later supplied one complete official range statement for each of the five managed
+company accounts. These five files supersede the incomplete daily-source batch as the production
+input. The daily sources remain retained privately and are not imported again.
+
+- The range batch contains five statements and 1,442 source rows.
+- Four accounts have no existing statement facts. One account has nine exact facts from the
+  representative daily slice; the range statement reuses those facts and adds new observations.
+- The accepted production delta is five statements/reviews/Evidence objects, 1,433 transaction
+  facts, and 1,442 observations. Candidates, Journal Entries, and Postings remain unchanged.
+- `mybank_company_range_xlsx_v3` is a separate parser profile for the three observed official
+  9/11-column range-export variants. The strict single-day v2 parser is unchanged.
+- A v2 private plan binds the operator-reviewed expected-new-transaction count. PostgreSQL still
+  rejects any non-exact overlap; the count gate does not weaken fact comparison.
+
+## Retained daily-batch contract
 
 - The batch contains 18 non-empty statements and 71 transactions.
 - Twenty-one valid empty statements are retained in the private manifest as explicit skips.
@@ -45,13 +61,13 @@ statement facts plus encrypted Evidence through Core.
 1. Build and deploy one immutable Core release containing the batch operator capability; schema
    remains `20260902_0033`.
 2. Create a fresh encrypted backup at that exact revision and pass isolated restore.
-3. Rebind the private batch to the deployed revision and fresh backup proof without re-decrypting
-   its source workbooks.
-4. Finalize all 18 private plans inside the one-shot container.
+3. Build the five-file range batch against the deployed revision and fresh backup proof. The new
+   official XLSX files are already plaintext exports and require no archive retry.
+4. Finalize all five private plans inside the one-shot container.
 5. Run the complete batch against the isolated restored database with `commit=false`; verify the
    database and encrypted artifact inventory return to the initial state.
-6. Execute production once; verify 18 new statements/reviews/Evidence objects and 71 new
-   transactions/observations, with all prohibited deltas remaining zero.
+6. Execute production once; verify five new statements/reviews/Evidence objects, 1,433 new
+   transactions, and 1,442 new observations, with all prohibited deltas remaining zero.
 7. Execute the same production batch again and require every item to report `created=false` with
    zero database, audit, and artifact delta.
 8. Create a post-import encrypted backup, pass isolated restore, verify service health/restart

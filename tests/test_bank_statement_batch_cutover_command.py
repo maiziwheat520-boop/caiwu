@@ -14,6 +14,7 @@ from ledgerbridge.bank_statement_batch_cutover_command import (
     BANK_STATEMENT_BATCH_PREFLIGHT_RECEIPT_SCHEMA,
     BANK_STATEMENT_BATCH_PRODUCTION_RECEIPT_SCHEMA,
     BANK_STATEMENT_PRIVATE_BATCH_SCHEMA,
+    BANK_STATEMENT_PRIVATE_BATCH_SCHEMA_V2,
     BankStatementBatchCommittedReceiptError,
     BankStatementBatchCutoverCommandError,
     run_bank_statement_batch_cutover_command,
@@ -24,6 +25,7 @@ from ledgerbridge.bank_statement_cutover import (
 )
 from ledgerbridge.bank_statement_cutover_plan_builder import (
     BANK_STATEMENT_EXISTING_ACCOUNT_PLAN_SCHEMA,
+    BANK_STATEMENT_EXISTING_ACCOUNT_PLAN_SCHEMA_V2,
     LoadedBankStatementPlan,
 )
 
@@ -297,6 +299,68 @@ def test_batch_rejects_a_manifest_item_tampered_against_its_plan(
             },
             executor=lambda *_args, **_kwargs: (),
         )
+
+
+def test_range_batch_binds_period_and_new_transaction_count(tmp_path: Path) -> None:
+    root = (tmp_path / "private-range-batch").resolve()
+    root.mkdir()
+    revision = "c" * 40
+    backup = (tmp_path / "backup").resolve()
+    restore = (backup / "restore.json").resolve()
+    payload = _plan_payload(
+        root,
+        item_id="range-1",
+        ordinal=1,
+        revision=revision,
+        backup=backup,
+        restore=restore,
+    )
+    payload["schema_version"] = BANK_STATEMENT_EXISTING_ACCOUNT_PLAN_SCHEMA_V2
+    source = payload["source"]
+    assert isinstance(source, dict)
+    source["period_start"] = "2025-09-02"
+    source["period_end"] = "2026-09-02"
+    source["expected_new_transaction_count"] = 1
+    scope = payload["scope"]
+    assert isinstance(scope, dict)
+    plan_path = _private_json((root / "items" / "range-1" / "plan.json").resolve(), payload)
+    manifest = _private_json(
+        (root / "manifest.json").resolve(),
+        {
+            "schema_version": BANK_STATEMENT_PRIVATE_BATCH_SCHEMA_V2,
+            "target_revision": revision,
+            "backup_directory": str(backup),
+            "restore_report": str(restore),
+            "item_count": 1,
+            "transaction_count": source["transaction_count"],
+            "items": [
+                {
+                    "item_id": "range-1",
+                    "source_group": "synthetic",
+                    "source_name": "range.xlsx",
+                    "source_sha256": source["sha256"],
+                    "source_size": source["size"],
+                    "account_suffix": source["account_suffix"],
+                    "period_start": source["period_start"],
+                    "period_end": source["period_end"],
+                    "transaction_count": source["transaction_count"],
+                    "new_transaction_count": 1,
+                    "evidence_ref": scope["evidence_ref"],
+                }
+            ],
+            "skipped_empty_count": 0,
+            "skipped_empty": [],
+            "skipped_existing_count": 0,
+            "skipped_existing": [],
+        },
+    )
+
+    loaded = batch_command.load_private_bank_statement_batch(manifest)
+
+    assert plan_path.exists()
+    assert loaded.plans[0].cutover.expected_new_transaction_count == 1
+    assert loaded.plans[0].cutover.period_start.isoformat() == "2025-09-02"
+    assert loaded.plans[0].cutover.period_end.isoformat() == "2026-09-02"
 
 
 def test_batch_rejects_a_plan_changed_after_preflight(

@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 from ledgerbridge.bank_statement_contract import (
     MYBANK_COMPANY_DAILY_XLSX_V2,
+    MYBANK_COMPANY_RANGE_XLSX_V3,
     MYBANK_XLSX_V1,
     BankStatementParserProfile,
 )
@@ -60,6 +61,77 @@ _COMPANY_HEADERS: Final = (
     "对方机构",
     "备注",
 )
+_FULLWIDTH_LEFT_PARENTHESIS: Final = "\N{FULLWIDTH LEFT PARENTHESIS}"
+_FULLWIDTH_RIGHT_PARENTHESIS: Final = "\N{FULLWIDTH RIGHT PARENTHESIS}"
+_COMPANY_RANGE_HEADERS: Final = {
+    (
+        "账务流水号",
+        "提交时间",
+        "交易时间",
+        "交易名称",
+        f"借方金额{_FULLWIDTH_LEFT_PARENTHESIS}收{_FULLWIDTH_RIGHT_PARENTHESIS}",
+        f"贷方金额{_FULLWIDTH_LEFT_PARENTHESIS}支{_FULLWIDTH_RIGHT_PARENTHESIS}",
+        "余额",
+        "对方户名",
+        "对方账号",
+        "对方机构",
+        "备注",
+    ): {
+        "serial": 0,
+        "submitted_at": 1,
+        "occurred_at": 2,
+        "transaction_name": 3,
+        "debit": 4,
+        "credit": 5,
+        "balance": 6,
+        "counterparty_name": 7,
+        "counterparty_account": 8,
+        "counterparty_institution": 9,
+        "note": 10,
+    },
+    (
+        "账务流水号",
+        "交易时间",
+        "交易名称",
+        f"借方金额{_FULLWIDTH_LEFT_PARENTHESIS}收{_FULLWIDTH_RIGHT_PARENTHESIS}",
+        f"贷方金额{_FULLWIDTH_LEFT_PARENTHESIS}支{_FULLWIDTH_RIGHT_PARENTHESIS}",
+        "余额",
+        "对方户名",
+        "对方机构",
+        "备注",
+    ): {
+        "serial": 0,
+        "occurred_at": 1,
+        "transaction_name": 2,
+        "debit": 3,
+        "credit": 4,
+        "balance": 5,
+        "counterparty_name": 6,
+        "counterparty_institution": 7,
+        "note": 8,
+    },
+    (
+        "账务流水号",
+        "交易时间",
+        f"借方金额{_FULLWIDTH_LEFT_PARENTHESIS}收{_FULLWIDTH_RIGHT_PARENTHESIS}",
+        f"贷方金额{_FULLWIDTH_LEFT_PARENTHESIS}支{_FULLWIDTH_RIGHT_PARENTHESIS}",
+        "余额",
+        "对方户名",
+        "对方账号",
+        "对方机构",
+        "备注",
+    ): {
+        "serial": 0,
+        "occurred_at": 1,
+        "debit": 2,
+        "credit": 3,
+        "balance": 4,
+        "counterparty_name": 5,
+        "counterparty_account": 6,
+        "counterparty_institution": 7,
+        "note": 8,
+    },
+}
 _COMPANY_ACCOUNT = re.compile(r"^(?P<account>[0-9]+)\(人民币\)$")
 _COMPANY_COUNT = re.compile(r"^(?P<count>[0-9]+)笔$")
 _COMPANY_SUMMARY_MONEY = re.compile(
@@ -86,6 +158,186 @@ class MyBankStatementError(RuntimeError):
 
 class MyBankEmptyStatementError(MyBankStatementError):
     """The source is a valid MYbank export with no transactions to import."""
+
+
+def parse_mybank_company_range_xlsx(
+    source_path: Path,
+    *,
+    expected_sha256: str,
+    managed_account_suffix: str,
+) -> MyBankStatement:
+    """Parse one official multi-day MYbank company statement export."""
+
+    if not _DIGEST.fullmatch(expected_sha256):
+        raise MyBankStatementError("expected source digest is invalid")
+    if not _ACCOUNT_SUFFIX.fullmatch(managed_account_suffix):
+        raise MyBankStatementError("managed account suffix is invalid")
+    raw = _read_source(source_path)
+    source_sha256 = hashlib.sha256(raw).hexdigest()
+    if source_sha256 != expected_sha256:
+        raise MyBankStatementError("source digest changed")
+    rows = _read_workbook_rows(raw, expected_sheet_name="sheet1")
+    if len(rows) < 5 or tuple(number for number, _ in rows[:5]) != (1, 2, 3, 4, 5):
+        raise MyBankStatementError("company statement metadata rows are invalid")
+
+    title = _company_width(rows[0][1])
+    identity = _company_width(rows[1][1])
+    if title != (_COMPANY_TITLE, *("" for _ in range(10))):
+        raise MyBankStatementError("company statement title is invalid")
+    if (
+        identity[0] != "企业名称"
+        or not identity[1]
+        or identity[4] != "企业账号"
+        or any(identity[index] for index in (2, 3, 6, 7, 8, 9, 10))
+    ):
+        raise MyBankStatementError("company statement identity is invalid")
+    company_name = _company_text(identity[1], field="company name", required=True, maximum=200)
+    account_match = _COMPANY_ACCOUNT.fullmatch(identity[5])
+    if account_match is None or not account_match.group("account").endswith(managed_account_suffix):
+        raise MyBankStatementError("company statement does not belong to the managed account")
+    account_sha256 = hashlib.sha256(account_match.group("account").encode("ascii")).hexdigest()
+    company_sha256 = hashlib.sha256(company_name.encode("utf-8")).hexdigest()
+    debit_count, debit_total = _company_summary(
+        rows[2][1], count_label="借方交易笔数", amount_label="借方交易金额"
+    )
+    credit_count, credit_total = _company_summary(
+        rows[3][1], count_label="贷方交易笔数", amount_label="贷方交易金额"
+    )
+
+    headers = tuple(rows[4][1])
+    try:
+        columns = _COMPANY_RANGE_HEADERS[headers]
+    except KeyError:
+        raise MyBankStatementError("company range statement header is invalid") from None
+
+    transactions: list[MyBankTransaction] = []
+    submitted_values: list[str | None] = []
+    known_serials: set[str] = set()
+    for expected_row_number, (source_row_number, raw_values) in enumerate(rows[5:], start=6):
+        if source_row_number != expected_row_number:
+            raise MyBankStatementError("company statement transaction rows are not contiguous")
+        if len(raw_values) > len(headers):
+            raise MyBankStatementError("company range statement contains unexpected columns")
+        values = (*raw_values, *("" for _ in range(len(headers) - len(raw_values))))
+        if not any(values):
+            raise MyBankStatementError("company statement transaction row is empty")
+
+        serial = _company_text(values[columns["serial"]], field="transaction serial", required=True)
+        if serial in known_serials:
+            raise MyBankStatementError("company statement transaction serial is duplicated")
+        known_serials.add(serial)
+        occurred_at = _parse_occurred_at(values[columns["occurred_at"]])
+        submitted_index = columns.get("submitted_at")
+        submitted_raw = values[submitted_index] if submitted_index is not None else ""
+        if submitted_raw:
+            submitted_at = _parse_occurred_at(submitted_raw)
+            if submitted_at.date() != occurred_at.date():
+                raise MyBankStatementError("company statement transaction dates conflict")
+            submitted_values.append(submitted_at.isoformat())
+        else:
+            submitted_values.append(None)
+
+        debit = _company_optional_minor(values[columns["debit"]])
+        credit = _company_optional_minor(values[columns["credit"]])
+        if (debit is None) == (credit is None):
+            raise MyBankStatementError("company statement transaction direction is invalid")
+        amount_minor = debit if debit is not None else -credit  # type: ignore[operator]
+        if amount_minor == 0:
+            raise MyBankStatementError("company statement transaction amount is invalid")
+        balance_minor = _company_required_minor(values[columns["balance"]], field="balance")
+
+        note = _company_text(values[columns["note"]], field="note")
+        name_index = columns.get("transaction_name")
+        transaction_name = (
+            _company_text(values[name_index], field="transaction name", required=True)
+            if name_index is not None
+            else "银行未提供交易名称"
+        )
+        combined_name = transaction_name if not note else f"{transaction_name} | {note}"
+        if len(combined_name) > 300:
+            raise MyBankStatementError("company statement transaction name is too long")
+
+        normalized_values = tuple(
+            _company_text(value, field="transaction text")
+            if index not in {columns["debit"], columns["credit"], columns["balance"]}
+            else value
+            for index, value in enumerate(values)
+        )
+        row_sha256 = hashlib.sha256(
+            json.dumps(normalized_values, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+        ).hexdigest()
+        source_event_ref = uuid5(
+            _COMPANY_NAMESPACE,
+            f"mybank-company-range-event:{source_sha256}:{source_row_number}:{row_sha256}",
+        )
+        counterparty_account_index = columns.get("counterparty_account")
+        transactions.append(
+            MyBankTransaction(
+                source_event_ref=source_event_ref,
+                source_row_number=source_row_number,
+                source_row_sha256=row_sha256,
+                occurred_at=occurred_at,
+                amount_minor=amount_minor,
+                balance_minor=balance_minor,
+                counterparty_name=_company_text(
+                    values[columns["counterparty_name"]], field="counterparty name"
+                ),
+                counterparty_account=(
+                    _company_text(values[counterparty_account_index], field="counterparty account")
+                    if counterparty_account_index is not None
+                    else ""
+                ),
+                counterparty_institution=_company_text(
+                    values[columns["counterparty_institution"]],
+                    field="counterparty institution",
+                ),
+                transaction_serial=serial,
+                transaction_name=combined_name,
+            )
+        )
+
+    _validate_company_transactions(
+        transactions,
+        debit_count=debit_count,
+        debit_total_minor=debit_total,
+        credit_count=credit_count,
+        credit_total_minor=credit_total,
+    )
+    if not transactions:
+        raise MyBankEmptyStatementError("company statement contains no transactions")
+    parser_facts_sha256 = hashlib.sha256(
+        json.dumps(
+            {
+                "account_sha256": account_sha256,
+                "company_sha256": company_sha256,
+                "credit_count": credit_count,
+                "credit_total_minor": credit_total,
+                "debit_count": debit_count,
+                "debit_total_minor": debit_total,
+                "header": headers,
+                "row_sha256": [item.source_row_sha256 for item in transactions],
+                "submitted_at": submitted_values,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    ).hexdigest()
+    return MyBankStatement(
+        statement_ref=uuid5(_COMPANY_NAMESPACE, f"mybank-company-range:{source_sha256}"),
+        source_sha256=source_sha256,
+        source_size=len(raw),
+        declared_media_type=MYBANK_COMPANY_RANGE_XLSX_V3.declared_media_type,
+        currency="CNY",
+        institution_code=MYBANK_COMPANY_RANGE_XLSX_V3.institution_code,
+        account_suffix=managed_account_suffix,
+        worksheet_index=1,
+        header_row_number=5,
+        transactions=tuple(transactions),
+        parser_profile=BankStatementParserProfile.MYBANK_COMPANY_RANGE_XLSX_V3,
+        source_system=MYBANK_COMPANY_RANGE_XLSX_V3.source_system,
+        parser_facts_sha256=parser_facts_sha256,
+    )
 
 
 def parse_mybank_company_daily_xlsx(

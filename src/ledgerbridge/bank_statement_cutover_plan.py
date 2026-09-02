@@ -55,6 +55,7 @@ class BankStatementExistingAccountPlan:
     expected_monthly_transaction_counts: tuple[tuple[str, int], ...]
     actor: str
     reason: str
+    expected_new_transaction_count: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.source_path, Path) or not self.source_path.is_absolute():
@@ -81,6 +82,11 @@ class BankStatementExistingAccountPlan:
             raise ValueError("bank statement period is invalid")
         if type(self.expected_transaction_count) is not int or self.expected_transaction_count <= 0:
             raise ValueError("bank statement transaction count is invalid")
+        if self.expected_new_transaction_count is not None and (
+            type(self.expected_new_transaction_count) is not int
+            or not 0 <= self.expected_new_transaction_count <= self.expected_transaction_count
+        ):
+            raise ValueError("bank statement new-transaction count is invalid")
         if not self.expected_monthly_transaction_counts or any(
             _MONTH.fullmatch(month) is None or type(count) is not int or count <= 0
             for month, count in self.expected_monthly_transaction_counts

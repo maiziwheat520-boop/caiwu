@@ -25,6 +25,7 @@ from ledgerbridge.bank_statement_cutover_plan_builder import (
 )
 
 BANK_STATEMENT_PRIVATE_BATCH_SCHEMA: Final = "ledgerbridge.private-company-statement-batch.v1"
+BANK_STATEMENT_PRIVATE_BATCH_SCHEMA_V2: Final = "ledgerbridge.private-company-statement-batch.v2"
 BANK_STATEMENT_BATCH_PREFLIGHT_RECEIPT_SCHEMA: Final = (
     "ledgerbridge.bank-statement-batch-cutover-preflight.v1"
 )
@@ -55,6 +56,11 @@ _ITEM_KEYS: Final = {
     "period",
     "transaction_count",
     "evidence_ref",
+}
+_ITEM_KEYS_V2: Final = (_ITEM_KEYS - {"period"}) | {
+    "period_start",
+    "period_end",
+    "new_transaction_count",
 }
 _SKIPPED_EMPTY_KEYS: Final = {
     "source_group",
@@ -100,8 +106,10 @@ class _ManifestItem:
     source_sha256: str
     source_size: int
     account_suffix: str
-    period: date
+    period_start: date
+    period_end: date
     transaction_count: int
+    new_transaction_count: int
     evidence_ref: UUID
 
 
@@ -216,10 +224,11 @@ def load_private_bank_statement_batch(path: Path) -> LoadedBankStatementBatch:
 
     try:
         payload = _read_private_json(path, maximum=_MAX_MANIFEST_BYTES)
-        if (
-            set(payload) != _MANIFEST_KEYS
-            or payload.get("schema_version") != BANK_STATEMENT_PRIVATE_BATCH_SCHEMA
-        ):
+        schema_version = payload.get("schema_version")
+        if set(payload) != _MANIFEST_KEYS or schema_version not in {
+            BANK_STATEMENT_PRIVATE_BATCH_SCHEMA,
+            BANK_STATEMENT_PRIVATE_BATCH_SCHEMA_V2,
+        }:
             raise ValueError
         target_revision = _text(payload["target_revision"])
         if _REVISION.fullmatch(target_revision) is None:
@@ -238,7 +247,9 @@ def load_private_bank_statement_batch(path: Path) -> LoadedBankStatementBatch:
         ):
             raise ValueError
         _validate_skipped_entries(payload)
-        items = tuple(_load_manifest_item(value) for value in items_raw)
+        items = tuple(
+            _load_manifest_item(value, schema_version=str(schema_version)) for value in items_raw
+        )
         if (
             len({item.item_id for item in items}) != len(items)
             or len({item.source_sha256 for item in items}) != len(items)
@@ -302,8 +313,9 @@ def load_private_bank_statement_batch(path: Path) -> LoadedBankStatementBatch:
         ) from None
 
 
-def _load_manifest_item(value: object) -> _ManifestItem:
-    item = _strict_mapping(value, _ITEM_KEYS)
+def _load_manifest_item(value: object, *, schema_version: str) -> _ManifestItem:
+    is_v2 = schema_version == BANK_STATEMENT_PRIVATE_BATCH_SCHEMA_V2
+    item = _strict_mapping(value, _ITEM_KEYS_V2 if is_v2 else _ITEM_KEYS)
     item_id = _text(item["item_id"])
     digest = _text(item["source_sha256"])
     suffix = _text(item["account_suffix"])
@@ -315,13 +327,25 @@ def _load_manifest_item(value: object) -> _ManifestItem:
         raise ValueError
     _text(item["source_group"])
     _text(item["source_name"])
+    transaction_count = _positive_integer(item["transaction_count"])
+    new_transaction_count = (
+        _non_negative_integer(item["new_transaction_count"]) if is_v2 else transaction_count
+    )
+    if new_transaction_count > transaction_count:
+        raise ValueError
+    period_start = date.fromisoformat(_text(item["period_start"] if is_v2 else item["period"]))
+    period_end = date.fromisoformat(_text(item["period_end"] if is_v2 else item["period"]))
+    if period_start > period_end:
+        raise ValueError
     return _ManifestItem(
         item_id=item_id,
         source_sha256=digest,
         source_size=_positive_integer(item["source_size"]),
         account_suffix=suffix,
-        period=date.fromisoformat(_text(item["period"])),
-        transaction_count=_positive_integer(item["transaction_count"]),
+        period_start=period_start,
+        period_end=period_end,
+        transaction_count=transaction_count,
+        new_transaction_count=new_transaction_count,
         evidence_ref=UUID(_text(item["evidence_ref"])),
     )
 
@@ -364,9 +388,15 @@ def _bind_item_plan(
         or cutover.expected_sha256 != item.source_sha256
         or cutover.expected_size != item.source_size
         or cutover.account_suffix != item.account_suffix
-        or cutover.period_start != item.period
-        or cutover.period_end != item.period
+        or cutover.period_start != item.period_start
+        or cutover.period_end != item.period_end
         or cutover.expected_transaction_count != item.transaction_count
+        or (
+            cutover.expected_new_transaction_count
+            if cutover.expected_new_transaction_count is not None
+            else cutover.expected_transaction_count
+        )
+        != item.new_transaction_count
         or cutover.evidence_ref != item.evidence_ref
     ):
         raise ValueError

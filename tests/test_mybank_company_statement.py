@@ -17,6 +17,7 @@ from ledgerbridge.bank_statement_cutover_plan import (
 )
 from ledgerbridge.bank_statement_cutover_plan_builder import (
     BANK_STATEMENT_EXISTING_ACCOUNT_DRAFT_SCHEMA,
+    BANK_STATEMENT_EXISTING_ACCOUNT_DRAFT_SCHEMA_V2,
     finalize_private_bank_statement_plan,
     load_private_bank_statement_plan,
 )
@@ -27,6 +28,7 @@ from ledgerbridge.mybank_statement import (
     MyBankEmptyStatementError,
     MyBankStatementError,
     parse_mybank_company_daily_xlsx,
+    parse_mybank_company_range_xlsx,
 )
 from ledgerbridge.mybank_statement_cutover import (
     ProductionCounts,
@@ -51,6 +53,8 @@ _ENTITY_REF = UUID("72000000-0000-4000-8000-000000000001")
 _BUSINESS_UNIT_REF = UUID("72000000-0000-4000-8000-000000000002")
 _ACCOUNT_REF = UUID("72000000-0000-4000-8000-000000000003")
 _EVIDENCE_REF = UUID("72000000-0000-4000-8000-000000000004")
+_FW_LEFT = "\N{FULLWIDTH LEFT PARENTHESIS}"
+_FW_RIGHT = "\N{FULLWIDTH RIGHT PARENTHESIS}"
 
 
 def _column_name(index: int) -> str:
@@ -219,6 +223,147 @@ def test_company_daily_parser_is_stable_and_maps_eleven_columns(tmp_path: Path) 
     assert len(statement.parser_facts_sha256) == 64
 
 
+@pytest.mark.parametrize(
+    "headers",
+    [
+        (
+            "账务流水号",
+            "提交时间",
+            "交易时间",
+            "交易名称",
+            f"借方金额{_FW_LEFT}收{_FW_RIGHT}",
+            f"贷方金额{_FW_LEFT}支{_FW_RIGHT}",
+            "余额",
+            "对方户名",
+            "对方账号",
+            "对方机构",
+            "备注",
+        ),
+        (
+            "账务流水号",
+            "交易时间",
+            "交易名称",
+            f"借方金额{_FW_LEFT}收{_FW_RIGHT}",
+            f"贷方金额{_FW_LEFT}支{_FW_RIGHT}",
+            "余额",
+            "对方户名",
+            "对方机构",
+            "备注",
+        ),
+        (
+            "账务流水号",
+            "交易时间",
+            f"借方金额{_FW_LEFT}收{_FW_RIGHT}",
+            f"贷方金额{_FW_LEFT}支{_FW_RIGHT}",
+            "余额",
+            "对方户名",
+            "对方账号",
+            "对方机构",
+            "备注",
+        ),
+    ],
+)
+def test_company_range_parser_accepts_official_header_variants(
+    tmp_path: Path,
+    headers: tuple[str, ...],
+) -> None:
+    metadata = _rows()[:4]
+    if len(headers) == 11:
+        transactions = [
+            (
+                "synthetic-0001",
+                "",
+                "2026-01-03 06:07:08",
+                "转入",
+                "125.34",
+                "",
+                "5125.34",
+                "合成商户甲",
+                "0000000000001111",
+                "合成银行",
+                "货款",
+            ),
+            (
+                "synthetic-0002",
+                "2026-01-02 03:04:05",
+                "2026-01-02 03:04:05",
+                "消费",
+                "",
+                "20.00",
+                "5000.00",
+                "合成商户乙",
+                "0000000000002222",
+                "合成银行",
+                "消费",
+            ),
+        ]
+    elif headers[2] == "交易名称":
+        transactions = [
+            (
+                "synthetic-0001",
+                "2026-01-03 06:07:08",
+                "转入",
+                "125.34",
+                "",
+                "5125.34",
+                "合成商户甲",
+                "合成银行",
+                "货款",
+            ),
+            (
+                "synthetic-0002",
+                "2026-01-02 03:04:05",
+                "消费",
+                "",
+                "20.00",
+                "5000.00",
+                "合成商户乙",
+                "合成银行",
+                "消费",
+            ),
+        ]
+    else:
+        transactions = [
+            (
+                "synthetic-0001",
+                "2026-01-03 06:07:08",
+                "125.34",
+                "",
+                "5125.34",
+                "合成商户甲",
+                "0000000000001111",
+                "合成银行",
+                "货款",
+            ),
+            (
+                "synthetic-0002",
+                "2026-01-02 03:04:05",
+                "",
+                "20.00",
+                "5000.00",
+                "合成商户乙",
+                "0000000000002222",
+                "合成银行",
+                "消费",
+            ),
+        ]
+    path = (tmp_path / "synthetic-company-range.xlsx").resolve()
+    raw = _write_xlsx(path, [*metadata, headers, *transactions])
+
+    statement = parse_mybank_company_range_xlsx(
+        path,
+        expected_sha256=hashlib.sha256(raw).hexdigest(),
+        managed_account_suffix=_SUFFIX,
+    )
+
+    assert statement.parser_profile is BankStatementParserProfile.MYBANK_COMPANY_RANGE_XLSX_V3
+    assert statement.period_start.isoformat() == "2026-01-02"
+    assert statement.period_end.isoformat() == "2026-01-03"
+    assert len(statement.transactions) == 2
+    assert statement.transactions[0].amount_minor == 12_534
+    assert statement.transactions[1].amount_minor == -2_000
+
+
 def test_company_daily_parser_recognizes_valid_empty_statement(tmp_path: Path) -> None:
     path = (tmp_path / "synthetic-empty.xlsx").resolve()
     raw = _write_xlsx(path, _rows(empty=True))
@@ -385,3 +530,58 @@ def test_generic_plan_builder_materializes_company_profile(
         assert after.encrypted_object_identities == before.encrypted_object_identities + 1
         assert after.encrypted_blob_versions == before.encrypted_blob_versions + 1
         assert after.managed_accounts == before.managed_accounts
+
+
+def test_range_plan_binds_expected_new_transaction_count(tmp_path: Path) -> None:
+    source = (tmp_path / "synthetic-company-range.xlsx").resolve()
+    rows = _rows()
+    rows[4] = tuple(value.replace("(", _FW_LEFT).replace(")", _FW_RIGHT) for value in rows[4])
+    rows[5] = (
+        rows[5][0],
+        "2026-01-03 06:00:00",
+        "2026-01-03 06:07:08",
+        *rows[5][3:],
+    )
+    raw = _write_xlsx(source, rows)
+    statement = parse_mybank_company_range_xlsx(
+        source,
+        expected_sha256=hashlib.sha256(raw).hexdigest(),
+        managed_account_suffix=_SUFFIX,
+    )
+    backup = (tmp_path / "backup").resolve()
+    backup.mkdir()
+    draft = (tmp_path / "draft.json").resolve()
+    output = (tmp_path / "plan.json").resolve()
+    draft.write_text(
+        json.dumps(
+            {
+                "schema_version": BANK_STATEMENT_EXISTING_ACCOUNT_DRAFT_SCHEMA_V2,
+                "target_revision": "a" * 40,
+                "parser": {"profile": "mybank_company_range_xlsx_v3"},
+                "source": {"path": str(source), "account_suffix": _SUFFIX},
+                "scope": {
+                    "evidence_ref": str(_EVIDENCE_REF),
+                    "evidence_mode": "CREATE_NEW",
+                    "owner_entity_ref": str(_ENTITY_REF),
+                    "business_unit_ref": str(_BUSINESS_UNIT_REF),
+                    "owner_kind": "COMPANY",
+                    "expected_new_transaction_count": 1,
+                },
+                "account": {"managed_account_ref": str(_ACCOUNT_REF)},
+                "audit": {"actor": "worker:test", "reason": "synthetic range import"},
+                "safety": {
+                    "backup_directory": str(backup),
+                    "restore_report": str(backup / "restore.json"),
+                    "key_file": str((tmp_path / "key.json").resolve()),
+                    "artifact_root": str((tmp_path / "artifacts").resolve()),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    finalize_private_bank_statement_plan(draft, output)
+    loaded = load_private_bank_statement_plan(output)
+
+    assert loaded.cutover.expected_new_transaction_count == 1
+    assert loaded.cutover.expected_transaction_count == len(statement.transactions)
