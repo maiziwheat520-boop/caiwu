@@ -711,6 +711,10 @@ BANK_STATEMENT_TABLES = (
     "bank_statement_observation",
     "bank_statement_review",
 )
+CASH_RECONCILIATION_TABLES = (
+    "cash_reconciliation_rule",
+    "cash_reconciliation_adjustment",
+)
 ACCOUNT_REGISTRY_TABLES = (
     "account_registry_operation",
     "managed_account_alias",
@@ -724,12 +728,8 @@ R1_CUTOVER_INVENTORY_TABLES = tuple(
         | set(COUNTERPARTY_PROTECTED_TABLES)
         | set(BANK_STATEMENT_TABLES)
         | set(ACCOUNT_REGISTRY_TABLES)
-        | {
-            "journal_entry",
-            "posting",
-            "cash_reconciliation_rule",
-            "cash_reconciliation_adjustment",
-        }
+        | set(CASH_RECONCILIATION_TABLES)
+        | {"journal_entry", "posting"}
     )
 )
 _R1_CUTOVER_ROW_COUNTS_SQL = ", ".join(
@@ -811,6 +811,12 @@ BANK_STATEMENT_SECURITY_DEFINER_FUNCTIONS = frozenset(
         ("internal_command", "review_bank_statement"),
         ("internal_read", "get_bank_statement_summary"),
         ("internal_read", "list_bank_statement_transactions"),
+        ("internal_read", "cash_reconciliation_rules_v1"),
+        ("internal_read", "cash_reconciliation_month_v1"),
+    }
+)
+CASH_RECONCILIATION_FUNCTION_KEYS = frozenset(
+    {
         ("internal_read", "cash_reconciliation_rules_v1"),
         ("internal_read", "cash_reconciliation_month_v1"),
     }
@@ -961,6 +967,12 @@ BANK_STATEMENT_TRIGGER_CONTRACT = {
         "r1_require_transaction_observation",
     ),
 }
+CASH_RECONCILIATION_TRIGGER_NAMES = frozenset(
+    {
+        "cash_reconciliation_rule_append_only",
+        "cash_reconciliation_adjustment_append_only",
+    }
+)
 BANK_STATEMENT_REQUIRED_TRIGGERS = frozenset(BANK_STATEMENT_TRIGGER_CONTRACT)
 BANK_STATEMENT_CONSTRAINT_CONTRACT = {
     "bank_statement_audit_event_id_fkey": (
@@ -1588,6 +1600,9 @@ SELECT jsonb_build_object(
 )
 
 _BANK_TABLES_SQL = ", ".join(f"'{name}'" for name in BANK_STATEMENT_TABLES)
+_BANK_TRIGGER_TABLES_SQL = ", ".join(
+    f"'{name}'" for name in (*BANK_STATEMENT_TABLES, *CASH_RECONCILIATION_TABLES)
+)
 _BANK_ROLES_SQL = ", ".join(f"('{name}'::name)" for name in R1_CONTROLLED_ROLES)
 _BANK_FUNCTIONS_SQL = ", ".join(
     f"('{schema}', '{name}', '{args}')"
@@ -1627,7 +1642,8 @@ present_roles(role_name) AS (
  JOIN pg_namespace n ON n.oid=c.relnamespace
  JOIN pg_proc fn ON fn.oid=t.tgfoid
  JOIN pg_namespace fnn ON fnn.oid=fn.pronamespace
- WHERE n.nspname='public' AND NOT t.tgisinternal AND c.relname IN (__BANK_TABLES_SQL__)
+ WHERE n.nspname='public' AND NOT t.tgisinternal
+  AND c.relname IN (__BANK_TRIGGER_TABLES_SQL__)
 ), observed_constraints AS (
  SELECT c.relname table_name,con.conname constraint_name,con.contype constraint_type,
   con.convalidated is_validated,con.condeferrable is_deferrable,
@@ -1733,6 +1749,7 @@ SELECT json_build_object(
 )::text;
     """.replace("__R1_ROLE_SQL__", _BANK_ROLES_SQL)
     .replace("__BANK_TABLES_SQL__", _BANK_TABLES_SQL)
+    .replace("__BANK_TRIGGER_TABLES_SQL__", _BANK_TRIGGER_TABLES_SQL)
     .replace("__BANK_FUNCTIONS_SQL__", _BANK_FUNCTIONS_SQL)
     .strip()
 )
@@ -5239,8 +5256,12 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
         raise BackupError("restored bank statement schema security boundary is invalid")
 
     functions = _list("bank_statement_functions")
+    expected_function_signatures = dict(BANK_STATEMENT_FUNCTION_SIGNATURES)
+    if revision < CASH_RECONCILIATION_REVISION:
+        for function_key in CASH_RECONCILIATION_FUNCTION_KEYS:
+            expected_function_signatures.pop(function_key)
     expected_functions = {
-        (schema, name, args) for (schema, name), args in BANK_STATEMENT_FUNCTION_SIGNATURES.items()
+        (schema, name, args) for (schema, name), args in expected_function_signatures.items()
     }
     actual_functions = {
         (item.get("schema"), item.get("name"), item.get("identity_arguments")) for item in functions
@@ -5267,6 +5288,9 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
     }
     if revision >= BANK_STATEMENT_REVIEW_API_GRANT_REVISION:
         executors[("internal_command", "review_bank_statement")] = "ledgerbridge_api"
+    if revision >= CASH_RECONCILIATION_REVISION:
+        for function_key in CASH_RECONCILIATION_FUNCTION_KEYS:
+            executors[function_key] = "ledgerbridge_reader"
 
     triggers = _list("bank_statement_triggers")
     actual_trigger_contract = {
@@ -5281,6 +5305,9 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
         for item in triggers
     }
     expected_trigger_contract = dict(BANK_STATEMENT_TRIGGER_CONTRACT)
+    if revision < CASH_RECONCILIATION_REVISION:
+        for trigger_name in CASH_RECONCILIATION_TRIGGER_NAMES:
+            expected_trigger_contract.pop(trigger_name)
     if revision >= ACCOUNT_REGISTRY_SECURITY_REVISION:
         expected_trigger_contract.pop("validate_managed_account_audit")
         expected_trigger_contract.pop("require_statement_backed_account")
