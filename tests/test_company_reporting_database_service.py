@@ -475,6 +475,28 @@ def test_candidate_statement_and_posted_bases_are_returned_without_cross_layer_m
     assert posted_page.basis is CompanyReportBasis.POSTED_LEDGER
 
 
+def test_confirmed_account_statement_with_bound_unit_returns_available_breakdown() -> None:
+    confirmed_statement = _report(basis=CompanyReportBasis.ACCOUNT_STATEMENT)
+    session = _Session(
+        {
+            (COMPANY_A, "ACCOUNT_STATEMENT"): [{"report": confirmed_statement}],
+        }
+    )
+
+    page = _service(session).report(
+        _principal((_grant(COMPANY_A, "unit-a", UNIT_A),)),
+        basis=CompanyReportBasis.ACCOUNT_STATEMENT,
+        from_month="2026-08",
+        to_month="2026-08",
+        company_ref=COMPANY_A,
+    )
+
+    item = page.items[0]
+    assert item.business_unit_breakdown_status.value == "AVAILABLE"
+    assert item.metrics.confirmed_transaction_count == 3
+    assert item.months[0].business_units is not None
+
+
 def test_unauthorized_and_unknown_company_are_indistinguishable() -> None:
     principal = _principal((_grant(COMPANY_A, "unit-a", UNIT_A),))
     unauthorized_session = _Session({COMPANY_A: [{"report": _report()}]})

@@ -160,6 +160,32 @@ def test_company_report_v1_uses_basis_specific_metrics_and_common_pending_counts
     assert isinstance(item.months[0].business_units[0], CompanyReportBusinessUnit)
 
 
+def test_confirmed_account_statement_accepts_available_business_unit_breakdown() -> None:
+    month = _month(
+        CompanyReportBasis.ACCOUNT_STATEMENT,
+        business_unit_breakdown_status="AVAILABLE",
+        business_units=[_business_unit(CompanyReportBasis.ACCOUNT_STATEMENT)],
+    )
+
+    page = CompanyReportPage.model_validate(
+        {
+            "basis": CompanyReportBasis.ACCOUNT_STATEMENT.value,
+            "from_month": "2026-08",
+            "to_month": "2026-08",
+            "items": [
+                _company(
+                    CompanyReportBasis.ACCOUNT_STATEMENT,
+                    business_unit_breakdown_status="AVAILABLE",
+                    months=[month],
+                )
+            ],
+        }
+    )
+
+    assert page.items[0].business_unit_breakdown_status.value == "AVAILABLE"
+    assert page.items[0].months[0].business_units is not None
+
+
 @pytest.mark.parametrize("basis", list(CompanyReportBasis))
 def test_company_report_page_selects_exactly_one_financial_basis(
     basis: CompanyReportBasis,
