@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Badge } from '@radix-ui/themes'
-import { Bank, CalendarBlank, CheckCircle, Database, Info, Warning } from '@phosphor-icons/react'
+import { Bank, CalendarBlank, CheckCircle, Database, Warning } from '@phosphor-icons/react'
 import { api, minorToMajor } from '../api'
 import type {
   CompanyReportAggregate,
@@ -35,7 +35,10 @@ export function CompanyReportsPage() {
       const response = await api.getCompanyReports(appliedRange ?? {})
       setReports(response)
       const statementLayer = response.layers.find((layer) => layer.basis === 'ACCOUNT_STATEMENT')
-      setBasis(statementLayer?.items.some((item) => (
+      const hasClassifiedTransactions = response.transaction_classifications?.items.some(
+        (item) => item.confirmed_count > 0 || item.pending_count > 0,
+      )
+      setBasis(hasClassifiedTransactions || statementLayer?.items.some((item) => (
         item.metrics.basis === 'ACCOUNT_STATEMENT'
         && item.metrics.confirmed_transaction_count > 0
       )) ? 'ACCOUNT_STATEMENT' : 'CONFIRMED_CANDIDATE')
@@ -59,7 +62,7 @@ export function CompanyReportsPage() {
     <PageHeader
       eyebrow="经营驾驶舱"
       title="各公司报表"
-      description="先看经营现金流，再下钻到分类、账单审核和逐月事实。"
+      description="按公司查看经营现金流、收支构成和月度趋势。"
     />
   )
 
@@ -144,13 +147,6 @@ export function CompanyReportsPage() {
     <>
       {header}
       {toolbar}
-      <section className="company-report-basis-note" aria-label="公司报表口径说明">
-        <Info size={18} />
-        <div>
-          <strong>正式数据的不同处理阶段分开展示</strong>
-          <span>银行账单和其流水是正式业务数据；已确认事项与会计已过账结果分开计算。</span>
-        </div>
-      </section>
       {genericCompanyOnly ? (
         <section className="company-attribution-warning" role="alert">
           <Warning size={20} />
@@ -169,26 +165,6 @@ export function CompanyReportsPage() {
           </div>
           <div className="company-dashboard-actions">
             <span className="company-data-status"><CheckCircle size={15} weight="fill" />数据已更新</span>
-            <div className="company-basis-switch" role="group" aria-label="汇总口径">
-            <button
-              type="button"
-              aria-pressed={basis === 'ACCOUNT_STATEMENT'}
-              className={basis === 'ACCOUNT_STATEMENT' ? 'active' : ''}
-              onClick={() => setBasis('ACCOUNT_STATEMENT')}
-            >正式银行流水</button>
-            <button
-              type="button"
-              aria-pressed={basis === 'CONFIRMED_CANDIDATE'}
-              className={basis === 'CONFIRMED_CANDIDATE' ? 'active' : ''}
-              onClick={() => setBasis('CONFIRMED_CANDIDATE')}
-            >已确认事项</button>
-            <button
-              type="button"
-              aria-pressed={basis === 'POSTED_LEDGER'}
-              className={basis === 'POSTED_LEDGER' ? 'active' : ''}
-              onClick={() => setBasis('POSTED_LEDGER')}
-            >正式账簿</button>
-            </div>
           </div>
         </header>
         <div className="company-dashboard-totals">
@@ -201,7 +177,6 @@ export function CompanyReportsPage() {
             已分类 {dashboard.confirmedCount} 条，待人工确认 {dashboard.pendingCount ?? 0} 条；往来、融资和内部划转不计入经营流入或经营流出。
           </p>
         ) : null}
-        <p className="company-dashboard-basis-description"><Info size={15} />{basisDescription(basis)}</p>
         <div className="company-dashboard-body">
           <MonthlyCashflowTable reports={reports} basis={basis} companyRefs={showAllCompanies ? companies.map(([companyRef]) => companyRef) : [activeCompanyRef]} currencyCode={activeCurrencyCode} />
           <aside className="company-dashboard-rail" aria-label="收支构成">
@@ -211,14 +186,6 @@ export function CompanyReportsPage() {
           </aside>
         </div>
       </section>
-      <details className="company-report-detail-drawer">
-        <summary>查看数据处理阶段与逐月明细</summary>
-        <div className="company-report-list">
-          {(showAllCompanies ? companies : activeCompany ? [[activeCompanyRef, activeCompany] as const] : []).map(([companyRef, identity]) => (
-            <CompanyReportCard key={companyRef} companyRef={companyRef} companyName={identity.name} currencyCode={identity.currencyCode} postedLedgerStatus={reports.posted_ledger_status} layers={reports.layers} />
-          ))}
-        </div>
-      </details>
     </>
   )
 }
@@ -482,12 +449,6 @@ function visibleCategorySlices(composition: CompanyReportCategoryComposition) {
   ]
 }
 
-function basisDescription(basis: CompanyReportLayer['basis']) {
-  if (basis === 'ACCOUNT_STATEMENT') return '正式银行流水：按已确认分类区分经营现金流、往来款、融资和内部划转；不等同于会计收入、费用或利润。'
-  if (basis === 'CONFIRMED_CANDIDATE') return '已确认事项：按已审核的业务事项金额正负统计，尚未生成会计过账分录。'
-  return '会计账簿：仅统计已过账分录。'
-}
-
 function NonOperatingCashflow({ categories, currencyCode }: {
   categories: CompanyTransactionCategorySummary[] | undefined
   currencyCode: string
@@ -621,6 +582,8 @@ function reportMonthLabel(month: string) {
   return `${year} 年 ${Number(value)} 月`
 }
 
+// Retained as an internal diagnostic renderer; it is intentionally not mounted in the report UI.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function CompanyReportCard({ companyRef, companyName, currencyCode, postedLedgerStatus, layers }: {
   companyRef: string
   companyName: string

@@ -2448,38 +2448,32 @@ describe('LedgerBridge Web API client', () => {
     expect(await screen.findByText('当前期间没有可展示的公司报表')).toBeInTheDocument()
   })
 
-  it('shows posted totals, source layers, months, and authoritative business units separately', async () => {
+  it('keeps processing-stage and business-unit diagnostics out of the company report page', async () => {
     window.history.replaceState({}, '', '/company-reports')
     installFetch({ runtimeMode: 'core-backed', companyReportResponse: companyReports(true, true) })
 
     renderApp()
 
     expect(await screen.findByRole('region', { name: '演示公司 财务汇总' })).toBeInTheDocument()
-    expect(screen.getAllByText('¥8,000.00').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('¥2,350.00').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('¥5,650.00').length).toBeGreaterThan(0)
-    expect(screen.getByText('已确认来源 61 条')).toBeInTheDocument()
-    expect(screen.getByText('账户流水 0 条')).toBeInTheDocument()
-    expect(screen.getByText('正式入账 3 条')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '2026 年 8 月' })).toBeInTheDocument()
-    expect(screen.getByText('演示门店')).toBeInTheDocument()
-    expect(screen.getByText('余额基础尚未建立')).toBeInTheDocument()
+    expect(screen.queryByText('已确认来源 61 条')).not.toBeInTheDocument()
+    expect(screen.queryByText('正式入账 3 条')).not.toBeInTheDocument()
+    expect(screen.queryByText('演示门店')).not.toBeInTheDocument()
+    expect(screen.queryByText('余额基础尚未建立')).not.toBeInTheDocument()
   })
 
-  it('keeps confirmed attribution and review queues outside zero posted totals', async () => {
+  it('keeps internal attribution and review counts out of the report page', async () => {
     window.history.replaceState({}, '', '/company-reports')
     installFetch({ runtimeMode: 'core-backed', companyReportResponse: companyReports(true) })
 
     renderApp()
 
     expect(await screen.findByRole('region', { name: '演示公司 财务汇总' })).toBeInTheDocument()
-    expect(screen.getByText('61 条已确认来源待账户或经济性质归属')).toBeInTheDocument()
-    expect(screen.getByText('146 条来源待审核')).toBeInTheDocument()
-    expect(screen.getAllByText('¥0.00').length).toBeGreaterThanOrEqual(3)
-    expect(screen.getByText('正式入账 0 条')).toBeInTheDocument()
+    expect(screen.queryByText('61 条已确认来源待账户或经济性质归属')).not.toBeInTheDocument()
+    expect(screen.queryByText('146 条来源待审核')).not.toBeInTheDocument()
+    expect(screen.queryByText('正式入账 0 条')).not.toBeInTheDocument()
   })
 
-  it('keeps source layers visible without showing zero when the posted ledger is unavailable', async () => {
+  it('keeps unavailable-ledger diagnostics out of the report page', async () => {
     window.history.replaceState({}, '', '/company-reports')
     const reports = companyReports(true)
     reports.posted_ledger_status = 'UNAVAILABLE'
@@ -2489,9 +2483,8 @@ describe('LedgerBridge Web API client', () => {
     renderApp()
 
     expect(await screen.findByRole('region', { name: '演示公司 财务汇总' })).toBeInTheDocument()
-    expect(screen.getByText('已确认来源 61 条')).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: '演示公司 正式财务总额' })).not.toBeInTheDocument()
-    expect(screen.getByText('会计账簿尚未接入')).toBeInTheDocument()
+    expect(screen.queryByText('已确认来源 61 条')).not.toBeInTheDocument()
+    expect(screen.queryByText('会计账簿尚未接入')).not.toBeInTheDocument()
   })
 
   it('prioritizes confirmed account cash flow when the posted ledger is empty', async () => {
@@ -2527,17 +2520,11 @@ describe('LedgerBridge Web API client', () => {
 
     renderApp()
 
-    const statementSummary = await screen.findByRole('region', { name: '演示公司 账户流水汇总' })
-    expect(within(statementSummary).getByText('正式银行流水')).toBeInTheDocument()
-    expect(within(statementSummary).getByText('正式数据')).toBeInTheDocument()
-    expect(within(statementSummary).getByText('¥2,000.00')).toBeInTheDocument()
-    expect(within(statementSummary).getByText('¥800.00')).toBeInTheDocument()
-    expect(within(statementSummary).getByText('¥1,200.00')).toBeInTheDocument()
-    expect(within(statementSummary).getByText(/12 条/)).toBeInTheDocument()
-    expect(within(statementSummary).getByText('2 份账单')).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: '演示公司 已确认事项汇总' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: '演示公司 正式财务总额' })).not.toBeInTheDocument()
-    expect(screen.getByText('正式数据已接入，尚无会计过账分录')).toBeInTheDocument()
+    const dashboard = await screen.findByRole('region', { name: '演示公司 财务汇总' })
+    expect(within(dashboard).getAllByText('¥2,000.00').length).toBeGreaterThan(0)
+    expect(within(dashboard).getAllByText('¥800.00').length).toBeGreaterThan(0)
+    expect(within(dashboard).getAllByText('¥1,200.00').length).toBeGreaterThan(0)
+    expect(screen.queryByRole('region', { name: '演示公司 账户流水汇总' })).not.toBeInTheDocument()
   })
 
   it('warns when Core only returns the generic company placeholder', async () => {
@@ -2576,7 +2563,7 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.queryByText('待完成公司归属')).not.toBeInTheDocument()
   })
 
-  it('distinguishes unavailable business-unit breakdowns without backfilling names', async () => {
+  it('does not surface unavailable business-unit diagnostics on the report page', async () => {
     window.history.replaceState({}, '', '/company-reports')
     const reports = companyReports(true, true)
     const statementMonth = reports.layers[1].items[0].months[0] as unknown as {
@@ -2598,12 +2585,12 @@ describe('LedgerBridge Web API client', () => {
     renderApp()
 
     expect(await screen.findByRole('region', { name: '演示公司 财务汇总' })).toBeInTheDocument()
-    expect(screen.getByText('账户流水的业务单元归属待补；公司级现金流仍保留。')).toBeInTheDocument()
-    expect(screen.getByText('历史业务单元快照缺失；未使用当前维度名称回填。')).toBeInTheDocument()
+    expect(screen.queryByText('账户流水的业务单元归属待补；公司级现金流仍保留。')).not.toBeInTheDocument()
+    expect(screen.queryByText('历史业务单元快照缺失；未使用当前维度名称回填。')).not.toBeInTheDocument()
     expect(screen.queryByText('演示门店')).not.toBeInTheDocument()
   })
 
-  it('shows a completed empty business-unit breakdown as empty rather than unavailable', async () => {
+  it('does not surface empty business-unit diagnostics on the report page', async () => {
     window.history.replaceState({}, '', '/company-reports')
     const reports = companyReports(true)
     reports.layers.forEach((layer) => {
@@ -2616,7 +2603,8 @@ describe('LedgerBridge Web API client', () => {
 
     renderApp()
 
-    expect(await screen.findByText('正式入账层的业务单元事实确认为空。')).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: '演示公司 财务汇总' })).toBeInTheDocument()
+    expect(screen.queryByText('正式入账层的业务单元事实确认为空。')).not.toBeInTheDocument()
     expect(screen.queryByText(/历史业务单元快照缺失/)).not.toBeInTheDocument()
   })
 

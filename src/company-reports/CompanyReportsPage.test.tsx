@@ -78,8 +78,8 @@ describe('CompanyReportsPage', () => {
     render(<CompanyReportsPage />)
 
     expect(await screen.findByText('待完成公司归属')).toBeInTheDocument()
-    expect(screen.getByText(/216 条已确认来源待账户或经济性质归属/)).toBeInTheDocument()
-    expect(screen.getByText('会计账簿尚未接入')).toBeInTheDocument()
+    expect(screen.queryByText(/216 条已确认来源待账户或经济性质归属/)).not.toBeInTheDocument()
+    expect(screen.queryByText('查看数据处理阶段与逐月明细')).not.toBeInTheDocument()
   })
 
   it('shows totals and ranked category shares for the selected test company', async () => {
@@ -124,19 +124,14 @@ describe('CompanyReportsPage', () => {
     const dashboard = await screen.findByRole('region', {
       name: 'LedgerBridge controlled reconciliation 财务汇总',
     })
-    expect(screen.getByRole('button', { name: '正式银行流水' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByRole('button', { name: '正式银行流水' })).not.toBeInTheDocument()
     expect(within(dashboard).getByText('¥6,160,215.31')).toBeInTheDocument()
     expect(within(dashboard).getByText('¥5,930,787.86')).toBeInTheDocument()
     expect(within(dashboard).getByText('¥229,427.45')).toBeInTheDocument()
     expect(within(dashboard).getAllByText('账户流水尚未完成分类。')).toHaveLength(2)
-    const statementSummary = screen.getByRole('region', {
+    expect(screen.queryByRole('region', {
       name: 'LedgerBridge controlled reconciliation 账户流水汇总',
-    })
-    expect(within(statementSummary).getByText('正式银行流水')).toBeInTheDocument()
-    expect(within(statementSummary).getByText('正式数据')).toBeInTheDocument()
-    expect(within(statementSummary).getByText('账户流入')).toBeInTheDocument()
-    expect(within(statementSummary).getByText('账户流出')).toBeInTheDocument()
-    expect(within(statementSummary).getByText('净现金流')).toBeInTheDocument()
+    })).not.toBeInTheDocument()
     expect(screen.queryByText('测试汇总收入')).not.toBeInTheDocument()
     expect(screen.queryByRole('region', {
       name: 'LedgerBridge controlled reconciliation 正式财务总额',
@@ -189,7 +184,6 @@ describe('CompanyReportsPage', () => {
     await screen.findByRole('region', {
       name: 'LedgerBridge controlled reconciliation 财务汇总',
     })
-    fireEvent.click(screen.getByRole('button', { name: '正式银行流水' }))
     const dashboard = screen.getByRole('region', {
       name: 'LedgerBridge controlled reconciliation 财务汇总',
     })
@@ -247,7 +241,6 @@ describe('CompanyReportsPage', () => {
     await screen.findByRole('region', {
       name: 'LedgerBridge controlled reconciliation 财务汇总',
     })
-    fireEvent.click(screen.getByRole('button', { name: '正式银行流水' }))
     const dashboard = screen.getByRole('region', {
       name: 'LedgerBridge controlled reconciliation 财务汇总',
     })
@@ -305,8 +298,7 @@ describe('CompanyReportsPage', () => {
     expect(within(allCompaniesDashboard).getByText('¥320.00')).toBeInTheDocument()
     expect(within(allCompaniesDashboard).getByText('¥80.00')).toBeInTheDocument()
     expect(within(allCompaniesDashboard).getByText('¥240.00')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '薇旭公司' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '景怡公司' })).toBeInTheDocument()
+    expect(screen.queryByText('查看数据处理阶段与逐月明细')).not.toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('开始月份'), { target: { value: '2026-03' } })
     fireEvent.change(screen.getByLabelText('结束月份'), { target: { value: '2026-05' } })
@@ -345,7 +337,7 @@ describe('CompanyReportsPage', () => {
     expect(getReports).toHaveBeenCalledWith({})
   })
 
-  it('uses posted ledger totals and categories after switching to the formal basis', async () => {
+  it('keeps posted-ledger processing details out of the report page', async () => {
     const response = structuredClone(reports)
     const postedReport = structuredClone(response.layers[0].items[0])
     postedReport.metrics = {
@@ -391,14 +383,11 @@ describe('CompanyReportsPage', () => {
 
     render(<CompanyReportsPage />)
     await screen.findByRole('region', { name: 'LedgerBridge controlled reconciliation 财务汇总' })
-    fireEvent.click(screen.getByRole('button', { name: '正式账簿' }))
-
     const dashboard = screen.getByRole('region', {
       name: 'LedgerBridge controlled reconciliation 财务汇总',
     })
-    expect(within(dashboard).getAllByText('¥120.00')).toHaveLength(2)
-    expect(within(dashboard).getAllByText('¥45.00')).toHaveLength(2)
-    expect(within(dashboard).getByText('¥75.00')).toBeInTheDocument()
-    expect(within(dashboard).getByRole('img', { name: '水电费 100.0%' })).toBeInTheDocument()
+    expect(within(dashboard).getByText('¥100.00')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '正式账簿' })).not.toBeInTheDocument()
+    expect(within(dashboard).queryByRole('img', { name: '水电费 100.0%' })).not.toBeInTheDocument()
   })
 })
