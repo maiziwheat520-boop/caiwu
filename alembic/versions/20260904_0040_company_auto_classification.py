@@ -57,7 +57,7 @@ BEGIN
         v_matches := 0;
         v_category := NULL;
 
-        -- AUTO-P03: company credit containing 陈明哲 -> owner current account.
+        -- AUTO-P03: company credit with exact counterparty 陈明哲 -> owner current account.
         IF item.occurred_on >= DATE '2026-09-04'
            AND item.amount_minor > 0 AND item.normalized_counterparty = '陈明哲' THEN
             v_matches := v_matches + 1;
