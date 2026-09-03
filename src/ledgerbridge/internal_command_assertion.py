@@ -37,7 +37,8 @@ class UserAssertionClaims(BaseModel):
         pattern=(
             r"^/internal/v1/(?:candidates/[0-9a-f-]{36}|"
             r"candidate-classification-groups/cg_[0-9a-f]{32})/decisions$|"
-            r"^/internal/v1/bank-statements/[0-9a-f-]{36}/reviews$"
+            r"^/internal/v1/(?:bank-statements|"
+            r"company-transaction-classifications)/[0-9a-f-]{36}/reviews$"
         )
     )
     body_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")

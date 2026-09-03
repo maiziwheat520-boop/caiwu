@@ -26,10 +26,10 @@ class Transaction:
 def classify(item: Transaction, company_names: frozenset[str]) -> str | None:
     counterparty = item.counterparty_name.strip()
     name = item.transaction_name.strip()
-    if counterparty in company_names or "资金归集" in name:
-        return "INTERNAL_TRANSFER"
     if counterparty == "陈明哲":
         return "RELATED_PARTY_CURRENT"
+    if counterparty in company_names or "资金归集" in name:
+        return "INTERNAL_TRANSFER"
     if "企业代发过渡户" in counterparty or "工资" in name or "批量代发" in name:
         return "PAYROLL"
     if "网商银行" in counterparty or "贷款" in name:
