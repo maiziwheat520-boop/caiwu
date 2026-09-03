@@ -931,3 +931,24 @@ ingestion require their later explicit gates.
   closed before the projection reaches the BFF.
 - This is local feature-parity work only. It does not parse live bank amounts,
   enable payment, deploy production data, or authorize synchronization.
+
+## Scoped monthly reconciliation v2 (2026-09-03)
+
+- `ledgerbridge.cash-reconciliation.v2` derives its entity and business-unit
+  scope from verified reader grants and exposes scoped rules, uniquely matched
+  rows, unmatched facts, and multi-rule conflicts. Facts with more than one
+  matching rule are excluded from every rule and total.
+- Bank facts use the Asia/Shanghai transaction date for natural-month and
+  effective-date checks. Confirmed WeChat Candidates currently have only
+  month-level evidence, so their reviewed `accounting_month` is authoritative
+  and rule effective dates use month-overlap semantics.
+- Migration `20260903_0038` is based directly on production `20260903_0036`;
+  the separately developed company-classification migration already reserves
+  `20260903_0037` and must be rebased or joined explicitly before both branches
+  can share one Alembic history.
+- Local evidence: focused reconciliation tests pass 10/10; PostgreSQL 15
+  upgrade, downgrade, re-upgrade, function security, and reader-only execution
+  checks pass. The complete Windows suite retains the same 32 baseline failures
+  as production commit `fdf8568` and adds no new failure.
+- No posting command is added. Production deployment remains pending the
+  unified `core,web` release lock, encrypted backup, and isolated restore gate.
