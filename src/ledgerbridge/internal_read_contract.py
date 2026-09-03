@@ -76,6 +76,12 @@ READ_ROUTE_CAPABILITIES: Mapping[str, Capability] = {
     "GET /internal/v1/company-report-composition": Capability.COMPANY_REPORT_READ,
     "GET /internal/v1/personal-finance": Capability.LEDGER_READ,
     "GET /internal/v1/company-bank-statements/{id}": Capability.BANK_STATEMENT_REVIEW_READ,
+    "GET /internal/v1/company-transaction-classifications": (
+        Capability.BANK_STATEMENT_REVIEW_READ
+    ),
+    "GET /internal/v1/company-transaction-classification-summary": (
+        Capability.COMPANY_REPORT_READ
+    ),
 }
 
 READ_ROUTE_SCOPE_MODES: Mapping[str, ScopeMode] = {
@@ -90,6 +96,8 @@ READ_ROUTE_SCOPE_MODES: Mapping[str, ScopeMode] = {
     "GET /internal/v1/company-report-composition": ScopeMode.COLLECTION,
     "GET /internal/v1/personal-finance": ScopeMode.OBJECT,
     "GET /internal/v1/company-bank-statements/{id}": ScopeMode.OBJECT,
+    "GET /internal/v1/company-transaction-classifications": ScopeMode.COLLECTION,
+    "GET /internal/v1/company-transaction-classification-summary": ScopeMode.COLLECTION,
 }
 
 CANDIDATE_ACTION_CAPABILITIES: Mapping[CandidateAction, Capability] = {

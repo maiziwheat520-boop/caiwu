@@ -240,6 +240,18 @@ def _database_candidate_decision_receipt(value: object) -> object:
     return payload
 
 
+def _database_candidate_event(value: object) -> object:
+    """Apply the receipt's registry-to-wire mapping to one historical event."""
+
+    wrapped = _database_candidate_decision_receipt({"events": [value]})
+    if not isinstance(wrapped, dict):
+        return value
+    events = wrapped.get("events")
+    if not isinstance(events, list) or len(events) != 1:
+        return value
+    return events[0]
+
+
 def _database_candidate_classification_batch_receipt(value: object) -> object:
     payload = deepcopy(value)
     if not isinstance(payload, dict):
@@ -558,26 +570,52 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
         candidate_ref: UUID | None = None,
     ) -> CandidateEventPage:
         authorize_collection_read(principal, Capability.CANDIDATE_READ)
-        entity_ref, business_unit_id = self._event_scope(principal, candidate_ref)
+        scopes: tuple[tuple[UUID, UUID | None], ...]
+        if candidate_ref is not None:
+            scopes = (self._event_scope(principal, candidate_ref),)
+        else:
+            scopes = tuple(
+                (grant.entity_ref, business_unit_id)
+                for grant in principal.grants
+                for business_unit_id in (
+                    *(value for _, value in grant.business_unit_bindings),
+                    *((None,) if grant.allow_unassigned_candidates else ()),
+                )
+            )
+            if not scopes:
+                raise ResourceNotVisible("candidate event scope is not visible")
         try:
             with self._session_factory() as session:
                 sequence, horizon_hash = self._audit_horizon(session)
-                rows = session.execute(
-                    text(
-                        "SELECT event FROM internal_read.list_candidate_events_as_of("
-                        "CAST(:entity_ref AS uuid), CAST(:business_unit_id AS uuid), "
-                        "CAST(:candidate_ref AS uuid), :horizon_sequence, :horizon_hash, 100)"
-                    ),
-                    {
-                        "entity_ref": entity_ref,
-                        "business_unit_id": business_unit_id,
-                        "candidate_ref": candidate_ref,
-                        "horizon_sequence": sequence,
-                        "horizon_hash": horizon_hash,
-                    },
-                ).mappings()
-                events = tuple(CandidateEvent.model_validate(row["event"]) for row in rows)
-        except SQLAlchemyError as exc:
+                events_by_operation: dict[UUID, CandidateEvent] = {}
+                for entity_ref, business_unit_id in scopes:
+                    rows = session.execute(
+                        text(
+                            "SELECT event FROM internal_read.list_candidate_events_as_of("
+                            "CAST(:entity_ref AS uuid), CAST(:business_unit_id AS uuid), "
+                            "CAST(:candidate_ref AS uuid), :horizon_sequence, :horizon_hash, 100)"
+                        ),
+                        {
+                            "entity_ref": entity_ref,
+                            "business_unit_id": business_unit_id,
+                            "candidate_ref": candidate_ref,
+                            "horizon_sequence": sequence,
+                            "horizon_hash": horizon_hash,
+                        },
+                    ).mappings()
+                    for row in rows:
+                        event = CandidateEvent.model_validate(
+                            _database_candidate_event(row["event"])
+                        )
+                        events_by_operation[event.operation_id] = event
+                events = tuple(
+                    sorted(
+                        events_by_operation.values(),
+                        key=lambda item: (item.created_at, item.operation_id.int),
+                        reverse=True,
+                    )[:100]
+                )
+        except (SQLAlchemyError, TypeError, ValueError, KeyError) as exc:
             raise CandidateCommandUnavailable("candidate event reader is unavailable") from exc
         return CandidateEventPage(items=events)
 

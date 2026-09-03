@@ -186,6 +186,9 @@ def test_route_capability_matrix_is_exact_and_non_transitive() -> None:
         "GET /internal/v1/company-reports",
         "GET /internal/v1/company-report-composition",
         "GET /internal/v1/personal-finance",
+        "GET /internal/v1/company-bank-statements/{id}",
+        "GET /internal/v1/company-transaction-classifications",
+        "GET /internal/v1/company-transaction-classification-summary",
     }
     assert READ_ROUTE_SCOPE_MODES == {
         "GET /internal/v1/capabilities": ScopeMode.SYSTEM,
@@ -198,6 +201,9 @@ def test_route_capability_matrix_is_exact_and_non_transitive() -> None:
         "GET /internal/v1/company-reports": ScopeMode.COLLECTION,
         "GET /internal/v1/company-report-composition": ScopeMode.COLLECTION,
         "GET /internal/v1/personal-finance": ScopeMode.OBJECT,
+        "GET /internal/v1/company-bank-statements/{id}": ScopeMode.OBJECT,
+        "GET /internal/v1/company-transaction-classifications": ScopeMode.COLLECTION,
+        "GET /internal/v1/company-transaction-classification-summary": ScopeMode.COLLECTION,
     }
     candidate_only = _principal("candidate-only", frozenset({Capability.CANDIDATE_READ}))
     authorize_read(

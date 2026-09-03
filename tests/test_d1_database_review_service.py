@@ -322,6 +322,40 @@ def test_database_review_service_reads_events_through_horizon_scoped_function() 
     assert "public.candidate_event" not in event_sql
 
 
+def test_database_review_service_merges_scopes_and_maps_historical_channel_ids() -> None:
+    candidate, principal, _, receipt = _fixtures()
+    second_unit = UUID("71000000-0000-4000-8000-000000000002")
+    principal = principal.model_copy(
+        update={
+            "grants": (
+                principal.grants[0].model_copy(
+                    update={
+                        "business_unit_refs": frozenset(
+                            {candidate.business_unit_ref, "unit-second"}
+                        ),
+                        "business_unit_ids": frozenset({BUSINESS_UNIT_ID, second_unit}),
+                        "business_unit_bindings": (
+                            (cast(str, candidate.business_unit_ref), BUSINESS_UNIT_ID),
+                            ("unit-second", second_unit),
+                        ),
+                    }
+                ),
+            )
+        }
+    )
+    raw_event = receipt.events[0].model_dump(mode="json")
+    raw_event["prior_projection"]["source"]["ingest_channel"] = "controlled_upload"
+    raw_event["result_projection"]["source"]["ingest_channel"] = "controlled_upload"
+    read = _Session(candidate.model_dump(), events=[raw_event])
+    service = DatabaseInternalReviewService(_factory(read), _factory(_Session({})))
+
+    page = service.list_candidate_events(principal)
+
+    assert len(page.items) == 1
+    assert page.items[0].prior_projection.source.ingest_channel == IngestChannel.CONTROLLED_UPLOAD
+    assert sum("list_candidate_events_as_of" in sql for sql, _ in read.calls) == 2
+
+
 def test_database_review_service_maps_stale_revision_without_leaking_database_error() -> None:
     candidate, principal, request, receipt = _fixtures()
     read = _Session(candidate.model_dump())

@@ -854,31 +854,55 @@ def test_database_reader_rejects_malformed_horizon_and_unbound_business_unit() -
         )
 
 
-def test_database_reader_rejects_multiple_scopes_and_missing_cursor_signer() -> None:
+def test_database_reader_merges_multiple_scopes_and_requires_cursor_signer() -> None:
+    second_unit = UUID("11000000-0000-4000-8000-000000000002")
     multi = _principal().model_copy(
         update={
             "grants": (
                 EntityGrant(
                     entity_ref=ENTITY,
                     business_unit_refs=frozenset({"unit-demo-a", "unit-demo-b"}),
-                    business_unit_ids=frozenset(
-                        {BUSINESS_UNIT, UUID("11000000-0000-4000-8000-000000000002")}
-                    ),
+                    business_unit_ids=frozenset({BUSINESS_UNIT, second_unit}),
                     business_unit_bindings=(
                         ("unit-demo-a", BUSINESS_UNIT),
-                        ("unit-demo-b", UUID("11000000-0000-4000-8000-000000000002")),
+                        ("unit-demo-b", second_unit),
                     ),
                 ),
             )
         }
     )
-    with pytest.raises(InternalReadBackendUnavailable, match="one bound"):
-        _service(_Session({})).list_candidates(multi)
     candidate = SyntheticInternalReadService()._fixture.candidates[1]
-    row = candidate.model_dump()
-    row["entity_ref"] = ENTITY
-    row["business_unit_ref"] = "unit-demo-a"
-    scoped = _service(_Session(row)).list_candidates(multi, business_unit="unit-demo-a")
+    first = candidate.model_copy(
+        update={"entity_ref": ENTITY, "business_unit_ref": "unit-demo-a"}
+    ).model_dump()
+    second = candidate.model_copy(
+        update={
+            "candidate_ref": UUID("30000000-0000-4000-8000-000000000099"),
+            "entity_ref": ENTITY,
+            "business_unit_ref": "unit-demo-b",
+        }
+    ).model_dump()
+
+    class ScopedSession(_Session):
+        def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Result:
+            if "list_candidates_as_of" in str(statement):
+                assert params is not None
+                return _Result(
+                    {
+                        BUSINESS_UNIT: [first],
+                        second_unit: [second],
+                        None: [],
+                    }[params["business_unit_id"]]
+                )
+            return super().execute(statement, params)
+
+    session = ScopedSession(first)
+    merged = _service(session).list_candidates(multi)
+    assert {item.candidate_ref for item in merged.items} == {
+        UUID(str(first["candidate_ref"])),
+        UUID(str(second["candidate_ref"])),
+    }
+    scoped = _service(session).list_candidates(multi, business_unit="unit-demo-a")
     assert [item.candidate_ref for item in scoped.items] == [candidate.candidate_ref]
 
     unassigned = _principal().model_copy(
@@ -888,8 +912,8 @@ def test_database_reader_rejects_multiple_scopes_and_missing_cursor_signer() -> 
             )
         }
     )
-    with pytest.raises(InternalReadBackendUnavailable, match="multiple scopes"):
-        _service(_Session({})).list_candidates(unassigned)
+    unassigned_page = _service(session).list_candidates(unassigned)
+    assert [item.candidate_ref for item in unassigned_page.items] == [candidate.candidate_ref]
 
     with pytest.raises(InternalReadBackendUnavailable, match="signed cursor"):
         _service(_Session({})).list_candidates(_principal(), cursor="invalid")
