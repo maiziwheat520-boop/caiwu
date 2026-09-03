@@ -110,6 +110,11 @@ describe('PayrollLegacyWorkbench', () => {
     expect(screen.getByText('月度工资账本')).toBeInTheDocument()
     expect(screen.getByText('2026-08 工资表 · 版本 1')).toBeInTheDocument()
     expect(screen.getByText('实际发放（统计口径）')).toBeInTheDocument()
+    const overview = screen.getByRole('region', { name: '工资概览' })
+    expect(overview).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '本月工资处理进度' })).toBeInTheDocument()
+    expect(within(overview).getByText('员工参数')).toBeInTheDocument()
+    expect(within(overview).getByText('1 人')).toBeInTheDocument()
   })
 
   it('generates monthly payroll from the three explicitly confirmed materials', async () => {
