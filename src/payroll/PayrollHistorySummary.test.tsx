@@ -117,6 +117,8 @@ describe('PayrollHistorySummary', () => {
     expect(await screen.findByRole('heading', { name: '2026-07 工资汇总' })).toBeInTheDocument()
     expect(api.previewPayrollSummaryMaterial).toHaveBeenCalledTimes(1)
     expect(api.previewPayrollSummaryMaterial).toHaveBeenCalledWith('material_authoritative_summary')
+    expect(screen.getByRole('complementary', { name: '账期与版本' })).toBeInTheDocument()
+    expect(screen.getByText('只读权威数据')).toBeInTheDocument()
     expect(screen.getByLabelText('对账月份')).toHaveValue('2026-07')
     expect(screen.getAllByText('¥172,611.98')).toHaveLength(2)
     const rows = screen.getByRole('table', { name: '各店当月工资汇总' })

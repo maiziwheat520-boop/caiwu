@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Info, ShieldCheck } from '@phosphor-icons/react'
 
 import { api } from '../api'
 import type {
@@ -82,12 +83,22 @@ export function PayrollHistorySummary({ workspace }: Props) {
     <section className="panel payroll-history-summary" aria-labelledby="payroll-history-summary-heading">
       <header>
         <div>
-          <span>工资统计总表 · 历史权威口径</span>
+          <span>历史权威口径</span>
           <h2 id="payroll-history-summary-heading">各店工资与总汇总</h2>
           <p>按月份直接读取原工资统计总表；历史金额不再从员工明细或实验素材重新计算。</p>
         </div>
-        {selectedSummary ? (
-          <div className="payroll-history-summary-controls">
+      </header>
+
+      {selectedSummary ? (
+        <aside className="payroll-history-summary-controls" aria-label="账期与版本">
+          <div className="payroll-history-control-heading">
+            <div>
+              <strong>账期与版本</strong>
+              <span>选择权威汇总口径</span>
+            </div>
+            <Info size={17} aria-hidden="true" />
+          </div>
+          <div className="payroll-history-control-fields">
             {summaries.length > 1 ? (
               <label>
                 汇总表版本
@@ -117,8 +128,16 @@ export function PayrollHistorySummary({ workspace }: Props) {
               </select>
             </label>
           </div>
-        ) : null}
-      </header>
+          <div className="payroll-history-authority">
+            <ShieldCheck size={19} weight="fill" aria-hidden="true" />
+            <div>
+              <strong>只读权威数据</strong>
+              <span>来源：工资统计总表</span>
+              <small>不可付款，不可提交银行</small>
+            </div>
+          </div>
+        </aside>
+      ) : null}
 
       {loading ? <p className="payroll-summary-state">正在读取工资统计总表…</p> : null}
       {!loading && (failed || noSummaryMaterials) ? (

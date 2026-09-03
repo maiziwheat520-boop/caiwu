@@ -252,16 +252,17 @@ export function PayrollWorkspacePage() {
       {loading ? <LoadingState /> : error ? <ErrorState message={error} onRetry={loadPayroll} /> : null}
 
       {!loading && !error && testWorkspace ? (
-        <PayrollHistorySummary key={testWorkspace.data.workspace_revision} workspace={testWorkspace} />
-      ) : null}
-
-      {!loading && !error && testWorkspace && csrfToken ? (
-        <PayrollLegacyWorkbench
-          key={confirmedMaterials?.period ?? 'payroll-unconfirmed'}
-          testWorkspace={testWorkspace}
-          csrfToken={csrfToken}
-          confirmedMaterials={confirmedMaterials}
-        />
+        <div className="payroll-command-center">
+          <PayrollHistorySummary key={testWorkspace.data.workspace_revision} workspace={testWorkspace} />
+          {csrfToken ? (
+            <PayrollLegacyWorkbench
+              key={confirmedMaterials?.period ?? 'payroll-unconfirmed'}
+              testWorkspace={testWorkspace}
+              csrfToken={csrfToken}
+              confirmedMaterials={confirmedMaterials}
+            />
+          ) : null}
+        </div>
       ) : null}
 
       {!loading && !error && status && !status.data.live_data_ready ? (
