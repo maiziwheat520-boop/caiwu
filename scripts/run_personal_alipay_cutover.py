@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
+import re
 import stat
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -529,31 +531,132 @@ def execute_cutover(
 
 
 def _verify_production_gate(
-    connection: Connection, *, backup_receipt: Path, restore_receipt: Path, revision: str
+    connection: Connection,
+    *,
+    backup_directory: Path,
+    restore_receipt: Path,
+    deployed_revision_file: Path,
+    completed_replay: bool,
 ) -> None:
+    backup_directory = backup_directory.resolve(strict=True)
+    if backup_directory.is_symlink() or not backup_directory.is_dir():
+        raise PersonalAlipayCutoverError("backup directory is invalid")
+    backup_receipt = backup_directory / "backup.json"
+    ciphertext = backup_directory / "ledgerbridge-backup.tar.gpg"
+    checksum = backup_directory / "SHA256SUMS"
+    if (
+        restore_receipt.resolve(strict=True).parent != backup_directory
+        or ciphertext.is_symlink()
+        or checksum.is_symlink()
+        or not ciphertext.is_file()
+        or not checksum.is_file()
+    ):
+        raise PersonalAlipayCutoverError("backup proof files are invalid")
     backup = _read_private_json(backup_receipt)
     restore = _read_private_json(restore_receipt)
+    deployed_revision = deployed_revision_file.read_text(encoding="ascii").strip()
+    ciphertext_sha256 = _digest(ciphertext)
     state = connection.execute(
         text(
-            "SELECT current_database(),"
+            "SELECT current_database(),current_user,session_user,"
+            "current_setting('transaction_read_only'),pg_is_in_recovery(),"
             "(SELECT version_num FROM public.alembic_version),"
             "(SELECT count(*) FROM public.journal_entry),"
             "(SELECT count(*) FROM public.posting)"
         )
     ).one()
-    if state != ("ledgerbridge", _EXPECTED_SCHEMA, 0, 0):
+    if tuple(state) != (
+        "ledgerbridge",
+        "ledgerbridge_owner",
+        "ledgerbridge_owner",
+        "off",
+        False,
+        _EXPECTED_SCHEMA,
+        0,
+        0,
+    ):
         raise PersonalAlipayCutoverError("production database gate failed")
     if (
-        backup.get("format") != "ledgerbridge-encrypted-backup-v3"
-        or backup.get("revision") != revision
+        set(backup)
+        != {
+            "ciphertext",
+            "ciphertext_sha256",
+            "created_at",
+            "format",
+            "gpg_fingerprint",
+            "postgres_image",
+            "revision",
+        }
+        or backup.get("format") != "ledgerbridge-encrypted-backup-v3"
+        or backup.get("revision") != deployed_revision
+        or re.fullmatch(r"[0-9a-f]{40}", deployed_revision) is None
+        or backup.get("ciphertext") != ciphertext.name
+        or not hmac.compare_digest(str(backup.get("ciphertext_sha256")), ciphertext_sha256)
+        or not hmac.compare_digest(
+            checksum.read_text(encoding="utf-8"),
+            f"{ciphertext_sha256}  {ciphertext.name}\n",
+        )
         or restore.get("format") != "ledgerbridge-restore-rehearsal-v3"
-        or restore.get("revision") != revision
+        or restore.get("revision") != deployed_revision
         or restore.get("status") != "passed"
+        or restore.get("source_format") != "v3"
         or restore.get("production_unchanged") is not True
         or restore.get("isolated_resources_removed") is not True
         or restore.get("backup") != backup_receipt.parent.name
+        or restore.get("unpaired_database_observation_fields") != []
     ):
         raise PersonalAlipayCutoverError("backup or isolated restore receipt is invalid")
+    compared = restore.get("database_compared_fields")
+    source = restore.get("source_database_metadata")
+    restored = restore.get("post_restore_database_observations")
+    if (
+        not isinstance(compared, list)
+        or "cutover_inventory" not in compared
+        or not isinstance(source, dict)
+        or not isinstance(restored, dict)
+        or any(source.get(field) != restored.get(field) for field in compared)
+        or restore.get("source_artifact_control")
+        != restore.get("post_restore_artifact_observations")
+    ):
+        raise PersonalAlipayCutoverError("isolated restore comparison is invalid")
+    if not completed_replay:
+        _verify_live_backup_inventory(connection, source.get("cutover_inventory"))
+
+
+def _verify_live_backup_inventory(connection: Connection, value: object) -> None:
+    if not isinstance(value, dict) or value.get("schema_revision") != _EXPECTED_SCHEMA:
+        raise PersonalAlipayCutoverError("backup inventory schema is invalid")
+    row_counts = value.get("row_counts")
+    if not isinstance(row_counts, dict) or not row_counts:
+        raise PersonalAlipayCutoverError("backup inventory counts are invalid")
+    for table_name, expected in row_counts.items():
+        if (
+            not isinstance(table_name, str)
+            or re.fullmatch(r"[a-z][a-z0-9_]{0,62}", table_name) is None
+            or not isinstance(expected, int)
+        ):
+            raise PersonalAlipayCutoverError("backup inventory entry is invalid")
+        actual = connection.execute(
+            text(f'SELECT count(*) FROM public."{table_name}"')
+        ).scalar_one()
+        if actual != expected:
+            raise PersonalAlipayCutoverError("live database no longer matches the backup")
+    summaries = connection.execute(
+        text(
+            "SELECT (SELECT count(*) FROM public.candidate),"
+            "(SELECT count(*) FROM public.audit_event),"
+            "(SELECT count(*) FROM public.candidate_revision r "
+            " WHERE r.status='PENDING' AND NOT EXISTS "
+            " (SELECT 1 FROM public.candidate_revision newer "
+            "  WHERE newer.candidate_id=r.candidate_id AND newer.revision>r.revision))"
+        )
+    ).one()
+    if tuple(summaries) != (
+        value.get("candidate_total"),
+        value.get("audit_events"),
+        value.get("latest_pending_candidates"),
+    ):
+        raise PersonalAlipayCutoverError("backup inventory summary is invalid")
 
 
 def _verify_final_state(connection: Connection, *, pairs: tuple[CandidatePair, ...]) -> None:
@@ -590,14 +693,14 @@ def main() -> int:
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--execute-reviewed-cutover-v1", action="store_true")
     parser.add_argument("--rehearse-and-rollback-v1", action="store_true")
-    parser.add_argument("--production-revision")
-    parser.add_argument("--backup-receipt", type=Path)
+    parser.add_argument("--backup-directory", type=Path)
     parser.add_argument("--restore-receipt", type=Path)
+    parser.add_argument("--deployed-revision-file", type=Path)
     args = parser.parse_args()
     if args.execute_reviewed_cutover_v1 and args.rehearse_and_rollback_v1:
         raise PersonalAlipayCutoverError("execution modes are mutually exclusive")
     if args.execute_reviewed_cutover_v1 and not (
-        args.production_revision and args.backup_receipt and args.restore_receipt
+        args.backup_directory and args.restore_receipt and args.deployed_revision_file
     ):
         raise PersonalAlipayCutoverError("production execution requires backup and restore gates")
     database_url = os.environ.get("LEDGERBRIDGE_IMPORT_DATABASE_URL")
@@ -655,11 +758,19 @@ def main() -> int:
             transaction = connection.begin()
             try:
                 if args.execute_reviewed_cutover_v1:
+                    completed_replay = connection.execute(
+                        text(
+                            "SELECT EXISTS (SELECT 1 FROM internal_import.controlled_batch_receipt "
+                            "WHERE batch_ref=:batch)"
+                        ),
+                        {"batch": _BATCH_REF},
+                    ).scalar_one()
                     _verify_production_gate(
                         connection,
-                        backup_receipt=args.backup_receipt.resolve(),
+                        backup_directory=args.backup_directory.resolve(),
                         restore_receipt=args.restore_receipt.resolve(),
-                        revision=args.production_revision,
+                        deployed_revision_file=args.deployed_revision_file.resolve(),
+                        completed_replay=completed_replay,
                     )
                 result = import_prepared_manifest_in_transaction(connection, prepared_manifest)
                 if result.candidate_count != _EXPECTED_COUNT:
