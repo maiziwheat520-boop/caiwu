@@ -21,7 +21,7 @@ from typing import cast
 from uuid import UUID, uuid5
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 from ledgerbridge.account_registry import (
@@ -38,7 +38,8 @@ from ledgerbridge.controlled_import import (
     ImportEntity,
     SourceEvidence,
     SourceManifest,
-    import_prepared_manifest,
+    import_prepared_manifest_in_transaction,
+    load_prepared_manifest,
     prepare_source_manifest,
 )
 from ledgerbridge.internal_read_contract import (
@@ -67,6 +68,9 @@ _PERSON_UNIT = UUID("948bff1d-2acd-5f1b-a7d3-c6038e6610c1")
 _CATEGORY = uuid5(_NAMESPACE, "personal-alipay-receipt-category")
 _ACCOUNT_SUFFIX = "5002"
 _BATCH_REF = uuid5(_NAMESPACE, f"personal-alipay-account2:{_SOURCE_SHA256}")
+_ACCOUNT_REF = UUID("fcca4187-7b28-4131-bb08-9c3c361f5797")
+_LEGACY_SET_SHA256 = "f2d982fa287a8f40a9a3a1c6ab4b7c453b7273b460d2206bdece8f863e7781af"
+_EXPECTED_SCHEMA = "20260903_0038"
 
 
 class PersonalAlipayCutoverError(RuntimeError):
@@ -101,14 +105,18 @@ def _require_private_source(path: Path) -> None:
 
 
 def _validate_scope(connection: Connection) -> None:
-    row = connection.execute(
-        text(
-            "SELECT e.entity_type::text AS entity_type,e.name,b.ref,b.label "
-            "FROM public.entity e JOIN public.business_unit b ON b.entity_id=e.id "
-            "WHERE e.id=:entity AND b.id=:unit"
-        ),
-        {"entity": _PERSON_ENTITY, "unit": _PERSON_UNIT},
-    ).mappings().one_or_none()
+    row = (
+        connection.execute(
+            text(
+                "SELECT e.entity_type::text AS entity_type,e.name,b.ref,b.label "
+                "FROM public.entity e JOIN public.business_unit b ON b.entity_id=e.id "
+                "WHERE e.id=:entity AND b.id=:unit"
+            ),
+            {"entity": _PERSON_ENTITY, "unit": _PERSON_UNIT},
+        )
+        .mappings()
+        .one_or_none()
+    )
     if row is None or dict(row) != {
         "entity_type": "PERSON",
         "name": "陈明哲",
@@ -128,7 +136,8 @@ def _load_legacy_rows(connection: Connection) -> list[dict[str, object]]:
             "JOIN LATERAL (SELECT * FROM public.candidate_revision cr "
             " WHERE cr.candidate_id=c.id ORDER BY cr.revision DESC LIMIT 1) r ON true "
             "WHERE c.entity_id=:legacy AND cs.source_system_id='alipay_export' "
-            "AND r.status='PENDING' AND r.accounting_month BETWEEN DATE '2026-01-01' "
+            "AND r.status IN ('PENDING','IGNORED') "
+            "AND r.accounting_month BETWEEN DATE '2026-01-01' "
             "AND DATE '2026-06-01' "
             "AND r.summary LIKE '支付宝 | % | 收入 | 转账红包 |%' "
             "ORDER BY r.accounting_month,c.id"
@@ -138,12 +147,28 @@ def _load_legacy_rows(connection: Connection) -> list[dict[str, object]]:
     return [dict(row) for row in rows]
 
 
+def _cohort_sha256(rows: list[dict[str, object]]) -> str:
+    rendered = "\n".join(
+        "|".join(
+            (
+                str(row["candidate_ref"]),
+                str(row["source_event_ref"]),
+                str(row["amount_minor"]),
+                cast(date, row["accounting_month"]).isoformat(),
+                str(row["summary"]),
+                str(row["confidence_basis_points"]),
+            )
+        )
+        for row in sorted(rows, key=lambda value: str(value["candidate_ref"]))
+    )
+    return hashlib.sha256(rendered.encode()).hexdigest()
+
+
 def _validate_cohort(rows: list[dict[str, object]]) -> None:
     if len(rows) != _EXPECTED_COUNT:
         raise PersonalAlipayCutoverError("reviewed Alipay cohort count changed")
     if any(
-        not isinstance(row["amount_minor"], int)
-        or not isinstance(row["accounting_month"], date)
+        not isinstance(row["amount_minor"], int) or not isinstance(row["accounting_month"], date)
         for row in rows
     ):
         raise PersonalAlipayCutoverError("reviewed Alipay cohort values are invalid")
@@ -156,10 +181,10 @@ def _validate_cohort(rows: list[dict[str, object]]) -> None:
             len(values),
             sum(cast(int, row["amount_minor"]) for row in values),
         )
-    if actual != _EXPECTED_MONTHS or any(
-        cast(int, row["amount_minor"]) <= 0 for row in rows
-    ):
+    if actual != _EXPECTED_MONTHS or any(cast(int, row["amount_minor"]) <= 0 for row in rows):
         raise PersonalAlipayCutoverError("reviewed Alipay monthly cohort changed")
+    if _cohort_sha256(rows) != _LEGACY_SET_SHA256:
+        raise PersonalAlipayCutoverError("reviewed Alipay exact candidate set changed")
 
 
 def build_source_manifest(
@@ -209,9 +234,7 @@ def build_source_manifest(
     manifest = SourceManifest(
         schema_version="ledgerbridge.controlled-review-source.v1",
         batch_ref=_BATCH_REF,
-        generated_at=datetime(
-            2026, 9, 3, 2, 12, 7, tzinfo=timezone(timedelta(hours=8))
-        ),
+        generated_at=datetime(2026, 9, 3, 2, 12, 7, tzinfo=timezone(timedelta(hours=8))),
         source_description="Reviewed personal Alipay account 2 receipt reattribution.",
         entity=ImportEntity(entity_ref=_PERSON_ENTITY, name="陈明哲"),
         business_unit=ImportBusinessUnit(
@@ -252,16 +275,33 @@ def _write_private(path: Path, payload: object) -> None:
     os.chmod(path, 0o600)
 
 
+def _read_private_json(path: Path) -> dict[str, object]:
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+        raise PersonalAlipayCutoverError("receipt must be a regular file")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise PersonalAlipayCutoverError("receipt is not valid JSON") from exc
+    if not isinstance(value, dict):
+        raise PersonalAlipayCutoverError("receipt must contain a JSON object")
+    return value
+
+
 def _current_candidate(connection: Connection, candidate_ref: UUID) -> dict[str, object]:
-    row = connection.execute(
-        text(
-            "SELECT c.entity_id,r.* FROM public.candidate c "
-            "JOIN LATERAL (SELECT * FROM public.candidate_revision cr "
-            " WHERE cr.candidate_id=c.id ORDER BY cr.revision DESC LIMIT 1) r ON true "
-            "WHERE c.id=:candidate FOR UPDATE OF c"
-        ),
-        {"candidate": candidate_ref},
-    ).mappings().one_or_none()
+    row = (
+        connection.execute(
+            text(
+                "SELECT c.entity_id,r.* FROM public.candidate c "
+                "JOIN LATERAL (SELECT * FROM public.candidate_revision cr "
+                " WHERE cr.candidate_id=c.id ORDER BY cr.revision DESC LIMIT 1) r ON true "
+                "WHERE c.id=:candidate FOR UPDATE OF c"
+            ),
+            {"candidate": candidate_ref},
+        )
+        .mappings()
+        .one_or_none()
+    )
     if row is None:
         raise PersonalAlipayCutoverError("candidate is missing during cutover")
     return dict(row)
@@ -294,24 +334,28 @@ def _transition(connection: Connection, row: dict[str, object], action: str, rea
 
 
 def _register_account(connection: Connection, account_ref: UUID, evidence_ref: UUID) -> None:
-    existing = connection.execute(
-        text(
-            "SELECT m.entity_id,m.account_key,m.institution_code,m.account_suffix,"
-            "m.owner_kind,m.account_kind,m.admission_evidence_ref,"
-            "(SELECT status FROM public.managed_account_lifecycle l "
-            " WHERE l.managed_account_ref=m.managed_account_ref "
-            " ORDER BY revision DESC LIMIT 1) AS lifecycle_status,"
-            "(SELECT count(*) FROM public.managed_account_alias a "
-            " WHERE a.managed_account_ref=m.managed_account_ref "
-            " AND a.alias_kind='ACCOUNT_SUFFIX' AND a.alias_value=:suffix) AS aliases,"
-            "(SELECT count(*) FROM public.account_business_unit_assignment a "
-            " WHERE a.managed_account_ref=m.managed_account_ref "
-            " AND a.business_unit_id=:unit AND a.effective_from=DATE '2025-09-04' "
-            " AND a.effective_to IS NULL) AS assignments "
-            "FROM public.managed_account m WHERE m.managed_account_ref=:account"
-        ),
-        {"account": account_ref, "suffix": _ACCOUNT_SUFFIX, "unit": _PERSON_UNIT},
-    ).mappings().one_or_none()
+    existing = (
+        connection.execute(
+            text(
+                "SELECT m.entity_id,m.account_key,m.institution_code,m.account_suffix,"
+                "m.owner_kind,m.account_kind,m.admission_evidence_ref,"
+                "(SELECT status FROM public.managed_account_lifecycle l "
+                " WHERE l.managed_account_ref=m.managed_account_ref "
+                " ORDER BY revision DESC LIMIT 1) AS lifecycle_status,"
+                "(SELECT count(*) FROM public.managed_account_alias a "
+                " WHERE a.managed_account_ref=m.managed_account_ref "
+                " AND a.alias_kind='ACCOUNT_SUFFIX' AND a.alias_value=:suffix) AS aliases,"
+                "(SELECT count(*) FROM public.account_business_unit_assignment a "
+                " WHERE a.managed_account_ref=m.managed_account_ref "
+                " AND a.business_unit_id=:unit AND a.effective_from=DATE '2025-09-04' "
+                " AND a.effective_to IS NULL) AS assignments "
+                "FROM public.managed_account m WHERE m.managed_account_ref=:account"
+            ),
+            {"account": account_ref, "suffix": _ACCOUNT_SUFFIX, "unit": _PERSON_UNIT},
+        )
+        .mappings()
+        .one_or_none()
+    )
     if existing is not None:
         expected = {
             "entity_id": _PERSON_ENTITY,
@@ -376,9 +420,7 @@ def _register_account(connection: Connection, account_ref: UUID, evidence_ref: U
         san_uri="spiffe://ledgerbridge.local/operator/personal-alipay-cutover",
         policy_generation=1,
         capabilities=frozenset({Capability.ACCOUNT_REGISTRY_WRITE}),
-        grants=(
-            EntityGrant(entity_ref=_PERSON_ENTITY, allow_account_registry=True),
-        ),
+        grants=(EntityGrant(entity_ref=_PERSON_ENTITY, allow_account_registry=True),),
     )
     session = Session(connection, join_transaction_mode="rollback_only")
     try:
@@ -424,87 +466,144 @@ def _require_completed_audit(
 
 
 def execute_cutover(
-    engine: Engine,
+    connection: Connection,
     *,
     pairs: tuple[CandidatePair, ...],
     account_ref: UUID,
     evidence_ref: UUID,
     mapping_sha256: str,
 ) -> None:
-    with engine.begin() as connection:
-        statuses = []
-        for pair in pairs:
-            old = _current_candidate(connection, pair.legacy_ref)
-            new = _current_candidate(connection, pair.replacement_ref)
-            if (
-                old["entity_id"] != _LEGACY_ENTITY
-                or new["entity_id"] != _PERSON_ENTITY
-                or old["amount_minor"] != pair.amount_minor
-                or new["amount_minor"] != pair.amount_minor
-                or old["accounting_month"] != pair.accounting_month
-                or new["accounting_month"] != pair.accounting_month
-            ):
-                raise PersonalAlipayCutoverError("candidate pair identity changed")
-            statuses.append((old["status"], new["status"]))
-        if all(value == ("IGNORED", "CONFIRMED") for value in statuses):
-            _register_account(connection, account_ref, evidence_ref)
-            _require_completed_audit(
-                connection, account_ref=account_ref, mapping_sha256=mapping_sha256
-            )
-            return
-        if any(value != ("PENDING", "PENDING") for value in statuses):
-            raise PersonalAlipayCutoverError("candidate cutover state is not uniformly pending")
+    statuses = []
+    for pair in pairs:
+        old = _current_candidate(connection, pair.legacy_ref)
+        new = _current_candidate(connection, pair.replacement_ref)
+        if (
+            old["entity_id"] != _LEGACY_ENTITY
+            or new["entity_id"] != _PERSON_ENTITY
+            or old["amount_minor"] != pair.amount_minor
+            or new["amount_minor"] != pair.amount_minor
+            or old["accounting_month"] != pair.accounting_month
+            or new["accounting_month"] != pair.accounting_month
+        ):
+            raise PersonalAlipayCutoverError("candidate pair identity changed")
+        statuses.append((old["status"], new["status"]))
+    if all(value == ("IGNORED", "CONFIRMED") for value in statuses):
         _register_account(connection, account_ref, evidence_ref)
-        for pair in pairs:
-            new = _current_candidate(connection, pair.replacement_ref)
-            _transition(
-                connection,
-                new,
-                "CONFIRM",
-                "user confirmed personal Alipay account 2 receipt cohort",
-            )
-            old = _current_candidate(connection, pair.legacy_ref)
-            _transition(
-                connection,
-                old,
-                "IGNORE",
-                "replaced by owner-scoped personal Alipay account 2 candidate",
-            )
-        connection.execute(
-            text(
-                "SELECT public.append_audit_event(:actor,:action,:reason,:rule,"
-                "CAST(:payload AS jsonb))"
+        _require_completed_audit(connection, account_ref=account_ref, mapping_sha256=mapping_sha256)
+        return
+    if any(value != ("PENDING", "PENDING") for value in statuses):
+        raise PersonalAlipayCutoverError("candidate cutover state is not uniformly pending")
+    _register_account(connection, account_ref, evidence_ref)
+    for pair in pairs:
+        new = _current_candidate(connection, pair.replacement_ref)
+        _transition(
+            connection,
+            new,
+            "CONFIRM",
+            "user confirmed personal Alipay account 2 receipt cohort",
+        )
+        old = _current_candidate(connection, pair.legacy_ref)
+        _transition(
+            connection,
+            old,
+            "IGNORE",
+            "replaced by owner-scoped personal Alipay account 2 candidate",
+        )
+    connection.execute(
+        text(
+            "SELECT public.append_audit_event(:actor,:action,:reason,:rule,CAST(:payload AS jsonb))"
+        ),
+        {
+            "actor": "user:maiziwheat520",
+            "action": "candidate.personal_alipay_reattribution",
+            "reason": "user identified reviewed annual statement as personal Alipay account 2",
+            "rule": "ledgerbridge.personal-alipay-reattribution.v1",
+            "payload": json.dumps(
+                _audit_payload(account_ref, mapping_sha256),
+                sort_keys=True,
+                separators=(",", ":"),
             ),
-            {
-                "actor": "user:maiziwheat520",
-                "action": "candidate.personal_alipay_reattribution",
-                "reason": "user identified reviewed annual statement as personal Alipay account 2",
-                "rule": "ledgerbridge.personal-alipay-reattribution.v1",
-                "payload": json.dumps(
-                    {
-                        **_audit_payload(account_ref, mapping_sha256),
-                    },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ),
-            },
-        ).scalar_one()
-        connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+        },
+    ).scalar_one()
+    connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+
+
+def _verify_production_gate(
+    connection: Connection, *, backup_receipt: Path, restore_receipt: Path, revision: str
+) -> None:
+    backup = _read_private_json(backup_receipt)
+    restore = _read_private_json(restore_receipt)
+    state = connection.execute(
+        text(
+            "SELECT current_database(),"
+            "(SELECT version_num FROM public.alembic_version),"
+            "(SELECT count(*) FROM public.journal_entry),"
+            "(SELECT count(*) FROM public.posting)"
+        )
+    ).one()
+    if state != ("ledgerbridge", _EXPECTED_SCHEMA, 0, 0):
+        raise PersonalAlipayCutoverError("production database gate failed")
+    if (
+        backup.get("format") != "ledgerbridge-encrypted-backup-v3"
+        or backup.get("revision") != revision
+        or restore.get("format") != "ledgerbridge-restore-rehearsal-v3"
+        or restore.get("revision") != revision
+        or restore.get("status") != "passed"
+        or restore.get("production_unchanged") is not True
+        or restore.get("isolated_resources_removed") is not True
+        or restore.get("backup") != backup_receipt.parent.name
+    ):
+        raise PersonalAlipayCutoverError("backup or isolated restore receipt is invalid")
+
+
+def _verify_final_state(connection: Connection, *, pairs: tuple[CandidatePair, ...]) -> None:
+    values = connection.execute(
+        text(
+            "SELECT "
+            "(SELECT count(*) FROM public.candidate_revision r JOIN LATERAL "
+            " (SELECT revision FROM public.candidate_revision x "
+            "  WHERE x.candidate_id=r.candidate_id "
+            "  ORDER BY revision DESC LIMIT 1) latest ON latest.revision=r.revision "
+            " WHERE r.status='CONFIRMED' AND r.candidate_id=ANY(:new_ids)),"
+            "(SELECT count(*) FROM public.candidate_revision r JOIN LATERAL "
+            " (SELECT revision FROM public.candidate_revision x "
+            "  WHERE x.candidate_id=r.candidate_id "
+            "  ORDER BY revision DESC LIMIT 1) latest ON latest.revision=r.revision "
+            " WHERE r.status='IGNORED' AND r.candidate_id=ANY(:old_ids)),"
+            "(SELECT count(*) FROM public.journal_entry),"
+            "(SELECT count(*) FROM public.posting)"
+        ),
+        {
+            "new_ids": [pair.replacement_ref for pair in pairs],
+            "old_ids": [pair.legacy_ref for pair in pairs],
+        },
+    ).one()
+    if values != (_EXPECTED_COUNT, _EXPECTED_COUNT, 0, 0):
+        raise PersonalAlipayCutoverError("final candidate or zero-posting invariant failed")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--working-directory", type=Path, required=True)
-    parser.add_argument("--account-ref-file", type=Path, required=True)
     parser.add_argument("--key-file", type=Path, required=True)
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--execute-reviewed-cutover-v1", action="store_true")
+    parser.add_argument("--rehearse-and-rollback-v1", action="store_true")
+    parser.add_argument("--production-revision")
+    parser.add_argument("--backup-receipt", type=Path)
+    parser.add_argument("--restore-receipt", type=Path)
     args = parser.parse_args()
+    if args.execute_reviewed_cutover_v1 and args.rehearse_and_rollback_v1:
+        raise PersonalAlipayCutoverError("execution modes are mutually exclusive")
+    if args.execute_reviewed_cutover_v1 and not (
+        args.production_revision and args.backup_receipt and args.restore_receipt
+    ):
+        raise PersonalAlipayCutoverError("production execution requires backup and restore gates")
     database_url = os.environ.get("LEDGERBRIDGE_IMPORT_DATABASE_URL")
     if not database_url:
         raise PersonalAlipayCutoverError("LEDGERBRIDGE_IMPORT_DATABASE_URL is required")
-    account_ref = UUID(args.account_ref_file.read_text(encoding="ascii").strip())
+    account_ref = _ACCOUNT_REF
     engine = create_engine(database_url, pool_pre_ping=True)
     try:
         args.working_directory.mkdir(mode=0o700, parents=False, exist_ok=True)
@@ -534,26 +633,59 @@ def main() -> int:
         }
         _write_private(mapping_receipt, mapping_payload)
         mapping_sha256 = _digest(mapping_receipt)
-        prepare_source_manifest(
-            source_manifest,
-            key_file=args.key_file.resolve(),
-            artifact_root=args.artifact_root.resolve(),
-            prepared_manifest_path=prepared_manifest,
-        )
-        result = import_prepared_manifest(engine, prepared_manifest)
-        if result.candidate_count != _EXPECTED_COUNT:
-            raise PersonalAlipayCutoverError("replacement import count is invalid")
-        if args.execute_reviewed_cutover_v1:
-            execute_cutover(
-                engine,
-                pairs=pairs,
-                account_ref=account_ref,
-                evidence_ref=manifest.evidence[0].evidence_ref,
-                mapping_sha256=mapping_sha256,
+        if prepared_manifest.exists():
+            prepared, _ = load_prepared_manifest(prepared_manifest)
+            if (
+                prepared.batch_ref != manifest.batch_ref
+                or prepared.source_manifest_sha256 != _digest(source_manifest)
+                or tuple(item.candidate_ref for item in prepared.candidates)
+                != tuple(item.candidate_ref for item in manifest.candidates)
+            ):
+                raise PersonalAlipayCutoverError("existing prepared manifest conflicts")
+        else:
+            prepare_source_manifest(
+                source_manifest,
+                key_file=args.key_file.resolve(),
+                artifact_root=args.artifact_root.resolve(),
+                prepared_manifest_path=prepared_manifest,
             )
+        should_cutover = args.execute_reviewed_cutover_v1 or args.rehearse_and_rollback_v1
+        if should_cutover:
+            connection = engine.connect()
+            transaction = connection.begin()
+            try:
+                if args.execute_reviewed_cutover_v1:
+                    _verify_production_gate(
+                        connection,
+                        backup_receipt=args.backup_receipt.resolve(),
+                        restore_receipt=args.restore_receipt.resolve(),
+                        revision=args.production_revision,
+                    )
+                result = import_prepared_manifest_in_transaction(connection, prepared_manifest)
+                if result.candidate_count != _EXPECTED_COUNT:
+                    raise PersonalAlipayCutoverError("replacement import count is invalid")
+                execute_cutover(
+                    connection,
+                    pairs=pairs,
+                    account_ref=account_ref,
+                    evidence_ref=manifest.evidence[0].evidence_ref,
+                    mapping_sha256=mapping_sha256,
+                )
+                _verify_final_state(connection, pairs=pairs)
+                if args.rehearse_and_rollback_v1:
+                    transaction.rollback()
+                else:
+                    transaction.commit()
+            except BaseException:
+                if transaction.is_active:
+                    transaction.rollback()
+                raise
+            finally:
+                connection.close()
         print(
             "PERSONAL_ALIPAY_CUTOVER_OK "
-            f"prepared={_EXPECTED_COUNT} executed={args.execute_reviewed_cutover_v1}"
+            f"prepared={_EXPECTED_COUNT} executed={args.execute_reviewed_cutover_v1} "
+            f"rehearsed={args.rehearse_and_rollback_v1}"
         )
     finally:
         engine.dispose()

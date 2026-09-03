@@ -462,6 +462,21 @@ def import_prepared_manifest(
     *,
     historical_auto_confirmation: HistoricalAutoConfirmationSettings | None = None,
 ) -> ImportResult:
+    with engine.begin() as connection:
+        return import_prepared_manifest_in_transaction(
+            connection,
+            prepared_manifest_path,
+            historical_auto_confirmation=historical_auto_confirmation,
+        )
+
+
+def import_prepared_manifest_in_transaction(
+    connection: Connection,
+    prepared_manifest_path: Path,
+    *,
+    historical_auto_confirmation: HistoricalAutoConfirmationSettings | None = None,
+) -> ImportResult:
+    """Import through a caller-owned transaction for a larger atomic cutover."""
     manifest, raw = load_prepared_manifest(prepared_manifest_path)
     auto_confirmation = historical_auto_confirmation or HistoricalAutoConfirmationSettings(
         enabled=False,
@@ -469,96 +484,95 @@ def import_prepared_manifest(
     )
     prepared_sha256 = hashlib.sha256(raw).digest()
     source_sha256 = bytes.fromhex(manifest.source_manifest_sha256)
-    with engine.begin() as connection:
-        receipt = (
-            connection.execute(
-                text(
-                    "SELECT source_manifest_sha256, prepared_manifest_sha256, evidence_count, "
-                    "candidate_count, audit_horizon_sequence, audit_horizon_hash "
-                    "FROM internal_import.controlled_batch_receipt WHERE batch_ref = :batch"
-                ),
-                {"batch": manifest.batch_ref},
-            )
-            .mappings()
-            .first()
-        )
-        if receipt is not None:
-            if (
-                bytes(receipt["source_manifest_sha256"]) != source_sha256
-                or bytes(receipt["prepared_manifest_sha256"]) != prepared_sha256
-                or receipt["evidence_count"] != len(manifest.evidence)
-                or receipt["candidate_count"] != len(manifest.candidates)
-            ):
-                raise ControlledImportError("batch receipt conflicts with prepared manifest")
-        else:
-            _preflight_empty_batch(connection, manifest)
-            _insert_dimensions(connection, manifest)
-            for evidence in manifest.evidence:
-                _insert_evidence(connection, manifest, evidence)
-            categories = {item.code: item for item in manifest.categories}
-            for candidate in manifest.candidates:
-                _insert_candidate(
-                    connection,
-                    manifest,
-                    categories[candidate.category_code],
-                    candidate,
-                )
-                _insert_candidate_counterparty(connection, manifest, candidate)
-            for link in manifest.candidate_links:
-                _insert_candidate_link(connection, manifest, link)
-
-        historical_confirmation = confirm_test_historical_candidates(
-            connection,
-            auto_confirmation,
-            candidate_refs=(candidate.candidate_ref for candidate in manifest.candidates),
-        )
-        if receipt is not None:
-            return ImportResult(
-                batch_ref=manifest.batch_ref,
-                replayed=True,
-                evidence_count=receipt["evidence_count"],
-                candidate_count=receipt["candidate_count"],
-                historical_auto_confirmed_count=historical_confirmation.confirmed_count,
-                audit_horizon_sequence=receipt["audit_horizon_sequence"],
-                audit_horizon_hash=bytes(receipt["audit_horizon_hash"]).hex(),
-            )
-        horizon = (
-            connection.execute(
-                text("SELECT sequence, hash FROM public.audit_event ORDER BY sequence DESC LIMIT 1")
-            )
-            .mappings()
-            .one()
-        )
+    receipt = (
         connection.execute(
             text(
-                "INSERT INTO internal_import.controlled_batch_receipt "
-                "(batch_ref, source_manifest_sha256, prepared_manifest_sha256, entity_id, "
-                "business_unit_id, evidence_count, candidate_count, audit_horizon_sequence, "
-                "audit_horizon_hash) VALUES "
-                "(:batch, :source_sha, :prepared_sha, :entity, :unit, :evidence_count, "
-                ":candidate_count, :sequence, :hash)"
+                "SELECT source_manifest_sha256, prepared_manifest_sha256, evidence_count, "
+                "candidate_count, audit_horizon_sequence, audit_horizon_hash "
+                "FROM internal_import.controlled_batch_receipt WHERE batch_ref = :batch"
             ),
-            {
-                "batch": manifest.batch_ref,
-                "source_sha": source_sha256,
-                "prepared_sha": prepared_sha256,
-                "entity": manifest.entity.entity_ref,
-                "unit": manifest.business_unit.business_unit_ref,
-                "evidence_count": len(manifest.evidence),
-                "candidate_count": len(manifest.candidates),
-                "sequence": horizon["sequence"],
-                "hash": horizon["hash"],
-            },
+            {"batch": manifest.batch_ref},
         )
+        .mappings()
+        .first()
+    )
+    if receipt is not None:
+        if (
+            bytes(receipt["source_manifest_sha256"]) != source_sha256
+            or bytes(receipt["prepared_manifest_sha256"]) != prepared_sha256
+            or receipt["evidence_count"] != len(manifest.evidence)
+            or receipt["candidate_count"] != len(manifest.candidates)
+        ):
+            raise ControlledImportError("batch receipt conflicts with prepared manifest")
+    else:
+        _preflight_empty_batch(connection, manifest)
+        _insert_dimensions(connection, manifest)
+        for evidence in manifest.evidence:
+            _insert_evidence(connection, manifest, evidence)
+        categories = {item.code: item for item in manifest.categories}
+        for candidate in manifest.candidates:
+            _insert_candidate(
+                connection,
+                manifest,
+                categories[candidate.category_code],
+                candidate,
+            )
+            _insert_candidate_counterparty(connection, manifest, candidate)
+        for link in manifest.candidate_links:
+            _insert_candidate_link(connection, manifest, link)
+
+    historical_confirmation = confirm_test_historical_candidates(
+        connection,
+        auto_confirmation,
+        candidate_refs=(candidate.candidate_ref for candidate in manifest.candidates),
+    )
+    if receipt is not None:
         return ImportResult(
             batch_ref=manifest.batch_ref,
-            replayed=False,
-            evidence_count=len(manifest.evidence),
-            candidate_count=len(manifest.candidates),
+            replayed=True,
+            evidence_count=receipt["evidence_count"],
+            candidate_count=receipt["candidate_count"],
             historical_auto_confirmed_count=historical_confirmation.confirmed_count,
-            audit_horizon_sequence=horizon["sequence"],
-            audit_horizon_hash=bytes(horizon["hash"]).hex(),
+            audit_horizon_sequence=receipt["audit_horizon_sequence"],
+            audit_horizon_hash=bytes(receipt["audit_horizon_hash"]).hex(),
         )
+    horizon = (
+        connection.execute(
+            text("SELECT sequence, hash FROM public.audit_event ORDER BY sequence DESC LIMIT 1")
+        )
+        .mappings()
+        .one()
+    )
+    connection.execute(
+        text(
+            "INSERT INTO internal_import.controlled_batch_receipt "
+            "(batch_ref, source_manifest_sha256, prepared_manifest_sha256, entity_id, "
+            "business_unit_id, evidence_count, candidate_count, audit_horizon_sequence, "
+            "audit_horizon_hash) VALUES "
+            "(:batch, :source_sha, :prepared_sha, :entity, :unit, :evidence_count, "
+            ":candidate_count, :sequence, :hash)"
+        ),
+        {
+            "batch": manifest.batch_ref,
+            "source_sha": source_sha256,
+            "prepared_sha": prepared_sha256,
+            "entity": manifest.entity.entity_ref,
+            "unit": manifest.business_unit.business_unit_ref,
+            "evidence_count": len(manifest.evidence),
+            "candidate_count": len(manifest.candidates),
+            "sequence": horizon["sequence"],
+            "hash": horizon["hash"],
+        },
+    )
+    return ImportResult(
+        batch_ref=manifest.batch_ref,
+        replayed=False,
+        evidence_count=len(manifest.evidence),
+        candidate_count=len(manifest.candidates),
+        historical_auto_confirmed_count=historical_confirmation.confirmed_count,
+        audit_horizon_sequence=horizon["sequence"],
+        audit_horizon_hash=bytes(horizon["hash"]).hex(),
+    )
 
 
 def _preflight_empty_batch(connection: Connection, manifest: PreparedManifest) -> None:

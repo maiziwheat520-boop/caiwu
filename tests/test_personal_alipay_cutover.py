@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.engine import Connection
 
 from scripts import run_personal_alipay_cutover as cutover
 
@@ -26,8 +28,11 @@ def _reviewed_rows() -> list[dict[str, object]]:
     return rows
 
 
-def test_reviewed_cohort_contract_accepts_only_exact_snapshot() -> None:
+def test_reviewed_cohort_contract_accepts_only_exact_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     rows = _reviewed_rows()
+    monkeypatch.setattr(cutover, "_LEGACY_SET_SHA256", cutover._cohort_sha256(rows))
     cutover._validate_cohort(rows)
 
     rows[0]["amount_minor"] = int(str(rows[0]["amount_minor"])) + 1
@@ -39,16 +44,22 @@ def test_manifest_creates_deterministic_personal_replacements(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     rows = _reviewed_rows()
+    monkeypatch.setattr(cutover, "_LEGACY_SET_SHA256", cutover._cohort_sha256(rows))
     monkeypatch.setattr(cutover, "_require_private_source", lambda _path: None)
     monkeypatch.setattr(cutover, "_validate_scope", lambda _connection: None)
     monkeypatch.setattr(cutover, "_load_legacy_rows", lambda _connection: rows)
     account_ref = uuid4()
+    connection = cast(Connection, object())
 
     manifest, pairs = cutover.build_source_manifest(
-        object(), source_path=tmp_path / "annual.csv", account_ref=account_ref  # type: ignore[arg-type]
+        connection,
+        source_path=tmp_path / "annual.csv",
+        account_ref=account_ref,
     )
     replay, replay_pairs = cutover.build_source_manifest(
-        object(), source_path=tmp_path / "annual.csv", account_ref=account_ref  # type: ignore[arg-type]
+        connection,
+        source_path=tmp_path / "annual.csv",
+        account_ref=account_ref,
     )
 
     assert manifest == replay
@@ -60,8 +71,7 @@ def test_manifest_creates_deterministic_personal_replacements(
     assert len({candidate.candidate_ref for candidate in manifest.candidates}) == 1_574
     assert len({candidate.source_event_ref for candidate in manifest.candidates}) == 1_574
     assert all(
-        candidate.source_system == "alipay_export_account2"
-        for candidate in manifest.candidates
+        candidate.source_system == "alipay_export_account2" for candidate in manifest.candidates
     )
     assert all(
         candidate.evidence_refs == (manifest.evidence[0].evidence_ref,)
