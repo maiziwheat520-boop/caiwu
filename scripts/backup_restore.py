@@ -711,6 +711,7 @@ BANK_STATEMENT_TABLES = (
     "bank_statement_observation",
     "bank_statement_review",
     "bank_statement_transaction_correction",
+    "bank_statement_transaction_projection_correction",
 )
 CASH_RECONCILIATION_TABLES = (
     "cash_reconciliation_rule",
@@ -759,10 +760,12 @@ BANK_STATEMENT_FUNCTION_SIGNATURES = {
     ),
     ("public", "r1_validate_bank_statement"): "",
     ("public", "r1_validate_bank_statement_transaction_correction"): "",
+    ("public", "r1_validate_bank_statement_transaction_projection_correction"): "",
     ("public", "r1_require_statement_backed_account"): "",
     ("public", "r1_validate_statement_facts"): "",
     ("public", "r1_require_transaction_observation"): "",
     ("internal_import", "import_bank_statement"): "p_request jsonb",
+    ("internal_import", "repair_boc_statement_projection"): "p_request jsonb",
     ("internal_command", "review_bank_statement"): (
         "p_statement_ref uuid, p_operation_id uuid, p_assertion_jti uuid, "
         "p_actor_ref text, p_workload_principal_ref text, p_expected_revision integer, "
@@ -787,10 +790,14 @@ BANK_STATEMENT_FUNCTION_RESULTS = {
     ("public", "r1_bank_statement_transaction_digest"): "bytea",
     ("public", "r1_validate_bank_statement"): "trigger",
     ("public", "r1_validate_bank_statement_transaction_correction"): "trigger",
+    ("public", "r1_validate_bank_statement_transaction_projection_correction"): "trigger",
     ("public", "r1_require_statement_backed_account"): "trigger",
     ("public", "r1_validate_statement_facts"): "trigger",
     ("public", "r1_require_transaction_observation"): "trigger",
     ("internal_import", "import_bank_statement"): "jsonb",
+    ("internal_import", "repair_boc_statement_projection"): (
+        "TABLE(created boolean, correction_count integer, transaction_count integer)"
+    ),
     ("internal_command", "review_bank_statement"): "jsonb",
     ("internal_read", "get_bank_statement_summary"): (
         "TABLE(statement_ref uuid, managed_account_ref uuid, evidence_ref uuid, "
@@ -815,6 +822,7 @@ BANK_STATEMENT_SECURITY_DEFINER_FUNCTIONS = frozenset(
         ("public", "r1_validate_statement_facts"),
         ("public", "r1_require_transaction_observation"),
         ("internal_import", "import_bank_statement"),
+        ("internal_import", "repair_boc_statement_projection"),
         ("internal_command", "review_bank_statement"),
         ("internal_read", "get_bank_statement_summary"),
         ("internal_read", "list_bank_statement_transactions"),
@@ -833,6 +841,22 @@ CASH_RECONCILIATION_V2_FUNCTION_KEYS = frozenset(
     {("internal_read", "cash_reconciliation_month_v2")}
 )
 BANK_STATEMENT_TRIGGER_CONTRACT = {
+    "bank_statement_transaction_projection_correction_append_only": (
+        "bank_statement_transaction_projection_correction",
+        False,
+        27,
+        False,
+        False,
+        "r1_bank_statement_append_only",
+    ),
+    "validate_bank_statement_transaction_projection_correction_audit": (
+        "bank_statement_transaction_projection_correction",
+        False,
+        7,
+        False,
+        False,
+        "r1_validate_bank_statement_transaction_projection_correction",
+    ),
     "bank_statement_transaction_correction_append_only": (
         "bank_statement_transaction_correction",
         False,
@@ -1002,6 +1026,52 @@ CASH_RECONCILIATION_TRIGGER_NAMES = frozenset(
 )
 BANK_STATEMENT_REQUIRED_TRIGGERS = frozenset(BANK_STATEMENT_TRIGGER_CONTRACT)
 BANK_STATEMENT_CONSTRAINT_CONTRACT = {
+    "bank_statement_transaction_projection_correction_audit_event_id_fkey": (
+        "bank_statement_transaction_projection_correction",
+        "f",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
+    ),
+    "bank_statement_transaction_projection_correction_audit_event_id_key": (
+        "bank_statement_transaction_projection_correction",
+        "u",
+        "UNIQUE (audit_event_id)",
+    ),
+    "bank_statement_transaction_projection_correction_command_sha256_check": (
+        "bank_statement_transaction_projection_correction",
+        "c",
+        "CHECK ((octet_length(command_sha256) = 32))",
+    ),
+    "bank_statement_transaction_projection_correction_parser_facts_sha256_check": (
+        "bank_statement_transaction_projection_correction",
+        "c",
+        "CHECK ((octet_length(parser_facts_sha256) = 32))",
+    ),
+    "bank_statement_transaction_projection_correction_pkey": (
+        "bank_statement_transaction_projection_correction",
+        "p",
+        "PRIMARY KEY (transaction_ref)",
+    ),
+    "bank_statement_transaction_projection_correction_reason_code_check": (
+        "bank_statement_transaction_projection_correction",
+        "c",
+        "CHECK (((reason_code)::text = 'BOC_PDF_PARSER_REPLAY_V2'::text))",
+    ),
+    "bank_statement_transaction_projection_correction_source_row_sha256_check": (
+        "bank_statement_transaction_projection_correction",
+        "c",
+        "CHECK ((octet_length(source_row_sha256) = 32))",
+    ),
+    "bank_statement_transaction_projection_correction_transaction_set_sha256_check": (
+        "bank_statement_transaction_projection_correction",
+        "c",
+        "CHECK ((octet_length(transaction_set_sha256) = 32))",
+    ),
+    "bank_statement_transaction_projection_correction_transaction_ref_fkey": (
+        "bank_statement_transaction_projection_correction",
+        "f",
+        "FOREIGN KEY (transaction_ref) REFERENCES bank_statement_transaction(transaction_ref) "
+        "ON DELETE RESTRICT",
+    ),
     "bank_statement_transaction_correction_audit_event_id_fkey": (
         "bank_statement_transaction_correction",
         "f",
@@ -1755,6 +1825,8 @@ SELECT json_build_object(
   'bank_statement_transaction',(SELECT count(*) FROM public.bank_statement_transaction),
   'bank_statement_transaction_correction',(
     SELECT count(*) FROM public.bank_statement_transaction_correction),
+  'bank_statement_transaction_projection_correction',(
+    SELECT count(*) FROM public.bank_statement_transaction_projection_correction),
   'bank_statement_observation',(SELECT count(*) FROM public.bank_statement_observation),
  'bank_statement_review',(SELECT count(*) FROM public.bank_statement_review)),
  'bank_statement_tables',COALESCE((SELECT json_agg(json_build_object(
@@ -2585,6 +2657,7 @@ SELECT json_build_object(
 )
 CASH_RECONCILIATION_V2_REVISION = "20260903_0038"
 BOC_COUNTERPARTY_CORRECTION_REVISION = "20260904_0039"
+BOC_PROJECTION_REPAIR_REVISION = "20260904_0040"
 MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
     {
         ACCOUNT_REGISTRY_SECURITY_REVISION,
@@ -2604,6 +2677,7 @@ MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
         COMPANY_TRANSACTION_CLASSIFICATION_REVISION,
         CASH_RECONCILIATION_V2_REVISION,
         BOC_COUNTERPARTY_CORRECTION_REVISION,
+        BOC_PROJECTION_REPAIR_REVISION,
     }
 )
 COMPANY_REPORTING_SCHEMA = "company_reporting_read"
