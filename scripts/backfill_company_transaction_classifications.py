@@ -11,6 +11,7 @@ from datetime import date
 from uuid import UUID, uuid5
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
 RULE_VERSION = "company-bank-classification.2026-09.v1"
 OPERATION_NAMESPACE = UUID("5ab5f435-b4ab-5fd7-b7be-16e09a210de0")
@@ -87,11 +88,18 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def migration_database_url() -> str:
+    database_url = os.environ.get("LEDGERBRIDGE_MIGRATION_DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("LEDGERBRIDGE_MIGRATION_DATABASE_URL is required")
+    if make_url(database_url).username != "ledgerbridge_owner":
+        raise RuntimeError("migration database URL must identify ledgerbridge_owner")
+    return database_url
+
+
 def main() -> int:
     args = parse_args()
-    database_url = os.environ.get("LEDGERBRIDGE_WORKER_DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("LEDGERBRIDGE_WORKER_DATABASE_URL is required")
+    database_url = migration_database_url()
     if args.from_date >= args.to_date_exclusive:
         raise RuntimeError("backfill date range is invalid")
     engine = create_engine(database_url)
