@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Badge } from '@radix-ui/themes'
-import { Bank, Database, Info, Warning } from '@phosphor-icons/react'
+import { Bank, CalendarBlank, CheckCircle, Database, Info, Warning } from '@phosphor-icons/react'
 import { api, minorToMajor } from '../api'
 import type {
   CompanyReportAggregate,
@@ -59,9 +59,9 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
 
   const header = (
     <PageHeader
-      eyebrow="公司维度"
+      eyebrow="经营驾驶舱"
       title="各公司报表"
-      description="按授权公司主体展示三层真实事实；正式收入、费用与利润仅来自已入账总账。"
+      description="先看经营现金流，再下钻到分类、账单审核和逐月事实。"
     />
   )
 
@@ -108,39 +108,20 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
 
   const toolbar = (
     <section className="company-report-toolbar" aria-label="报表筛选">
-      <label>
-        <span>公司</span>
-        <select
-          aria-label="选择公司"
-          value={activeCompanyRef}
-          disabled={companies.length === 0}
-          onChange={(event) => setSelectedCompanyRef(event.target.value)}
-        >
-          <option value={ALL_COMPANIES}>全部公司</option>
-          {companies.map(([companyRef, identity]) => (
-            <option key={companyRef} value={companyRef}>{identity.name}</option>
-          ))}
-        </select>
-      </label>
-      <label>
-        <span>开始月份</span>
-        <input aria-label="开始月份" type="month" value={fromMonth} onChange={(event) => setFromMonth(event.target.value)} />
-      </label>
-      <label>
-        <span>结束月份</span>
-        <input aria-label="结束月份" type="month" value={toMonth} onChange={(event) => setToMonth(event.target.value)} />
-      </label>
-      <button
-        type="button"
-        className="primary-button company-report-apply"
-        disabled={rangeInvalid}
-        onClick={() => setAppliedRange({ fromMonth, toMonth })}
-      >
-        应用期间
-      </button>
-      <button type="button" className="secondary-button" onClick={() => void loadReports()}>
-        重新加载
-      </button>
+      <div className="company-report-tabs" role="tablist" aria-label="选择公司">
+        <button type="button" role="tab" aria-selected={showAllCompanies} className={showAllCompanies ? 'active' : ''} onClick={() => setSelectedCompanyRef(ALL_COMPANIES)}>全部公司</button>
+        {companies.map(([companyRef, identity]) => (
+          <button key={companyRef} type="button" role="tab" aria-selected={activeCompanyRef === companyRef} className={activeCompanyRef === companyRef ? 'active' : ''} onClick={() => setSelectedCompanyRef(companyRef)}>{identity.name}</button>
+        ))}
+      </div>
+      <div className="company-report-range">
+        <CalendarBlank size={17} />
+        <label><span>开始月份</span><input aria-label="开始月份" type="month" value={fromMonth} onChange={(event) => setFromMonth(event.target.value)} /></label>
+        <span className="company-range-separator">至</span>
+        <label><span>结束月份</span><input aria-label="结束月份" type="month" value={toMonth} onChange={(event) => setToMonth(event.target.value)} /></label>
+        <button type="button" className="primary-button company-report-apply" disabled={rangeInvalid} onClick={() => setAppliedRange({ fromMonth, toMonth })}>应用期间</button>
+        <button type="button" className="secondary-button" onClick={() => void loadReports()}>刷新</button>
+      </div>
       {rangeInvalid ? <p role="alert">请选择不超过 24 个月的有效月份范围。</p> : null}
     </section>
   )
@@ -189,9 +170,10 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
             <span className="eyebrow">{reports.from_month} 至 {reports.to_month}</span>
             <h2>{showAllCompanies ? '全部公司汇总' : activeCompany?.name}</h2>
             {showAllCompanies ? <span>{companies.length} 家公司合并展示</span> : null}
-            <p>{basisDescription(basis)}</p>
           </div>
-          <div className="company-basis-switch" role="group" aria-label="汇总口径">
+          <div className="company-dashboard-actions">
+            <span className="company-data-status"><CheckCircle size={15} weight="fill" />数据已更新</span>
+            <div className="company-basis-switch" role="group" aria-label="汇总口径">
             <button
               type="button"
               aria-pressed={basis === 'ACCOUNT_STATEMENT'}
@@ -210,6 +192,7 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
               className={basis === 'POSTED_LEDGER' ? 'active' : ''}
               onClick={() => setBasis('POSTED_LEDGER')}
             >正式账簿</button>
+            </div>
           </div>
         </header>
         <div className="company-dashboard-totals">
@@ -222,54 +205,68 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
             已分类 {dashboard.confirmedCount} 条，待人工确认 {dashboard.pendingCount ?? 0} 条；往来、融资和内部划转不计入经营流入或经营流出。
           </p>
         ) : null}
-        <div className="company-composition-grid">
-          <CategoryShareChart
-            title="收入类型占比"
-            composition={dashboard.incomeComposition}
-            currencyCode={activeCurrencyCode}
-            tone="income"
-            unavailable={!dashboard.available}
-            emptyMessage={basis === 'ACCOUNT_STATEMENT'
-              ? dashboard.confirmedCount === undefined
-                ? '账户流水尚未完成收支类型分类，当前仅展示现金流总额。'
-                : '当前期间没有已分类的经营流入。'
-              : undefined}
-          />
-          <CategoryShareChart
-            title="支出类型占比"
-            composition={dashboard.expenseComposition}
-            currencyCode={activeCurrencyCode}
-            tone="expense"
-            unavailable={!dashboard.available}
-            emptyMessage={basis === 'ACCOUNT_STATEMENT'
-              ? dashboard.confirmedCount === undefined
-                ? '账户流水尚未完成收支类型分类，当前仅展示现金流总额。'
-                : '当前期间没有已分类的经营流出。'
-              : undefined}
-          />
+        <p className="company-dashboard-basis-description"><Info size={15} />{basisDescription(basis)}</p>
+        <div className="company-dashboard-body">
+          <MonthlyCashflowTable reports={reports} basis={basis} companyRefs={showAllCompanies ? companies.map(([companyRef]) => companyRef) : [activeCompanyRef]} currencyCode={activeCurrencyCode} />
+          <aside className="company-dashboard-rail" aria-label="收支构成">
+            <CategoryShareChart title="收入构成" composition={dashboard.incomeComposition} currencyCode={activeCurrencyCode} tone="income" unavailable={!dashboard.available} emptyMessage={basis === 'ACCOUNT_STATEMENT' ? dashboard.confirmedCount === undefined ? '账户流水尚未完成分类。' : '当前没有经营流入。' : undefined} />
+            <CategoryShareChart title="支出构成" composition={dashboard.expenseComposition} currencyCode={activeCurrencyCode} tone="expense" unavailable={!dashboard.available} emptyMessage={basis === 'ACCOUNT_STATEMENT' ? dashboard.confirmedCount === undefined ? '账户流水尚未完成分类。' : '当前没有经营流出。' : undefined} />
+            {basis === 'ACCOUNT_STATEMENT' ? <NonOperatingCashflow categories={dashboard.nonOperatingCategories} currencyCode={activeCurrencyCode} /> : null}
+          </aside>
         </div>
-        {basis === 'ACCOUNT_STATEMENT' ? (
-          <NonOperatingCashflow
-            categories={dashboard.nonOperatingCategories}
-            currencyCode={activeCurrencyCode}
-          />
-        ) : null}
       </section>
       <CompanyBankStatementReviewPanel csrfToken={csrfToken} />
       <CompanyTransactionClassificationPanel csrfToken={csrfToken} />
-      <div className="company-report-list">
-        {(showAllCompanies ? companies : activeCompany ? [[activeCompanyRef, activeCompany] as const] : []).map(([companyRef, identity]) => (
-          <CompanyReportCard
-            key={companyRef}
-            companyRef={companyRef}
-            companyName={identity.name}
-            currencyCode={identity.currencyCode}
-            postedLedgerStatus={reports.posted_ledger_status}
-            layers={reports.layers}
-          />
-        ))}
-      </div>
+      <details className="company-report-detail-drawer">
+        <summary>查看三层事实与逐月明细</summary>
+        <div className="company-report-list">
+          {(showAllCompanies ? companies : activeCompany ? [[activeCompanyRef, activeCompany] as const] : []).map(([companyRef, identity]) => (
+            <CompanyReportCard key={companyRef} companyRef={companyRef} companyName={identity.name} currencyCode={identity.currencyCode} postedLedgerStatus={reports.posted_ledger_status} layers={reports.layers} />
+          ))}
+        </div>
+      </details>
     </>
+  )
+}
+
+function MonthlyCashflowTable({ reports, basis, companyRefs, currencyCode }: {
+  reports: CompanyReportsResponse
+  basis: CompanyReportLayer['basis']
+  companyRefs: string[]
+  currencyCode: string
+}) {
+  const layer = layerFor(reports.layers, basis)
+  const monthKeys = new Set<string>()
+  companyRefs.forEach((companyRef) => companyFor(layer, companyRef)?.months.forEach((month) => monthKeys.add(month.month)))
+  const rows = [...monthKeys].sort((left, right) => right.localeCompare(left)).map((month) => {
+    const summaries = companyRefs.map((companyRef) => dashboardSummary(basis, monthFor(companyFor(layer, companyRef), month), undefined))
+    return {
+      month,
+      incomeMinor: summaries.reduce((total, item) => total + item.incomeMinor, 0),
+      expenseMinor: summaries.reduce((total, item) => total + item.expenseMinor, 0),
+      netMinor: summaries.reduce((total, item) => total + item.netMinor, 0),
+    }
+  })
+  const maximum = Math.max(1, ...rows.flatMap((row) => [row.incomeMinor, row.expenseMinor]))
+  const incomeLabel = basis === 'POSTED_LEDGER' ? '收入' : basis === 'ACCOUNT_STATEMENT' ? '账户流入' : '事项流入'
+  const expenseLabel = basis === 'POSTED_LEDGER' ? '费用' : basis === 'ACCOUNT_STATEMENT' ? '账户流出' : '事项流出'
+  return (
+    <section className="company-monthly-overview" aria-label="月度现金流趋势">
+      <header><div><h3>月度现金流趋势</h3><span>按当前公司与口径汇总</span></div><strong>{rows.length} 个月</strong></header>
+      {rows.length === 0 ? <p className="company-monthly-empty">当前期间没有可展示的逐月事实。</p> : (
+        <div className="company-monthly-table" role="table" aria-label="月度现金流明细">
+          <div className="company-monthly-table-head" role="row"><span>月份</span><span>{incomeLabel}</span><span>{expenseLabel}</span><span>净额</span></div>
+          {rows.map((row) => (
+            <div className="company-monthly-table-row" role="row" key={row.month}>
+              <strong>{reportMonthLabel(row.month)}</strong>
+              <span className="company-flow-value income">{reportMoney(row.incomeMinor, currencyCode)}<i style={{ width: `${row.incomeMinor / maximum * 100}%` }} /></span>
+              <span className="company-flow-value expense">{reportMoney(row.expenseMinor, currencyCode)}<i style={{ width: `${row.expenseMinor / maximum * 100}%` }} /></span>
+              <strong className={row.netMinor < 0 ? 'negative' : 'positive'}>{reportMoney(row.netMinor, currencyCode)}</strong>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -296,7 +293,7 @@ function compositionFor(
 
 function dashboardSummary(
   basis: CompanyReportLayer['basis'],
-  report: CompanyReportCompany | undefined,
+  report: CompanyReportAggregate | undefined,
   composition: CompanyReportCompositionItem | undefined,
   classification?: CompanyTransactionClassificationSummary,
 ) {
