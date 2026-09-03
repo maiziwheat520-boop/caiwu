@@ -2244,7 +2244,7 @@ def test_bank_statement_restore_metadata_rejects_drift(mutation: str) -> None:
     elif mutation.startswith("trigger_"):
         rows = cast(list[dict[str, object]], expected["bank_statement_triggers"])
         trigger_field, trigger_value = {
-            "trigger_table": ("table", "bank_statement_review"),
+            "trigger_table": ("table", "unexpected_table"),
             "trigger_constraint": (
                 "constraint",
                 not cast(bool, rows[0]["constraint"]),

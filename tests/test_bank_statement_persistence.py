@@ -337,6 +337,103 @@ def test_0023_evidence_registry_and_statement_can_commit_as_one_idempotent_trans
         engine.dispose()
 
 
+def test_0040_confirmed_company_statement_is_auto_classified_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LEDGERBRIDGE_ENV", raising=False)
+    with _legacy_r1_database(reader=True) as database_url:
+        command.upgrade(_upgrade_config(database_url), "head")
+        engine = create_engine(database_url)
+        original = _statement()
+        automatic = replace(
+            original,
+            transactions=(
+                replace(
+                    original.transactions[0],
+                    counterparty_name="陈明哲",
+                    transaction_name="转入公司",
+                ),
+                replace(
+                    original.transactions[1],
+                    counterparty_name="企业代发过渡户",
+                    transaction_name="批量代发",
+                ),
+                MyBankTransaction(
+                    source_event_ref=UUID("82000000-0000-4000-8000-000000000013"),
+                    source_row_number=11,
+                    source_row_sha256="3" * 64,
+                    occurred_at=datetime(2026, 1, 4, 9, 10, 11, tzinfo=UTC),
+                    amount_minor=-3_000,
+                    balance_minor=507_534,
+                    counterparty_name="浙江网商银行",
+                    counterparty_account="0000000000003456",
+                    counterparty_institution="浙江网商银行",
+                    transaction_serial="SYNTHETIC-0003",
+                    transaction_name="贷款还款",
+                ),
+            ),
+        )
+        operation_id = uuid4()
+        assertion_jti = uuid4()
+        with engine.begin() as connection:
+            _seed_statement_evidence(
+                connection,
+                entity_ref=ENTITY_REF,
+                business_unit_ref=uuid4(),
+                evidence_ref=EVIDENCE_REF,
+                statement=automatic,
+            )
+            _register_managed_account(cast(Session, connection))
+            imported = BankStatementImportService(
+                lambda: cast(Session, connection)
+            ).import_statement(automatic, context=_context(), session=cast(Session, connection))
+            assert imported.review_status == "PENDING"
+            assert (
+                connection.execute(
+                    text("SELECT count(*) FROM public.company_transaction_classification")
+                ).scalar_one()
+                == 0
+            )
+            first = connection.execute(
+                text(
+                    "SELECT internal_command.review_bank_statement("
+                    ":statement,:operation,:assertion,'user:test','workload:test',"
+                    "1,'CONFIRMED','confirm synthetic company statement')"
+                ),
+                {
+                    "statement": STATEMENT_REF,
+                    "operation": operation_id,
+                    "assertion": assertion_jti,
+                },
+            ).scalar_one()
+            replay = connection.execute(
+                text(
+                    "SELECT internal_command.review_bank_statement("
+                    ":statement,:operation,:assertion,'user:test','workload:test',"
+                    "1,'CONFIRMED','confirm synthetic company statement')"
+                ),
+                {
+                    "statement": STATEMENT_REF,
+                    "operation": operation_id,
+                    "assertion": assertion_jti,
+                },
+            ).scalar_one()
+            rows = connection.execute(
+                text(
+                    "SELECT category_code,source,actor_ref FROM "
+                    "public.company_transaction_classification ORDER BY category_code"
+                )
+            ).all()
+            assert first["created"] is True
+            assert replay["created"] is False
+            assert [tuple(row) for row in rows] == [
+                ("FINANCING", "AUTO_RULE", "system:company-auto-classification"),
+                ("PAYROLL", "AUTO_RULE", "system:company-auto-classification"),
+                ("RELATED_PARTY_CURRENT", "AUTO_RULE", "system:company-auto-classification"),
+            ]
+        engine.dispose()
+
+
 def test_statement_request_uses_pre_registered_account_refs_without_owner_guess_fields() -> None:
     context = BankStatementImportContext(
         owner_entity_ref=ENTITY_REF,

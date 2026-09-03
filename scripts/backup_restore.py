@@ -750,6 +750,7 @@ R1_CUTOVER_INVENTORY_SQL = (
     ")::text;"
 )
 BANK_STATEMENT_FUNCTION_SIGNATURES = {
+    ("internal_import", "auto_classify_confirmed_company_statement"): "",
     ("public", "r1_bank_statement_append_only"): "",
     ("public", "r1_bank_statement_transaction_digest"): (
         "p_managed_account_ref uuid, p_occurred_at timestamp with time zone, "
@@ -783,6 +784,7 @@ BANK_STATEMENT_FUNCTION_SIGNATURES = {
     ),
 }
 BANK_STATEMENT_FUNCTION_RESULTS = {
+    ("internal_import", "auto_classify_confirmed_company_statement"): "trigger",
     ("public", "r1_bank_statement_append_only"): "trigger",
     ("public", "r1_bank_statement_transaction_digest"): "bytea",
     ("public", "r1_validate_bank_statement"): "trigger",
@@ -811,6 +813,7 @@ BANK_STATEMENT_FUNCTION_RESULTS = {
 }
 BANK_STATEMENT_SECURITY_DEFINER_FUNCTIONS = frozenset(
     {
+        ("internal_import", "auto_classify_confirmed_company_statement"),
         ("public", "r1_require_statement_backed_account"),
         ("public", "r1_validate_statement_facts"),
         ("public", "r1_require_transaction_observation"),
@@ -992,6 +995,14 @@ BANK_STATEMENT_TRIGGER_CONTRACT = {
         True,
         True,
         "r1_require_transaction_observation",
+    ),
+    "auto_classify_confirmed_company_statement": (
+        "bank_statement_review",
+        False,
+        5,
+        False,
+        False,
+        "auto_classify_confirmed_company_statement",
     ),
 }
 CASH_RECONCILIATION_TRIGGER_NAMES = frozenset(
@@ -2585,6 +2596,7 @@ SELECT json_build_object(
 )
 CASH_RECONCILIATION_V2_REVISION = "20260903_0038"
 BOC_COUNTERPARTY_CORRECTION_REVISION = "20260904_0039"
+COMPANY_AUTO_CLASSIFICATION_REVISION = "20260904_0040"
 MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
     {
         ACCOUNT_REGISTRY_SECURITY_REVISION,
@@ -2604,6 +2616,7 @@ MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
         COMPANY_TRANSACTION_CLASSIFICATION_REVISION,
         CASH_RECONCILIATION_V2_REVISION,
         BOC_COUNTERPARTY_CORRECTION_REVISION,
+        COMPANY_AUTO_CLASSIFICATION_REVISION,
     }
 )
 COMPANY_REPORTING_SCHEMA = "company_reporting_read"
