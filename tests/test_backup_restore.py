@@ -1807,7 +1807,7 @@ def test_bank_statement_restore_metadata_covers_0021_contract() -> None:
         assert f"('{schema}', '{name}', '{args}')" in BANK_STATEMENT_SECURITY_SQL
     assert "observed_constraints AS" in BANK_STATEMENT_SECURITY_SQL
     assert "'bank_statement_constraints'" in BANK_STATEMENT_SECURITY_SQL
-    assert len(BANK_STATEMENT_CONSTRAINT_CONTRACT) == 62
+    assert len(BANK_STATEMENT_CONSTRAINT_CONTRACT) == 67
 
 
 def test_restore_accepts_pg_dump_equivalent_text_array_check_definition() -> None:

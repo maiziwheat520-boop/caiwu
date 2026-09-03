@@ -710,6 +710,7 @@ BANK_STATEMENT_TABLES = (
     "bank_statement_transaction",
     "bank_statement_observation",
     "bank_statement_review",
+    "bank_statement_transaction_correction",
 )
 CASH_RECONCILIATION_TABLES = (
     "cash_reconciliation_rule",
@@ -757,6 +758,7 @@ BANK_STATEMENT_FUNCTION_SIGNATURES = {
         "p_counterparty_institution text, p_transaction_serial text, p_transaction_name text"
     ),
     ("public", "r1_validate_bank_statement"): "",
+    ("public", "r1_validate_bank_statement_transaction_correction"): "",
     ("public", "r1_require_statement_backed_account"): "",
     ("public", "r1_validate_statement_facts"): "",
     ("public", "r1_require_transaction_observation"): "",
@@ -784,6 +786,7 @@ BANK_STATEMENT_FUNCTION_RESULTS = {
     ("public", "r1_bank_statement_append_only"): "trigger",
     ("public", "r1_bank_statement_transaction_digest"): "bytea",
     ("public", "r1_validate_bank_statement"): "trigger",
+    ("public", "r1_validate_bank_statement_transaction_correction"): "trigger",
     ("public", "r1_require_statement_backed_account"): "trigger",
     ("public", "r1_validate_statement_facts"): "trigger",
     ("public", "r1_require_transaction_observation"): "trigger",
@@ -830,6 +833,22 @@ CASH_RECONCILIATION_V2_FUNCTION_KEYS = frozenset(
     {("internal_read", "cash_reconciliation_month_v2")}
 )
 BANK_STATEMENT_TRIGGER_CONTRACT = {
+    "bank_statement_transaction_correction_append_only": (
+        "bank_statement_transaction_correction",
+        False,
+        27,
+        False,
+        False,
+        "r1_bank_statement_append_only",
+    ),
+    "validate_bank_statement_transaction_correction_audit": (
+        "bank_statement_transaction_correction",
+        False,
+        7,
+        False,
+        False,
+        "r1_validate_bank_statement_transaction_correction",
+    ),
     "cash_reconciliation_rule_append_only": (
         "cash_reconciliation_rule",
         False,
@@ -983,6 +1002,32 @@ CASH_RECONCILIATION_TRIGGER_NAMES = frozenset(
 )
 BANK_STATEMENT_REQUIRED_TRIGGERS = frozenset(BANK_STATEMENT_TRIGGER_CONTRACT)
 BANK_STATEMENT_CONSTRAINT_CONTRACT = {
+    "bank_statement_transaction_correction_audit_event_id_fkey": (
+        "bank_statement_transaction_correction",
+        "f",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
+    ),
+    "bank_statement_transaction_correction_audit_event_id_key": (
+        "bank_statement_transaction_correction",
+        "u",
+        "UNIQUE (audit_event_id)",
+    ),
+    "bank_statement_transaction_correction_pkey": (
+        "bank_statement_transaction_correction",
+        "p",
+        "PRIMARY KEY (transaction_ref)",
+    ),
+    "bank_statement_transaction_correction_reason_code_check": (
+        "bank_statement_transaction_correction",
+        "c",
+        "CHECK (((reason_code)::text = 'BOC_PDF_COUNTERPARTY_COLUMN_SPILL'::text))",
+    ),
+    "bank_statement_transaction_correction_transaction_ref_fkey": (
+        "bank_statement_transaction_correction",
+        "f",
+        "FOREIGN KEY (transaction_ref) REFERENCES bank_statement_transaction(transaction_ref) "
+        "ON DELETE RESTRICT",
+    ),
     "bank_statement_audit_event_id_fkey": (
         "bank_statement",
         "f",
@@ -1708,6 +1753,8 @@ SELECT json_build_object(
   'managed_account_lifecycle',(SELECT count(*) FROM public.managed_account_lifecycle),
   'bank_statement',(SELECT count(*) FROM public.bank_statement),
   'bank_statement_transaction',(SELECT count(*) FROM public.bank_statement_transaction),
+  'bank_statement_transaction_correction',(
+    SELECT count(*) FROM public.bank_statement_transaction_correction),
   'bank_statement_observation',(SELECT count(*) FROM public.bank_statement_observation),
  'bank_statement_review',(SELECT count(*) FROM public.bank_statement_review)),
  'bank_statement_tables',COALESCE((SELECT json_agg(json_build_object(
@@ -2537,6 +2584,7 @@ SELECT json_build_object(
     .strip()
 )
 CASH_RECONCILIATION_V2_REVISION = "20260903_0038"
+BOC_COUNTERPARTY_CORRECTION_REVISION = "20260904_0039"
 MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
     {
         ACCOUNT_REGISTRY_SECURITY_REVISION,
@@ -2555,6 +2603,7 @@ MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
         CASH_RECONCILIATION_REVISION,
         COMPANY_TRANSACTION_CLASSIFICATION_REVISION,
         CASH_RECONCILIATION_V2_REVISION,
+        BOC_COUNTERPARTY_CORRECTION_REVISION,
     }
 )
 COMPANY_REPORTING_SCHEMA = "company_reporting_read"

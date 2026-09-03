@@ -59,9 +59,7 @@ _CONTINUATION_FORBIDDEN_RE = re.compile(
     rf"(?:{_DATE})|(?:{_TIME})|(?<![\d,])(?:{_SIGNED_MONEY})(?![\d,])"
 )
 _LAYOUT_RULE_TOKEN_RE = re.compile(r"(?<!\S)-{2,}(?!\S)")
-_COUNTERPARTY_ACCOUNT_SPILL_RE = re.compile(
-    r"^(?P<name>.*?)\s{2,}(?P<account_prefix>[0-9]{1,4})\s*$"
-)
+_COUNTERPARTY_ACCOUNT_SPILL_RE = re.compile(r"^(?P<name>.*?)\s+(?P<account_prefix>[0-9]{1,4})\s*$")
 _COUNTERPARTY_ACCOUNT_CELL_RE = re.compile(r"^(?P<account>[0-9]{16,30})(?P<institution_prefix>.*)$")
 _COLUMN_HEADERS: Final = (
     "记账日期",

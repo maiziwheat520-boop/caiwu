@@ -23,7 +23,11 @@ from ledgerbridge.bank_statement_cutover_plan_builder import (
     load_private_bank_statement_plan,
 )
 from ledgerbridge.bank_statement_persistence import BankStatementImportContext, _build_request
-from ledgerbridge.boc_statement import BocStatementError, parse_boc_personal_pdf
+from ledgerbridge.boc_statement import (
+    BocStatementError,
+    _clean_layout_cells,
+    parse_boc_personal_pdf,
+)
 from ledgerbridge.models import EntityType
 
 _SUFFIX = "4321"
@@ -245,6 +249,24 @@ def test_parser_discards_pdf_layout_rules_and_repairs_account_spill(
     assert first.counterparty_account == "16222000000000002"
     assert first.counterparty_institution == "测试银行乙"
     assert first.transaction_name == "转入 | 手机银行"
+
+
+def test_parser_repairs_real_single_space_account_spill_shape() -> None:
+    cells = [
+        "transfer",
+        "mobile",
+        "",
+        "",
+        "Synthetic Person 6",
+        "222034000051377442",
+        "Synthetic Bank",
+    ]
+
+    repaired = _clean_layout_cells(cells)
+
+    assert repaired[4] == "Synthetic Person"
+    assert repaired[5] == "6222034000051377442"
+    assert repaired[6] == "Synthetic Bank"
 
 
 @pytest.mark.parametrize(
