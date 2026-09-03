@@ -2435,7 +2435,7 @@ describe('LedgerBridge Web API client', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
     expect(screen.getByRole('heading', { name: '完整个人财务对账' })).toBeInTheDocument()
     fireEvent.click(screen.getAllByRole('button', { name: /月度对账/ })[0])
-    expect(await screen.findByRole('heading', { name: '收支与往来对账' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '月度对账' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: '月度对账' })).toHaveLength(2)
     expect(screen.queryByRole('button', { name: '原口径对账表' })).not.toBeInTheDocument()
     expect(window.location.pathname).toBe('/reconciliation')
@@ -2638,7 +2638,7 @@ describe('LedgerBridge Web API client', () => {
     installFetch()
     renderApp()
 
-    expect(await screen.findByRole('heading', { name: '收支与往来对账' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '月度对账' })).toBeInTheDocument()
     expect(window.location.pathname).toBe('/reconciliation')
     expect(window.location.search).toBe('')
     expect(screen.queryByRole('table', { name: '原口径固定列对账表' })).not.toBeInTheDocument()
@@ -2649,7 +2649,7 @@ describe('LedgerBridge Web API client', () => {
     expect(within(lanes).getByRole('tab', { name: /往来款/ })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: '旧表项目取数来源' })).toBeInTheDocument()
 
-    fireEvent.click(within(workflow).getByRole('button', { name: '查看未识别流水' }))
+    fireEvent.click(within(workflow).getByRole('button', { name: '处理待审核' }))
     expect(`${window.location.pathname}${window.location.hash}`).toBe('/overview#review')
   })
 
@@ -2658,7 +2658,7 @@ describe('LedgerBridge Web API client', () => {
     const fetchMock = installFetch()
     renderApp()
 
-    expect(await screen.findByRole('heading', { name: '收支与往来对账' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '月度对账' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: '收支与往来事项' })).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: '原口径合计' })).not.toBeInTheDocument()
     expect(await screen.findByText('3 条交易待审核')).toBeInTheDocument()
@@ -2685,7 +2685,7 @@ describe('LedgerBridge Web API client', () => {
     const projectionGate = new Promise<void>((resolve) => { releaseProjection = resolve })
     installFetch({ originalReconciliationGate: projectionGate })
     const loadingView = renderApp()
-    expect(await screen.findByRole('heading', { name: '收支与往来对账' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '月度对账' })).toBeInTheDocument()
     await act(async () => releaseProjection())
     expect(await screen.findByRole('region', { name: '收支与往来事项' })).toBeInTheDocument()
     loadingView.unmount()

@@ -62,6 +62,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
   const [loading, setLoading] = useState(false)
   const [cashError, setCashError] = useState<string | null>(null)
   const [projectionWarning, setProjectionWarning] = useState<string | null>(null)
+  const [showAllIssues, setShowAllIssues] = useState(false)
   const requestRef = useRef(0)
   const scopeRef = useRef<OriginalReconciliation['scope'] | null>(null)
   const selectedMonth = selectedMonthOverride ?? currentMonth()
@@ -134,9 +135,9 @@ export function OriginalReconciliationPage({ onNavigate }: {
   return (
     <>
       <PageHeader
-        eyebrow="月度对账"
-        title="收支与往来对账"
-        description="导入银行和微信流水后，系统按固定规则直接生成旧对账表已有项目。"
+        eyebrow="财务核对"
+        title="月度对账"
+        description="按正式银行和微信流水生成当月收入、支出与往来款。"
         action={(
           <div className="original-reconciliation-filters">
             <input
@@ -151,6 +152,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
                 setData(null)
                 setCashData(null)
                 setSelectedFlow('income')
+                setShowAllIssues(false)
                 setSelectedMonthOverride(event.target.value)
               }}
             />
@@ -173,13 +175,37 @@ export function OriginalReconciliationPage({ onNavigate }: {
         </div>
       </section>
 
+      <section className="reconciliation-overview" aria-label="本月对账概览">
+        <div className="reconciliation-overview-status">
+          <span>本月结果</span>
+          <strong>
+            {cashData
+              ? cashData.conflicted_fact_count > 0
+                ? '存在规则冲突'
+                : cashData.unmatched_fact_count > 0
+                  ? '有流水待归类'
+                  : '全部流水已归类'
+              : loading
+                ? '正在核对'
+                : '等待数据'}
+          </strong>
+          <small>{cashData ? `${cashData.matched_fact_count} / ${cashData.eligible_fact_count} 笔已进入对账项目` : '读取正式流水与规则结果'}</small>
+        </div>
+        <dl className="reconciliation-overview-metrics">
+          <div><dt>已归入</dt><dd>{cashData?.matched_fact_count ?? 0}</dd><small>笔流水</small></div>
+          <div><dt>未识别</dt><dd>{cashData?.unmatched_fact_count ?? 0}</dd><small>不计入合计</small></div>
+          <div className={cashData?.conflicted_fact_count ? 'is-critical' : ''}><dt>规则冲突</dt><dd>{cashData?.conflicted_fact_count ?? 0}</dd><small>需优先处理</small></div>
+          <div><dt>生效规则</dt><dd>{cashData?.rules.length ?? 0}</dd><small>当前授权范围</small></div>
+        </dl>
+      </section>
+
       <section className="panel statement-workbench" aria-label="收支与往来事项">
         <div className="panel-heading statement-workbench-heading">
           <div>
             <h2>{selectedMonthLabel}</h2>
             <p>{cashData?.matched_fact_count ?? 0} 笔流水唯一命中旧表项目规则</p>
           </div>
-            <Button onClick={() => onNavigate('review')}><ListChecks size={16} />查看未识别流水</Button>
+          <Button variant="soft" onClick={() => onNavigate('review')}><ListChecks size={16} />处理待审核</Button>
         </div>
 
         <div className="statement-flow-tabs" role="tablist" aria-label="业务性质">
@@ -257,7 +283,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
             </Badge>
           </div>
           <div className="reconciliation-issue-list">
-            {cashData.issues.map((issue) => (
+            {cashData.issues.slice(0, showAllIssues ? undefined : 8).map((issue) => (
               <article key={`${issue.source_kind}:${issue.fact_ref}`} className={issue.issue_kind === 'MULTIPLE_RULES' ? 'conflict' : ''}>
                 <div>
                   <Badge color={issue.issue_kind === 'MULTIPLE_RULES' ? 'red' : 'amber'}>
@@ -271,6 +297,16 @@ export function OriginalReconciliationPage({ onNavigate }: {
               </article>
             ))}
           </div>
+          {cashData.issues.length > 8 ? (
+            <Button
+              className="reconciliation-issues-toggle"
+              variant="soft"
+              color="gray"
+              onClick={() => setShowAllIssues((value) => !value)}
+            >
+              {showAllIssues ? '收起异常明细' : `展开全部 ${cashData.issue_count} 条`}
+            </Button>
+          ) : null}
           {cashData.issues_truncated ? <p className="projection-note">仅显示前 500 条；总计 {cashData.issue_count} 条。</p> : null}
           <p className="projection-note">银行流水请按完整标识复核；微信流水可进入待审核继续处理。</p>
           <Button variant="outline" color="gray" onClick={() => onNavigate('review')}>查看微信待审核</Button>
@@ -284,12 +320,15 @@ export function OriginalReconciliationPage({ onNavigate }: {
         </section>
       ) : null}
 
-      <section className="panel statement-source-registry" aria-label="旧表项目取数来源">
-        <div className="panel-heading">
-          <div><h2>自动取数规则</h2><p>规则保存在系统中，只把明确命中的流水写入旧表项目</p></div>
-          <Badge color="green">收入 {incomeSourceRuleCount} · 支出 {expenseSourceRuleCount}</Badge>
-        </div>
-        <div className="statement-source-registry-list">
+      <details className="panel statement-source-registry" aria-label="旧表项目取数来源" role="region">
+        <summary className="panel-heading statement-source-registry-summary">
+          <div><h2>自动取数规则</h2><p>查看本月使用的账户、匹配词和生效日期</p></div>
+          <span className="statement-source-registry-summary-meta">
+            收入 {incomeSourceRuleCount} 条 <span aria-hidden="true">·</span> 支出 {expenseSourceRuleCount} 条
+          </span>
+        </summary>
+        <div className="statement-source-registry-body">
+          <div className="statement-source-registry-list">
           <div className="statement-source-registry-labels" aria-hidden="true"><span>主体</span><span>旧表项目</span><span>取数或权威来源</span></div>
           {cashData?.rules.map((rule) => (
             <article key={rule.rule_key}>
@@ -301,18 +340,19 @@ export function OriginalReconciliationPage({ onNavigate }: {
               </span>
             </article>
           ))}
-        </div>
-        <div className="current-account-registry-note">
+          </div>
+          <div className="current-account-registry-note">
           <ArrowsLeftRight size={18} />
           <div><strong>往来款重点对象</strong><span>{currentAccountCounterpartyNote}</span></div>
           <Badge color="amber">账户与例外待确认</Badge>
-        </div>
-        <div className="current-account-registry-note">
+          </div>
+          <div className="current-account-registry-note">
           <Info size={18} />
           <div><strong>历史口径校正</strong><span>{historicalClassificationCorrection}</span></div>
           <Badge color="blue">网页核对口径</Badge>
+          </div>
         </div>
-      </section>
+      </details>
 
       {data && hasProjectionTodos ? (
         <section className="panel original-workflow-todos statement-todos" aria-label="对账待办">
