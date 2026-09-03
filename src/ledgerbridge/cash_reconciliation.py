@@ -29,9 +29,7 @@ class CashReconciliationRule(BaseModel):
     match_pattern: str = Field(min_length=1, max_length=300)
     amount_direction: str = Field(pattern=r"^(CREDIT|DEBIT|ANY)$")
     effective_from: str = Field(pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
-    effective_to: str | None = Field(
-        default=None, pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
-    )
+    effective_to: str | None = Field(default=None, pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
 
 class CashReconciliationRow(BaseModel):

@@ -68,9 +68,7 @@ def _principal() -> WorkloadPrincipal:
         principal_ref="workload:cash-reconciliation-test",
         san_uri="spiffe://ledgerbridge.test/cash-reconciliation-test",
         policy_generation=1,
-        capabilities=frozenset(
-            {Capability.RECONCILIATION_READ, Capability.LEDGER_READ}
-        ),
+        capabilities=frozenset({Capability.RECONCILIATION_READ, Capability.LEDGER_READ}),
         grants=(
             EntityGrant(
                 entity_ref=ENTITY_B,
@@ -109,9 +107,7 @@ def test_database_cash_reconciliation_rejects_empty_entity_scope() -> None:
         principal_ref="workload:cash-reconciliation-test",
         san_uri="spiffe://ledgerbridge.test/cash-reconciliation-test",
         policy_generation=1,
-        capabilities=frozenset(
-            {Capability.RECONCILIATION_READ, Capability.LEDGER_READ}
-        ),
+        capabilities=frozenset({Capability.RECONCILIATION_READ, Capability.LEDGER_READ}),
     )
     service = DatabaseInternalReadService(lambda: cast(Session, _Session(_payload())))
 
