@@ -369,13 +369,21 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
     }])
   }
 
+  const currentTotal = activeBatch?.lines.reduce((sum, line) => sum + line.net_pay_cents, 0) ?? 0
+  const completedSteps = [
+    workspace && workspace.rules.employees.length > 0,
+    Boolean(confirmedMaterials),
+    Boolean(activeBatch),
+    Boolean(activeBatch?.verification),
+  ].filter(Boolean).length
+
   return (
     <section className="payroll-legacy-workbench" aria-labelledby="payroll-legacy-heading">
       <header className="payroll-legacy-header">
         <div>
-          <span>原软件功能迁移</span>
-          <h2 id="payroll-legacy-heading">原工资软件工作台</h2>
-          <p>按业务任务操作，不复制 Excel 界面。所有结果保存到当前公司测试工作区。</p>
+          <span>工资业务工作台</span>
+          <h2 id="payroll-legacy-heading">本月工资处理</h2>
+          <p>从素材确认、工资生成到发放复核，在一个工作区完成。</p>
         </div>
         <div className="payroll-legacy-safety">
           <CheckCircle size={18} weight="fill" />
@@ -383,6 +391,13 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
           <small>{testWorkspace.data.materials.length} 份测试素材 · 不可付款 · 不可提交银行</small>
         </div>
       </header>
+
+      <section className="payroll-overview" aria-label="工资概览">
+        <article><span>当前账期</span><strong>{generationPeriod}</strong><small>可切换已保存月份</small></article>
+        <article><span>工资总额</span><strong>{currentTotal ? money(currentTotal) : '待生成'}</strong><small>以系统工资表为准</small></article>
+        <article><span>员工参数</span><strong>{workspace?.rules.employees.length ?? 0} 人</strong><small>独立于全局工资规则</small></article>
+        <article><span>处理进度</span><strong>{completedSteps}/4</strong><small>规则、素材、工资、复核</small></article>
+      </section>
 
       <nav className="payroll-legacy-taskbar" aria-label="工资工作流程">
         {tasks.map((item) => {
@@ -408,6 +423,34 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
         <div className="payroll-legacy-loading"><ArrowClockwise size={20} />正在读取工资规则和月度结果</div>
       ) : (
         <div className="payroll-legacy-body">
+          {task === 'generate' ? (
+            <section className="payroll-flow-overview" aria-label="本月工资处理进度">
+              <div className="payroll-flow-steps">
+                {[
+                  ['01', '员工与规则', Boolean(workspace && workspace.rules.employees.length > 0)],
+                  ['02', '三类素材', Boolean(confirmedMaterials)],
+                  ['03', '生成工资表', Boolean(activeBatch)],
+                  ['04', '发放复核', Boolean(activeBatch?.verification)],
+                ].map(([number, label, done], index) => (
+                  <div className={done ? 'done' : index === completedSteps ? 'current' : ''} key={String(number)}>
+                    <span>{done ? <CheckCircle size={18} weight="fill" /> : number}</span>
+                    <strong>{label}</strong>
+                  </div>
+                ))}
+              </div>
+              <div className="payroll-flow-focus">
+                <span>当前任务</span>
+                <strong>{confirmedMaterials ? '生成并复核当月工资' : '先确认本月三类工资素材'}</strong>
+                <p>{confirmedMaterials ? '所需素材已确认，可以按员工参数和全局规则生成。' : '考勤表、阿姨考勤表和好评统计必须各选定一个版本。'}</p>
+              </div>
+              <aside>
+                <strong>生成前检查</strong>
+                <span className={workspace?.rules.employees.length ? 'ready' : ''}>{workspace?.rules.employees.length ? '已完成' : '待完成'} · 员工参数</span>
+                <span className={reviewRules.length ? 'ready' : ''}>{reviewRules.length ? '已完成' : '待完成'} · 工资规则</span>
+                <span className={confirmedMaterials ? 'ready' : ''}>{confirmedMaterials ? '已完成' : '待完成'} · 三类素材</span>
+              </aside>
+            </section>
+          ) : null}
           <div className="payroll-legacy-toolbar">
             <div>
               <strong>{workspace ? `工资工作区版本 ${workspace.revision}` : '尚未建立工资规则'}</strong>
