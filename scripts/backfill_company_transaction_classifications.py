@@ -27,7 +27,7 @@ class Transaction:
 def classify(item: Transaction, company_names: frozenset[str]) -> str | None:
     counterparty = item.counterparty_name.strip()
     name = item.transaction_name.strip()
-    if counterparty in {"陈明哲", "陈明毅", "陈婵娟"} or "往来款" in name:
+    if counterparty in {"陈明哲", "陈明毅", "陈婵娟"} or "往来款" in name or "押金" in name:
         return "RELATED_PARTY_CURRENT"
     if counterparty in company_names or "资金归集" in name:
         return "INTERNAL_TRANSFER"
@@ -46,7 +46,15 @@ def classify(item: Transaction, company_names: frozenset[str]) -> str | None:
         or "房款结算" in name
     ):
         return "PLATFORM_ROOM_REVENUE"
-    if item.amount_minor > 0 and any(marker in name for marker in ("房租", "租金", "水电费")):
+    if item.amount_minor > 0 and (
+        counterparty
+        in {
+            "深圳市三径工程有限公司",
+            "深圳市紫元造境科技传媒有限公司",
+            "深圳市辉熙智能科技有限公司",
+        }
+        or any(marker in name for marker in ("房租", "租金", "水电费"))
+    ):
         return "RENTAL_INCOME"
     if "房租" in name:
         return "RENT"
