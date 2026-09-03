@@ -2,6 +2,20 @@
 
 Updated: 2026-09-02
 
+## Historical classification backfill checkpoint (2026-09-04)
+
+The user-approved P01-P07 high-confidence historical groups are now classified
+in production. Four personal cash-reconciliation groups are bound by exact fact
+digests and versioned rules: personal Alipay account 2 Fliggy 1,574 rows,
+Jingyi Meituan 49, Weixu bank/POS 28, and Weixu Ctrip 11. Three company-bank
+groups added 111 append-only confirmed classifications: related-party current
+50, payroll 38, and financing 23. The whole write set is atomic, audited, and
+idempotent; replay created zero rows. No Journal Entry or Posting was created.
+
+Production Core remains `4f0e9b5c3c972da26dda055d21e52141bf0b6929` at
+schema `20260904_0039`. Pre/post encrypted backups and isolated restores passed.
+See `docs/tasks/2026-09-04-historical-classification-backfill.md`.
+
 ## Personal Alipay account 2 reattribution checkpoint (2026-09-04)
 
 The reviewed 1,574-row receipt cohort from personal Alipay account 2 is now
