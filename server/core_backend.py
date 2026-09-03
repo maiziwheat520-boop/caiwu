@@ -36,6 +36,15 @@ PAYROLL_USER_ASSERTION_VERSION = "ledgerbridge.payroll-bff-user-assertion.v1"
 PAYROLL_RESOURCE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PAYROLL_PROJECTION_REVISION = re.compile(r"^[0-9a-f]{64}$")
 PAYROLL_PERIOD = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+PAYROLL_CANONICAL_ACCOUNT_ID = re.compile(r"^account_[0-9a-f]{24}$")
+PAYROLL_LEGACY_REVIEW_RULE_TYPES = frozenset(
+    {
+        "PAYMENT_CHANNEL_REQUIRED",
+        "SUPPORTING_MATERIAL_REQUIRED",
+        "HISTORY_CHANGE_REVIEW",
+    }
+)
+PAYROLL_LEGACY_REVIEW_RULE_SEVERITIES = frozenset({"BLOCKING", "REVIEW"})
 PAYROLL_TEST_MATERIAL_TYPES = frozenset(
     {
         "PAYROLL_SHEET",
@@ -4613,15 +4622,51 @@ def _validate_payroll_legacy_workspace_data(
         or not isinstance(active_period, str)
         or PAYROLL_PERIOD.fullmatch(active_period) is None
         or not isinstance(rules, dict)
-        or set(rules) != {"revision", "employees"}
+        or not {"revision", "employees"}.issubset(rules)
+        or set(rules) - {"revision", "employees", "review_rules"}
         or type(rules.get("revision")) is not int
         or not 0 <= int(rules["revision"]) <= JSON_SAFE_INTEGER
         or not isinstance(rules.get("employees"), list)
         or not isinstance(batches, list)
-        or not batches
         or not isinstance(events, list)
     ):
         raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    review_rules = rules.get("review_rules", [])
+    if (
+        not isinstance(review_rules, list)
+        or len(review_rules) > len(PAYROLL_LEGACY_REVIEW_RULE_TYPES)
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    review_rule_ids: set[str] = set()
+    review_rule_types: set[str] = set()
+    review_rule_fields = {
+        "rule_id", "name", "rule_type", "enabled", "severity", "threshold_cents"
+    }
+    for rule in review_rules:
+        if not isinstance(rule, dict) or set(rule) != review_rule_fields:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        rule_id = rule.get("rule_id")
+        name = rule.get("name")
+        rule_type = rule.get("rule_type")
+        threshold = rule.get("threshold_cents")
+        if (
+            not _payroll_identifier(rule_id)
+            or rule_id in review_rule_ids
+            or not isinstance(name, str)
+            or not name.strip()
+            or name != name.strip()
+            or len(name) > 120
+            or rule_type not in PAYROLL_LEGACY_REVIEW_RULE_TYPES
+            or rule_type in review_rule_types
+            or type(rule.get("enabled")) is not bool
+            or rule.get("severity") not in PAYROLL_LEGACY_REVIEW_RULE_SEVERITIES
+            or type(threshold) is not int
+            or not 0 <= int(threshold) <= JSON_SAFE_INTEGER
+            or (rule_type != "HISTORY_CHANGE_REVIEW" and threshold != 0)
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        review_rule_ids.add(str(rule_id))
+        review_rule_types.add(str(rule_type))
     batch_fields = {
         "batch_id",
         "period",
@@ -4671,15 +4716,14 @@ def _validate_payroll_legacy_workspace_data(
                 not isinstance(line, dict)
                 or line.get("company_id") != expected_company_id
                 or not _payroll_identifier(line.get("employee_id"))
-                or not _payroll_identifier(line.get("account_id"))
-                or sum(character.isdigit() for character in str(line.get("account_id"))) >= 12
+                or not _payroll_account_identifier(line.get("account_id"))
                 or not isinstance(line.get("account_masked"), str)
                 or re.fullmatch(r"\*{4}(?:\d{4}|\?{4})", str(line["account_masked"])) is None
                 or type(line.get("source_row")) is not int
                 or int(line["source_row"]) < 1
             ):
                 raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
-    if active_period not in periods:
+    if periods and active_period not in periods:
         raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
     for sequence, event in enumerate(events, start=1):
         if not isinstance(event, dict) or event.get("sequence") != sequence:
@@ -5293,6 +5337,16 @@ def _validate_payroll_command_receipt_data(
 
 def _payroll_identifier(value: object) -> bool:
     return isinstance(value, str) and PAYROLL_RESOURCE_REF.fullmatch(value) is not None
+
+
+def _payroll_account_identifier(value: object) -> bool:
+    return (
+        _payroll_identifier(value)
+        and (
+            PAYROLL_CANONICAL_ACCOUNT_ID.fullmatch(str(value)) is not None
+            or sum(character.isdigit() for character in str(value)) < 12
+        )
+    )
 
 
 def _reject_unsafe_payroll_values(value: object) -> None:

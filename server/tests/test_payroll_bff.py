@@ -1087,6 +1087,48 @@ class PayrollBffTests(unittest.TestCase):
             state.payroll_legacy_workspace("session-token", "ledgerbridge-owner")
         self.assertEqual(raised.exception.payload["code"], "PAYROLL_PAYMENT_MODE_NOT_ALLOWED")
 
+    def test_legacy_feature_workspace_accepts_rules_before_first_batch(self) -> None:
+        state = build_state(self.client, payroll_test_workspace_enabled=True)
+        self.client.legacy_workspace_updates = {
+            "rules": {
+                "revision": 1,
+                "employees": [],
+                "review_rules": [{
+                    "rule_id": "review_supporting_materials",
+                    "name": "三类工资素材必须齐全",
+                    "rule_type": "SUPPORTING_MATERIAL_REQUIRED",
+                    "enabled": True,
+                    "severity": "REVIEW",
+                    "threshold_cents": 0,
+                }],
+            },
+            "batches": [],
+        }
+
+        workspace = state.payroll_legacy_workspace(
+            "session-token", "ledgerbridge-owner"
+        )
+
+        self.assertEqual(len(workspace["data"]["rules"]["review_rules"]), 1)
+        self.assertEqual(workspace["data"]["batches"], [])
+
+    def test_legacy_feature_workspace_accepts_canonical_opaque_account_id(self) -> None:
+        state = build_state(self.client, payroll_test_workspace_enabled=True)
+        workspace = self.client.legacy_workspace()
+        workspace["batches"][0]["lines"][0]["account_id"] = (
+            "account_123456789012345678901234"
+        )
+        self.client.legacy_workspace_updates = workspace
+
+        result = state.payroll_legacy_workspace(
+            "session-token", "ledgerbridge-owner"
+        )
+
+        self.assertEqual(
+            result["data"]["batches"][0]["lines"][0]["account_id"],
+            "account_123456789012345678901234",
+        )
+
     def test_test_workspace_command_rejects_payment_mode_drift(self) -> None:
         self.client.test_workspace_command_data_updates = {"payable": True}
         status, payload = self.post_payroll(
