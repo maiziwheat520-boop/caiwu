@@ -1,6 +1,18 @@
 # Project status
 
-Updated: 2026-09-02
+Updated: 2026-09-04
+
+## BOC counterparty column-spill correction (2026-09-04)
+
+Production now runs Core revision `4f0e9b5c3c972da26dda055d21e52141bf0b6929`
+at schema `20260904_0039`. The BOC PDF parser accepts the verified single-space
+fixed-column spill shape, while an append-only audited correction projection repairs
+176 previously imported personal BOC transaction names/accounts/institutions without
+mutating immutable source facts. The corrected projection has zero residual `" 6"`
+name suffixes; 176 correction audit events exist, and Journal Entry/Posting remain zero.
+Pre- and post-release encrypted backups passed isolated restore rehearsals. The focused
+parser/migration/backup suite passed 188 tests; the full suite passed 1,344 with 212
+platform skips and the three documented baseline payroll failures.
 
 ## Dedicated multi-company report principal checkpoint (2026-09-02)
 
