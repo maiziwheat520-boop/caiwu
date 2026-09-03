@@ -190,15 +190,6 @@ BEGIN
         END IF;
         SELECT * INTO v_old FROM public.bank_statement_transaction_correction
          WHERE transaction_ref = v_transaction.transaction_ref;
-        IF (v_name, v_account, v_institution, v_serial, v_transaction_name)
-           IS NOT DISTINCT FROM (
-             coalesce(v_old.counterparty_name, v_transaction.counterparty_name),
-             coalesce(v_old.counterparty_account, v_transaction.counterparty_account),
-             coalesce(v_old.counterparty_institution, v_transaction.counterparty_institution),
-             v_transaction.transaction_serial, v_transaction.transaction_name
-           ) THEN
-            CONTINUE;
-        END IF;
         SELECT * INTO v_existing
           FROM public.bank_statement_transaction_projection_correction
          WHERE transaction_ref = v_transaction.transaction_ref;
@@ -214,6 +205,15 @@ BEGIN
                 RAISE EXCEPTION 'BOC projection repair replay conflicts'
                     USING ERRCODE = 'integrity_constraint_violation';
             END IF;
+            CONTINUE;
+        END IF;
+        IF (v_name, v_account, v_institution, v_serial, v_transaction_name)
+           IS NOT DISTINCT FROM (
+             coalesce(v_old.counterparty_name, v_transaction.counterparty_name),
+             coalesce(v_old.counterparty_account, v_transaction.counterparty_account),
+             coalesce(v_old.counterparty_institution, v_transaction.counterparty_institution),
+             v_transaction.transaction_serial, v_transaction.transaction_name
+           ) THEN
             CONTINUE;
         END IF;
         v_audit := public.append_audit_event(
@@ -284,34 +284,11 @@ BEGIN
                  WHEN correction_audit.sequence <= p_audit_horizon_sequence
                  THEN correction.counterparty_name
                  ELSE transaction.counterparty_name END)::varchar(300),
-           (CASE WHEN coalesce(
-                    CASE WHEN projection_audit.sequence <= p_audit_horizon_sequence
-                         THEN projection.counterparty_account END,
-                    CASE WHEN correction_audit.sequence <= p_audit_horizon_sequence
-                         THEN correction.counterparty_account END,
-                    transaction.counterparty_account) IS NULL THEN NULL
-                 WHEN length(coalesce(
-                    CASE WHEN projection_audit.sequence <= p_audit_horizon_sequence
-                         THEN projection.counterparty_account END,
-                    CASE WHEN correction_audit.sequence <= p_audit_horizon_sequence
-                         THEN correction.counterparty_account END,
-                    transaction.counterparty_account)) <= 4 THEN repeat('*',length(coalesce(
-                    CASE WHEN projection_audit.sequence <= p_audit_horizon_sequence
-                         THEN projection.counterparty_account END,
-                    CASE WHEN correction_audit.sequence <= p_audit_horizon_sequence
-                         THEN correction.counterparty_account END,
-                    transaction.counterparty_account)))
-                 ELSE repeat('*',length(coalesce(
-                    CASE WHEN projection_audit.sequence <= p_audit_horizon_sequence
-                         THEN projection.counterparty_account END,
-                    CASE WHEN correction_audit.sequence <= p_audit_horizon_sequence
-                         THEN correction.counterparty_account END,
-                    transaction.counterparty_account))-4) || right(coalesce(
-                    CASE WHEN projection_audit.sequence <= p_audit_horizon_sequence
-                         THEN projection.counterparty_account END,
-                    CASE WHEN correction_audit.sequence <= p_audit_horizon_sequence
-                         THEN correction.counterparty_account END,
-                    transaction.counterparty_account),4) END)::varchar(300),
+           (CASE WHEN effective.counterparty_account IS NULL THEN NULL
+                 WHEN length(effective.counterparty_account) <= 4
+                    THEN repeat('*',length(effective.counterparty_account))
+                 ELSE repeat('*',length(effective.counterparty_account)-4) ||
+                    right(effective.counterparty_account,4) END)::varchar(300),
            (CASE WHEN projection_audit.sequence <= p_audit_horizon_sequence
                  THEN projection.counterparty_institution
                  WHEN correction_audit.sequence <= p_audit_horizon_sequence
@@ -332,6 +309,14 @@ BEGIN
       LEFT JOIN public.bank_statement_transaction_projection_correction projection
         USING(transaction_ref)
       LEFT JOIN public.audit_event projection_audit ON projection_audit.id=projection.audit_event_id
+      CROSS JOIN LATERAL (
+        SELECT CASE WHEN projection_audit.sequence <= p_audit_horizon_sequence
+                    THEN projection.counterparty_account
+                    WHEN correction_audit.sequence <= p_audit_horizon_sequence
+                    THEN coalesce(correction.counterparty_account,
+                                  transaction.counterparty_account)
+                    ELSE transaction.counterparty_account END AS counterparty_account
+      ) effective
       JOIN public.audit_event imported ON imported.id=statement.audit_event_id
       JOIN public.audit_event observed ON observed.id=observation.audit_event_id
       JOIN public.audit_event recorded ON recorded.id=transaction.audit_event_id

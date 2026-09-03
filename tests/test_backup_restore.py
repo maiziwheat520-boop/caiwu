@@ -825,6 +825,11 @@ def _counterparty_database_metadata() -> dict[str, object]:
 def _bank_statement_database_metadata() -> dict[str, object]:
     metadata = _counterparty_database_metadata()
     metadata["alembic_version"] = "20260830_0021"
+    bank_tables = tuple(
+        table
+        for table in BANK_STATEMENT_TABLES
+        if table not in backup_restore_module.BOC_PROJECTION_REPAIR_TABLES
+    )
     function_signatures = dict(BANK_STATEMENT_FUNCTION_SIGNATURES)
     for function_key in CASH_RECONCILIATION_FUNCTION_KEYS:
         function_signatures.pop(function_key)
@@ -832,10 +837,14 @@ def _bank_statement_database_metadata() -> dict[str, object]:
         function_signatures.pop(function_key)
     for function_key in COMPANY_AUTO_CLASSIFICATION_FUNCTION_KEYS:
         function_signatures.pop(function_key)
+    for function_key in backup_restore_module.BOC_PROJECTION_REPAIR_FUNCTION_KEYS:
+        function_signatures.pop(function_key)
     trigger_contract = dict(BANK_STATEMENT_TRIGGER_CONTRACT)
     for trigger_name in CASH_RECONCILIATION_TRIGGER_NAMES:
         trigger_contract.pop(trigger_name)
     for trigger_name in COMPANY_AUTO_CLASSIFICATION_TRIGGER_NAMES:
+        trigger_contract.pop(trigger_name)
+    for trigger_name in backup_restore_module.BOC_PROJECTION_REPAIR_TRIGGER_NAMES:
         trigger_contract.pop(trigger_name)
     schema_rows = cast(list[dict[str, object]], metadata["r1_effective_schema_privileges"])
     metadata["r1_effective_schema_privileges"] = [
@@ -844,10 +853,9 @@ def _bank_statement_database_metadata() -> dict[str, object]:
         else item
         for item in schema_rows
     ]
-    metadata["bank_statement_row_counts"] = {table: 0 for table in BANK_STATEMENT_TABLES}
+    metadata["bank_statement_row_counts"] = {table: 0 for table in bank_tables}
     metadata["bank_statement_tables"] = [
-        {"table": table, "owner": "ledgerbridge_owner", "kind": "r"}
-        for table in BANK_STATEMENT_TABLES
+        {"table": table, "owner": "ledgerbridge_owner", "kind": "r"} for table in bank_tables
     ]
     metadata["bank_statement_schemas"] = [
         {"schema": schema, "owner": "ledgerbridge_owner"}
@@ -897,7 +905,11 @@ def _bank_statement_database_metadata() -> dict[str, object]:
             "definition": definition,
         }
         for name, (table, constraint_type, definition) in sorted(
-            BANK_STATEMENT_CONSTRAINT_CONTRACT.items()
+            (
+                (name, contract)
+                for name, contract in BANK_STATEMENT_CONSTRAINT_CONTRACT.items()
+                if contract[0] in bank_tables
+            )
         )
     ]
     metadata["bank_statement_table_acls"] = [
@@ -907,7 +919,7 @@ def _bank_statement_database_metadata() -> dict[str, object]:
             "privilege": privilege,
             "grantable": False,
         }
-        for table in BANK_STATEMENT_TABLES
+        for table in bank_tables
         for privilege in (
             "SELECT",
             "INSERT",
@@ -973,7 +985,7 @@ def _bank_statement_database_metadata() -> dict[str, object]:
             "trigger": False,
         }
         for role in roles
-        for table in BANK_STATEMENT_TABLES
+        for table in bank_tables
     ]
     metadata["bank_statement_effective_function_privileges"] = [
         {
@@ -1012,6 +1024,8 @@ def _account_registry_database_metadata() -> dict[str, object]:
         bank_triggers.pop(trigger_name)
     for trigger_name in COMPANY_AUTO_CLASSIFICATION_TRIGGER_NAMES:
         bank_triggers.pop(trigger_name)
+    for trigger_name in backup_restore_module.BOC_PROJECTION_REPAIR_TRIGGER_NAMES:
+        bank_triggers.pop(trigger_name)
     bank_triggers.pop("validate_managed_account_audit")
     bank_triggers.pop("require_statement_backed_account")
     bank_triggers.update(ACCOUNT_REGISTRY_MANAGED_ACCOUNT_TRIGGER_CONTRACT)
@@ -1037,6 +1051,11 @@ def _account_registry_database_metadata() -> dict[str, object]:
         ) in sorted(bank_triggers.items())
     ]
     bank_constraints = dict(BANK_STATEMENT_CONSTRAINT_CONTRACT)
+    bank_constraints = {
+        name: contract
+        for name, contract in bank_constraints.items()
+        if contract[0] not in backup_restore_module.BOC_PROJECTION_REPAIR_TABLES
+    }
     bank_constraints.pop("managed_account_institution_code_check")
     bank_constraints.update(ACCOUNT_REGISTRY_MANAGED_ACCOUNT_CONSTRAINT_CONTRACT)
     metadata["bank_statement_constraints"] = [
@@ -1806,8 +1825,8 @@ def test_counterparty_restore_metadata_rejects_drift(mutation: str) -> None:
 def test_bank_statement_restore_metadata_covers_0021_contract() -> None:
     expected = _bank_statement_database_metadata()
     _validate_restored_database(expected, expected.copy())
-    assert set(cast(dict[str, int], expected["bank_statement_row_counts"])) == set(
-        BANK_STATEMENT_TABLES
+    assert set(cast(dict[str, int], expected["bank_statement_row_counts"])) == (
+        set(BANK_STATEMENT_TABLES) - backup_restore_module.BOC_PROJECTION_REPAIR_TABLES
     )
     for table in BANK_STATEMENT_TABLES:
         assert f"FROM public.{table}" in BANK_STATEMENT_SECURITY_SQL
@@ -1816,6 +1835,12 @@ def test_bank_statement_restore_metadata_covers_0021_contract() -> None:
     assert "observed_constraints AS" in BANK_STATEMENT_SECURITY_SQL
     assert "'bank_statement_constraints'" in BANK_STATEMENT_SECURITY_SQL
     assert len(BANK_STATEMENT_CONSTRAINT_CONTRACT) == 76
+
+
+def test_pre_0041_backup_queries_do_not_reference_projection_repair_objects() -> None:
+    marker = "bank_statement_transaction_projection_correction"
+    assert marker not in backup_restore_module.BANK_STATEMENT_PRE_PROJECTION_SECURITY_SQL
+    assert marker not in backup_restore_module.R1_CUTOVER_PRE_PROJECTION_INVENTORY_SQL
 
 
 def test_restore_accepts_pg_dump_equivalent_text_array_check_definition() -> None:

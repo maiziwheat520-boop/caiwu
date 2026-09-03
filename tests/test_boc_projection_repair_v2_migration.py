@@ -32,6 +32,9 @@ def test_reader_prefers_v2_then_v1_then_immutable_fact() -> None:
     assert "projection.transaction_name" in source
     assert "projection_audit.sequence <= p_audit_horizon_sequence" in source
     assert "AND (projection_audit.sequence IS NULL" not in source
+    assert "THEN projection.counterparty_account" in source
+    assert "THEN coalesce(correction.counterparty_account," in source
+    assert "coalesce(projection.counterparty_account" not in source
 
 
 def test_repair_is_idempotent_and_runtime_roles_cannot_call_it() -> None:
@@ -39,3 +42,6 @@ def test_repair_is_idempotent_and_runtime_roles_cannot_call_it() -> None:
     assert "command_sha256" in source
     assert "created boolean" in source
     assert "FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker" in source
+    existing_check = source.index("SELECT * INTO v_existing")
+    baseline_skip = source.index("IS NOT DISTINCT FROM (", existing_check)
+    assert existing_check < baseline_skip

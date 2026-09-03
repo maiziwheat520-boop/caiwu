@@ -713,6 +713,7 @@ BANK_STATEMENT_TABLES = (
     "bank_statement_transaction_correction",
     "bank_statement_transaction_projection_correction",
 )
+BOC_PROJECTION_REPAIR_TABLES = frozenset({"bank_statement_transaction_projection_correction"})
 CASH_RECONCILIATION_TABLES = (
     "cash_reconciliation_rule",
     "cash_reconciliation_adjustment",
@@ -845,6 +846,12 @@ CASH_RECONCILIATION_V2_FUNCTION_KEYS = frozenset(
 )
 COMPANY_AUTO_CLASSIFICATION_FUNCTION_KEYS = frozenset(
     {("internal_import", "auto_classify_confirmed_company_statement")}
+)
+BOC_PROJECTION_REPAIR_FUNCTION_KEYS = frozenset(
+    {
+        ("public", "r1_validate_bank_statement_transaction_projection_correction"),
+        ("internal_import", "repair_boc_statement_projection"),
+    }
 )
 BANK_STATEMENT_TRIGGER_CONTRACT = {
     "bank_statement_transaction_projection_correction_append_only": (
@@ -1039,6 +1046,12 @@ CASH_RECONCILIATION_TRIGGER_NAMES = frozenset(
     }
 )
 COMPANY_AUTO_CLASSIFICATION_TRIGGER_NAMES = frozenset({"auto_classify_confirmed_company_statement"})
+BOC_PROJECTION_REPAIR_TRIGGER_NAMES = frozenset(
+    {
+        "bank_statement_transaction_projection_correction_append_only",
+        "validate_bank_statement_transaction_projection_correction_audit",
+    }
+)
 BANK_STATEMENT_REQUIRED_TRIGGERS = frozenset(BANK_STATEMENT_TRIGGER_CONTRACT)
 BANK_STATEMENT_CONSTRAINT_CONTRACT = {
     "bank_statement_transaction_projection_correction_audit_event_id_fkey": (
@@ -1894,6 +1907,30 @@ SELECT json_build_object(
     .replace("__BANK_TRIGGER_TABLES_SQL__", _BANK_TRIGGER_TABLES_SQL)
     .replace("__BANK_FUNCTIONS_SQL__", _BANK_FUNCTIONS_SQL)
     .strip()
+)
+
+
+def _without_boc_projection_repair_security(sql: str) -> str:
+    legacy = sql.replace(", 'bank_statement_transaction_projection_correction'", "")
+    for schema, name in BOC_PROJECTION_REPAIR_FUNCTION_KEYS:
+        entry = f"('{schema}', '{name}', '{BANK_STATEMENT_FUNCTION_SIGNATURES[(schema, name)]}')"
+        legacy = legacy.replace(f", {entry}", "")
+    legacy = legacy.replace(
+        "  'bank_statement_transaction_projection_correction',("
+        "\n    SELECT count(*) FROM "
+        "public.bank_statement_transaction_projection_correction),\n",
+        "",
+    )
+    return legacy
+
+
+BANK_STATEMENT_PRE_PROJECTION_SECURITY_SQL = _without_boc_projection_repair_security(
+    BANK_STATEMENT_SECURITY_SQL
+)
+R1_CUTOVER_PRE_PROJECTION_INVENTORY_SQL = R1_CUTOVER_INVENTORY_SQL.replace(
+    ", 'bank_statement_transaction_projection_correction', "
+    "(SELECT count(*) FROM public.bank_statement_transaction_projection_correction)",
+    "",
 )
 
 EVIDENCE_UNLOCK_SECURITY_REVISION = "20260830_0025"
@@ -3832,7 +3869,11 @@ def _database_metadata(
             raise BackupError("counterparty security query returned an incomplete object")
         metadata.update(cast(dict[str, Any], counterparty_security))
     if revision >= BANK_STATEMENT_SECURITY_REVISION:
-        bank_security = query(BANK_STATEMENT_SECURITY_SQL)
+        bank_security = query(
+            BANK_STATEMENT_SECURITY_SQL
+            if revision >= BOC_PROJECTION_REPAIR_REVISION
+            else BANK_STATEMENT_PRE_PROJECTION_SECURITY_SQL
+        )
         required_bank_keys = {
             "bank_statement_row_counts",
             "bank_statement_tables",
@@ -3869,7 +3910,13 @@ def _database_metadata(
         ):
             raise BackupError("account registry security query returned an incomplete object")
         metadata.update(cast(dict[str, Any], registry_security))
-        cutover_inventory = CutoverInventory.from_payload(query(R1_CUTOVER_INVENTORY_SQL))
+        cutover_inventory = CutoverInventory.from_payload(
+            query(
+                R1_CUTOVER_INVENTORY_SQL
+                if revision >= BOC_PROJECTION_REPAIR_REVISION
+                else R1_CUTOVER_PRE_PROJECTION_INVENTORY_SQL
+            )
+        )
         metadata["cutover_inventory"] = cutover_inventory.as_payload()
     if revision >= COMPANY_REPORTING_SECURITY_REVISION:
         company_reporting_security = query(COMPANY_REPORTING_SECURITY_SQL)
@@ -5578,21 +5625,25 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
             value is True or value is False or (isinstance(value, str) and value in {"YES", "NO"})
         )
 
-    row_counts = metadata.get("bank_statement_row_counts")
-    if (
-        not isinstance(row_counts, dict)
-        or set(row_counts) != set(BANK_STATEMENT_TABLES)
-        or any(not isinstance(value, int) or value < 0 for value in row_counts.values())
-    ):
-        raise BackupError("restored bank statement row-count metadata is invalid")
-
     owner = metadata.get("database_owner")
     revision = metadata.get("alembic_version")
     if not isinstance(owner, str) or not isinstance(revision, str):
         raise BackupError("restored bank statement database owner is invalid")
+
+    expected_bank_tables = set(BANK_STATEMENT_TABLES)
+    if revision < BOC_PROJECTION_REPAIR_REVISION:
+        expected_bank_tables -= BOC_PROJECTION_REPAIR_TABLES
+    row_counts = metadata.get("bank_statement_row_counts")
+    if (
+        not isinstance(row_counts, dict)
+        or set(row_counts) != expected_bank_tables
+        or any(not isinstance(value, int) or value < 0 for value in row_counts.values())
+    ):
+        raise BackupError("restored bank statement row-count metadata is invalid")
+
     tables = _list("bank_statement_tables")
     actual_tables = {item.get("table") for item in tables}
-    if len(actual_tables) != len(tables) or actual_tables != set(BANK_STATEMENT_TABLES):
+    if len(actual_tables) != len(tables) or actual_tables != expected_bank_tables:
         raise BackupError("restored bank statement tables differ from the required baseline")
     if any(item.get("owner") != owner or item.get("kind") != "r" for item in tables):
         raise BackupError("restored bank statement table security boundary is invalid")
@@ -5617,6 +5668,9 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
             expected_function_signatures.pop(function_key)
     if revision < COMPANY_AUTO_CLASSIFICATION_REVISION:
         for function_key in COMPANY_AUTO_CLASSIFICATION_FUNCTION_KEYS:
+            expected_function_signatures.pop(function_key)
+    if revision < BOC_PROJECTION_REPAIR_REVISION:
+        for function_key in BOC_PROJECTION_REPAIR_FUNCTION_KEYS:
             expected_function_signatures.pop(function_key)
     expected_functions = {
         (schema, name, args) for (schema, name), args in expected_function_signatures.items()
@@ -5672,6 +5726,9 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
     if revision < COMPANY_AUTO_CLASSIFICATION_REVISION:
         for trigger_name in COMPANY_AUTO_CLASSIFICATION_TRIGGER_NAMES:
             expected_trigger_contract.pop(trigger_name)
+    if revision < BOC_PROJECTION_REPAIR_REVISION:
+        for trigger_name in BOC_PROJECTION_REPAIR_TRIGGER_NAMES:
+            expected_trigger_contract.pop(trigger_name)
     if revision >= ACCOUNT_REGISTRY_SECURITY_REVISION:
         expected_trigger_contract.pop("validate_managed_account_audit")
         expected_trigger_contract.pop("require_statement_backed_account")
@@ -5703,6 +5760,12 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
         }
     )
     expected_constraint_contract = dict(BANK_STATEMENT_CONSTRAINT_CONTRACT)
+    if revision < BOC_PROJECTION_REPAIR_REVISION:
+        expected_constraint_contract = {
+            name: contract
+            for name, contract in expected_constraint_contract.items()
+            if contract[0] not in BOC_PROJECTION_REPAIR_TABLES
+        }
     if revision >= ACCOUNT_REGISTRY_SECURITY_REVISION:
         expected_constraint_contract.pop("managed_account_institution_code_check")
         expected_constraint_contract.update(ACCOUNT_REGISTRY_MANAGED_ACCOUNT_CONSTRAINT_CONTRACT)
@@ -5735,7 +5798,7 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
             raise BackupError("restored bank statement table ACL contains a duplicate entry")
         table_acl_keys.add(table_acl_key)
         if (
-            item.get("table") not in BANK_STATEMENT_TABLES
+            item.get("table") not in expected_bank_tables
             or item.get("grantee") != owner
             or item.get("privilege") not in table_privileges
             or not _grantable(item.get("grantable"))
@@ -5795,9 +5858,7 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
     roles = _list("r1_role_matrix")
     active_roles = {item.get("role") for item in roles if item.get("role") in R1_CONTROLLED_ROLES}
     tables = _list("bank_statement_effective_table_privileges")
-    expected_table_keys = {
-        (role, table) for role in active_roles for table in BANK_STATEMENT_TABLES
-    }
+    expected_table_keys = {(role, table) for role in active_roles for table in expected_bank_tables}
     actual_table_keys = {(item.get("role"), item.get("table")) for item in tables}
     privilege_names = (
         "select",
