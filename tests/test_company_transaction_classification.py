@@ -235,6 +235,17 @@ def test_user_approved_company_transaction_rules() -> None:
         classify(Transaction(UUID(int=15), 100, "太平财产保险有限公司", "退款"), companies)
         == "OPERATING_FEE"
     )
+    assert (
+        classify(
+            Transaction(UUID(int=16), 100, "深圳市紫元造境科技传媒有限公司", "他行转入"),
+            companies,
+        )
+        == "RENTAL_INCOME"
+    )
+    assert (
+        classify(Transaction(UUID(int=17), -100, "租户", "退还宿舍押金"), companies)
+        == "RELATED_PARTY_CURRENT"
+    )
 
 
 def test_pending_wire_item_cannot_claim_a_category() -> None:
