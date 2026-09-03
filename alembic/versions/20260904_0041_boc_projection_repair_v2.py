@@ -292,7 +292,8 @@ BEGIN
            (CASE WHEN projection_audit.sequence <= p_audit_horizon_sequence
                  THEN projection.counterparty_institution
                  WHEN correction_audit.sequence <= p_audit_horizon_sequence
-                 THEN correction.counterparty_institution
+                 THEN coalesce(correction.counterparty_institution,
+                               transaction.counterparty_institution)
                  ELSE transaction.counterparty_institution END)::varchar(300),
            (CASE WHEN projection_audit.sequence <= p_audit_horizon_sequence
                  THEN projection.transaction_serial

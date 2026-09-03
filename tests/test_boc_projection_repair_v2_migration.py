@@ -34,6 +34,7 @@ def test_reader_prefers_v2_then_v1_then_immutable_fact() -> None:
     assert "AND (projection_audit.sequence IS NULL" not in source
     assert "THEN projection.counterparty_account" in source
     assert "THEN coalesce(correction.counterparty_account," in source
+    assert "THEN coalesce(correction.counterparty_institution," in source
     assert "coalesce(projection.counterparty_account" not in source
 
 
