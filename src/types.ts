@@ -485,12 +485,89 @@ export type CompanyReportCompositionLayer = {
 }
 
 export type CompanyReportsResponse = {
-  contract_version: 'ledgerbridge.company-reports-bff.v1' | 'ledgerbridge.company-reports-bff.v2'
+  contract_version: 'ledgerbridge.company-reports-bff.v1' | 'ledgerbridge.company-reports-bff.v2' | 'ledgerbridge.company-reports-bff.v3'
   from_month: string
   to_month: string
   posted_ledger_status: 'AVAILABLE' | 'UNAVAILABLE'
   layers: CompanyReportLayer[]
   compositions?: CompanyReportCompositionLayer[]
+  transaction_classifications?: CompanyTransactionClassificationSummaryPage
+}
+
+export type CompanyTransactionCategory =
+  | 'PLATFORM_ROOM_REVENUE'
+  | 'RELATED_PARTY_CURRENT'
+  | 'PAYROLL'
+  | 'FINANCING'
+  | 'BOTTLED_WATER'
+  | 'INTERNAL_TRANSFER'
+  | 'RENT'
+  | 'BANK_INTEREST'
+  | 'LINEN_LAUNDRY'
+  | 'OPERATING_FEE'
+
+export type CompanyTransactionCashflowRole =
+  | 'OPERATING_INCOME'
+  | 'OPERATING_EXPENSE'
+  | 'NON_OPERATING'
+
+export type CompanyTransactionClassification = {
+  transaction_ref: string
+  entity_ref: string
+  company_name: string
+  occurred_at: string
+  amount_minor: number
+  currency: 'CNY'
+  counterparty_name: string | null
+  transaction_name: string
+  status: 'PENDING'
+  category_code: null
+  cashflow_role: null
+  revision: number
+  source: 'AUTO_RULE'
+  rule_version: string
+}
+
+export type CompanyTransactionClassificationsResponse = {
+  contract_version: 'ledgerbridge.company-transaction-classifications-bff.v1'
+  items: CompanyTransactionClassification[]
+}
+
+export type CompanyTransactionCategorySummary = {
+  category_code: CompanyTransactionCategory
+  cashflow_role: CompanyTransactionCashflowRole
+  transaction_count: number
+  inflow_minor: number
+  outflow_minor: number
+  net_minor: number
+  gross_minor: number
+  transaction_share_ppm: number
+  gross_share_ppm: number
+}
+
+export type CompanyTransactionClassificationSummary = {
+  entity_ref: string
+  company_name: string
+  from_date: string
+  to_date_exclusive: string
+  confirmed_count: number
+  pending_count: number
+  confirmed_gross_minor: number
+  categories: CompanyTransactionCategorySummary[]
+}
+
+export type CompanyTransactionClassificationSummaryPage = {
+  contract_version: 'ledgerbridge.company-transaction-classification-summary.v1'
+  items: CompanyTransactionClassificationSummary[]
+}
+
+export type CompanyTransactionClassificationReviewReceipt = {
+  contract_version: 'ledgerbridge.company-transaction-classification-review.v1'
+  transaction_ref: string
+  status: 'CONFIRMED'
+  category_code: CompanyTransactionCategory
+  revision: number
+  created: boolean
 }
 
 export type PersonalBankTransaction = {

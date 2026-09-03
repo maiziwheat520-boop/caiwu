@@ -23,6 +23,10 @@ import type {
   PersonalBankStatementReviewReceipt,
   CompanyBankStatement,
   CompanyBankStatementsResponse,
+  CompanyTransactionCategory,
+  CompanyTransactionClassification,
+  CompanyTransactionClassificationReviewReceipt,
+  CompanyTransactionClassificationsResponse,
   PayrollBatchListData,
   PayrollCommandResult,
   PayrollDashboardData,
@@ -335,6 +339,34 @@ export const api = {
       body: JSON.stringify({
         expected_revision: statement.review_revision,
         decision,
+        reason,
+      }),
+    },
+  ),
+
+  getCompanyTransactionClassifications: () =>
+    requestJson<CompanyTransactionClassificationsResponse>(
+      '/api/v1/company-transaction-classifications',
+    ),
+
+  reviewCompanyTransactionClassification: ({ transaction, categoryCode, reason, csrfToken }: {
+    transaction: CompanyTransactionClassification
+    categoryCode: CompanyTransactionCategory
+    reason: string
+    csrfToken: string
+  }) => requestJson<CompanyTransactionClassificationReviewReceipt>(
+    `/api/v1/company-transaction-classifications/${encodeURIComponent(transaction.transaction_ref)}/reviews`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': createOperationId(),
+        'X-CSRF-Token': csrfToken,
+      },
+      body: JSON.stringify({
+        entity_ref: transaction.entity_ref,
+        expected_revision: transaction.revision,
+        category_code: categoryCode,
         reason,
       }),
     },
