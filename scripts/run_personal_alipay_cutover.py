@@ -311,7 +311,7 @@ def _transition(connection: Connection, row: dict[str, object], action: str, rea
     connection.execute(
         text(
             "SELECT internal_command.append_candidate_transition("
-            ":candidate,:revision,:action,:actor,:reason,CURRENT_TIMESTAMP,"
+            ":candidate,:revision,:action,:actor,:reason,clock_timestamp(),"
             ":unit,:unit_ref,:unit_label,:category,:category_code,:category_label,"
             ":amount,:month,NULL)"
         ),
