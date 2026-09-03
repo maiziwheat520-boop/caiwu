@@ -2,6 +2,24 @@
 
 Updated: 2026-09-02
 
+## Personal Alipay account 2 reattribution checkpoint (2026-09-04)
+
+The reviewed 1,574-row receipt cohort from personal Alipay account 2 is now
+reattributed from the legacy generic scope to the authoritative personal Entity
+and `personal-funds` business unit. The exact legacy Candidate set is bound by a
+fixed digest; a deterministic private map preserves every old/new Candidate pair.
+Replacement import, account registration, 1,574 confirmations, 1,574 ignores,
+the audit receipt, deferred constraints, and final assertions commit in one
+transaction. Replay is zero-delta and still verifies the batch, account, audit,
+states, and zero Journal Entry/Posting invariant.
+
+Production execution used Core one-shot commit `c630875` against deployed Core
+`8e935e965b34b7fc1dffb27f738419dcbf7d46ff` and schema `20260903_0038`.
+Encrypted pre/post backups and isolated restores passed. Production now has
+1,574 CONFIRMED personal replacements totaling CNY 213,620.70, 1,574 IGNORED
+legacy predecessors, and the unrelated 34 legacy PENDING rows remain untouched.
+No Journal Entry or Posting was created.
+
 ## Dedicated multi-company report principal checkpoint (2026-09-02)
 
 Production baselines were rechecked as Core `5d03d93fe43670ec4136754050eab06e4dab2b0c`,
