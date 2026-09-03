@@ -854,32 +854,56 @@ def test_database_reader_rejects_malformed_horizon_and_unbound_business_unit() -
         )
 
 
-def test_database_reader_rejects_multiple_scopes_and_missing_cursor_signer() -> None:
+def test_database_reader_keeps_public_cursor_bound_to_one_scope() -> None:
+    second_unit = UUID("11000000-0000-4000-8000-000000000002")
     multi = _principal().model_copy(
         update={
             "grants": (
                 EntityGrant(
                     entity_ref=ENTITY,
                     business_unit_refs=frozenset({"unit-demo-a", "unit-demo-b"}),
-                    business_unit_ids=frozenset(
-                        {BUSINESS_UNIT, UUID("11000000-0000-4000-8000-000000000002")}
-                    ),
+                    business_unit_ids=frozenset({BUSINESS_UNIT, second_unit}),
                     business_unit_bindings=(
                         ("unit-demo-a", BUSINESS_UNIT),
-                        ("unit-demo-b", UUID("11000000-0000-4000-8000-000000000002")),
+                        ("unit-demo-b", second_unit),
                     ),
                 ),
             )
         }
     )
-    with pytest.raises(InternalReadBackendUnavailable, match="one bound"):
-        _service(_Session({})).list_candidates(multi)
     candidate = SyntheticInternalReadService()._fixture.candidates[1]
-    row = candidate.model_dump()
-    row["entity_ref"] = ENTITY
-    row["business_unit_ref"] = "unit-demo-a"
-    scoped = _service(_Session(row)).list_candidates(multi, business_unit="unit-demo-a")
+    first = candidate.model_copy(
+        update={"entity_ref": ENTITY, "business_unit_ref": "unit-demo-a"}
+    ).model_dump()
+    second = candidate.model_copy(
+        update={
+            "candidate_ref": UUID("30000000-0000-4000-8000-000000000099"),
+            "entity_ref": ENTITY,
+            "business_unit_ref": "unit-demo-b",
+        }
+    ).model_dump()
+
+    class ScopedSession(_Session):
+        def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Result:
+            if "list_candidates_as_of" in str(statement):
+                assert params is not None
+                return _Result(
+                    {
+                        BUSINESS_UNIT: [first],
+                        second_unit: [second],
+                        None: [],
+                    }[params["business_unit_id"]]
+                )
+            return super().execute(statement, params)
+
+    session = ScopedSession(first)
+    with pytest.raises(InternalReadBackendUnavailable, match="exactly one scope"):
+        _service(session).list_candidates(multi)
+    scoped = _service(session).list_candidates(multi, business_unit="unit-demo-a")
     assert [item.candidate_ref for item in scoped.items] == [candidate.candidate_ref]
+    assert _service(session).get_candidate(
+        multi, UUID(str(second["candidate_ref"]))
+    ).candidate_ref == (UUID(str(second["candidate_ref"])))
 
     unassigned = _principal().model_copy(
         update={
@@ -888,11 +912,175 @@ def test_database_reader_rejects_multiple_scopes_and_missing_cursor_signer() -> 
             )
         }
     )
-    with pytest.raises(InternalReadBackendUnavailable, match="multiple scopes"):
-        _service(_Session({})).list_candidates(unassigned)
+    with pytest.raises(InternalReadBackendUnavailable, match="exactly one scope"):
+        _service(session).list_candidates(unassigned)
 
     with pytest.raises(InternalReadBackendUnavailable, match="signed cursor"):
         _service(_Session({})).list_candidates(_principal(), cursor="invalid")
+
+
+def test_database_candidate_detail_uses_independent_cursors_for_each_scope() -> None:
+    second_unit = UUID("11000000-0000-4000-8000-000000000002")
+    principal = _principal().model_copy(
+        update={
+            "grants": (
+                EntityGrant(
+                    entity_ref=ENTITY,
+                    business_unit_refs=frozenset({"unit-demo-a", "unit-demo-b"}),
+                    business_unit_ids=frozenset({BUSINESS_UNIT, second_unit}),
+                    business_unit_bindings=(
+                        ("unit-demo-a", BUSINESS_UNIT),
+                        ("unit-demo-b", second_unit),
+                    ),
+                ),
+            )
+        }
+    )
+    template = SyntheticInternalReadService()._fixture.candidates[1]
+
+    def scoped_rows(unit_ref: str, offset: int) -> list[dict[str, Any]]:
+        return [
+            template.model_copy(
+                update={
+                    "candidate_ref": UUID(f"30000000-0000-4000-8000-{offset + index:012d}"),
+                    "short_id": f"C-{offset + index:05d}",
+                    "entity_ref": ENTITY,
+                    "business_unit_ref": unit_ref,
+                    "created_at": datetime(2026, 8, 1, tzinfo=UTC)
+                    + timedelta(seconds=offset + index),
+                    "updated_at": datetime(2026, 8, 1, tzinfo=UTC)
+                    + timedelta(seconds=offset + index),
+                }
+            ).model_dump()
+            for index in range(101)
+        ]
+
+    rows_by_unit = {
+        BUSINESS_UNIT: scoped_rows("unit-demo-a", 1_000),
+        second_unit: scoped_rows("unit-demo-b", 2_000),
+    }
+    candidate_queries: list[dict[str, Any]] = []
+
+    class CursorCheckingSession(_Session):
+        def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Result:
+            if "list_candidates_as_of" in str(statement):
+                assert params is not None
+                candidate_queries.append(params)
+                rows = rows_by_unit[params["business_unit_id"]]
+                last_candidate_id = params["last_candidate_id"]
+                if last_candidate_id is None:
+                    return _Result(rows[:101])
+                ids = [row["candidate_ref"] for row in rows]
+                assert last_candidate_id in ids
+                start = ids.index(last_candidate_id) + 1
+                return _Result(rows[start : start + 101])
+            return super().execute(statement, params)
+
+    session = CursorCheckingSession(rows_by_unit[BUSINESS_UNIT][0])
+    target = UUID(str(rows_by_unit[second_unit][-1]["candidate_ref"]))
+
+    assert _service(session).get_candidate(principal, target).candidate_ref == target
+    assert {params["business_unit_id"] for params in candidate_queries} == {
+        BUSINESS_UNIT,
+        second_unit,
+    }
+    assert all(
+        params["last_candidate_id"] is None
+        or params["last_candidate_id"]
+        in {row["candidate_ref"] for row in rows_by_unit[params["business_unit_id"]]}
+        for params in candidate_queries
+    )
+
+
+def test_database_reader_bounds_enrichment_while_scanning_nonmatching_month_rows() -> None:
+    second_unit = UUID("11000000-0000-4000-8000-000000000002")
+    multi = _principal().model_copy(
+        update={
+            "grants": (
+                EntityGrant(
+                    entity_ref=ENTITY,
+                    business_unit_refs=frozenset({"unit-demo-a", "unit-demo-b"}),
+                    business_unit_ids=frozenset({BUSINESS_UNIT, second_unit}),
+                    business_unit_bindings=(
+                        ("unit-demo-a", BUSINESS_UNIT),
+                        ("unit-demo-b", second_unit),
+                    ),
+                ),
+            )
+        }
+    )
+    template = SyntheticInternalReadService()._fixture.candidates[1]
+    first_rows: list[dict[str, Any]] = []
+    for index in range(100):
+        first_rows.append(
+            template.model_copy(
+                update={
+                    "candidate_ref": UUID(f"30000000-0000-4000-8000-{index + 1000:012d}"),
+                    "entity_ref": ENTITY,
+                    "business_unit_ref": "unit-demo-a",
+                    "accounting_month": "2026-08",
+                    "created_at": datetime(2026, 9, 1, tzinfo=UTC) + timedelta(seconds=index),
+                    "updated_at": datetime(2026, 9, 1, tzinfo=UTC) + timedelta(seconds=index),
+                }
+            ).model_dump()
+        )
+    second_nonmatching: list[dict[str, Any]] = []
+    for index in range(101):
+        second_nonmatching.append(
+            template.model_copy(
+                update={
+                    "candidate_ref": UUID(f"30000000-0000-4000-8000-{index + 2000:012d}"),
+                    "entity_ref": ENTITY,
+                    "business_unit_ref": "unit-demo-b",
+                    "accounting_month": "2026-07",
+                    "created_at": datetime(2026, 8, 1, tzinfo=UTC) + timedelta(seconds=index),
+                    "updated_at": datetime(2026, 8, 1, tzinfo=UTC) + timedelta(seconds=index),
+                }
+            ).model_dump()
+        )
+    second_match = template.model_copy(
+        update={
+            "candidate_ref": UUID("30000000-0000-4000-8000-000000003000"),
+            "entity_ref": ENTITY,
+            "business_unit_ref": "unit-demo-b",
+            "accounting_month": "2026-08",
+            "created_at": datetime(2026, 8, 2, tzinfo=UTC),
+            "updated_at": datetime(2026, 8, 2, tzinfo=UTC),
+        }
+    ).model_dump()
+
+    class PagedScopedSession(_Session):
+        def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Result:
+            if "list_candidate_evidence_satisfactions" in str(
+                statement
+            ) or "list_candidate_counterparty_facts" in str(statement):
+                assert params is not None
+                assert len(params["candidate_ids"]) <= 101
+            if "list_candidates_as_of" in str(statement):
+                assert params is not None
+                if params["business_unit_id"] == BUSINESS_UNIT:
+                    return _Result(first_rows)
+                if params["business_unit_id"] == second_unit:
+                    return _Result(
+                        second_nonmatching
+                        if params["last_candidate_id"] is None
+                        else [second_match]
+                    )
+            return super().execute(statement, params)
+
+    session = PagedScopedSession(first_rows[0])
+    service = DatabaseInternalReadService(
+        lambda: cast(Session, session),
+        cursor_signer=ReadCursorSigner("k" * 32),
+    )
+
+    page = service.list_candidates(
+        multi,
+        month="2026-08",
+        business_unit="unit-demo-b",
+    )
+
+    assert UUID(str(second_match["candidate_ref"])) in {item.candidate_ref for item in page.items}
 
 
 def test_database_reader_verifies_cursor_and_row_scope_before_returning() -> None:

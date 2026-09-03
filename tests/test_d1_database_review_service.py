@@ -34,8 +34,10 @@ from ledgerbridge.internal_read_contract import (
     ResourceNotVisible,
     WorkloadPrincipal,
 )
+from ledgerbridge.internal_read_service import InternalReadBackendUnavailable
 
 BUSINESS_UNIT_ID = UUID("71000000-0000-4000-8000-000000000001")
+SECOND_BUSINESS_UNIT_ID = UUID("71000000-0000-4000-8000-000000000002")
 
 
 class _Result:
@@ -320,6 +322,209 @@ def test_database_review_service_reads_events_through_horizon_scoped_function() 
     event_sql = next(sql for sql, _ in read.calls if "list_candidate_events_as_of" in sql)
     assert "internal_read.list_candidate_events_as_of" in event_sql
     assert "public.candidate_event" not in event_sql
+
+
+def test_database_review_service_merges_events_from_each_authorized_scope() -> None:
+    candidate, _, _, receipt = _fixtures()
+    second_ref = uuid4()
+
+    def move_projection(projection: CandidateProjection) -> CandidateProjection:
+        return projection.model_copy(
+            update={
+                "candidate_ref": second_ref,
+                "business_unit_ref": "unit-demo-b",
+                "evidence": tuple(
+                    evidence.model_copy(update={"business_unit_ref": "unit-demo-b"})
+                    for evidence in projection.evidence
+                ),
+            }
+        )
+
+    second_event = receipt.events[0].model_copy(
+        update={
+            "operation_id": uuid4(),
+            "candidate_ref": second_ref,
+            "prior_projection": move_projection(receipt.events[0].prior_projection),
+            "result_projection": move_projection(receipt.events[0].result_projection),
+        }
+    )
+    principal = WorkloadPrincipal(
+        principal_ref="workload:web-review",
+        san_uri="spiffe://ledgerbridge.local/web-review",
+        policy_generation=1,
+        capabilities=frozenset({Capability.CANDIDATE_READ}),
+        grants=(
+            EntityGrant(
+                entity_ref=candidate.entity_ref,
+                business_unit_refs=frozenset({"unit-demo-a", "unit-demo-b"}),
+                business_unit_ids=frozenset({BUSINESS_UNIT_ID, SECOND_BUSINESS_UNIT_ID}),
+                business_unit_bindings=(
+                    ("unit-demo-a", BUSINESS_UNIT_ID),
+                    ("unit-demo-b", SECOND_BUSINESS_UNIT_ID),
+                ),
+            ),
+        ),
+    )
+
+    event_calls: list[dict[str, Any]] = []
+
+    class ScopedEventSession(_Session):
+        def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Result:
+            if "list_candidate_events_as_of" in str(statement):
+                assert params is not None
+                event_calls.append(params)
+                event = {
+                    BUSINESS_UNIT_ID: receipt.events[0],
+                    SECOND_BUSINESS_UNIT_ID: second_event,
+                }[params["business_unit_id"]]
+                return _Result([{"event": event.model_dump(mode="json")}])
+            return super().execute(statement, params)
+
+    read = ScopedEventSession(candidate.model_dump())
+    service = DatabaseInternalReviewService(_factory(read), _factory(_Session({})))
+
+    page = service.list_candidate_events(principal)
+
+    assert {event.operation_id for event in page.items} == {
+        receipt.events[0].operation_id,
+        second_event.operation_id,
+    }
+    assert {params["business_unit_id"] for params in event_calls} == {
+        BUSINESS_UNIT_ID,
+        SECOND_BUSINESS_UNIT_ID,
+    }
+
+
+def test_database_review_service_builds_groups_from_all_authorized_scopes() -> None:
+    candidate, _, _, _ = _fixtures()
+    candidate = candidate.model_copy(
+        update={
+            "summary": "支付宝 | 2026-08-01 | 支出 | 消费 | 商户 | 招商银行(1234) | 交易成功",
+            "amount_minor": -1_000,
+        }
+    )
+    second_ref = uuid4()
+    second = candidate.model_copy(
+        update={
+            "candidate_ref": second_ref,
+            "short_id": "C-MULTI02",
+            "business_unit_ref": "unit-demo-b",
+            "evidence": tuple(
+                evidence.model_copy(update={"business_unit_ref": "unit-demo-b"})
+                for evidence in candidate.evidence
+            ),
+        }
+    )
+    principal = WorkloadPrincipal(
+        principal_ref="workload:web-review",
+        san_uri="spiffe://ledgerbridge.local/web-review",
+        policy_generation=1,
+        capabilities=frozenset({Capability.CANDIDATE_READ}),
+        grants=(
+            EntityGrant(
+                entity_ref=candidate.entity_ref,
+                business_unit_refs=frozenset({"unit-demo-a", "unit-demo-b"}),
+                business_unit_ids=frozenset({BUSINESS_UNIT_ID, SECOND_BUSINESS_UNIT_ID}),
+                business_unit_bindings=(
+                    ("unit-demo-a", BUSINESS_UNIT_ID),
+                    ("unit-demo-b", SECOND_BUSINESS_UNIT_ID),
+                ),
+            ),
+        ),
+    )
+
+    class ScopedCandidateSession(_Session):
+        def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Result:
+            if "list_candidates_as_of" in str(statement):
+                assert params is not None
+                projection = {
+                    BUSINESS_UNIT_ID: candidate,
+                    SECOND_BUSINESS_UNIT_ID: second,
+                }[params["business_unit_id"]]
+                return _Result([projection.model_dump()])
+            return super().execute(statement, params)
+
+    read = ScopedCandidateSession(candidate.model_dump())
+    service = DatabaseInternalReviewService(_factory(read), _factory(_Session({})))
+
+    page = service.list_classification_groups(principal)
+
+    assert len(page.items) == 1
+    assert {member.candidate_ref for member in page.items[0].members} == {
+        candidate.candidate_ref,
+        second_ref,
+    }
+
+
+def test_database_classification_write_remains_fail_closed_for_multiple_scopes() -> None:
+    candidate, principal, _, _ = _fixtures()
+    _, request, _ = _batch_fixtures()
+    multi_scope = principal.model_copy(
+        update={
+            "grants": (
+                EntityGrant(
+                    entity_ref=candidate.entity_ref,
+                    business_unit_refs=frozenset({"unit-demo-a", "unit-demo-b"}),
+                    business_unit_ids=frozenset({BUSINESS_UNIT_ID, SECOND_BUSINESS_UNIT_ID}),
+                    business_unit_bindings=(
+                        ("unit-demo-a", BUSINESS_UNIT_ID),
+                        ("unit-demo-b", SECOND_BUSINESS_UNIT_ID),
+                    ),
+                ),
+            )
+        }
+    )
+    service = DatabaseInternalReviewService(
+        _factory(_Session(candidate.model_dump())),
+        _factory(_Session({})),
+    )
+
+    with pytest.raises(InternalReadBackendUnavailable, match="exactly one scope"):
+        service.apply_classification_batch(
+            multi_scope,
+            group_ref="cg_0123456789abcdef0123456789abcdef",
+            operation_id=uuid4(),
+            assertion_jti=uuid4(),
+            actor_ref="human:web-reviewer",
+            request=request,
+            decided_at=datetime.now(UTC),
+        )
+
+
+def test_database_candidate_decision_remains_fail_closed_for_multiple_scopes() -> None:
+    candidate, principal, request, receipt = _fixtures()
+    multi_scope = principal.model_copy(
+        update={
+            "grants": (
+                EntityGrant(
+                    entity_ref=candidate.entity_ref,
+                    business_unit_refs=frozenset({"unit-demo-a", "unit-demo-b"}),
+                    business_unit_ids=frozenset({BUSINESS_UNIT_ID, SECOND_BUSINESS_UNIT_ID}),
+                    business_unit_bindings=(
+                        ("unit-demo-a", BUSINESS_UNIT_ID),
+                        ("unit-demo-b", SECOND_BUSINESS_UNIT_ID),
+                    ),
+                ),
+            )
+        }
+    )
+    read = _Session(candidate.model_dump())
+    command = _Session(candidate.model_dump(), receipt=receipt.model_dump(mode="json"))
+    service = DatabaseInternalReviewService(_factory(read), _factory(command))
+
+    with pytest.raises(InternalReadBackendUnavailable, match="exactly one scope"):
+        service.append_decision(
+            multi_scope,
+            candidate_ref=candidate.candidate_ref,
+            operation_id=receipt.operation_id,
+            assertion_jti=uuid4(),
+            actor_ref="human:web-reviewer",
+            request=request,
+            decided_at=datetime.now(UTC),
+        )
+
+    assert read.calls == []
+    assert command.calls == []
 
 
 def test_database_review_service_maps_stale_revision_without_leaking_database_error() -> None:

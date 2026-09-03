@@ -52,6 +52,7 @@ from ledgerbridge.internal_read_contract import (
 from ledgerbridge.internal_read_cursor import ReadCursorSigner
 from ledgerbridge.internal_read_service import (
     DatabaseInternalReadService,
+    InternalReadBackendUnavailable,
     SyntheticInternalReadService,
     _wire_ingest_channel,
 )
@@ -558,26 +559,60 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
         candidate_ref: UUID | None = None,
     ) -> CandidateEventPage:
         authorize_collection_read(principal, Capability.CANDIDATE_READ)
-        entity_ref, business_unit_id = self._event_scope(principal, candidate_ref)
+        scopes = self._candidate_scopes(principal)
+        if candidate_ref is not None:
+            candidate = self.get_candidate(principal, candidate_ref)
+            scopes = tuple(
+                scope
+                for scope in scopes
+                if scope.grant.entity_ref == candidate.entity_ref
+                and scope.business_unit_ref == candidate.business_unit_ref
+            )
+            if len(scopes) != 1:
+                raise ResourceNotVisible("candidate scope is not visible")
         try:
             with self._session_factory() as session:
                 sequence, horizon_hash = self._audit_horizon(session)
-                rows = session.execute(
-                    text(
-                        "SELECT event FROM internal_read.list_candidate_events_as_of("
-                        "CAST(:entity_ref AS uuid), CAST(:business_unit_id AS uuid), "
-                        "CAST(:candidate_ref AS uuid), :horizon_sequence, :horizon_hash, 100)"
-                    ),
-                    {
-                        "entity_ref": entity_ref,
-                        "business_unit_id": business_unit_id,
-                        "candidate_ref": candidate_ref,
-                        "horizon_sequence": sequence,
-                        "horizon_hash": horizon_hash,
-                    },
-                ).mappings()
-                events = tuple(CandidateEvent.model_validate(row["event"]) for row in rows)
-        except SQLAlchemyError as exc:
+                events_by_operation: dict[UUID, CandidateEvent] = {}
+                for scope in scopes:
+                    rows = session.execute(
+                        text(
+                            "SELECT event FROM internal_read.list_candidate_events_as_of("
+                            "CAST(:entity_ref AS uuid), CAST(:business_unit_id AS uuid), "
+                            "CAST(:candidate_ref AS uuid), :horizon_sequence, "
+                            ":horizon_hash, 100)"
+                        ),
+                        {
+                            "entity_ref": scope.grant.entity_ref,
+                            "business_unit_id": scope.business_unit_id,
+                            "candidate_ref": candidate_ref,
+                            "horizon_sequence": sequence,
+                            "horizon_hash": horizon_hash,
+                        },
+                    ).mappings()
+                    for row in rows:
+                        event = CandidateEvent.model_validate(row["event"])
+                        self._require_event_scope(
+                            event,
+                            entity_ref=scope.grant.entity_ref,
+                            business_unit_ref=scope.business_unit_ref,
+                            candidate_ref=candidate_ref,
+                        )
+                        if event.operation_id in events_by_operation:
+                            raise CandidateCommandUnavailable(
+                                "candidate event reader returned duplicate operations"
+                            )
+                        events_by_operation[event.operation_id] = event
+                events = tuple(
+                    sorted(
+                        events_by_operation.values(),
+                        key=lambda event: (event.created_at, event.operation_id.int),
+                        reverse=True,
+                    )[:100]
+                )
+        except CandidateCommandUnavailable:
+            raise
+        except (SQLAlchemyError, ValueError, TypeError, KeyError) as exc:
             raise CandidateCommandUnavailable("candidate event reader is unavailable") from exc
         return CandidateEventPage(items=events)
 
@@ -585,9 +620,13 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
         self,
         principal: WorkloadPrincipal,
     ) -> ClassificationGroupPage:
-        return ClassificationGroupPage(
-            items=build_classification_groups(_all_candidates(self, principal))
-        )
+        try:
+            candidates = self._collect_visible_candidates(principal)
+        except InternalReadBackendUnavailable as exc:
+            raise CandidateCommandUnavailable(
+                "classification group candidate reader is unavailable"
+            ) from exc
+        return ClassificationGroupPage(items=build_classification_groups(candidates))
 
     def apply_classification_batch(
         self,
@@ -788,6 +827,10 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
         decided_at: datetime,
     ) -> CandidateDecisionReceipt:
         require_capability(principal, Capability.CANDIDATE_DECIDE)
+        if len(self._candidate_scopes(principal)) != 1:
+            raise InternalReadBackendUnavailable(
+                "database candidate pagination requires exactly one scope"
+            )
         candidate = self.get_candidate(principal, candidate_ref)
         current_business_unit_id, target_business_unit_id = self._command_scope(
             principal,
@@ -852,25 +895,21 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
         except SQLAlchemyError as exc:
             self._raise_database_command_error(exc)
 
-    def _event_scope(
-        self,
-        principal: WorkloadPrincipal,
+    @staticmethod
+    def _require_event_scope(
+        event: CandidateEvent,
+        *,
+        entity_ref: UUID,
+        business_unit_ref: str | None,
         candidate_ref: UUID | None,
-    ) -> tuple[UUID, UUID | None]:
-        if candidate_ref is not None:
-            candidate = self.get_candidate(principal, candidate_ref)
-            current, _ = self._command_scope(principal, candidate, None)
-            return candidate.entity_ref, current
-        bindings = [
-            (grant.entity_ref, binding_id)
-            for grant in principal.grants
-            for _, binding_id in grant.business_unit_bindings
-        ]
-        if len(bindings) != 1:
-            raise CandidateCommandUnavailable(
-                "database event listing requires exactly one bound business-unit scope"
-            )
-        return bindings[0]
+    ) -> None:
+        if candidate_ref is not None and event.candidate_ref != candidate_ref:
+            raise CandidateCommandUnavailable("candidate event reader escaped candidate scope")
+        if (
+            event.result_projection.entity_ref != entity_ref
+            or event.result_projection.business_unit_ref != business_unit_ref
+        ):
+            raise CandidateCommandUnavailable("candidate event reader escaped business-unit scope")
 
     @staticmethod
     def _command_scope(

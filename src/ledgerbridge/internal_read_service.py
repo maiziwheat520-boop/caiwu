@@ -11,7 +11,7 @@ import hashlib
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from importlib import resources
 from typing import Annotated, Literal, cast
 from uuid import UUID
@@ -124,6 +124,19 @@ class _DatabaseEvidenceMetadata:
     ciphertext_size: int
     storage_key: str
     envelope_metadata: EncryptedEnvelopeMetadata
+
+
+@dataclass(frozen=True, slots=True)
+class _CandidateReadScope:
+    grant: EntityGrant
+    business_unit_ref: str | None
+    business_unit_id: UUID | None
+
+
+@dataclass(frozen=True, slots=True)
+class _CandidateScopePage:
+    items: tuple[CandidateProjection, ...]
+    next_boundary: tuple[datetime, UUID] | None
 
 
 class _Provenance(_FrozenModel):
@@ -617,29 +630,10 @@ class DatabaseInternalReadService:
             _validate_month(month)
         if business_unit is not None and not (1 <= len(business_unit) <= 100):
             raise ValueError("business_unit must contain 1 to 100 characters")
-        scopes_by_grant: list[tuple[EntityGrant, UUID | None]] = []
-        for grant in principal.grants:
-            if (grant.business_unit_refs or grant.business_unit_ids) and not (
-                grant.business_unit_bindings
-            ):
-                raise InternalReadBackendUnavailable(
-                    "database grants require explicit business-unit ref/UUID bindings"
-                )
-            selected_bindings = tuple(
-                (ref, value)
-                for ref, value in grant.business_unit_bindings
-                if business_unit is None or ref == business_unit
-            )
-            if business_unit is None and len(selected_bindings) > 1:
-                raise InternalReadBackendUnavailable(
-                    "database candidate pagination requires one bound business unit"
-                )
-            scopes_by_grant.extend((grant, value) for _, value in selected_bindings)
-            if grant.allow_unassigned_candidates:
-                scopes_by_grant.append((grant, None))
-        if len(scopes_by_grant) > 1:
+        scopes = self._candidate_scopes(principal, business_unit=business_unit)
+        if len(scopes) > 1:
             raise InternalReadBackendUnavailable(
-                "database candidate pagination does not yet support multiple scopes"
+                "database candidate pagination requires exactly one scope"
             )
 
         if cursor is not None and self._cursor_signer is None:
@@ -665,125 +659,31 @@ class DatabaseInternalReadService:
                     horizon_hash = cursor_claims["horizon_hash"]
                     last_created_at = cursor_claims["last_created_at"]
                     last_candidate_id = cursor_claims["last_candidate_id"]
-                rows: list[Mapping[str, object]] = []
-                seen: set[UUID] = set()
-                raw_has_more = False
-                for grant, business_unit_id in scopes_by_grant:
-                    if business_unit is not None and business_unit_id is None:
-                        continue
-                    query_last_created_at = last_created_at
-                    query_last_candidate_id = last_candidate_id
-                    while True:
-                        params = {
-                            "entity_id": grant.entity_ref,
-                            "business_unit_id": business_unit_id,
-                            "status": status.value if status is not None else None,
-                            "horizon_sequence": sequence,
-                            "horizon_hash": horizon_hash,
-                            "last_created_at": query_last_created_at,
-                            "last_candidate_id": query_last_candidate_id,
-                            "limit": 100,
-                        }
-                        result = session.execute(
-                            text(
-                                """
-                                SELECT * FROM internal_read.list_candidates_as_of(
-                                    :entity_id, :business_unit_id, :status,
-                                    :horizon_sequence, :horizon_hash,
-                                    :last_created_at, :last_candidate_id, :limit
-                                )
-                                """
-                            ),
-                            params,
-                        )
-                        raw_rows = [
-                            cast(Mapping[str, object], dict(row)) for row in result.mappings()
-                        ]
-                        raw_has_more = len(raw_rows) > 100
-                        for row_map in raw_rows:
-                            candidate = self._candidate(row_map)
-                            if candidate.entity_ref != grant.entity_ref:
-                                raise InternalReadBackendUnavailable(
-                                    "database candidate scope binding is invalid"
-                                )
-                            if business_unit_id is None:
-                                if candidate.business_unit_ref is not None:
-                                    raise InternalReadBackendUnavailable(
-                                        "database candidate scope binding is invalid"
-                                    )
-                            else:
-                                expected_ref = next(
-                                    ref
-                                    for ref, value in grant.business_unit_bindings
-                                    if value == business_unit_id
-                                )
-                                if candidate.business_unit_ref != expected_ref:
-                                    raise InternalReadBackendUnavailable(
-                                        "database candidate scope binding is invalid"
-                                    )
-                            if candidate.candidate_ref in seen:
-                                continue
-                            if (
-                                business_unit is not None
-                                and candidate.business_unit_ref != business_unit
-                            ):
-                                continue
-                            if month is not None and candidate.accounting_month != month:
-                                continue
-                            seen.add(candidate.candidate_ref)
-                            rows.append(row_map)
-                        if not (month is not None and raw_has_more and len(rows) < 100):
-                            break
-                        boundary = self._candidate(raw_rows[99])
-                        query_last_created_at = boundary.created_at
-                        query_last_candidate_id = boundary.candidate_ref
-                satisfied_by_candidate: dict[UUID, frozenset[ReviewRiskCode]] = {}
-                counterparties_by_candidate: dict[UUID, tuple[str, CounterpartyClass]] = {}
-                if rows:
-                    scope_grant, scope_business_unit_id = scopes_by_grant[0]
-                    if scope_business_unit_id is not None:
-                        candidate_ids = tuple(UUID(str(row["candidate_ref"])) for row in rows)
-                        satisfied_by_candidate = self._candidate_risk_satisfactions(
-                            session,
-                            entity_ref=scope_grant.entity_ref,
-                            business_unit_id=scope_business_unit_id,
-                            candidate_ids=candidate_ids,
-                            horizon_sequence=sequence,
-                            horizon_hash=horizon_hash,
-                        )
-                        counterparties_by_candidate = self._candidate_counterparty_facts(
-                            session,
-                            entity_ref=scope_grant.entity_ref,
-                            business_unit_id=scope_business_unit_id,
-                            candidate_ids=candidate_ids,
-                            horizon_sequence=sequence,
-                            horizon_hash=horizon_hash,
-                        )
-                candidates = [
-                    self._candidate(
-                        row,
-                        satisfied_review_risk_codes=satisfied_by_candidate.get(
-                            UUID(str(row["candidate_ref"])), frozenset()
-                        ),
-                        counterparty=counterparties_by_candidate.get(
-                            UUID(str(row["candidate_ref"]))
-                        ),
+                page = (
+                    self._candidate_scope_page(
+                        session,
+                        scopes[0],
+                        month=month,
+                        status=status,
+                        horizon_sequence=sequence,
+                        horizon_hash=horizon_hash,
+                        last_created_at=last_created_at,
+                        last_candidate_id=last_candidate_id,
                     )
-                    for row in rows
-                ]
+                    if scopes
+                    else _CandidateScopePage(items=(), next_boundary=None)
+                )
         except (InternalReadBackendUnavailable, CursorInvalid):
             raise
         except (SQLAlchemyError, ValueError, TypeError, KeyError) as exc:
             raise InternalReadBackendUnavailable("database candidate read failed") from exc
 
-        candidates.sort(key=lambda item: (item.created_at, item.candidate_ref.int))
-        has_more = len(candidates) > 100 or raw_has_more
-        page_items = tuple(candidates[:100])
+        page_items = page.items
         next_cursor = None
-        if has_more:
+        if page.next_boundary is not None:
             if self._cursor_signer is None:
                 raise InternalReadBackendUnavailable("signed cursor key is unavailable")
-            boundary = page_items[-1]
+            boundary_created_at, boundary_candidate_id = page.next_boundary
             try:
                 next_cursor = self._cursor_signer.issue(
                     principal,
@@ -792,8 +692,8 @@ class DatabaseInternalReadService:
                     business_unit=business_unit,
                     horizon_sequence=sequence,
                     horizon_hash=horizon_hash,
-                    last_created_at=boundary.created_at,
-                    last_candidate_id=boundary.candidate_ref,
+                    last_created_at=boundary_created_at,
+                    last_candidate_id=boundary_candidate_id,
                 )
             except CursorInvalid as exc:
                 raise InternalReadBackendUnavailable("signed cursor could not be issued") from exc
@@ -808,16 +708,195 @@ class DatabaseInternalReadService:
         # Migration C intentionally exposes a bounded list function rather than
         # a broad candidate SELECT.  Resolve a single object through that same
         # allowlisted path, then apply object scope before returning it.
-        cursor: str | None = None
-        while True:
-            page = self.list_candidates(principal, cursor=cursor)
-            for candidate in page.items:
-                if candidate.candidate_ref == candidate_ref:
-                    return candidate
-            if page.next_cursor is None:
-                break
-            cursor = page.next_cursor
+        if len(self._candidate_scopes(principal)) <= 1:
+            cursor: str | None = None
+            while True:
+                page = self.list_candidates(principal, cursor=cursor)
+                for candidate in page.items:
+                    if candidate.candidate_ref == candidate_ref:
+                        return candidate
+                if page.next_cursor is None:
+                    break
+                cursor = page.next_cursor
+            raise ResourceNotVisible("resource was not found")
+        for candidate in self._collect_visible_candidates(principal):
+            if candidate.candidate_ref == candidate_ref:
+                return candidate
         raise ResourceNotVisible("resource was not found")
+
+    @staticmethod
+    def _candidate_scopes(
+        principal: WorkloadPrincipal,
+        *,
+        business_unit: str | None = None,
+    ) -> tuple[_CandidateReadScope, ...]:
+        scopes: list[_CandidateReadScope] = []
+        for grant in principal.grants:
+            if (grant.business_unit_refs or grant.business_unit_ids) and not (
+                grant.business_unit_bindings
+            ):
+                raise InternalReadBackendUnavailable(
+                    "database grants require explicit business-unit ref/UUID bindings"
+                )
+            scopes.extend(
+                _CandidateReadScope(
+                    grant=grant,
+                    business_unit_ref=ref,
+                    business_unit_id=business_unit_id,
+                )
+                for ref, business_unit_id in grant.business_unit_bindings
+                if business_unit is None or ref == business_unit
+            )
+            if business_unit is None and grant.allow_unassigned_candidates:
+                scopes.append(
+                    _CandidateReadScope(
+                        grant=grant,
+                        business_unit_ref=None,
+                        business_unit_id=None,
+                    )
+                )
+        return tuple(scopes)
+
+    def _collect_visible_candidates(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        max_items: int = 10_000,
+    ) -> tuple[CandidateProjection, ...]:
+        authorize_collection_read(principal, Capability.CANDIDATE_READ)
+        scopes = self._candidate_scopes(principal)
+        candidates: list[CandidateProjection] = []
+        try:
+            with self._session_factory() as session:
+                sequence, horizon_hash = self._audit_horizon(session)
+                for scope in scopes:
+                    last_created_at: datetime | None = None
+                    last_candidate_id: UUID | None = None
+                    while True:
+                        page = self._candidate_scope_page(
+                            session,
+                            scope,
+                            month=None,
+                            status=None,
+                            horizon_sequence=sequence,
+                            horizon_hash=horizon_hash,
+                            last_created_at=last_created_at,
+                            last_candidate_id=last_candidate_id,
+                        )
+                        candidates.extend(page.items)
+                        if len(candidates) > max_items:
+                            raise InternalReadBackendUnavailable(
+                                "candidate collection exceeds the reviewed bound"
+                            )
+                        if page.next_boundary is None:
+                            break
+                        last_created_at, last_candidate_id = page.next_boundary
+        except InternalReadBackendUnavailable:
+            raise
+        except (SQLAlchemyError, ValueError, TypeError, KeyError) as exc:
+            raise InternalReadBackendUnavailable("database candidate read failed") from exc
+        candidates.sort(key=lambda item: (item.created_at, item.candidate_ref.int))
+        return tuple(candidates)
+
+    def _candidate_scope_page(
+        self,
+        session: Session,
+        scope: _CandidateReadScope,
+        *,
+        month: str | None,
+        status: CandidateStatus | None,
+        horizon_sequence: int,
+        horizon_hash: bytes,
+        last_created_at: datetime | None,
+        last_candidate_id: UUID | None,
+    ) -> _CandidateScopePage:
+        rows: list[Mapping[str, object]] = []
+        seen: set[UUID] = set()
+        query_last_created_at = last_created_at
+        query_last_candidate_id = last_candidate_id
+        while len(rows) <= _MAX_PAGE_ITEMS:
+            result = session.execute(
+                text(
+                    """
+                    SELECT * FROM internal_read.list_candidates_as_of(
+                        :entity_id, :business_unit_id, :status,
+                        :horizon_sequence, :horizon_hash,
+                        :last_created_at, :last_candidate_id, :limit
+                    )
+                    """
+                ),
+                {
+                    "entity_id": scope.grant.entity_ref,
+                    "business_unit_id": scope.business_unit_id,
+                    "status": status.value if status is not None else None,
+                    "horizon_sequence": horizon_sequence,
+                    "horizon_hash": horizon_hash,
+                    "last_created_at": query_last_created_at,
+                    "last_candidate_id": query_last_candidate_id,
+                    "limit": _MAX_PAGE_ITEMS,
+                },
+            )
+            raw_rows = [cast(Mapping[str, object], dict(row)) for row in result.mappings()]
+            raw_has_more = len(raw_rows) > _MAX_PAGE_ITEMS
+            for row_map in raw_rows:
+                candidate = self._candidate(row_map)
+                if (
+                    candidate.entity_ref != scope.grant.entity_ref
+                    or candidate.business_unit_ref != scope.business_unit_ref
+                ):
+                    raise InternalReadBackendUnavailable(
+                        "database candidate scope binding is invalid"
+                    )
+                if candidate.candidate_ref in seen:
+                    raise InternalReadBackendUnavailable(
+                        "database candidate page contains duplicate rows"
+                    )
+                seen.add(candidate.candidate_ref)
+                if month is None or candidate.accounting_month == month:
+                    rows.append(row_map)
+                    if len(rows) > _MAX_PAGE_ITEMS:
+                        break
+            if len(rows) > _MAX_PAGE_ITEMS or not raw_has_more:
+                break
+            raw_boundary = self._candidate(raw_rows[-1])
+            query_last_created_at = raw_boundary.created_at
+            query_last_candidate_id = raw_boundary.candidate_ref
+
+        satisfied_by_candidate: dict[UUID, frozenset[ReviewRiskCode]] = {}
+        counterparties_by_candidate: dict[UUID, tuple[str, CounterpartyClass]] = {}
+        if rows and scope.business_unit_id is not None:
+            candidate_ids = tuple(UUID(str(row["candidate_ref"])) for row in rows)
+            satisfied_by_candidate = self._candidate_risk_satisfactions(
+                session,
+                entity_ref=scope.grant.entity_ref,
+                business_unit_id=scope.business_unit_id,
+                candidate_ids=candidate_ids,
+                horizon_sequence=horizon_sequence,
+                horizon_hash=horizon_hash,
+            )
+            counterparties_by_candidate = self._candidate_counterparty_facts(
+                session,
+                entity_ref=scope.grant.entity_ref,
+                business_unit_id=scope.business_unit_id,
+                candidate_ids=candidate_ids,
+                horizon_sequence=horizon_sequence,
+                horizon_hash=horizon_hash,
+            )
+        candidates = tuple(
+            self._candidate(
+                row,
+                satisfied_review_risk_codes=satisfied_by_candidate.get(
+                    UUID(str(row["candidate_ref"])), frozenset()
+                ),
+                counterparty=counterparties_by_candidate.get(UUID(str(row["candidate_ref"]))),
+            )
+            for row in rows[:_MAX_PAGE_ITEMS]
+        )
+        next_boundary = None
+        if len(rows) > _MAX_PAGE_ITEMS:
+            boundary = candidates[-1]
+            next_boundary = (boundary.created_at, boundary.candidate_ref)
+        return _CandidateScopePage(items=candidates, next_boundary=next_boundary)
 
     def get_evidence(
         self,
