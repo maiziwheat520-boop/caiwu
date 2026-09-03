@@ -46,6 +46,7 @@ from ledgerbridge.internal_read_contract import (
     require_capability,
 )
 from ledgerbridge.internal_read_cursor import ReadCursorSigner
+from ledgerbridge.internal_read_service import InternalReadBackendUnavailable
 
 
 class InternalCandidateCommandProblem(RuntimeError):
@@ -109,6 +110,11 @@ class InternalCandidateCommandRoute(APIRoute):
                     "COMMAND_REJECTED",
                 )
             except CandidateCommandUnavailable:
+                return _problem_response(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "CANDIDATE_COMMAND_UNAVAILABLE",
+                )
+            except InternalReadBackendUnavailable:
                 return _problem_response(
                     status.HTTP_503_SERVICE_UNAVAILABLE,
                     "CANDIDATE_COMMAND_UNAVAILABLE",

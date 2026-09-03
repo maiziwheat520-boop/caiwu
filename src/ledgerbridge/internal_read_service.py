@@ -630,17 +630,9 @@ class DatabaseInternalReadService:
                 for ref, value in grant.business_unit_bindings
                 if business_unit is None or ref == business_unit
             )
-            if business_unit is None and len(selected_bindings) > 1:
-                raise InternalReadBackendUnavailable(
-                    "database candidate pagination requires one bound business unit"
-                )
             scopes_by_grant.extend((grant, value) for _, value in selected_bindings)
             if grant.allow_unassigned_candidates:
                 scopes_by_grant.append((grant, None))
-        if len(scopes_by_grant) > 1:
-            raise InternalReadBackendUnavailable(
-                "database candidate pagination does not yet support multiple scopes"
-            )
 
         if cursor is not None and self._cursor_signer is None:
             raise InternalReadBackendUnavailable("signed cursor key is unavailable")
@@ -668,6 +660,7 @@ class DatabaseInternalReadService:
                 rows: list[Mapping[str, object]] = []
                 seen: set[UUID] = set()
                 raw_has_more = False
+                row_scopes: dict[UUID, tuple[EntityGrant, UUID | None]] = {}
                 for grant, business_unit_id in scopes_by_grant:
                     if business_unit is not None and business_unit_id is None:
                         continue
@@ -699,7 +692,7 @@ class DatabaseInternalReadService:
                         raw_rows = [
                             cast(Mapping[str, object], dict(row)) for row in result.mappings()
                         ]
-                        raw_has_more = len(raw_rows) > 100
+                        scope_has_more = len(raw_rows) > 100
                         for row_map in raw_rows:
                             candidate = self._candidate(row_map)
                             if candidate.entity_ref != grant.entity_ref:
@@ -732,32 +725,48 @@ class DatabaseInternalReadService:
                                 continue
                             seen.add(candidate.candidate_ref)
                             rows.append(row_map)
-                        if not (month is not None and raw_has_more and len(rows) < 100):
+                            row_scopes[candidate.candidate_ref] = (grant, business_unit_id)
+                        if not (month is not None and scope_has_more and len(rows) < 100):
                             break
                         boundary = self._candidate(raw_rows[99])
                         query_last_created_at = boundary.created_at
                         query_last_candidate_id = boundary.candidate_ref
+                    raw_has_more = raw_has_more or scope_has_more
                 satisfied_by_candidate: dict[UUID, frozenset[ReviewRiskCode]] = {}
                 counterparties_by_candidate: dict[UUID, tuple[str, CounterpartyClass]] = {}
                 if rows:
-                    scope_grant, scope_business_unit_id = scopes_by_grant[0]
-                    if scope_business_unit_id is not None:
-                        candidate_ids = tuple(UUID(str(row["candidate_ref"])) for row in rows)
-                        satisfied_by_candidate = self._candidate_risk_satisfactions(
-                            session,
-                            entity_ref=scope_grant.entity_ref,
-                            business_unit_id=scope_business_unit_id,
-                            candidate_ids=candidate_ids,
-                            horizon_sequence=sequence,
-                            horizon_hash=horizon_hash,
+                    candidate_ids_by_scope: dict[tuple[UUID, UUID], list[UUID]] = {}
+                    for row in rows:
+                        candidate_id = UUID(str(row["candidate_ref"]))
+                        scope_grant, scope_business_unit_id = row_scopes[candidate_id]
+                        if scope_business_unit_id is not None:
+                            candidate_ids_by_scope.setdefault(
+                                (scope_grant.entity_ref, scope_business_unit_id), []
+                            ).append(candidate_id)
+                    for (
+                        entity_ref,
+                        scope_business_unit_id,
+                    ), scoped_ids in candidate_ids_by_scope.items():
+                        candidate_ids = tuple(scoped_ids)
+                        satisfied_by_candidate.update(
+                            self._candidate_risk_satisfactions(
+                                session,
+                                entity_ref=entity_ref,
+                                business_unit_id=scope_business_unit_id,
+                                candidate_ids=candidate_ids,
+                                horizon_sequence=sequence,
+                                horizon_hash=horizon_hash,
+                            )
                         )
-                        counterparties_by_candidate = self._candidate_counterparty_facts(
-                            session,
-                            entity_ref=scope_grant.entity_ref,
-                            business_unit_id=scope_business_unit_id,
-                            candidate_ids=candidate_ids,
-                            horizon_sequence=sequence,
-                            horizon_hash=horizon_hash,
+                        counterparties_by_candidate.update(
+                            self._candidate_counterparty_facts(
+                                session,
+                                entity_ref=entity_ref,
+                                business_unit_id=scope_business_unit_id,
+                                candidate_ids=candidate_ids,
+                                horizon_sequence=sequence,
+                                horizon_hash=horizon_hash,
+                            )
                         )
                 candidates = [
                     self._candidate(
