@@ -73,9 +73,9 @@ BEGIN
     SELECT action, rule_version, payload, actor, occurred_at
       INTO v_action, v_rule, v_payload, v_actor, v_audit_time
       FROM public.audit_event WHERE id = NEW.audit_event_id;
-    IF v_action IS DISTINCT FROM CASE WHEN NEW.revision = 1
+    IF v_action IS DISTINCT FROM (CASE WHEN NEW.revision = 1
             THEN 'company_transaction_classification.record'
-            ELSE 'company_transaction_classification.review' END
+            ELSE 'company_transaction_classification.review' END)
        OR v_rule IS DISTINCT FROM 'ledgerbridge.company-transaction-classification.v1'
        OR v_actor IS DISTINCT FROM NEW.actor_ref
        OR v_payload->>'transaction_ref' IS DISTINCT FROM NEW.transaction_ref::text
