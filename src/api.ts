@@ -47,7 +47,6 @@ import type {
   ReviewEventListResponse,
   Session,
   RegistrationOptionsJson,
-  WorkbookDraft,
 } from './types'
 
 export class ApiError extends Error {
@@ -459,20 +458,6 @@ export const api = {
     requestJson<import('./types').CashReconciliation>(
       `/api/v1/cash-reconciliations/${encodeURIComponent(accountingMonth)}`,
     ),
-
-  createWorkbookDraft: ({ accountingMonth, expectedRevision, csrfToken }: {
-    accountingMonth: string
-    expectedRevision: number
-    csrfToken: string
-  }) => requestJson<WorkbookDraft>(`/api/v1/reconciliations/${encodeURIComponent(accountingMonth)}/drafts`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Idempotency-Key': createOperationId(),
-      'X-CSRF-Token': csrfToken,
-    },
-    body: JSON.stringify({ expected_revision: expectedRevision }),
-  }),
 
   listConnections: async () => {
     const response = await requestJson<{ items: ConnectionStatus[] }>('/api/v1/connections')

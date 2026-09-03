@@ -35,32 +35,6 @@ button { -webkit-tap-highlight-color: transparent; }
 .brand.compact strong { color: #16243c; }
 .side-nav { display: grid; gap: 5px; }
 
-.reconciliation-view-tabs {
-  display: inline-flex;
-  gap: 4px;
-  margin: 0 0 18px;
-  padding: 4px;
-  border: 1px solid #dbe3ee;
-  border-radius: 10px;
-  background: #f3f6fa;
-}
-.reconciliation-view-tabs button {
-  min-height: 36px;
-  padding: 7px 14px;
-  border: 0;
-  border-radius: 7px;
-  color: #5c6d83;
-  background: transparent;
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-.reconciliation-view-tabs button.active {
-  color: #244b7a;
-  background: white;
-  box-shadow: 0 3px 12px rgb(35 57 86 / 8%);
-}
-.reconciliation-view-tabs button:focus-visible { outline: 2px solid #4b82d6; outline-offset: 2px; }
 .nav-item { display: flex; align-items: center; width: 100%; min-height: 43px; padding: 0 12px; border: 0; border-radius: 9px; color: #aab5c7; background: transparent; cursor: pointer; text-align: left; transition: color 140ms ease, background 140ms ease; }
 .nav-item:hover { color: white; background: rgb(255 255 255 / 5%); }
 .nav-item.active { color: white; background: #253a5d; }
@@ -760,6 +734,15 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
 .projection-state-alert strong, .projection-state-alert span { display: block; }
 .projection-state-alert strong { color: #584725; font-size: 11px; }
 .projection-state-alert span { margin-top: 3px; color: #796d55; font-size: 9px; }
+.reconciliation-issues { margin-bottom: 20px; }
+.reconciliation-issue-list { display: grid; gap: 8px; padding: 0 18px 16px; }
+.reconciliation-issue-list article { display: grid; grid-template-columns: minmax(150px, .9fr) minmax(190px, 1fr) auto; align-items: center; gap: 14px; padding: 11px 12px; border: 1px solid #f0dfb8; border-radius: 9px; background: #fffbf2; }
+.reconciliation-issue-list article.conflict { border-color: #f0c6ca; background: #fff5f6; }
+.reconciliation-issue-list article > div { display: flex; align-items: center; gap: 9px; }
+.reconciliation-issue-list article > span, .reconciliation-issue-list article > small { color: var(--muted); font-size: 10px; }
+.reconciliation-issue-list article > strong { color: #263b57; font-size: 12px; text-align: right; }
+.reconciliation-issue-list article > small { grid-column: 1 / -1; }
+.reconciliation-issues > button { margin: 0 18px 18px; }
 .statement-source-registry { overflow: hidden; margin-bottom: 20px; }
 .statement-source-registry-list { padding: 0 18px 16px; }
 .statement-source-registry-labels, .statement-source-registry-list article { display: grid; grid-template-columns: minmax(90px, .45fr) minmax(150px, .8fr) minmax(180px, 1fr); align-items: center; gap: 18px; }
@@ -768,6 +751,7 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
 .statement-source-registry-list article:last-child { border-bottom: 0; }
 .statement-source-registry-list article strong { color: #2e435e; font-size: 11px; }
 .statement-source-registry-list article span { color: #526780; font-size: 10px; }
+.statement-source-registry-list article span small { display: block; margin-top: 3px; color: #8190a3; font-size: 9px; }
 .current-account-registry-note { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 14px 18px; border-top: 1px solid #e7ecf3; color: #48698e; background: #f7faff; }
 .current-account-registry-note strong, .current-account-registry-note span { display: block; }
 .current-account-registry-note strong { color: #2d496a; font-size: 11px; }
@@ -932,6 +916,10 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .unclassified-alert button { grid-column: 2; justify-self: start; padding-left: 0; }
   .statement-flow-panel-heading { align-items: flex-start; }
   .statement-item-list { padding-inline: 13px; }
+  .reconciliation-issue-list { padding-inline: 13px; }
+  .reconciliation-issue-list article { grid-template-columns: 1fr auto; }
+  .reconciliation-issue-list article > div { grid-column: 1 / -1; }
+  .reconciliation-issue-list article > small { grid-column: 1 / -1; }
   .statement-source-registry-list { padding-inline: 13px; overflow-x: auto; }
   .statement-source-registry-labels, .statement-source-registry-list article { min-width: 520px; }
   .current-account-registry-note { grid-template-columns: 24px minmax(0, 1fr); }

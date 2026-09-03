@@ -36,12 +36,6 @@ import {
   X,
 } from '@phosphor-icons/react'
 import {
-  createColumnHelper,
-  flexRender,
-  getCoreRowModel,
-  useReactTable,
-} from '@tanstack/react-table'
-import {
   api,
   ApiError,
   eligibleClassificationBatchMembers,
@@ -335,18 +329,12 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true)
   const [authError, setAuthError] = useState<string | null>(null)
   const [page, setPage] = useState<Page>(() => pageFromPath(window.location.pathname))
-  const [reconciliationView, setReconciliationView] = useState<'monthly' | 'original'>(() => (
-    window.location.pathname === pagePaths['original-reconciliation']
-      || new URLSearchParams(window.location.search).get('view') === 'original'
-      ? 'original'
-      : 'monthly'
-  ))
   const [candidates, setCandidates] = useState<Candidate[]>([])
   const [classificationGroups, setClassificationGroups] = useState<ClassificationGroup[]>([])
   const [classificationGroupsAvailable, setClassificationGroupsAvailable] = useState(false)
   const [session, setSession] = useState<Session | null>(null)
   const [reconciliation, setReconciliation] = useState<ReconciliationData | null>(null)
-  const [selectedMonth, setSelectedMonth] = useState(CURRENT_MONTH)
+  const selectedMonth = CURRENT_MONTH
   const [connections, setConnections] = useState<ConnectionStatus[]>([])
   const [reviewEvents, setReviewEvents] = useState<ReviewEvent[]>([])
   const [auditCandidates, setAuditCandidates] = useState<Candidate[]>([])
@@ -360,7 +348,6 @@ function App() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [decisionBusyId, setDecisionBusyId] = useState<string | null>(null)
   const [batchBusy, setBatchBusy] = useState(false)
-  const [draftBusy, setDraftBusy] = useState(false)
   const [logoutBusy, setLogoutBusy] = useState(false)
   const [passkeyDialogOpen, setPasskeyDialogOpen] = useState(false)
   const [passkeyBusy, setPasskeyBusy] = useState(false)
@@ -385,16 +372,6 @@ function App() {
     } else if (nextPage === 'overview') {
       scrollToOverviewSection('#overview-summary')
     }
-    if (nextPage === 'reconciliation') setReconciliationView('monthly')
-  }, [])
-
-  const changeReconciliationView = useCallback((view: 'monthly' | 'original', replace = false) => {
-    const nextPath = view === 'original' ? `${pagePaths.reconciliation}?view=original` : pagePaths.reconciliation
-    if (`${window.location.pathname}${window.location.search}` !== nextPath) {
-      window.history[replace ? 'replaceState' : 'pushState']({}, '', nextPath)
-    }
-    setPage('reconciliation')
-    setReconciliationView(view)
   }, [])
 
   useEffect(() => {
@@ -402,8 +379,11 @@ function App() {
       const anchor = window.location.pathname === pagePaths.review ? '#review' : '#files'
       window.history.replaceState({}, '', `${pagePaths.overview}${anchor}`)
     }
-    if (window.location.pathname === pagePaths['original-reconciliation']) {
-      window.history.replaceState({}, '', `${pagePaths.reconciliation}?view=original`)
+    if (
+      window.location.pathname === pagePaths['original-reconciliation']
+      || (window.location.pathname === pagePaths.reconciliation && window.location.search)
+    ) {
+      window.history.replaceState({}, '', pagePaths.reconciliation)
     }
     if (!Object.values(pagePaths).includes(window.location.pathname)) {
       window.history.replaceState({}, '', pagePaths.overview)
@@ -415,7 +395,6 @@ function App() {
       } else if (window.location.pathname === pagePaths.overview) {
         scrollToOverviewSection('#overview-summary')
       }
-      setReconciliationView(new URLSearchParams(window.location.search).get('view') === 'original' ? 'original' : 'monthly')
     }
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
@@ -541,12 +520,9 @@ function App() {
     return () => window.clearTimeout(loadTimer)
   }, [authStatus?.authenticated, authStatus?.recovery_setup_required, loadReviewEvents, loading, page])
 
-  const changeMonth = (month: string) => setSelectedMonth(month)
-
   const pendingCandidates = candidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
   const pendingBankStatements = personalBankData?.statements.filter((statement) => statement.review_status === 'PENDING') ?? []
   const pendingReviewCount = pendingCandidates.length + pendingBankStatements.length
-  const confirmedCandidates = candidates.filter((candidate) => candidate.status === 'CONFIRMED')
   const overviewMonthCandidates = candidates.filter((candidate) => candidate.accountingMonth === selectedMonth)
   const overviewMonthPending = overviewMonthCandidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
   const overviewMonthConfirmed = overviewMonthCandidates.filter((candidate) => candidate.status === 'CONFIRMED')
@@ -761,26 +737,6 @@ function App() {
     if (candidateDetailRequestRef.current === requestId) setCandidateDetailLoadingId(null)
   }
 
-  const generateDraft = async () => {
-    if (!session || !reconciliation || !reconciliation.ready || reconciliation.blockers.length > 0) {
-      setNotice({ tone: 'error', message: '当前对账仍有阻断项，不能生成草稿' })
-      return
-    }
-    setDraftBusy(true)
-    try {
-      const draft = await api.createWorkbookDraft({
-        accountingMonth: reconciliation.accounting_month,
-        expectedRevision: reconciliation.revision,
-        csrfToken: session.csrf_token,
-      })
-      setNotice({ tone: 'success', message: `对账草稿已进入${draft.status === 'QUEUED' ? '生成队列' : '处理流程'}` })
-    } catch (error) {
-      setNotice({ tone: 'error', message: error instanceof Error ? error.message : '草稿生成请求失败' })
-    } finally {
-      setDraftBusy(false)
-    }
-  }
-
   const completeAuthentication = (result: AuthResult) => {
     setAuthStatus({
       authenticated: result.authenticated,
@@ -893,21 +849,7 @@ function App() {
     }
     if (page === 'reconciliation') {
       return (
-        <>
-          <div className="reconciliation-view-tabs" role="tablist" aria-label="对账视图">
-            <button aria-selected={reconciliationView === 'monthly'} className={reconciliationView === 'monthly' ? 'active' : ''} role="tab" type="button" onClick={() => changeReconciliationView('monthly')}>月度状态</button>
-            <button aria-selected={reconciliationView === 'original'} className={reconciliationView === 'original' ? 'active' : ''} role="tab" type="button" onClick={() => changeReconciliationView('original')}>原口径明细</button>
-          </div>
-          {reconciliationView === 'monthly' ? (
-            <Reconciliation data={reconciliation} confirmed={confirmedCandidates} selectedMonth={selectedMonth} onMonthChange={changeMonth} onGenerate={generateDraft} generating={draftBusy} onNavigate={navigate} />
-          ) : (
-            <OriginalReconciliationPage
-              candidates={candidates}
-              onNavigate={(nextPage) => nextPage === 'reconciliation' ? changeReconciliationView('monthly') : navigate(nextPage)}
-              onOpenCandidate={openCandidate}
-            />
-          )}
-        </>
+        <OriginalReconciliationPage onNavigate={navigate} />
       )
     }
     if (page === 'company-reports') {
@@ -2542,148 +2484,6 @@ function CandidateDialog({ candidate, classificationGroup, onClose, onUpdate, on
         </div>
       </Dialog.Content>
     </Dialog.Root>
-  )
-}
-
-type ReconciliationRow = {
-  unit: string
-  waterMinor: number
-  taxMinor: number
-  linenMinor: number
-  bottledWaterMinor: number
-  receiptsMinor: number
-  readiness: string
-}
-
-function amountFor(amounts: Record<string, number>, ...keys: string[]) {
-  const key = keys.find((candidate) => candidate in amounts)
-  return key ? amounts[key] : 0
-}
-
-function toReconciliationRows(data: ReconciliationData | null): ReconciliationRow[] {
-  if (!data) return []
-  return data.business_units.map((unit) => ({
-    unit: unit.name,
-    waterMinor: amountFor(unit.amounts_minor, 'water', 'water_fee', '水费'),
-    taxMinor: amountFor(unit.amounts_minor, 'tax', 'tax_fee', '税费'),
-    linenMinor: amountFor(unit.amounts_minor, 'linen', 'linen_fee', '布草'),
-    bottledWaterMinor: amountFor(unit.amounts_minor, 'bottled_water', 'bottledWater', '瓶装水'),
-    receiptsMinor: amountFor(unit.amounts_minor, 'bank_receipts', 'receipts', '银行收款'),
-    readiness: data.ready ? '可生成' : '待处理',
-  }))
-}
-
-const columnHelper = createColumnHelper<ReconciliationRow>()
-const columns = [
-  columnHelper.group({
-    id: 'business-unit',
-    header: '营业单元',
-    columns: [columnHelper.accessor('unit', { header: '门店', cell: (info) => <strong>{info.getValue()}</strong> })],
-  }),
-  columnHelper.group({
-    id: 'operating-expenses',
-    header: '运营支出',
-    columns: [
-      columnHelper.accessor('waterMinor', { header: '水费', cell: (info) => currency.format(minorToMajor(info.getValue())) }),
-      columnHelper.accessor('taxMinor', { header: '税费', cell: (info) => currency.format(minorToMajor(info.getValue())) }),
-      columnHelper.accessor('linenMinor', { header: '布草', cell: (info) => currency.format(minorToMajor(info.getValue())) }),
-      columnHelper.accessor('bottledWaterMinor', { header: '瓶装水', cell: (info) => currency.format(minorToMajor(info.getValue())) }),
-    ],
-  }),
-  columnHelper.group({
-    id: 'bank-receipts',
-    header: '银行收款',
-    columns: [columnHelper.accessor('receiptsMinor', { header: '入账金额', cell: (info) => currency.format(minorToMajor(info.getValue())) })],
-  }),
-  columnHelper.group({
-    id: 'draft-state',
-    header: '处理状态',
-    columns: [columnHelper.accessor('readiness', {
-      header: '草稿状态',
-      cell: (info) => {
-        const value = info.getValue()
-        return <Badge color={value === '可生成' ? 'green' : 'amber'}>{value}</Badge>
-      },
-    })],
-  }),
-]
-
-function Reconciliation({ data, confirmed, selectedMonth, onMonthChange, onGenerate, generating, onNavigate }: {
-  data: ReconciliationData | null
-  confirmed: Candidate[]
-  selectedMonth: string
-  onMonthChange: (month: string) => void
-  onGenerate: () => void
-  generating: boolean
-  onNavigate: (page: Page) => void
-}) {
-  const rows = toReconciliationRows(data)
-  const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel() })
-  const expensesTotalMinor = rows.reduce((sum, row) => sum + row.waterMinor + row.taxMinor + row.linenMinor + row.bottledWaterMinor, 0)
-  const receiptsTotalMinor = rows.reduce((sum, row) => sum + row.receiptsMinor, 0)
-  const ready = Boolean(data?.ready && data.blockers.length === 0)
-  const monthLabel = selectedMonth === '2026-08' ? '2026 年 8 月' : '2026 年 7 月'
-  return (
-    <>
-      <PageHeader
-        eyebrow="酒店月度对账"
-        title={`${monthLabel}对账草稿`}
-        description="当前是预览层。确认保存仍由原程序完成，候选不会直接入正式账。"
-        action={<Select.Root value={selectedMonth} onValueChange={onMonthChange}><Select.Trigger aria-label="选择对账月份" /><Select.Content><Select.Item value="2026-08">2026 年 8 月</Select.Item><Select.Item value="2026-07">2026 年 7 月</Select.Item></Select.Content></Select.Root>}
-      />
-
-      {!ready ? (
-        <div className="blocking-banner" role="alert">
-          <Warning size={21} weight="fill" />
-          <div><strong>本月草稿尚不可生成</strong><span>{data?.blockers.map((blocker) => blocker.message).join('；') || '对账数据尚未就绪。'}</span></div>
-          <Button color="red" variant="soft" onClick={() => onNavigate('review')}>处理阻断项</Button>
-        </div>
-      ) : null}
-
-      <section className="metric-grid reconciliation-metrics">
-        <Metric label="运营支出" value={currency.format(minorToMajor(expensesTotalMinor))} detail={`跨 ${rows.length} 个营业单元`} icon={<Bank size={20} />} />
-        <Metric label="银行收款" value={currency.format(minorToMajor(receiptsTotalMinor))} detail="与运营支出分开统计" icon={<CloudArrowUp size={20} />} />
-        <Metric label="已确认来源" value={`${confirmed.length} 条`} detail="均可回溯至原始证据" icon={<CheckCircle size={20} />} />
-        <Metric label="待处理" value={`${data?.blockers.length ?? 0} 条`} detail={ready ? '无草稿阻断项' : '需先处理阻断项'} icon={<Warning size={20} />} tone={ready ? undefined : 'attention'} />
-      </section>
-
-      <section className="panel table-panel">
-        <div className="panel-heading">
-          <div><h2>营业单元汇总</h2><p>只展示审核通过或既有数据库中的数据</p></div>
-          <Button disabled={!ready || generating} onClick={onGenerate}><FileText size={17} />{generating ? '正在提交' : '生成对账草稿'}</Button>
-        </div>
-        <div className="desktop-table-wrap">
-          <table>
-            <thead>{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th colSpan={header.colSpan} data-column={header.column.id} key={header.id}>{header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}</thead>
-            <tbody>{table.getRowModel().rows.map((row) => <tr key={row.id}>{row.getVisibleCells().map((cell) => <td data-column={cell.column.id} key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}</tr>)}</tbody>
-            <tfoot><tr><td>本月合计</td><td colSpan={4}>{currency.format(minorToMajor(expensesTotalMinor))}</td><td>{currency.format(minorToMajor(receiptsTotalMinor))}</td><td><Badge color={ready ? 'green' : 'red'}>{ready ? '就绪' : '阻断'}</Badge></td></tr></tfoot>
-          </table>
-        </div>
-        <div className="mobile-reconciliation-list">
-          {rows.map((row) => (
-            <article key={row.unit}>
-              <div><strong>{row.unit}</strong><Badge color={row.readiness === '可生成' ? 'green' : 'amber'}>{row.readiness}</Badge></div>
-              <dl><dt>运营支出</dt><dd>{currency.format(minorToMajor(row.waterMinor + row.taxMinor + row.linenMinor + row.bottledWaterMinor))}</dd><dt>银行收款</dt><dd>{currency.format(minorToMajor(row.receiptsMinor))}</dd></dl>
-            </article>
-          ))}
-          {rows.length === 0 ? <div className="empty-state compact-empty"><Table size={32} /><h2>本月没有对账数据</h2><p>审核通过的候选和既有数据库汇总会显示在这里。</p></div> : null}
-          <p className="mobile-grid-note"><Info size={16} />完整科目网格请在平板或电脑查看。</p>
-        </div>
-      </section>
-
-      <section className="panel provenance-panel">
-        <div className="panel-heading"><div><h2>数据来源说明</h2><p>每次生成都记录输入版本与计算结果</p></div></div>
-        <div className="provenance-steps">
-          <div><span>1</span><strong>人工确认</strong><small>消息候选</small></div>
-          <CaretRight size={18} />
-          <div><span>2</span><strong>写入草稿</strong><small>不可直接入账</small></div>
-          <CaretRight size={18} />
-          <div><span>3</span><strong>公式校验</strong><small>LibreOffice</small></div>
-          <CaretRight size={18} />
-          <div><span>4</span><strong>原程序确认</strong><small>正式保存</small></div>
-        </div>
-      </section>
-    </>
   )
 }
 
