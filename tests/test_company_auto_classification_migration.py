@@ -20,7 +20,8 @@ def test_rules_are_explicit_fail_closed_and_post_confirmation() -> None:
     assert "AFTER INSERT ON public.bank_statement_review" in source
     assert "NEW.status <> 'CONFIRMED'" in source
     assert "account.owner_kind = 'COMPANY'" in source
-    assert "%陈明哲%" in source
+    assert "item.normalized_counterparty = '陈明哲'" in source
+    assert source.count("item.occurred_on >= DATE '2026-09-04'") == 3
     assert "%企业代发过渡户%" in source and "%批量代发%" in source
     assert "%浙江网商银行%" in source and "%贷款还款%" in source
     assert "v_matches > 1" in source

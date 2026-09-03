@@ -350,11 +350,13 @@ def test_0040_confirmed_company_statement_is_auto_classified_once(
             transactions=(
                 replace(
                     original.transactions[0],
+                    occurred_at=datetime(2026, 9, 4, 3, 4, 5, tzinfo=UTC),
                     counterparty_name="陈明哲",
                     transaction_name="转入公司",
                 ),
                 replace(
                     original.transactions[1],
+                    occurred_at=datetime(2026, 9, 5, 6, 7, 8, tzinfo=UTC),
                     counterparty_name="企业代发过渡户",
                     transaction_name="批量代发",
                 ),
@@ -362,7 +364,7 @@ def test_0040_confirmed_company_statement_is_auto_classified_once(
                     source_event_ref=UUID("82000000-0000-4000-8000-000000000013"),
                     source_row_number=11,
                     source_row_sha256="3" * 64,
-                    occurred_at=datetime(2026, 1, 4, 9, 10, 11, tzinfo=UTC),
+                    occurred_at=datetime(2026, 9, 4, 9, 10, 11, tzinfo=UTC),
                     amount_minor=-3_000,
                     balance_minor=507_534,
                     counterparty_name="浙江网商银行",
@@ -370,6 +372,19 @@ def test_0040_confirmed_company_statement_is_auto_classified_once(
                     counterparty_institution="浙江网商银行",
                     transaction_serial="SYNTHETIC-0003",
                     transaction_name="贷款还款",
+                ),
+                MyBankTransaction(
+                    source_event_ref=UUID("82000000-0000-4000-8000-000000000014"),
+                    source_row_number=12,
+                    source_row_sha256="4" * 64,
+                    occurred_at=datetime(2026, 9, 3, 9, 10, 11, tzinfo=UTC),
+                    amount_minor=100,
+                    balance_minor=507_634,
+                    counterparty_name="陈明哲",
+                    counterparty_account="0000000000007890",
+                    counterparty_institution="Synthetic bank",
+                    transaction_serial="SYNTHETIC-0004",
+                    transaction_name="转入公司",
                 ),
             ),
         )
@@ -431,6 +446,17 @@ def test_0040_confirmed_company_statement_is_auto_classified_once(
                 ("PAYROLL", "AUTO_RULE", "system:company-auto-classification"),
                 ("RELATED_PARTY_CURRENT", "AUTO_RULE", "system:company-auto-classification"),
             ]
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT count(*) FROM public.bank_statement_transaction t "
+                        "WHERE t.transaction_serial='SYNTHETIC-0004' AND NOT EXISTS ("
+                        "SELECT 1 FROM public.company_transaction_classification c "
+                        "WHERE c.transaction_ref=t.transaction_ref)"
+                    )
+                ).scalar_one()
+                == 1
+            )
         engine.dispose()
 
 

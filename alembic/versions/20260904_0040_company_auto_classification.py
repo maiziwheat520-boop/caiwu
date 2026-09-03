@@ -36,6 +36,9 @@ BEGIN
     END IF;
     FOR item IN
         SELECT DISTINCT transaction.transaction_ref, transaction.amount_minor,
+               (transaction.occurred_at AT TIME ZONE 'Asia/Shanghai')::date AS occurred_on,
+               regexp_replace(coalesce(transaction.counterparty_name,''), '\s', '', 'g')
+                   AS normalized_counterparty,
                regexp_replace(concat_ws('|', transaction.counterparty_name,
                    transaction.transaction_name), '\s', '', 'g') AS normalized
           FROM public.bank_statement_observation AS observation
@@ -55,18 +58,21 @@ BEGIN
         v_category := NULL;
 
         -- AUTO-P03: company credit containing 陈明哲 -> owner current account.
-        IF item.amount_minor > 0 AND item.normalized LIKE '%陈明哲%' THEN
+        IF item.occurred_on >= DATE '2026-09-04'
+           AND item.amount_minor > 0 AND item.normalized_counterparty = '陈明哲' THEN
             v_matches := v_matches + 1;
             v_category := 'RELATED_PARTY_CURRENT';
         END IF;
         -- AUTO-P04: payroll clearing account + batch payroll, including refunds.
-        IF item.normalized LIKE '%企业代发过渡户%'
+        IF item.occurred_on >= DATE '2026-09-04'
+           AND item.normalized LIKE '%企业代发过渡户%'
            AND item.normalized LIKE '%批量代发%' THEN
             v_matches := v_matches + 1;
             v_category := 'PAYROLL';
         END IF;
         -- AUTO-P06: MYbank loan repayment debit -> financing.
-        IF item.amount_minor < 0 AND item.normalized LIKE '%浙江网商银行%'
+        IF item.occurred_on >= DATE '2026-09-04'
+           AND item.amount_minor < 0 AND item.normalized LIKE '%浙江网商银行%'
            AND item.normalized LIKE '%贷款还款%' THEN
             v_matches := v_matches + 1;
             v_category := 'FINANCING';
