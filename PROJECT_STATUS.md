@@ -950,3 +950,15 @@ ingestion require their later explicit gates.
   as production commit `fdf8568` and adds no new failure.
 - No posting command is added. Production deployment remains pending the
   unified `core,web` release lock, encrypted backup, and isolated restore gate.
+
+## BOC historical projection repair v2 (2026-09-04)
+
+- Production Core is `8f1fe9419a6da0200097c166c8a1bea45f225b22` and Alembic is
+  `20260904_0041`, integrated after company auto-classification `0040`.
+- A controlled replay of the authenticated 641-row BOC source added 595
+  append-only projection corrections and 595 bound audit events. A second
+  identical replay added zero rows; date, amount, and balance facts remained
+  immutable, and all replayed description fields now compare equal.
+- Journal Entry and Posting remain zero. API, worker, internal reader, and
+  PostgreSQL are healthy with zero restarts. Pre- and post-release encrypted
+  backups passed isolated restore rehearsal.
