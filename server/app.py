@@ -55,6 +55,9 @@ BANK_STATEMENT_REVIEW_PATH = re.compile(
 COMPANY_BANK_STATEMENT_REVIEW_PATH = re.compile(
     r"^/api/v1/company-bank-statements/([0-9a-f-]{36})/reviews$"
 )
+COMPANY_TRANSACTION_CLASSIFICATION_REVIEW_PATH = re.compile(
+    r"^/api/v1/company-transaction-classifications/([0-9a-f-]{36})/reviews$"
+)
 CLASSIFICATION_BATCH_PATH = re.compile(
     r"^/api/v1/candidate-classification-groups/(cg_[0-9a-f]{32})/decisions$"
 )
@@ -99,6 +102,18 @@ MAX_CURSOR_LENGTH = 512
 MAX_WRAPPED_CURSOR_LENGTH = 1024
 JSON_SAFE_INTEGER = 9_007_199_254_740_991
 STATUSES = {"INCOMPLETE", "PENDING", "CONFLICTED", "CONFIRMED", "IGNORED", "SUPERSEDED"}
+COMPANY_TRANSACTION_CATEGORIES = {
+    "PLATFORM_ROOM_REVENUE",
+    "RELATED_PARTY_CURRENT",
+    "PAYROLL",
+    "FINANCING",
+    "BOTTLED_WATER",
+    "INTERNAL_TRANSFER",
+    "RENT",
+    "BANK_INTEREST",
+    "LINEN_LAUNDRY",
+    "OPERATING_FEE",
+}
 
 
 def _utc_timestamp() -> str:
@@ -1225,6 +1240,19 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 return
             self._send_json(200, state.company_bank_statements())
             return
+        if path == "/api/v1/company-transaction-classifications":
+            if query:
+                self._send_json(
+                    400,
+                    _problem(
+                        400,
+                        "INVALID_COMPANY_CLASSIFICATION_QUERY",
+                        "公司流水分类范围由服务端专用授权决定",
+                    ),
+                )
+                return
+            self._send_json(200, state.company_transaction_classifications())
+            return
         if path == "/api/v1/company-reports":
             params = parse_qs(query, keep_blank_values=True)
             if (
@@ -1613,6 +1641,9 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         decision_match = DECISION_PATH.fullmatch(path)
         bank_statement_review = BANK_STATEMENT_REVIEW_PATH.fullmatch(path)
         company_bank_statement_review = COMPANY_BANK_STATEMENT_REVIEW_PATH.fullmatch(path)
+        company_transaction_review = (
+            COMPANY_TRANSACTION_CLASSIFICATION_REVIEW_PATH.fullmatch(path)
+        )
         classification_batch_match = CLASSIFICATION_BATCH_PATH.fullmatch(path)
         draft_match = DRAFT_CREATE_PATH.fullmatch(path)
         evidence_unlock = path == EVIDENCE_UNLOCK_PATH
@@ -1624,6 +1655,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             decision_match is None
             and bank_statement_review is None
             and company_bank_statement_review is None
+            and company_transaction_review is None
             and classification_batch_match is None
             and draft_match is None
             and not evidence_unlock
@@ -1644,6 +1676,16 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                     400,
                     "INVALID_CLASSIFICATION_BATCH_QUERY",
                     "相似交易批量请求不接受查询参数",
+                ),
+            )
+            return
+        if company_transaction_review is not None and split.query:
+            self._send_json(
+                400,
+                _problem(
+                    400,
+                    "INVALID_COMPANY_CLASSIFICATION_QUERY",
+                    "公司流水分类审批不接受查询参数",
                 ),
             )
             return
@@ -1943,6 +1985,56 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 return
             status, payload = self.preview_server.state.review_company_bank_statement(
                 company_bank_statement_review.group(1), idempotency_key.lower(), request
+            )
+            self._send_json(status, payload)
+            return
+        if company_transaction_review is not None:
+            if set(request) != {
+                "entity_ref",
+                "expected_revision",
+                "category_code",
+                "reason",
+            }:
+                self._send_json(
+                    422,
+                    _problem(
+                        422,
+                        "INVALID_COMPANY_CLASSIFICATION_REVIEW",
+                        "公司流水分类审批字段无效",
+                    ),
+                )
+                return
+            revision = request.get("expected_revision")
+            reason = request.get("reason")
+            try:
+                entity_ref = str(uuid.UUID(str(request.get("entity_ref"))))
+            except (TypeError, ValueError):
+                entity_ref = ""
+            if (
+                request.get("entity_ref") != entity_ref
+                or isinstance(revision, bool)
+                or not isinstance(revision, int)
+                or revision < 1
+                or request.get("category_code") not in COMPANY_TRANSACTION_CATEGORIES
+                or not isinstance(reason, str)
+                or not 1 <= len(reason.strip()) <= 1000
+            ):
+                self._send_json(
+                    422,
+                    _problem(
+                        422,
+                        "INVALID_COMPANY_CLASSIFICATION_REVIEW",
+                        "公司流水分类审批内容无效",
+                    ),
+                )
+                return
+            request["reason"] = reason.strip()
+            status, payload = (
+                self.preview_server.state.review_company_transaction_classification(
+                    company_transaction_review.group(1),
+                    idempotency_key.lower(),
+                    request,
+                )
             )
             self._send_json(status, payload)
             return

@@ -33,6 +33,7 @@ EVIDENCE_ID = "20000000-0000-4000-8000-000000000003"
 ENTITY_ID = "10000000-0000-4000-8000-000000000001"
 STATEMENT_ID = "70000000-0000-4000-8000-000000000007"
 SECOND_STATEMENT_ID = "70000000-0000-4000-8000-000000000009"
+COMPANY_TRANSACTION_ID = "90000000-0000-4000-8000-000000000009"
 
 
 def _decode_assertion(value: str) -> dict[str, object]:
@@ -417,6 +418,44 @@ def core_company_report_composition(basis: str) -> dict[str, object]:
             }
         ],
     }
+
+
+def core_company_transaction_classification_summary() -> dict[str, object]:
+    return {
+        "contract_version": "ledgerbridge.company-transaction-classification-summary.v1",
+        "items": [{
+            "entity_ref": ENTITY_ID,
+            "from_date": "2026-01-01",
+            "to_date_exclusive": "2026-09-01",
+            "confirmed_count": 2,
+            "pending_count": 1,
+            "confirmed_gross_minor": 900000,
+            "categories": [
+                {
+                    "category_code": "BANK_INTEREST",
+                    "cashflow_role": "OPERATING_INCOME",
+                    "transaction_count": 1,
+                    "inflow_minor": 100000,
+                    "outflow_minor": 0,
+                    "net_minor": 100000,
+                    "gross_minor": 100000,
+                    "transaction_share_ppm": 500000,
+                    "gross_share_ppm": 111111,
+                },
+                {
+                    "category_code": "RELATED_PARTY_CURRENT",
+                    "cashflow_role": "NON_OPERATING",
+                    "transaction_count": 1,
+                    "inflow_minor": 600000,
+                    "outflow_minor": 200000,
+                    "net_minor": 400000,
+                    "gross_minor": 800000,
+                    "transaction_share_ppm": 500000,
+                    "gross_share_ppm": 888889,
+                },
+            ],
+        }],
+    }
 def core_original_reconciliation() -> dict[str, object]:
     columns = [
         {
@@ -529,7 +568,7 @@ def core_original_reconciliation() -> dict[str, object]:
 
 def company_reports_bff() -> dict[str, object]:
     return {
-        "contract_version": "ledgerbridge.company-reports-bff.v2",
+        "contract_version": "ledgerbridge.company-reports-bff.v3",
         "from_month": "2026-01",
         "to_month": "2026-08",
         "posted_ledger_status": "AVAILABLE",
@@ -538,6 +577,13 @@ def company_reports_bff() -> dict[str, object]:
             core_company_report_composition(basis)
             for basis in ("CONFIRMED_CANDIDATE", "POSTED_LEDGER")
         ],
+        "transaction_classifications": {
+            **core_company_transaction_classification_summary(),
+            "items": [{
+                **core_company_transaction_classification_summary()["items"][0],
+                "company_name": "演示公司",
+            }],
+        },
     }
 
 
@@ -612,6 +658,8 @@ class FakeCoreClient:
                 if f"basis={value}" in path
             )
             return self.company_report_composition_payloads[basis]
+        if path.startswith("/internal/v1/company-transaction-classification-summary?"):
+            return core_company_transaction_classification_summary()
         if path.startswith("/internal/v1/personal-finance?"):
             return self.personal_finance_payload
         if path.startswith("/internal/v1/original-reconciliations/"):
@@ -679,6 +727,51 @@ class ClassificationCoreClient(FakeCoreClient):
             assert headers is not None
             self.calls.append((method, path, body, dict(headers or {})))
             return core_classification_batch_receipt(str(headers["Idempotency-Key"]))
+        return super().json(method, path, body=body, headers=headers)
+
+
+class CompanyTransactionClassificationCoreClient(FakeCoreClient):
+    def json(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        if method == "GET" and path == "/internal/v1/company-transaction-classifications?status=PENDING":
+            self.calls.append((method, path, body, dict(headers or {})))
+            return {
+                "contract_version": "ledgerbridge.company-transaction-classification.v1",
+                "items": [{
+                    "transaction_ref": COMPANY_TRANSACTION_ID,
+                    "entity_ref": ENTITY_ID,
+                    "occurred_at": "2026-08-03T10:30:00+08:00",
+                    "amount_minor": 120000,
+                    "currency": "CNY",
+                    "counterparty_name": "待确认对方",
+                    "transaction_name": "转账",
+                    "status": "PENDING",
+                    "category_code": None,
+                    "cashflow_role": None,
+                    "revision": 1,
+                    "source": "AUTO_RULE",
+                    "rule_version": "company-transaction-rules.v1",
+                }],
+            }
+        review_path = f"/internal/v1/company-transaction-classifications/{COMPANY_TRANSACTION_ID}/reviews"
+        if method == "POST" and path == review_path:
+            self.calls.append((method, path, body, dict(headers or {})))
+            assert body is not None
+            request = json.loads(body)
+            return {
+                "contract_version": "ledgerbridge.company-transaction-classification-review.v1",
+                "transaction_ref": COMPANY_TRANSACTION_ID,
+                "status": "CONFIRMED",
+                "category_code": request["category_code"],
+                "revision": 2,
+                "created": True,
+            }
         return super().json(method, path, body=body, headers=headers)
 
 
@@ -805,6 +898,8 @@ def build_state(
     client: FakeCoreClient,
     *,
     company_report_client: FakeCoreClient | None | object = ...,
+    company_bank_review_client: FakeCoreClient | None = None,
+    company_bank_statement_mappings: tuple[tuple[str, str, str], ...] = (),
     evidence_unlock_path: str | None = None,
     personal_finance_enabled: bool = True,
     personal_finance_statement_refs: tuple[str, ...] | None = None,
@@ -815,6 +910,8 @@ def build_state(
         company_report_client=(
             client if company_report_client is ... else company_report_client
         ),  # type: ignore[arg-type]
+        company_bank_review_client=company_bank_review_client,  # type: ignore[arg-type]
+        company_bank_statement_mappings=company_bank_statement_mappings,
         assertion_key=ASSERTION_KEY,
         assertion_issuer="ledgerbridge-web-test",
         assertion_audience="ledgerbridge-core-test",
@@ -1593,7 +1690,7 @@ class CoreBackedAdapterTests(unittest.TestCase):
 
         self.assertEqual(report, company_reports_bff())
         self.assertEqual(
-            client.calls[-5:],
+            client.calls[-6:],
             [
                 (
                     "GET",
@@ -1611,7 +1708,13 @@ class CoreBackedAdapterTests(unittest.TestCase):
                     {},
                 )
                 for basis in ("CONFIRMED_CANDIDATE", "POSTED_LEDGER")
-            ],
+            ]
+            + [(
+                "GET",
+                "/internal/v1/company-transaction-classification-summary?from_date=2026-01-01&to_date_exclusive=2026-09-01",
+                None,
+                {},
+            )],
         )
 
     def test_company_reports_use_only_the_dedicated_read_only_client(self) -> None:
@@ -1632,7 +1735,52 @@ class CoreBackedAdapterTests(unittest.TestCase):
             ("GET", "/internal/v1/candidates?business_unit=unit-demo-a"),
         )
         self.assertEqual(len(primary_client.calls), 1)
-        self.assertEqual(len(report_client.calls), 5)
+        self.assertEqual(len(report_client.calls), 6)
+
+    def test_company_classification_reads_and_reviews_use_only_the_dedicated_review_client(self) -> None:
+        primary_client = FakeCoreClient()
+        review_client = CompanyTransactionClassificationCoreClient()
+        state = build_state(
+            primary_client,
+            company_bank_review_client=review_client,
+            company_bank_statement_mappings=tuple(
+                (f"70000000-0000-4000-8000-00000000000{ordinal}", ENTITY_ID, "演示公司")
+                for ordinal in range(1, 7)
+            ),
+        )
+
+        page = state.company_transaction_classifications()
+        operation_id = str(uuid.uuid4())
+        status, receipt = state.review_company_transaction_classification(
+            COMPANY_TRANSACTION_ID,
+            operation_id,
+            {
+                "entity_ref": ENTITY_ID,
+                "expected_revision": 1,
+                "category_code": "RELATED_PARTY_CURRENT",
+                "reason": "人工逐笔确认往来款",
+            },
+        )
+
+        self.assertEqual(page["items"][0]["company_name"], "演示公司")  # type: ignore[index]
+        self.assertEqual(status, 200)
+        self.assertEqual(receipt["category_code"], "RELATED_PARTY_CURRENT")
+        self.assertEqual(primary_client.calls, [])
+        method, path, body, headers = review_client.calls[-1]
+        self.assertEqual(method, "POST")
+        self.assertEqual(
+            path,
+            f"/internal/v1/company-transaction-classifications/{COMPANY_TRANSACTION_ID}/reviews",
+        )
+        self.assertEqual(headers["Idempotency-Key"], operation_id)
+        self.assertEqual(json.loads(body or b"{}") ["entity_ref"], ENTITY_ID)
+        claims = _decode_assertion(headers["X-LedgerBridge-User-Assertion"])
+        self.assertEqual(
+            claims["workload_principal"],
+            "workload:ledgerbridge-company-bank-review",
+        )
+        self.assertEqual(claims["resource_ref"], COMPANY_TRANSACTION_ID)
+        self.assertEqual(claims["expected_revision"], 1)
 
     def test_company_reports_are_unavailable_without_the_dedicated_client(self) -> None:
         primary_client = FakeCoreClient()
@@ -2499,8 +2647,8 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 self.assertEqual(company_reports, company_reports_bff())
                 self.assertEqual(
                     client.calls[-1][1],
-                    "/internal/v1/company-report-composition?"
-                    "from_month=2026-01&to_month=2026-08&basis=POSTED_LEDGER",
+                    "/internal/v1/company-transaction-classification-summary?"
+                    "from_date=2026-01-01&to_date_exclusive=2026-09-01",
                 )
 
                 forwarded_call_count = len(client.calls)

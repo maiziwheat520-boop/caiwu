@@ -143,6 +143,64 @@ describe('CompanyReportsPage', () => {
     })).not.toBeInTheDocument()
   })
 
+  it('excludes related-party current accounts from operating cash flow', async () => {
+    const response = structuredClone(reports)
+    response.contract_version = 'ledgerbridge.company-reports-bff.v3'
+    response.transaction_classifications = {
+      contract_version: 'ledgerbridge.company-transaction-classification-summary.v1',
+      items: [{
+        entity_ref: response.layers[0].items[0].company_ref,
+        company_name: response.layers[0].items[0].company_name,
+        from_date: '2026-05-01',
+        to_date_exclusive: '2026-06-01',
+        confirmed_count: 3,
+        pending_count: 29,
+        confirmed_gross_minor: 950000,
+        categories: [
+          {
+            category_code: 'PLATFORM_ROOM_REVENUE',
+            cashflow_role: 'OPERATING_INCOME',
+            transaction_count: 2,
+            inflow_minor: 150000,
+            outflow_minor: 0,
+            net_minor: 150000,
+            gross_minor: 150000,
+            transaction_share_ppm: 666667,
+            gross_share_ppm: 157895,
+          },
+          {
+            category_code: 'RELATED_PARTY_CURRENT',
+            cashflow_role: 'NON_OPERATING',
+            transaction_count: 1,
+            inflow_minor: 600000,
+            outflow_minor: 200000,
+            net_minor: 400000,
+            gross_minor: 800000,
+            transaction_share_ppm: 333333,
+            gross_share_ppm: 842105,
+          },
+        ],
+      }],
+    }
+    vi.spyOn(api, 'getCompanyReports').mockResolvedValue(response)
+
+    render(<CompanyReportsPage csrfToken="csrf-test" />)
+
+    await screen.findByRole('region', {
+      name: 'LedgerBridge controlled reconciliation 财务汇总',
+    })
+    fireEvent.click(screen.getByRole('button', { name: '正式银行流水' }))
+    const dashboard = screen.getByRole('region', {
+      name: 'LedgerBridge controlled reconciliation 财务汇总',
+    })
+    expect(within(dashboard).getAllByText('¥1,500.00')).toHaveLength(3)
+    expect(within(dashboard).getByText('已分类 3 条，待人工确认 29 条；往来、融资和内部划转不计入经营流入或经营流出。')).toBeInTheDocument()
+    const nonOperating = within(dashboard).getByRole('region', { name: '往来及其他非经营现金流' })
+    expect(within(nonOperating).getByText('往来款')).toBeInTheDocument()
+    expect(within(nonOperating).getByText('流入 ¥6,000.00')).toBeInTheDocument()
+    expect(within(nonOperating).getByText('流出 ¥2,000.00')).toBeInTheDocument()
+  })
+
   it('switches companies and requests an applied month range', async () => {
     const response = structuredClone(reports)
     response.layers[0].items[0].company_name = '薇旭公司'

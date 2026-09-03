@@ -1,0 +1,178 @@
+import { useCallback, useEffect, useState } from 'react'
+import { CheckCircle, Warning } from '@phosphor-icons/react'
+import { api, minorToMajor } from '../api'
+import type {
+  CompanyTransactionCategory,
+  CompanyTransactionClassification,
+  CompanyTransactionClassificationsResponse,
+} from '../types'
+
+const CATEGORY_OPTIONS: Array<{ value: CompanyTransactionCategory; label: string }> = [
+  { value: 'PLATFORM_ROOM_REVENUE', label: '平台房费收入' },
+  { value: 'RELATED_PARTY_CURRENT', label: '往来款' },
+  { value: 'PAYROLL', label: '工资' },
+  { value: 'FINANCING', label: '融资及还款' },
+  { value: 'BOTTLED_WATER', label: '瓶装水' },
+  { value: 'INTERNAL_TRANSFER', label: '公司内部划转' },
+  { value: 'RENT', label: '房租' },
+  { value: 'BANK_INTEREST', label: '银行利息' },
+  { value: 'LINEN_LAUNDRY', label: '布草洗涤' },
+  { value: 'OPERATING_FEE', label: '运营费' },
+]
+
+type Draft = { categoryCode: CompanyTransactionCategory | ''; reason: string }
+
+export function CompanyTransactionClassificationPanel({ csrfToken }: { csrfToken: string }) {
+  const [page, setPage] = useState<CompanyTransactionClassificationsResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [savingRef, setSavingRef] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({})
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      setPage(await api.getCompanyTransactionClassifications())
+    } catch (loadError) {
+      setPage(null)
+      setError(loadError instanceof Error ? loadError.message : '待审批分类暂不可用')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0)
+    return () => window.clearTimeout(timer)
+  }, [load])
+
+  const updateDraft = (transactionRef: string, patch: Partial<Draft>) => {
+    setDrafts((current) => ({
+      ...current,
+      [transactionRef]: {
+        categoryCode: current[transactionRef]?.categoryCode ?? '',
+        reason: current[transactionRef]?.reason ?? '',
+        ...patch,
+      },
+    }))
+  }
+
+  const approve = async (transaction: CompanyTransactionClassification) => {
+    const draft = drafts[transaction.transaction_ref]
+    if (!draft?.categoryCode || !draft.reason.trim()) {
+      setError('请选择分类并填写本笔审批理由。')
+      return
+    }
+    setSavingRef(transaction.transaction_ref)
+    setError(null)
+    setNotice(null)
+    try {
+      await api.reviewCompanyTransactionClassification({
+        transaction,
+        categoryCode: draft.categoryCode,
+        reason: draft.reason.trim(),
+        csrfToken,
+      })
+      setPage((current) => current ? {
+        ...current,
+        items: current.items.filter(
+          (item) => item.transaction_ref !== transaction.transaction_ref,
+        ),
+      } : current)
+      setNotice('本笔流水已追加人工确认记录；未生成分录或过账。')
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : '审批失败，请重新加载后重试。')
+    } finally {
+      setSavingRef(null)
+    }
+  }
+
+  const items = page?.items ?? []
+  return (
+    <section className="company-classification-review" aria-label="公司流水分类审批">
+      <header>
+        <div>
+          <span className="eyebrow">人工审批</span>
+          <h2>待确认公司流水分类</h2>
+          <p>只处理规则无法安全判断的流水；每笔确认都会写入审计记录，不自动生成分录或过账。</p>
+        </div>
+        <strong>{loading ? '读取中' : `${items.length} 条待确认`}</strong>
+      </header>
+      {notice ? <p className="company-classification-notice"><CheckCircle size={18} />{notice}</p> : null}
+      {error ? <p className="company-classification-error" role="alert"><Warning size={18} />{error}</p> : null}
+      {!loading && page && items.length === 0 ? (
+        <p className="company-classification-empty">当前没有待确认的公司流水。</p>
+      ) : null}
+      {items.length > 0 ? (
+        <div className="company-classification-list">
+          {items.map((transaction) => {
+            const draft = drafts[transaction.transaction_ref] ?? {
+              categoryCode: '',
+              reason: '',
+            }
+            return (
+              <article key={transaction.transaction_ref} className="company-classification-item">
+                <div className="company-classification-fact">
+                  <div><strong>{transaction.company_name}</strong><span>{formatDate(transaction.occurred_at)}</span></div>
+                  <div><strong>{formatMoney(transaction.amount_minor)}</strong><span>{transaction.amount_minor >= 0 ? '流入' : '流出'}</span></div>
+                  <p>{transaction.counterparty_name || '未提供交易对象'} · {transaction.transaction_name}</p>
+                </div>
+                <div className="company-classification-fields">
+                  <label>
+                    <span>确认分类</span>
+                    <select
+                      aria-label={`确认分类 ${transaction.transaction_ref}`}
+                      value={draft.categoryCode}
+                      onChange={(event) => updateDraft(transaction.transaction_ref, {
+                        categoryCode: event.target.value as CompanyTransactionCategory | '',
+                      })}
+                    >
+                      <option value="">请选择</option>
+                      {CATEGORY_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>审批理由</span>
+                    <input
+                      aria-label={`审批理由 ${transaction.transaction_ref}`}
+                      value={draft.reason}
+                      maxLength={1000}
+                      placeholder="填写判断依据"
+                      onChange={(event) => updateDraft(transaction.transaction_ref, {
+                        reason: event.target.value,
+                      })}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={savingRef !== null || !draft.categoryCode || !draft.reason.trim()}
+                    onClick={() => void approve(transaction)}
+                  >
+                    {savingRef === transaction.transaction_ref ? '正在确认' : '确认本笔分类'}
+                  </button>
+                </div>
+              </article>
+            )
+          })}
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' }).format(new Date(value))
+}
+
+function formatMoney(amountMinor: number) {
+  return new Intl.NumberFormat('zh-CN', {
+    style: 'currency',
+    currency: 'CNY',
+    minimumFractionDigits: 2,
+  }).format(minorToMajor(Math.abs(amountMinor)))
+}
