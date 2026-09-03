@@ -253,7 +253,6 @@ export function PayrollWorkspacePage() {
 
       {!loading && !error && testWorkspace ? (
         <div className="payroll-command-center">
-          <PayrollHistorySummary key={testWorkspace.data.workspace_revision} workspace={testWorkspace} />
           {csrfToken ? (
             <PayrollLegacyWorkbench
               key={confirmedMaterials?.period ?? 'payroll-unconfirmed'}
@@ -262,6 +261,7 @@ export function PayrollWorkspacePage() {
               confirmedMaterials={confirmedMaterials}
             />
           ) : null}
+          <PayrollHistorySummary key={testWorkspace.data.workspace_revision} workspace={testWorkspace} />
         </div>
       ) : null}
 

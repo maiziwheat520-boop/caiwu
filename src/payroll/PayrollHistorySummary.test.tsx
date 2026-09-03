@@ -124,6 +124,8 @@ describe('PayrollHistorySummary', () => {
     const rows = screen.getByRole('table', { name: '各店当月工资汇总' })
     expect(within(rows).getByText('青居客')).toBeInTheDocument()
     expect(within(rows).getByText('同富')).toBeInTheDocument()
+    expect(within(rows).getByRole('columnheader', { name: '2026-06' })).toBeInTheDocument()
+    expect(within(rows).getByRole('columnheader', { name: '2026-07' })).toBeInTheDocument()
     expect(screen.getByText('七、八月工资素材保留在实验区，不参与这里的历史金额计算。')).toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('对账月份'), { target: { value: '2026-06' } })

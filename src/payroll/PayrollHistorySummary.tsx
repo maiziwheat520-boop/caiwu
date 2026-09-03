@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { Info, ShieldCheck } from '@phosphor-icons/react'
 
 import { api } from '../api'
@@ -72,6 +73,10 @@ export function PayrollHistorySummary({ workspace }: Props) {
   const selectedMonth = selectedSummary?.data.periods.find(
     (item) => item.period === selectedPeriod,
   ) ?? selectedSummary?.data.periods[0]
+  const comparisonPeriods = selectedSummary?.data.periods ?? []
+  const storeNames = Array.from(new Set(
+    comparisonPeriods.flatMap((period) => period.stores.map((store) => store.store_name)),
+  ))
 
   const selectSummary = (materialId: string) => {
     setSelectedMaterialId(materialId)
@@ -165,20 +170,33 @@ export function PayrollHistorySummary({ workspace }: Props) {
               总计行与各店相加不一致；本页保留显示总表“总计”行，需人工对账。
             </p>
           ) : null}
-          <div className="payroll-summary-store-table" role="table" aria-label="各店当月工资汇总">
+          <div
+            className="payroll-summary-store-table payroll-summary-comparison-table"
+            role="table"
+            aria-label="各店当月工资汇总"
+            style={{ '--payroll-period-count': comparisonPeriods.length } as CSSProperties}
+          >
             <div className="payroll-summary-store-row header" role="row">
               <span role="columnheader">门店</span>
-              <span role="columnheader">当月工资</span>
+              {comparisonPeriods.map((period) => (
+                <span role="columnheader" className={period.period === selectedMonth.period ? 'selected' : ''} key={period.period}>{period.period}</span>
+              ))}
             </div>
-            {selectedMonth.stores.map((store) => (
-              <div className="payroll-summary-store-row" role="row" key={store.store_name}>
-                <strong role="cell">{store.store_name}</strong>
-                <span role="cell">{formatMoney(store.net_pay_cents)}</span>
+            {storeNames.map((storeName) => (
+              <div className="payroll-summary-store-row" role="row" key={storeName}>
+                <strong role="cell">{storeName}</strong>
+                {comparisonPeriods.map((period) => (
+                  <span role="cell" className={period.period === selectedMonth.period ? 'selected' : ''} key={period.period}>
+                    {formatMoney(period.stores.find((store) => store.store_name === storeName)?.net_pay_cents ?? 0)}
+                  </span>
+                ))}
               </div>
             ))}
             <div className="payroll-summary-store-row total" role="row">
               <strong role="cell">总计</strong>
-              <strong role="cell">{formatMoney(selectedMonth.total_net_pay_cents)}</strong>
+              {comparisonPeriods.map((period) => (
+                <strong role="cell" className={period.period === selectedMonth.period ? 'selected' : ''} key={period.period}>{formatMoney(period.total_net_pay_cents)}</strong>
+              ))}
             </div>
           </div>
           <footer>
