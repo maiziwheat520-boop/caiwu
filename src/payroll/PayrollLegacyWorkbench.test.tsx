@@ -95,14 +95,14 @@ function mockRead(workspace = legacyWorkspace) {
 afterEach(() => vi.restoreAllMocks())
 
 describe('PayrollLegacyWorkbench', () => {
-  it('exposes four payroll tasks and keeps checks and supplements inside the workflow', async () => {
+  it('separates global payroll rules from employee payroll parameters', async () => {
     mockRead()
     render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
     await screen.findByText('工资工作区版本 1')
     const navigation = screen.getByRole('navigation', { name: '工资工作流程' })
-    expect(within(navigation).getAllByRole('button')).toHaveLength(4)
+    expect(within(navigation).getAllByRole('button')).toHaveLength(5)
     for (const name of ['生成当月工资', '查看代发表与发放表',
-      '复核本月已发并更新汇总', '管理工资规则']) {
+      '复核本月已发并更新汇总', '管理工资规则', '管理员工工资参数']) {
       expect(within(navigation).getByRole('button', { name })).toBeInTheDocument()
     }
     expect(within(navigation).queryByRole('button', { name: '生成补发代发表' })).not.toBeInTheDocument()
@@ -176,15 +176,29 @@ describe('PayrollLegacyWorkbench', () => {
     expect(screen.getByText('主楼 · 1 人')).toBeInTheDocument()
   })
 
-  it('manages independent rules even when no monthly payroll exists', async () => {
+  it('shows only global review rules in the payroll-rules task', async () => {
+    const rulesOnly = { ...legacyWorkspace, batches: [] }
+    mockRead(rulesOnly)
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
+    await screen.findByText('工资工作区版本 1')
+    fireEvent.click(screen.getByRole('button', { name: '管理工资规则' }))
+    expect(screen.getByRole('heading', { name: '全局工资规则' })).toBeInTheDocument()
+    expect(screen.getByText('发放渠道完整性')).toBeInTheDocument()
+    expect(screen.queryByRole('table', { name: '员工工资参数' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('示例员工甲固定工资')).not.toBeInTheDocument()
+  })
+
+  it('manages employee payroll parameters separately when no monthly payroll exists', async () => {
     const rulesOnly = { ...legacyWorkspace, batches: [] }
     mockRead(rulesOnly)
     vi.spyOn(api, 'runPayrollLegacyCommand').mockResolvedValue(commandResult('SAVE_RULES', rulesOnly))
     render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
     await screen.findByText('工资工作区版本 1')
-    fireEvent.click(screen.getByRole('button', { name: '管理工资规则' }))
+    fireEvent.click(screen.getByRole('button', { name: '管理员工工资参数' }))
+    expect(screen.getByRole('heading', { name: '员工工资参数' })).toBeInTheDocument()
+    expect(screen.queryByText('发放渠道完整性')).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('示例员工甲固定工资'), { target: { value: '5200.00' } })
-    fireEvent.click(screen.getByRole('button', { name: '保存全部工资规则' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存员工工资参数' }))
     await waitFor(() => expect(api.runPayrollLegacyCommand).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'SAVE_RULES', payload: expect.objectContaining({
         employee_rules: [expect.objectContaining({ employee_name: '示例员工甲',

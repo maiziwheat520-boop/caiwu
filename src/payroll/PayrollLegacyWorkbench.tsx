@@ -7,6 +7,7 @@ import {
   Receipt,
   SlidersHorizontal,
   Table,
+  UsersThree,
   Warning,
 } from '@phosphor-icons/react'
 
@@ -38,6 +39,7 @@ type TaskId =
   | 'normal'
   | 'verify'
   | 'rules'
+  | 'employees'
 
 type EditableRule = Omit<PayrollLegacyEmployeeRule, 'payment_channel'> & {
   payment_channel: '' | PayrollLegacyEmployeeRule['payment_channel']
@@ -63,10 +65,11 @@ const tasks: Array<{
   description: string
   icon: typeof Table
 }> = [
-  { id: 'generate', label: '生成当月工资', description: '用唯一确认素材、工资规则和上月待办生成工资表。', icon: Table },
+  { id: 'generate', label: '生成当月工资', description: '用员工工资参数、全局规则和上月待办生成工资表。', icon: Table },
   { id: 'normal', label: '查看代发表与发放表', description: '预览五家公司代发表及工资发放表。', icon: FileArrowDown },
   { id: 'verify', label: '复核本月已发并更新汇总', description: '先核对七份实际流水，全部匹配后更新汇总。', icon: Receipt },
-  { id: 'rules', label: '管理工资规则', description: '编辑固定待遇、渠道、工种、地点和可休天数。', icon: SlidersHorizontal },
+  { id: 'rules', label: '管理工资规则', description: '设置适用于全员的计算检查与复核条件。', icon: SlidersHorizontal },
+  { id: 'employees', label: '管理员工工资参数', description: '维护员工待遇、账户、渠道、工种和地点。', icon: UsersThree },
 ]
 
 const channels = ['MYBANK', 'BOC', 'WECHAT'] as const
@@ -303,7 +306,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
       rule.threshold_cents >= 0 &&
       (rule.rule_type === 'HISTORY_CHANGE_REVIEW' || rule.threshold_cents === 0)
     ))
-  const rulesComplete = reviewRulesComplete && rules.length > 0 && rules.every(
+  const employeeParametersComplete = rules.length > 0 && rules.every(
     (rule) => rule.employee_name.trim() && /^\*{4}(?:\d{4}|\?{4})$/.test(rule.account_masked) &&
       rule.disbursement_company.trim() && rule.payment_channel &&
       rule.job_group.trim() && rule.location.trim(),
@@ -408,7 +411,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
           <div className="payroll-legacy-toolbar">
             <div>
               <strong>{workspace ? `工资工作区版本 ${workspace.revision}` : '尚未建立工资规则'}</strong>
-              <span>{workspace ? `${workspace.rules.employees.length} 条独立员工规则 · ${workspace.batches.length} 个已生成账期` : '先管理工资规则，再确认素材生成工资'}</span>
+              <span>{workspace ? `${workspace.rules.employees.length} 名员工 · ${reviewRules.length} 条工资规则 · ${workspace.batches.length} 个已生成账期` : '先维护员工工资参数与全局规则，再确认素材生成工资'}</span>
             </div>
             {workspace && workspace.batches.length > 0 ? (
               <label>
@@ -427,7 +430,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
             <div className="payroll-task-panel">
               <div className="payroll-task-heading">
                 <div><span>01</span><h3>生成当月工资</h3></div>
-                <p>不再导入外部工资表；以独立工资规则、下方唯一确认的三类素材和上月待办生成当月工资。</p>
+                <p>不再导入外部工资表；以员工工资参数、全局规则、下方唯一确认的三类素材和上月待办生成当月工资。</p>
               </div>
               <div className="payroll-source-form">
                 <label>
@@ -469,26 +472,10 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
 
           {task === 'rules' && !loadFailed ? (
             <div className="payroll-task-panel">
-              <div className="payroll-task-heading"><div><span>07</span><h3>工资计算与审查规则</h3></div><p>规则保存后刷新仍会保留；停用或删除的审查规则不会参与下一次检查。</p></div>
-              {rules.length === 0 ? (
-                <section className="payroll-rule-import" aria-labelledby="payroll-rule-import-heading">
-                  <div>
-                    <strong id="payroll-rule-import-heading">启用七月工资规则基线</strong>
-                    <span>七月规则已经内置在系统中。启用后入口自动关闭，往后只在本网页保存和修改，不再读取或依赖 Excel 工资表。</span>
-                  </div>
-                  <button type="button" className="primary" disabled={busy} onClick={initializeRules}>
-                    {busy ? '正在启用' : '启用内置规则'}
-                  </button>
-                </section>
-              ) : (
-                <div className="payroll-rule-baseline-status">
-                  <strong>七月规则基线已建立</strong>
-                  <span>当前规则以网页保存内容为准；Excel 导入入口已关闭。</span>
-                </div>
-              )}
+              <div className="payroll-task-heading"><div><span>规则</span><h3>全局工资规则</h3></div><p>这里只管理适用于全员的检查与复核条件，不包含员工姓名、工资和账户信息。</p></div>
               <section className="payroll-review-rules" aria-labelledby="payroll-review-rules-heading">
                 <div className="payroll-review-rules-heading">
-                  <div><strong id="payroll-review-rules-heading">审查规则管理</strong><span>控制“检查规则与历史”实际执行的项目。</span></div>
+                  <div><strong id="payroll-review-rules-heading">工资规则</strong><span>控制生成工资时执行的全局检查项目。</span></div>
                   <button type="button" className="secondary" disabled={!addableReviewRule || busy} onClick={addReviewRule}>新增审查规则</button>
                 </div>
                 {reviewRules.length ? reviewRules.map((rule) => {
@@ -524,8 +511,31 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
                   )
                 }) : <p className="payroll-empty-task">当前没有审查规则；可新增需要的检查项目。</p>}
               </section>
-              <div className="payroll-rule-section-title"><strong>员工工资计算规则</strong><span>规则独立长期保存，只影响以后生成的工资，不改已生成历史。</span><button type="button" className="secondary" onClick={addEmployeeRule}>新增员工规则</button></div>
-              <div className="payroll-rule-table" role="table" aria-label="工资规则">
+              <button type="button" className="primary" disabled={!reviewRulesComplete || busy} onClick={saveRules}>保存工资规则</button>
+            </div>
+          ) : null}
+
+          {task === 'employees' && !loadFailed ? (
+            <div className="payroll-task-panel">
+              <div className="payroll-task-heading"><div><span>员工</span><h3>员工工资参数</h3></div><p>维护员工个人的固定待遇、发放信息和岗位归属；这些资料不是全局工资规则。</p></div>
+              {rules.length === 0 ? (
+                <section className="payroll-rule-import" aria-labelledby="payroll-rule-import-heading">
+                  <div>
+                    <strong id="payroll-rule-import-heading">启用七月员工工资参数基线</strong>
+                    <span>七月员工参数已经内置在系统中。启用后只在本网页保存和修改，不再读取或依赖 Excel 工资表。</span>
+                  </div>
+                  <button type="button" className="primary" disabled={busy} onClick={initializeRules}>
+                    {busy ? '正在启用' : '启用内置员工参数'}
+                  </button>
+                </section>
+              ) : (
+                <div className="payroll-rule-baseline-status">
+                  <strong>七月员工工资参数基线已建立</strong>
+                  <span>当前员工资料以网页保存内容为准；Excel 导入入口已关闭。</span>
+                </div>
+              )}
+              <div className="payroll-rule-section-title"><strong>员工工资参数</strong><span>长期保存，只影响以后生成的工资，不改已生成历史。</span><button type="button" className="secondary" onClick={addEmployeeRule}>新增员工</button></div>
+              <div className="payroll-rule-table" role="table" aria-label="员工工资参数">
                 <div className="payroll-rule-row header" role="row">
                   <span>员工</span><span>账户尾号</span><span>代发公司</span><span>固定工资</span><span>固定津贴</span><span>固定增减</span><span>渠道</span><span>类型</span><span>夜班标准</span><span>可休天数</span><span>工种</span><span>地点</span><span>操作</span>
                 </div>
@@ -547,8 +557,8 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
                   </div>
                 ))}
               </div>
-              <div className="payroll-main-total"><span>当前规则固定工资合计</span><strong>{money(rules.reduce((sum, rule) => sum + rule.fixed_base_salary_cents + rule.fixed_allowance_cents + (rule.fixed_adjustment_cents ?? 0), 0))}</strong></div>
-              <button type="button" className="primary" disabled={!rulesComplete || busy} onClick={saveRules}>保存全部工资规则</button>
+              <div className="payroll-main-total"><span>当前员工固定待遇合计</span><strong>{money(rules.reduce((sum, rule) => sum + rule.fixed_base_salary_cents + rule.fixed_allowance_cents + (rule.fixed_adjustment_cents ?? 0), 0))}</strong></div>
+              <button type="button" className="primary" disabled={!employeeParametersComplete || !reviewRulesComplete || busy} onClick={saveRules}>保存员工工资参数</button>
             </div>
           ) : null}
 
@@ -619,7 +629,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
             </div>
           ) : null}
 
-          {!activeBatch && !new Set<TaskId>(['generate', 'rules']).has(task) ? (
+          {!activeBatch && !new Set<TaskId>(['generate', 'rules', 'employees']).has(task) ? (
             <div className="payroll-empty-task">请先用“生成当月工资”建立一个工资账期。</div>
           ) : null}
 
