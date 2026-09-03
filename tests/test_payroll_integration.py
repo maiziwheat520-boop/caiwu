@@ -214,6 +214,24 @@ def _refresh_publication_integrity(publication: dict[str, object]) -> None:
     proof["events_sha256"] = event_digest
 
 
+def _replace_publication_account_id(publication: dict[str, object], account_id: str) -> None:
+    batch = cast(dict[str, object], publication["payroll_batch"])
+    batch_line = cast(list[dict[str, object]], batch["lines"])[0]
+    batch_line["account_id"] = account_id
+
+    verification = cast(list[dict[str, object]], publication["verification_results"])[0]
+    verification_result = cast(list[dict[str, object]], verification["results"])[0]
+    verification_result["account_id"] = account_id
+
+    audit_events = cast(list[dict[str, object]], publication["audit_events"])
+    for event in audit_events:
+        if event.get("action") == "payroll.version_approved_locked":
+            data = cast(dict[str, object], event["data"])
+            data["locked_batch_sha256"] = hashlib.sha256(_stable_json(batch).encode()).hexdigest()
+    publication["audit_events"] = _rehash_audit_events(audit_events)
+    _refresh_publication_integrity(publication)
+
+
 class _Transport:
     def __init__(self, publication: dict[str, object]) -> None:
         self.publication = publication
@@ -396,9 +414,7 @@ def test_source_never_guesses_or_reencodes_employee_and_account_ids(
 
 def test_source_accepts_opaque_account_digest_with_scattered_digits() -> None:
     publication = _publication()
-    batch = cast(dict[str, object], publication["payroll_batch"])
-    line = cast(list[dict[str, object]], batch["lines"])[0]
-    line["account_id"] = "account_9f99f99999f99999f9f99f99"
+    _replace_publication_account_id(publication, "account_9f99f99999f99999f9f99f99")
     source, _ = _source(publication)
 
     result = _pull(source, publication)
@@ -410,9 +426,7 @@ def test_source_accepts_opaque_account_digest_with_scattered_digits() -> None:
 
 def test_source_accepts_opaque_account_digest_with_contiguous_digits() -> None:
     publication = _publication()
-    batch = cast(dict[str, object], publication["payroll_batch"])
-    line = cast(list[dict[str, object]], batch["lines"])[0]
-    line["account_id"] = "account_123456789012abcdefabcdef"
+    _replace_publication_account_id(publication, "account_123456789012abcdefabcdef")
     source, _ = _source(publication)
 
     result = _pull(source, publication)

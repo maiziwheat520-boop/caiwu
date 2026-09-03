@@ -639,9 +639,7 @@ def test_legacy_feature_workspace_accepts_independent_rules_before_a_monthly_bat
 
 def test_legacy_feature_workspace_accepts_opaque_account_digest():
     payload = legacy_workspace_payload()
-    payload["rules"]["employees"][0]["account_id"] = (
-        "account_9f99f99999f99999f9f99f99"
-    )
+    payload["batches"][0]["lines"][0]["account_id"] = "account_9f99f99999f99999f9f99f99"
     entity, adapter = source(payload)
 
     read = adapter.read_legacy_features(
@@ -650,9 +648,7 @@ def test_legacy_feature_workspace_accepts_opaque_account_digest():
         provider_headers={},
     )
 
-    assert read.payload_copy()["rules"]["employees"][0]["account_id"].startswith(
-        "account_"
-    )
+    assert read.payload_copy()["batches"][0]["lines"][0]["account_id"].startswith("account_")
 
 
 def test_legacy_feature_workspace_accepts_generated_monthly_payroll_without_main_material():

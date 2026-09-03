@@ -4129,10 +4129,14 @@ def _validate_publishable_string(value: str, *, parent_key: str) -> None:
     except UnicodeEncodeError:
         _invalid_response("payroll publication contains invalid Unicode text")
     normalized = re.sub(r"[^a-z0-9]", "", parent_key.lower())
+    is_opaque_account_id = (
+        normalized == "accountid" and _OPAQUE_ACCOUNT_ID.fullmatch(value) is not None
+    )
     if (
         normalized not in _SENSITIVE_VALUE_SKIP_FIELDS
         and not normalized.endswith("hash")
         and not normalized.endswith("sha256")
+        and not is_opaque_account_id
         and (
             _ACCOUNT_LIKE_NUMBER.search(value) is not None or _LOCAL_PATH.search(value) is not None
         )
