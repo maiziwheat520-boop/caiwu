@@ -32,6 +32,7 @@ from scripts.backup_restore import (
     BANK_STATEMENT_TRIGGER_CONTRACT,
     CASH_RECONCILIATION_FUNCTION_KEYS,
     CASH_RECONCILIATION_TRIGGER_NAMES,
+    CASH_RECONCILIATION_V2_FUNCTION_KEYS,
     CLASSIFICATION_BATCH_CONSTRAINT_DEFINITION_MARKERS,
     CLASSIFICATION_BATCH_CONSTRAINT_TABLES,
     CLASSIFICATION_BATCH_FUNCTION_EXECUTORS,
@@ -824,6 +825,8 @@ def _bank_statement_database_metadata() -> dict[str, object]:
     metadata["alembic_version"] = "20260830_0021"
     function_signatures = dict(BANK_STATEMENT_FUNCTION_SIGNATURES)
     for function_key in CASH_RECONCILIATION_FUNCTION_KEYS:
+        function_signatures.pop(function_key)
+    for function_key in CASH_RECONCILIATION_V2_FUNCTION_KEYS:
         function_signatures.pop(function_key)
     trigger_contract = dict(BANK_STATEMENT_TRIGGER_CONTRACT)
     for trigger_name in CASH_RECONCILIATION_TRIGGER_NAMES:
