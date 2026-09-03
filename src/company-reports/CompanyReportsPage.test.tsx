@@ -201,6 +201,64 @@ describe('CompanyReportsPage', () => {
     expect(within(nonOperating).getByText('流出 ¥2,000.00')).toBeInTheDocument()
   })
 
+  it('nets operating refunds within income and expense categories', async () => {
+    const response = structuredClone(reports)
+    response.contract_version = 'ledgerbridge.company-reports-bff.v3'
+    response.transaction_classifications = {
+      contract_version: 'ledgerbridge.company-transaction-classification-summary.v1',
+      items: [{
+        entity_ref: response.layers[0].items[0].company_ref,
+        company_name: response.layers[0].items[0].company_name,
+        from_date: '2026-05-01',
+        to_date_exclusive: '2026-06-01',
+        confirmed_count: 4,
+        pending_count: 0,
+        confirmed_gross_minor: 280000,
+        categories: [
+          {
+            category_code: 'RENTAL_INCOME',
+            cashflow_role: 'OPERATING_INCOME',
+            transaction_count: 2,
+            inflow_minor: 150000,
+            outflow_minor: 10000,
+            net_minor: 140000,
+            gross_minor: 160000,
+            transaction_share_ppm: 500000,
+            gross_share_ppm: 571429,
+          },
+          {
+            category_code: 'PAYROLL',
+            cashflow_role: 'OPERATING_EXPENSE',
+            transaction_count: 2,
+            inflow_minor: 20000,
+            outflow_minor: 100000,
+            net_minor: -80000,
+            gross_minor: 120000,
+            transaction_share_ppm: 500000,
+            gross_share_ppm: 428571,
+          },
+        ],
+      }],
+    }
+    vi.spyOn(api, 'getCompanyReports').mockResolvedValue(response)
+
+    render(<CompanyReportsPage csrfToken="csrf-test" />)
+
+    await screen.findByRole('region', {
+      name: 'LedgerBridge controlled reconciliation 财务汇总',
+    })
+    fireEvent.click(screen.getByRole('button', { name: '正式银行流水' }))
+    const dashboard = screen.getByRole('region', {
+      name: 'LedgerBridge controlled reconciliation 财务汇总',
+    })
+    expect(within(within(dashboard).getByText('经营流入').parentElement!).getByText('¥1,400.00'))
+      .toBeInTheDocument()
+    expect(within(within(dashboard).getByText('经营流出').parentElement!).getByText('¥800.00'))
+      .toBeInTheDocument()
+    expect(within(within(dashboard).getByText('经营净现金流').parentElement!).getByText('¥600.00'))
+      .toBeInTheDocument()
+  })
+
   it('switches companies and requests an applied month range', async () => {
     const response = structuredClone(reports)
     response.layers[0].items[0].company_name = '薇旭公司'
