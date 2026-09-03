@@ -708,17 +708,29 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
 .original-month-input { min-height: 32px; padding: 0 10px; border: 1px solid #cfd8e6; border-radius: 7px; color: #324760; background: white; font: inherit; font-size: 12px; }
 .original-month-input:focus-visible { outline: 2px solid #4b82d6; outline-offset: 2px; }
 .scope-chip { max-width: 320px; overflow: hidden; padding: 6px 9px; border: 1px solid #d6e0ee; border-radius: 8px; color: #536985; background: #f7f9fc; font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.statement-source-notice { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; padding: 13px 15px; border: 1px solid #d6e2f1; border-radius: 11px; color: #315981; background: #f5f9fe; }
+.statement-source-notice { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 10px 14px; border: 1px solid #dce5f0; border-radius: 10px; color: #315981; background: #f8fafd; }
 .statement-source-notice > svg { flex: 0 0 auto; }
 .statement-source-notice strong, .statement-source-notice span { display: block; }
 .statement-source-notice strong { color: #294b70; font-size: 12px; }
 .statement-source-notice span { margin-top: 3px; color: #62748a; font-size: 10px; }
+.reconciliation-overview { display: grid; grid-template-columns: minmax(210px, .8fr) minmax(0, 2.2fr); overflow: hidden; margin-bottom: 14px; border: 1px solid #dce3ec; border-radius: 12px; background: white; box-shadow: 0 8px 24px rgb(44 62 86 / 5%); }
+.reconciliation-overview-status { display: grid; align-content: center; min-height: 116px; padding: 20px 22px; border-right: 1px solid #e2e7ee; background: #f7f9fc; }
+.reconciliation-overview-status span { color: #6b7a8d; font-size: 10px; font-weight: 700; }
+.reconciliation-overview-status strong { margin-top: 8px; color: #213957; font-size: 20px; letter-spacing: -.02em; }
+.reconciliation-overview-status small { margin-top: 7px; color: #718096; font-size: 10px; }
+.reconciliation-overview-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; }
+.reconciliation-overview-metrics > div { display: grid; align-content: center; min-width: 0; padding: 18px; border-right: 1px solid #edf0f4; }
+.reconciliation-overview-metrics > div:last-child { border-right: 0; }
+.reconciliation-overview-metrics dt { color: #6c7b8e; font-size: 10px; font-weight: 700; }
+.reconciliation-overview-metrics dd { margin: 7px 0 0; color: #263c57; font-size: 24px; font-weight: 780; font-variant-numeric: tabular-nums; line-height: 1; }
+.reconciliation-overview-metrics small { margin-top: 7px; color: #8a96a6; font-size: 9px; }
+.reconciliation-overview-metrics .is-critical dd { color: #a0434c; }
 .statement-workbench { overflow: hidden; margin-bottom: 20px; }
 .statement-workbench-heading { align-items: center; }
-.statement-flow-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 0 18px; padding: 6px; border: 1px solid #dbe3ee; border-radius: 12px; background: #f3f6fa; }
-.statement-flow-tabs button { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-width: 0; min-height: 72px; padding: 12px; border: 1px solid transparent; border-radius: 8px; color: #5c6d83; background: transparent; text-align: left; cursor: pointer; }
-.statement-flow-tabs button:hover { background: rgb(255 255 255 / 72%); }
-.statement-flow-tabs button.active { border-color: #cbd9eb; color: #244b7a; background: white; box-shadow: 0 5px 16px rgb(35 57 86 / 7%); }
+.statement-flow-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0 18px; overflow: hidden; border: 1px solid #dbe3ee; border-radius: 10px; background: #dfe6ee; }
+.statement-flow-tabs button { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-width: 0; min-height: 72px; padding: 12px; border: 0; border-radius: 0; color: #5c6d83; background: #f5f7fa; text-align: left; cursor: pointer; }
+.statement-flow-tabs button:hover { background: #fafbfd; }
+.statement-flow-tabs button.active { color: #244b7a; background: white; box-shadow: inset 0 -3px 0 #4b78af; }
 .statement-flow-tabs button:focus-visible, .unclassified-alert button:focus-visible { outline: 2px solid #4b82d6; outline-offset: 2px; }
 .statement-flow-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 8px; color: #496988; background: #e8eef5; }
 .statement-flow-tabs .income .statement-flow-icon { color: #2d7657; background: #e9f5ef; }
@@ -741,7 +753,7 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
 .statement-flow-panel-heading h3 { margin: 0; color: #243852; font-size: 14px; }
 .statement-flow-panel-heading p { margin: 4px 0 0; color: var(--muted); font-size: 10px; }
 .statement-item-list { padding: 0 18px 18px; }
-.statement-item { display: grid; grid-template-columns: 94px minmax(210px, 1.6fr) minmax(130px, .7fr) 110px auto; align-items: center; gap: 14px; min-height: 78px; padding: 13px 12px; border-bottom: 1px solid #e8edf3; }
+.statement-item { display: grid; grid-template-columns: 94px minmax(210px, 1.6fr) minmax(130px, .7fr) minmax(150px, auto); align-items: center; gap: 14px; min-height: 72px; padding: 11px 12px; border-bottom: 1px solid #e8edf3; }
 .statement-item:last-child { border-bottom: 0; }
 .statement-item:hover { background: #fbfcfe; }
 .statement-item-status { display: grid; justify-items: start; gap: 6px; }
@@ -765,15 +777,24 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
 .projection-state-alert strong { color: #584725; font-size: 11px; }
 .projection-state-alert span { margin-top: 3px; color: #796d55; font-size: 9px; }
 .reconciliation-issues { margin-bottom: 20px; }
-.reconciliation-issue-list { display: grid; gap: 8px; padding: 0 18px 16px; }
-.reconciliation-issue-list article { display: grid; grid-template-columns: minmax(150px, .9fr) minmax(190px, 1fr) auto; align-items: center; gap: 14px; padding: 11px 12px; border: 1px solid #f0dfb8; border-radius: 9px; background: #fffbf2; }
+.reconciliation-issue-list { display: grid; padding: 0 18px 12px; }
+.reconciliation-issue-list article { display: grid; grid-template-columns: minmax(150px, .9fr) minmax(190px, 1fr) auto; align-items: center; gap: 14px; padding: 11px 12px; border-bottom: 1px solid #eadfca; background: #fffcf6; }
+.reconciliation-issue-list article:first-child { border-radius: 9px 9px 0 0; }
+.reconciliation-issue-list article:last-child { border-bottom: 0; border-radius: 0 0 9px 9px; }
 .reconciliation-issue-list article.conflict { border-color: #f0c6ca; background: #fff5f6; }
 .reconciliation-issue-list article > div { display: flex; align-items: center; gap: 9px; }
 .reconciliation-issue-list article > span, .reconciliation-issue-list article > small { color: var(--muted); font-size: 10px; }
 .reconciliation-issue-list article > strong { color: #263b57; font-size: 12px; text-align: right; }
 .reconciliation-issue-list article > small { grid-column: 1 / -1; }
 .reconciliation-issues > button { margin: 0 18px 18px; }
+.reconciliation-issues > .reconciliation-issues-toggle { margin-bottom: 10px; }
 .statement-source-registry { overflow: hidden; margin-bottom: 20px; }
+.statement-source-registry-summary { cursor: pointer; list-style: none; user-select: none; }
+.statement-source-registry-summary::-webkit-details-marker { display: none; }
+.statement-source-registry-summary::after { content: '+'; display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid #d7dfe9; border-radius: 7px; color: #5f7085; font-size: 17px; font-weight: 400; }
+.statement-source-registry[open] .statement-source-registry-summary::after { content: '−'; }
+.statement-source-registry-summary-meta { margin-left: auto; color: #61738a; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.statement-source-registry-body { border-top: 1px solid #e7ecf2; }
 .statement-source-registry-list { padding: 0 18px 16px; }
 .statement-source-registry-labels, .statement-source-registry-list article { display: grid; grid-template-columns: minmax(90px, .45fr) minmax(150px, .8fr) minmax(180px, 1fr); align-items: center; gap: 18px; }
 .statement-source-registry-labels { padding: 0 12px 8px; color: var(--muted); font-size: 9px; }
@@ -824,6 +845,10 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .personal-insight-grid { grid-template-columns: 1fr; }
   .statement-item { grid-template-columns: 88px minmax(190px, 1fr) 105px auto; }
   .statement-item-context { grid-column: 2 / 3; grid-row: 2; margin-top: -10px; }
+  .reconciliation-overview { grid-template-columns: 210px minmax(0, 1fr); }
+  .reconciliation-overview-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .reconciliation-overview-metrics > div:nth-child(2) { border-right: 0; }
+  .reconciliation-overview-metrics > div:nth-child(-n + 2) { border-bottom: 1px solid #edf0f4; }
 }
 
 @media (max-width: 800px) {
@@ -853,6 +878,10 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .page-action { align-self: flex-end; }
   .statement-flow-tabs { grid-template-columns: 1fr; }
   .statement-flow-tabs button { min-height: 62px; }
+  .reconciliation-overview { grid-template-columns: 1fr; }
+  .reconciliation-overview-status { min-height: auto; border-right: 0; border-bottom: 1px solid #e2e7ee; }
+  .reconciliation-overview-metrics > div { padding: 14px 16px; }
+  .reconciliation-overview-metrics dd { font-size: 21px; }
   .statement-item { grid-template-columns: minmax(0, 1fr) auto; gap: 10px 14px; padding: 14px 8px; }
   .statement-item-status { grid-column: 1; grid-row: 1; display: flex; align-items: center; }
   .statement-item-main { grid-column: 1 / 3; grid-row: 2; }
@@ -939,6 +968,9 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .page-action button { width: 100%; }
   .original-reconciliation-filters { justify-items: stretch; }
   .scope-chip { max-width: 100%; }
+  .reconciliation-overview-metrics { grid-template-columns: 1fr 1fr; }
+  .reconciliation-overview-status { padding: 16px; }
+  .reconciliation-overview-status strong { font-size: 18px; }
   .statement-source-notice { align-items: flex-start; }
   .statement-workbench-heading { align-items: stretch; flex-direction: column; }
   .statement-workbench-heading button { width: 100%; }
@@ -953,6 +985,8 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .reconciliation-issue-list article > div { grid-column: 1 / -1; }
   .reconciliation-issue-list article > small { grid-column: 1 / -1; }
   .statement-source-registry-list { padding-inline: 13px; overflow-x: auto; }
+  .statement-source-registry-summary { align-items: flex-start; }
+  .statement-source-registry-summary-meta { display: none; }
   .statement-source-registry-labels, .statement-source-registry-list article { min-width: 520px; }
   .current-account-registry-note { grid-template-columns: 24px minmax(0, 1fr); }
   .current-account-registry-note > :last-child { grid-column: 2; justify-self: start; }

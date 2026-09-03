@@ -47,6 +47,9 @@ describe('OriginalReconciliationPage', () => {
     render(<OriginalReconciliationPage onNavigate={vi.fn()} />)
 
     expect(await screen.findByText('4 笔流水唯一命中旧表项目规则')).toBeInTheDocument()
+    const overview = screen.getByRole('region', { name: '本月对账概览' })
+    expect(within(overview).getByText('存在规则冲突')).toBeInTheDocument()
+    expect(within(overview).getByText('4 / 6 笔已进入对账项目')).toBeInTheDocument()
     const lanes = screen.getByRole('tablist', { name: '业务性质' })
     expect(within(lanes).getByRole('tab', { name: /收入/ })).toHaveTextContent('¥120.00')
     expect(within(lanes).getByRole('tab', { name: /支出/ })).toHaveTextContent('¥30.00')
@@ -72,7 +75,9 @@ describe('OriginalReconciliationPage', () => {
     render(<OriginalReconciliationPage onNavigate={vi.fn()} />)
 
     const registry = await screen.findByRole('region', { name: '旧表项目取数来源' })
-    expect(await within(registry).findByText('收入 1 · 支出 1')).toBeInTheDocument()
+    expect(within(registry).getByText((_content, element) => (
+      element?.classList.contains('statement-source-registry-summary-meta') ?? false
+    ))).toHaveTextContent(/收入 1 条 · 支出 1 条/)
     expect(within(registry).getByText(/银行 · bank\.hotel-a · CREDIT/)).toBeInTheDocument()
     expect(within(registry).getByText(/匹配：synthetic-income/)).toBeInTheDocument()
     expect(within(registry).getByText(/微信 · wechat\.synthetic · ANY/)).toBeInTheDocument()
