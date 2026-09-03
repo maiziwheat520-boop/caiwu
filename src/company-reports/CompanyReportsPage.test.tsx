@@ -128,7 +128,7 @@ describe('CompanyReportsPage', () => {
     expect(within(dashboard).getByText('¥6,160,215.31')).toBeInTheDocument()
     expect(within(dashboard).getByText('¥5,930,787.86')).toBeInTheDocument()
     expect(within(dashboard).getByText('¥229,427.45')).toBeInTheDocument()
-    expect(within(dashboard).getAllByText('账户流水尚未完成收支类型分类，当前仅展示现金流总额。')).toHaveLength(2)
+    expect(within(dashboard).getAllByText('账户流水尚未完成分类。')).toHaveLength(2)
     const statementSummary = screen.getByRole('region', {
       name: 'LedgerBridge controlled reconciliation 账户流水汇总',
     })
@@ -292,17 +292,13 @@ describe('CompanyReportsPage', () => {
 
     render(<CompanyReportsPage csrfToken="csrf-test" />)
     await screen.findByRole('region', { name: '薇旭公司 财务汇总' })
-    fireEvent.change(screen.getByRole('combobox', { name: '选择公司' }), {
-      target: { value: secondReport.company_ref },
-    })
+    fireEvent.click(screen.getByRole('tab', { name: '景怡公司' }))
 
     const dashboard = screen.getByRole('region', { name: '景怡公司 财务汇总' })
     expect(within(dashboard).getAllByText('¥220.00')).toHaveLength(2)
     expect(within(dashboard).getByText('未分类')).toBeInTheDocument()
 
-    fireEvent.change(screen.getByRole('combobox', { name: '选择公司' }), {
-      target: { value: '__all_companies__' },
-    })
+    fireEvent.click(screen.getByRole('tab', { name: '全部公司' }))
     const allCompaniesDashboard = screen.getByRole('region', { name: '全部公司 财务汇总' })
     expect(within(allCompaniesDashboard).getByRole('heading', { name: '全部公司汇总' })).toBeInTheDocument()
     expect(within(allCompaniesDashboard).getByText('2 家公司合并展示')).toBeInTheDocument()
@@ -339,13 +335,11 @@ describe('CompanyReportsPage', () => {
 
     render(<CompanyReportsPage csrfToken="csrf-test" />)
 
-    const selector = await screen.findByRole('combobox', { name: '选择公司' })
-    expect(within(selector).getAllByRole('option')).toHaveLength(6)
-    expect(within(selector).getByRole('option', { name: '全部公司' })).toBeInTheDocument()
-    expect(within(selector).getByRole('option', { name: '公司五' })).toBeInTheDocument()
-    fireEvent.change(selector, {
-      target: { value: '50000000-0000-4000-8000-000000000005' },
-    })
+    const companyTabs = await screen.findByRole('tablist', { name: '选择公司' })
+    expect(within(companyTabs).getAllByRole('tab')).toHaveLength(6)
+    expect(within(companyTabs).getByRole('tab', { name: '全部公司' })).toBeInTheDocument()
+    expect(within(companyTabs).getByRole('tab', { name: '公司五' })).toBeInTheDocument()
+    fireEvent.click(within(companyTabs).getByRole('tab', { name: '公司五' }))
     expect(screen.getByRole('region', { name: '公司五 财务汇总' })).toBeInTheDocument()
     expect(getReports).toHaveBeenCalledTimes(1)
     expect(getReports).toHaveBeenCalledWith({})

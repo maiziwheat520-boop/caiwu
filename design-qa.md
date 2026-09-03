@@ -43,3 +43,15 @@
 - [ ] Capture the rendered authenticated state and compare it with the selected concept.
 
 final result: blocked
+
+---
+
+# Design QA: Company operating dashboard redesign
+
+- Reference: `C:\Users\87614\.codex\generated_images\01a066b7-34ec-7be2-a463-48ae37b72cc0\exec-d4ca7ddc-61bf-45f0-af56-155d75fdd3e4.png`
+- Implemented screen: `src/company-reports/CompanyReportsPage.tsx`
+- Automated checks: 107 tests passed; ESLint passed; TypeScript and production build passed.
+- Source review: company tabs, compact summary band, monthly cash-flow table, composition rail, non-operating separation, responsive layout, and collapsed deep-detail section are present.
+- Visual comparison: blocked. Workspace policy prohibits the agent from controlling a browser or desktop UI, so no implementation screenshot may be captured here. Final visual comparison requires a user-provided production screenshot after deployment.
+
+final result: blocked

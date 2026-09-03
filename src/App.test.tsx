@@ -2570,9 +2570,7 @@ describe('LedgerBridge Web API client', () => {
     renderApp()
 
     expect(await screen.findByRole('region', { name: '薇旭公司 财务汇总' })).toBeInTheDocument()
-    fireEvent.change(screen.getByRole('combobox', { name: '选择公司' }), {
-      target: { value: '20000000-0000-4000-8000-000000000002' },
-    })
+    fireEvent.click(screen.getByRole('tab', { name: '景怡公司' }))
     expect(screen.getByRole('region', { name: '景怡公司 财务汇总' })).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: '薇旭公司 财务汇总' })).not.toBeInTheDocument()
     expect(screen.queryByText('待完成公司归属')).not.toBeInTheDocument()

@@ -692,6 +692,87 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
 .company-month-totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 12px 17px; border-bottom: 1px solid #edf0f4; color: #6a7890; font-size: 10px; }
 .company-month-totals span, .company-month-totals strong { display: block; }
 .company-month-totals strong { margin-top: 4px; color: #34465f; font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* Company reports · operating dashboard */
+.company-report-toolbar { display: grid; grid-template-columns: 1fr; gap: 12px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.company-report-tabs { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 1px; border-bottom: 1px solid #dfe6ee; scrollbar-width: thin; }
+.company-report-tabs button { min-height: 38px; padding: 0 16px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: #6b7c91; background: transparent; white-space: nowrap; }
+.company-report-tabs button:hover { border-color: transparent; color: #264c77; background: #f3f6f9; }
+.company-report-tabs button.active { border-bottom-color: #2d639f; color: #183d68; background: #f2f6fb; }
+.company-report-range { display: flex; align-items: end; gap: 9px; padding: 10px 12px; border: 1px solid #dde5ee; border-radius: 10px; background: #fff; }
+.company-report-range > svg { align-self: center; color: #68809b; }
+.company-report-range label { display: flex; align-items: center; gap: 7px; }
+.company-report-range label > span { white-space: nowrap; }
+.company-report-range input { width: 142px; }
+.company-range-separator { align-self: center; color: #8a98aa; font-size: 10px; }
+.company-report-range .secondary-button { margin-left: auto; }
+.company-financial-dashboard { border-radius: 12px; box-shadow: 0 8px 24px rgb(28 50 75 / 6%); }
+.company-dashboard-header { align-items: center; padding: 18px 20px 14px; }
+.company-dashboard-header h2 { font-size: 20px; }
+.company-dashboard-actions { display: flex; align-items: center; gap: 12px; }
+.company-data-status { display: inline-flex; align-items: center; gap: 5px; color: #26714e; font-size: 10px; font-weight: 750; white-space: nowrap; }
+.company-dashboard-totals { background: #e4e9ef; }
+.company-dashboard-totals > div { padding: 16px 20px; background: #fff; }
+.company-dashboard-totals > div.emphasis { border-left: 3px solid #2e639d; background: #f5f8fc; }
+.company-dashboard-totals strong { font-size: 21px; }
+.company-dashboard-basis-description { display: flex; align-items: center; gap: 7px; margin: 0; padding: 9px 20px; border-top: 1px solid #edf0f4; border-bottom: 1px solid #e6ebf1; color: #6f7f92; background: #fafbfd; font-size: 9px; }
+.company-classification-coverage { margin: 0; padding: 9px 20px; border-bottom: 1px solid #e6ebf1; color: #48657f; background: #f4f8fb; font-size: 10px; }
+.company-dashboard-body { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(290px, .8fr); min-height: 390px; }
+.company-monthly-overview { min-width: 0; padding: 18px 20px 20px; border-right: 1px solid #e4e9ef; }
+.company-monthly-overview > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.company-monthly-overview h3 { margin: 0; color: #243b57; font-size: 14px; }
+.company-monthly-overview header span { display: block; margin-top: 4px; color: #8794a5; font-size: 9px; }
+.company-monthly-overview header > strong { color: #687b91; font-size: 10px; font-weight: 650; }
+.company-monthly-table { overflow: hidden; border-top: 1px solid #dfe6ee; }
+.company-monthly-table-head, .company-monthly-table-row { display: grid; grid-template-columns: minmax(105px, .75fr) repeat(3, minmax(120px, 1fr)); align-items: center; gap: 14px; }
+.company-monthly-table-head { padding: 9px 8px; color: #8290a3; background: #f7f9fb; font-size: 9px; font-weight: 750; }
+.company-monthly-table-row { min-height: 54px; padding: 8px; border-top: 1px solid #edf0f4; color: #40536b; font-size: 10px; font-variant-numeric: tabular-nums; }
+.company-monthly-table-row > strong:first-child { color: #2c405a; font-size: 11px; }
+.company-monthly-table-row > strong:last-child { justify-self: end; }
+.company-monthly-table-row > strong.positive { color: #236b4c; }
+.company-monthly-table-row > strong.negative { color: #a04c45; }
+.company-flow-value { position: relative; display: block; padding-bottom: 7px; text-align: right; }
+.company-flow-value i { position: absolute; bottom: 0; left: 0; display: block; height: 3px; border-radius: 2px; background: #4e82b8; }
+.company-flow-value.expense i { background: #d19a43; }
+.company-monthly-empty { margin: 60px 0; color: #7b899b; font-size: 10px; text-align: center; }
+.company-dashboard-rail { display: grid; align-content: start; gap: 0; background: #fbfcfd; }
+.company-dashboard-rail .company-category-card { padding: 16px 18px; border: 0; border-bottom: 1px solid #e4e9ef; border-radius: 0; background: transparent; }
+.company-dashboard-rail .company-category-card > header { margin-bottom: 12px; }
+.company-dashboard-rail .company-category-list { gap: 10px; }
+.company-dashboard-rail .company-category-row { grid-template-columns: minmax(0, 1fr) 88px; }
+.company-dashboard-rail .company-non-operating { margin: 0; padding: 16px 18px; border: 0; border-radius: 0; background: transparent; }
+.company-dashboard-rail .company-non-operating > header { align-items: flex-start; }
+.company-dashboard-rail .company-non-operating > header span { max-width: 105px; text-align: right; }
+.company-dashboard-rail .company-non-operating-list { border: 0; border-radius: 0; background: transparent; }
+.company-dashboard-rail .company-non-operating-list > div { grid-template-columns: 1fr auto; gap: 4px 10px; padding: 9px 0; border-top: 1px solid #e6ebf1; background: transparent; }
+.company-dashboard-rail .company-non-operating-list > div span { grid-column: 1 / -1; }
+.company-dashboard-rail .company-non-operating-list > div small { grid-column: 2; grid-row: 1; text-align: right; }
+.company-report-detail-drawer { margin-top: 18px; border: 1px solid #dce4ed; border-radius: 10px; background: #fff; }
+.company-report-detail-drawer > summary { padding: 14px 17px; color: #36516f; font-size: 11px; font-weight: 750; cursor: pointer; }
+.company-report-detail-drawer[open] > summary { border-bottom: 1px solid #e4e9ef; }
+.company-report-detail-drawer .company-report-list { padding: 16px; }
+.company-report-detail-drawer .company-report-card { border-radius: 10px; box-shadow: none; }
+
+@media (max-width: 1050px) {
+  .company-dashboard-body { grid-template-columns: 1fr; }
+  .company-monthly-overview { border-right: 0; border-bottom: 1px solid #e4e9ef; }
+  .company-dashboard-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .company-dashboard-rail .company-non-operating { grid-column: 1 / -1; }
+}
+
+@media (max-width: 720px) {
+  .company-report-range { flex-wrap: wrap; align-items: center; }
+  .company-report-range label { flex: 1 1 150px; }
+  .company-report-range input { width: 100%; }
+  .company-report-range .secondary-button { margin-left: 0; }
+  .company-dashboard-header, .company-dashboard-actions { align-items: flex-start; flex-direction: column; }
+  .company-dashboard-totals { grid-template-columns: 1fr; }
+  .company-dashboard-totals > div.emphasis { border-top: 1px solid #dce4ed; border-left: 0; }
+  .company-monthly-table { overflow-x: auto; }
+  .company-monthly-table-head, .company-monthly-table-row { min-width: 610px; }
+  .company-dashboard-rail { grid-template-columns: 1fr; }
+  .company-dashboard-rail .company-non-operating { grid-column: auto; }
+}
 .company-breakdown-state { margin: 0; padding: 12px 17px; border-bottom: 1px solid #edf0f4; color: #66758b; background: #fafbfd; font-size: 11px; }
 .company-breakdown-state.warning { color: #885f16; background: #fff9e9; }
 .company-business-units { display: grid; gap: 8px; padding: 12px; }
