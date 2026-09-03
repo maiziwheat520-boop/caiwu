@@ -948,5 +948,8 @@ ingestion require their later explicit gates.
   upgrade, downgrade, re-upgrade, function security, and reader-only execution
   checks pass. The complete Windows suite retains the same 32 baseline failures
   as production commit `fdf8568` and adds no new failure.
-- No posting command is added. Production deployment remains pending the
-  unified `core,web` release lock, encrypted backup, and isolated restore gate.
+- No posting command is added. Production deployment completed on 2026-09-04
+  after the unified `core,web` release lock, encrypted backup, isolated restore,
+  PostgreSQL 15 migration rehearsal, and production-clone count checks passed.
+  Production Core is `8e935e965b34b7fc1dffb27f738419dcbf7d46ff`, Web is
+  `1a57fa03799fffcf08105fd501e7f9b672bd6919`, and Alembic is `20260903_0038`.
