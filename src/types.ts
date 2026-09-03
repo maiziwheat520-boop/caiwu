@@ -438,18 +438,45 @@ export type CompanyReportCategorySlice = {
 }
 
 export type CashReconciliation = {
-  contract_version: 'ledgerbridge.cash-reconciliation.v1'
+  contract_version: 'ledgerbridge.cash-reconciliation.v2'
   accounting_month: string
+  rules: Array<{
+    rule_key: string
+    source_kind: 'BANK_TRANSACTION' | 'CANDIDATE'
+    source_ref: string
+    flow_kind: 'INCOME' | 'EXPENSE' | 'CURRENT'
+    business_unit_label: string
+    item_label: string
+    match_pattern: string
+    amount_direction: 'CREDIT' | 'DEBIT' | 'ANY'
+    effective_from: string
+    effective_to: string | null
+  }>
   rows: Array<{
     rule_key: string
     flow_kind: 'INCOME' | 'EXPENSE' | 'CURRENT'
     business_unit_label: string
     item_label: string
-    source_kind: 'BANK_TRANSACTION' | 'CANDIDATE'
+    source_kind: 'BANK_TRANSACTION' | 'CANDIDATE' | 'ADJUSTMENT'
+    source_ref: string
     transaction_count: number
     amount_minor: number
     facts: Array<{ fact_ref: string; occurred_on: string; amount_minor: number }>
   }>
+  issues: Array<{
+    issue_kind: 'UNMATCHED' | 'MULTIPLE_RULES'
+    source_kind: 'BANK_TRANSACTION' | 'CANDIDATE'
+    fact_ref: string
+    occurred_on: string
+    amount_minor: number
+    matched_rule_keys: string[]
+  }>
+  eligible_fact_count: number
+  matched_fact_count: number
+  unmatched_fact_count: number
+  conflicted_fact_count: number
+  issue_count: number
+  issues_truncated: boolean
   totals: { income_minor: number; expense_minor: number; current_minor: number }
 }
 
@@ -688,14 +715,6 @@ export type OriginalReconciliation = {
     mapped_fact_count: number
     amount_minor: number
   }>
-}
-
-export type WorkbookDraft = {
-  id: string
-  accounting_month: string
-  input_revision: number
-  status: 'QUEUED' | 'BUILDING' | 'NEEDS_REVIEW' | 'VERIFIED' | 'FAILED'
-  verification: 'LIBREOFFICE_VERIFIED' | null
 }
 
 export type ConnectionId =

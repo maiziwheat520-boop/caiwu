@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Theme } from '@radix-ui/themes'
 import App from './App'
-import type { AccountingDimensions, ApiCandidate, AuthStatus, ClassificationGroup, EvidencePreview, OriginalReconciliation, ReviewEvent } from './types'
+import type { AccountingDimensions, ApiCandidate, AuthStatus, CashReconciliation, ClassificationGroup, EvidencePreview, OriginalReconciliation, ReviewEvent } from './types'
 import { originalReconciliationFixture } from './test-fixtures/original-reconciliation'
 
 const session = {
@@ -58,6 +58,29 @@ const reconciliation = {
   accounting_month: '2026-08', revision: 7, ready: false,
   blockers: [{ code: 'BUSINESS_KEY_CONFLICT', message: '相同凭证号金额不同' }],
   business_units: [{ name: '城南店', amounts_minor: { water: 512080, linen: 638000, bank_receipts: 4286000 } }],
+}
+
+const cashReconciliation: CashReconciliation = {
+  contract_version: 'ledgerbridge.cash-reconciliation.v2',
+  accounting_month: '2026-09',
+  rules: [
+    { rule_key: 'income.synthetic', source_kind: 'BANK_TRANSACTION', source_ref: 'bank.synthetic', flow_kind: 'INCOME', business_unit_label: '示例门店', item_label: '平台实收', match_pattern: 'synthetic-income', amount_direction: 'CREDIT', effective_from: '2026-01-01', effective_to: null },
+    { rule_key: 'expense.synthetic', source_kind: 'BANK_TRANSACTION', source_ref: 'bank.synthetic', flow_kind: 'EXPENSE', business_unit_label: '示例门店', item_label: '布草', match_pattern: 'synthetic-expense', amount_direction: 'DEBIT', effective_from: '2026-01-01', effective_to: null },
+    { rule_key: 'current.synthetic', source_kind: 'CANDIDATE', source_ref: 'wechat.synthetic', flow_kind: 'CURRENT', business_unit_label: '示例门店', item_label: '往来款', match_pattern: 'synthetic-current', amount_direction: 'ANY', effective_from: '2026-01-01', effective_to: null },
+  ],
+  rows: [
+    { rule_key: 'income.synthetic', flow_kind: 'INCOME', business_unit_label: '示例门店', item_label: '平台实收', source_kind: 'BANK_TRANSACTION', source_ref: 'bank.synthetic', transaction_count: 1, amount_minor: 10_000, facts: [{ fact_ref: 'income-1', occurred_on: '2026-09-01', amount_minor: 10_000 }] },
+    { rule_key: 'expense.synthetic', flow_kind: 'EXPENSE', business_unit_label: '示例门店', item_label: '布草', source_kind: 'BANK_TRANSACTION', source_ref: 'bank.synthetic', transaction_count: 1, amount_minor: 3_000, facts: [{ fact_ref: 'expense-1', occurred_on: '2026-09-02', amount_minor: -3_000 }] },
+    { rule_key: 'current.synthetic', flow_kind: 'CURRENT', business_unit_label: '示例门店', item_label: '往来款', source_kind: 'CANDIDATE', source_ref: 'wechat.synthetic', transaction_count: 1, amount_minor: 2_000, facts: [{ fact_ref: 'current-1', occurred_on: '2026-09-01', amount_minor: 2_000 }] },
+  ],
+  issues: [],
+  eligible_fact_count: 3,
+  matched_fact_count: 3,
+  unmatched_fact_count: 0,
+  conflicted_fact_count: 0,
+  issue_count: 0,
+  issues_truncated: false,
+  totals: { income_minor: 10_000, expense_minor: 3_000, current_minor: 2_000 },
 }
 
 const reviewEvents: ReviewEvent[] = [{
@@ -496,6 +519,8 @@ function installFetch(options: {
   companyReportResponse?: unknown
   failCompanyReportsOnce?: boolean
   failOriginalReconciliation?: boolean
+  failCashReconciliation?: boolean
+  cashReconciliation?: CashReconciliation
   personalBankResponse?: unknown
   failPersonalBank?: boolean
   originalReconciliation?: OriginalReconciliation
@@ -563,6 +588,8 @@ function installFetch(options: {
     companyReportResponse = companyReports(),
     failCompanyReportsOnce = false,
     failOriginalReconciliation = false,
+    failCashReconciliation = false,
+    cashReconciliation: cashProjection = cashReconciliation,
     personalBankResponse = emptyPersonalBankTransactions,
     failPersonalBank = false,
     originalReconciliation = originalReconciliationFixture,
@@ -661,6 +688,11 @@ function installFetch(options: {
       if (failReviewEvents) return response({ title: '操作记录暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
       const cursor = new URL(url, 'http://ledgerbridge.local').searchParams.get('cursor')
       return response(reviewEventPages[cursor ? 1 : 0] ?? { items: [], next_cursor: null })
+    }
+    if (url.startsWith('/api/v1/cash-reconciliations/')) {
+      if (failCashReconciliation) return response({ title: '规则生成结果暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
+      const requestedMonth = new URL(url, 'http://ledgerbridge.local').pathname.split('/').at(-1)!
+      return response({ ...cashProjection, accounting_month: requestedMonth })
     }
     if (url.startsWith('/api/v1/reconciliations/') && init?.method !== 'POST') {
       if (decisionSaved && failReconciliationAfterDecision) return response({ title: '对账投影暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
@@ -2396,30 +2428,21 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.queryByText('C-ZS01')).not.toBeInTheDocument()
   })
 
-  it('merges monthly status and original-layout details under one reconciliation entry', async () => {
+  it('opens the single cash reconciliation workspace from the monthly entry', async () => {
     const fetchMock = installFetch()
     renderApp()
     await screen.findByText('早上好，今天有几项需要确认')
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
     expect(screen.getByRole('heading', { name: '完整个人财务对账' })).toBeInTheDocument()
     fireEvent.click(screen.getAllByRole('button', { name: /月度对账/ })[0])
-    expect(screen.getByRole('heading', { name: '2026 年 8 月对账草稿' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '收支与往来对账' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: '月度对账' })).toHaveLength(2)
     expect(screen.queryByRole('button', { name: '原口径对账表' })).not.toBeInTheDocument()
-    expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/v1/original-reconciliations/'))).toHaveLength(0)
-
-    fireEvent.click(screen.getByRole('tab', { name: '原口径明细' }))
-    expect(window.location.pathname).toBe('/reconciliation')
-    expect(window.location.search).toBe('?view=original')
-    expect(await screen.findByRole('heading', { name: '收支与往来对账' })).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: '2026 年 8 月对账草稿' })).not.toBeInTheDocument()
-    await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/v1/original-reconciliations/'))).toHaveLength(1))
-
-    fireEvent.click(screen.getByRole('tab', { name: '月度状态' }))
     expect(window.location.pathname).toBe('/reconciliation')
     expect(window.location.search).toBe('')
-    expect(screen.getByRole('heading', { name: '2026 年 8 月对账草稿' })).toBeInTheDocument()
-    expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/reconciliations/2026-08')).toHaveLength(1)
+    expect(screen.queryByRole('heading', { name: '2026 年 8 月对账草稿' })).not.toBeInTheDocument()
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/v1/original-reconciliations/'))).toHaveLength(1))
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/v1/cash-reconciliations/'))).toHaveLength(1)
     fireEvent.click(screen.getAllByRole('button', { name: /各公司报表/ })[0])
     expect(await screen.findByRole('heading', { name: '各公司报表' })).toBeInTheDocument()
     expect(await screen.findByText('当前期间没有可展示的公司报表')).toBeInTheDocument()
@@ -2610,12 +2633,14 @@ describe('LedgerBridge Web API client', () => {
     expect(await screen.findByText('当前期间没有可展示的公司报表')).toBeInTheDocument()
   })
 
-  it('renders statement candidates as income, expense and current-account work lanes', async () => {
+  it('renders rule-generated income, expense and current-account work lanes', async () => {
     window.history.replaceState({}, '', '/original-reconciliation')
     installFetch()
     renderApp()
 
     expect(await screen.findByRole('heading', { name: '收支与往来对账' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/reconciliation')
+    expect(window.location.search).toBe('')
     expect(screen.queryByRole('table', { name: '原口径固定列对账表' })).not.toBeInTheDocument()
     const workflow = screen.getByRole('region', { name: '收支与往来事项' })
     const lanes = within(workflow).getByRole('tablist', { name: '业务性质' })
@@ -2661,7 +2686,6 @@ describe('LedgerBridge Web API client', () => {
     installFetch({ originalReconciliationGate: projectionGate })
     const loadingView = renderApp()
     expect(await screen.findByRole('heading', { name: '收支与往来对账' })).toBeInTheDocument()
-    expect(await screen.findByText('正在确认公司 / 门店范围')).toBeInTheDocument()
     await act(async () => releaseProjection())
     expect(await screen.findByRole('region', { name: '收支与往来事项' })).toBeInTheDocument()
     loadingView.unmount()
@@ -2669,8 +2693,8 @@ describe('LedgerBridge Web API client', () => {
     vi.restoreAllMocks()
     installFetch({ failOriginalReconciliation: true })
     const errorView = renderApp()
-    expect(await screen.findByRole('alert')).toHaveTextContent('月度对账状态暂不可用')
-    expect(screen.getByRole('button', { name: /重试/ })).toBeInTheDocument()
+    expect(await screen.findByText('旧口径补充待办暂不可用')).toBeInTheDocument()
+    expect(screen.getByText('平台实收')).toBeInTheDocument()
     errorView.unmount()
 
     vi.restoreAllMocks()
@@ -2688,6 +2712,18 @@ describe('LedgerBridge Web API client', () => {
     }))
     installFetch({
       items: [],
+      cashReconciliation: {
+        ...cashReconciliation,
+        rows: [],
+        issues: [],
+        eligible_fact_count: 0,
+        matched_fact_count: 0,
+        unmatched_fact_count: 0,
+        conflicted_fact_count: 0,
+        issue_count: 0,
+        issues_truncated: false,
+        totals: { income_minor: 0, expense_minor: 0, current_minor: 0 },
+      },
       originalReconciliation: {
         ...originalReconciliationFixture,
         rows: blankRows,
@@ -2708,7 +2744,7 @@ describe('LedgerBridge Web API client', () => {
       },
     })
     renderApp()
-    expect(await screen.findByRole('heading', { name: '本月还没有已映射的旧表事项' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '本月没有收入事项' })).toBeInTheDocument()
     expect(screen.queryByText(/截图导入|受控导入/)).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: '原口径合计' })).not.toBeInTheDocument()
     expect(screen.queryByRole('table', { name: '原口径固定列对账表' })).not.toBeInTheDocument()

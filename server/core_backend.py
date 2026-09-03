@@ -1158,7 +1158,7 @@ class CoreBackedState:
             "GET",
             f"/internal/v1/cash-reconciliations/{month}",
         )
-        if payload.get("contract_version") != "ledgerbridge.cash-reconciliation.v1":
+        if payload.get("contract_version") != "ledgerbridge.cash-reconciliation.v2":
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
         return payload
 

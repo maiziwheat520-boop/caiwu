@@ -664,6 +664,25 @@ class FakeCoreClient:
             return self.personal_finance_payload
         if path.startswith("/internal/v1/original-reconciliations/"):
             return core_original_reconciliation()
+        if path.startswith("/internal/v1/cash-reconciliations/"):
+            return {
+                "contract_version": "ledgerbridge.cash-reconciliation.v2",
+                "accounting_month": "2026-08",
+                "rules": [],
+                "rows": [],
+                "issues": [],
+                "eligible_fact_count": 0,
+                "matched_fact_count": 0,
+                "unmatched_fact_count": 0,
+                "conflicted_fact_count": 0,
+                "issue_count": 0,
+                "issues_truncated": False,
+                "totals": {
+                    "income_minor": 0,
+                    "expense_minor": 0,
+                    "current_minor": 0,
+                },
+            }
         raise AssertionError(f"unexpected Core path: {path}")
 
     def evidence(self, path: str) -> dict[str, object]:
@@ -2794,6 +2813,42 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, 403)
                 self.assertEqual(caught.exception.headers["Cache-Control"], "no-store")
                 self.assertEqual(json.load(caught.exception)["code"], "SCOPE_NOT_AUTHORIZED")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_core_backed_bff_serves_scoped_cash_reconciliation_v2(self) -> None:
+        client = FakeCoreClient()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "index.html").write_text("<main>review</main>", encoding="utf-8")
+            server = create_server(
+                "127.0.0.1",
+                0,
+                temp_dir,
+                state=build_state(client),
+                auth_manager=FakeAuthManager(),  # type: ignore[arg-type]
+                mode="core-backed",
+                trusted_proxy_cidrs="127.0.0.1/32",
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_port}/api/v1/cash-reconciliations/2026-08",
+                    headers={"Cookie": f"{COOKIE_NAME}=session-token"},
+                )
+                with urllib.request.urlopen(request, timeout=2) as response:
+                    projection = json.load(response)
+                    self.assertEqual(response.headers["Cache-Control"], "no-store")
+                self.assertEqual(
+                    projection["contract_version"],
+                    "ledgerbridge.cash-reconciliation.v2",
+                )
+                self.assertIn(
+                    "/internal/v1/cash-reconciliations/2026-08",
+                    client.calls[-1][1],
+                )
             finally:
                 server.shutdown()
                 server.server_close()
