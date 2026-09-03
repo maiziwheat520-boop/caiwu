@@ -511,16 +511,33 @@ class DatabaseInternalReadService:
         *,
         month: str,
     ) -> CashReconciliationProjection:
-        authorize_read(principal, Capability.RECONCILIATION_READ)
+        require_capability(principal, Capability.RECONCILIATION_READ)
         require_capability(principal, Capability.LEDGER_READ)
+        entity_ids = sorted({grant.entity_ref for grant in principal.grants}, key=str)
+        business_unit_ids = sorted(
+            {
+                business_unit_id
+                for grant in principal.grants
+                for business_unit_id in grant.business_unit_ids
+            },
+            key=str,
+        )
+        if not entity_ids:
+            raise ResourceNotVisible("resource was not found")
         try:
             with self._session_factory() as session:
                 payload = session.execute(
                     text(
-                        "SELECT internal_read.cash_reconciliation_month_v1("
-                        "to_date(:month || '-01', 'YYYY-MM-DD')) AS projection"
+                        "SELECT internal_read.cash_reconciliation_month_v2("
+                        "to_date(:month || '-01', 'YYYY-MM-DD'), "
+                        "CAST(:entity_ids AS uuid[]), "
+                        "CAST(:business_unit_ids AS uuid[])) AS projection"
                     ),
-                    {"month": month},
+                    {
+                        "month": month,
+                        "entity_ids": entity_ids,
+                        "business_unit_ids": business_unit_ids,
+                    },
                 ).scalar_one()
             return CashReconciliationProjection.model_validate(payload)
         except (ValueError, TypeError, KeyError) as exc:

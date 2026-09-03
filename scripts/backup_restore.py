@@ -776,6 +776,9 @@ BANK_STATEMENT_FUNCTION_SIGNATURES = {
     ),
     ("internal_read", "cash_reconciliation_rules_v1"): "",
     ("internal_read", "cash_reconciliation_month_v1"): "p_month date",
+    ("internal_read", "cash_reconciliation_month_v2"): (
+        "p_month date, p_entity_ids uuid[], p_business_unit_ids uuid[]"
+    ),
 }
 BANK_STATEMENT_FUNCTION_RESULTS = {
     ("public", "r1_bank_statement_append_only"): "trigger",
@@ -801,6 +804,7 @@ BANK_STATEMENT_FUNCTION_RESULTS = {
     ),
     ("internal_read", "cash_reconciliation_rules_v1"): "jsonb",
     ("internal_read", "cash_reconciliation_month_v1"): "jsonb",
+    ("internal_read", "cash_reconciliation_month_v2"): "jsonb",
 }
 BANK_STATEMENT_SECURITY_DEFINER_FUNCTIONS = frozenset(
     {
@@ -813,6 +817,7 @@ BANK_STATEMENT_SECURITY_DEFINER_FUNCTIONS = frozenset(
         ("internal_read", "list_bank_statement_transactions"),
         ("internal_read", "cash_reconciliation_rules_v1"),
         ("internal_read", "cash_reconciliation_month_v1"),
+        ("internal_read", "cash_reconciliation_month_v2"),
     }
 )
 CASH_RECONCILIATION_FUNCTION_KEYS = frozenset(
@@ -820,6 +825,9 @@ CASH_RECONCILIATION_FUNCTION_KEYS = frozenset(
         ("internal_read", "cash_reconciliation_rules_v1"),
         ("internal_read", "cash_reconciliation_month_v1"),
     }
+)
+CASH_RECONCILIATION_V2_FUNCTION_KEYS = frozenset(
+    {("internal_read", "cash_reconciliation_month_v2")}
 )
 BANK_STATEMENT_TRIGGER_CONTRACT = {
     "cash_reconciliation_rule_append_only": (
@@ -2528,6 +2536,7 @@ SELECT json_build_object(
     )
     .strip()
 )
+CASH_RECONCILIATION_V2_REVISION = "20260903_0038"
 MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
     {
         ACCOUNT_REGISTRY_SECURITY_REVISION,
@@ -2545,6 +2554,7 @@ MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
         BANK_STATEMENT_REVIEW_API_GRANT_REVISION,
         CASH_RECONCILIATION_REVISION,
         COMPANY_TRANSACTION_CLASSIFICATION_REVISION,
+        CASH_RECONCILIATION_V2_REVISION,
     }
 )
 COMPANY_REPORTING_SCHEMA = "company_reporting_read"
@@ -5462,6 +5472,9 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
     if revision < CASH_RECONCILIATION_REVISION:
         for function_key in CASH_RECONCILIATION_FUNCTION_KEYS:
             expected_function_signatures.pop(function_key)
+    if revision < CASH_RECONCILIATION_V2_REVISION:
+        for function_key in CASH_RECONCILIATION_V2_FUNCTION_KEYS:
+            expected_function_signatures.pop(function_key)
     expected_functions = {
         (schema, name, args) for (schema, name), args in expected_function_signatures.items()
     }
@@ -5492,6 +5505,9 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
         executors[("internal_command", "review_bank_statement")] = "ledgerbridge_api"
     if revision >= CASH_RECONCILIATION_REVISION:
         for function_key in CASH_RECONCILIATION_FUNCTION_KEYS:
+            executors[function_key] = "ledgerbridge_reader"
+    if revision >= CASH_RECONCILIATION_V2_REVISION:
+        for function_key in CASH_RECONCILIATION_V2_FUNCTION_KEYS:
             executors[function_key] = "ledgerbridge_reader"
 
     triggers = _list("bank_statement_triggers")
