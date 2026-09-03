@@ -950,3 +950,21 @@ ingestion require their later explicit gates.
   as production commit `fdf8568` and adds no new failure.
 - No posting command is added. Production deployment remains pending the
   unified `core,web` release lock, encrypted backup, and isolated restore gate.
+
+## Confirmed-statement company auto-classification (2026-09-04)
+
+- Migration `20260904_0040` adds fail-closed, rule-based classification after
+  an official company bank statement is confirmed. From local transaction date
+  2026-09-04, exact approved patterns classify 陈明哲 company credits as
+  `RELATED_PARTY_CURRENT`, 企业代发过渡户 + 批量代发 as `PAYROLL` (including
+  refunds), and 浙江网商银行 + 贷款还款 company debits as `FINANCING`.
+- Existing classifications are never overwritten. Overlapping rules abort the
+  statement confirmation. The trigger creates classification facts only; it
+  cannot create journal entries or postings.
+- Production runs Core `d716fc52b09dd14b1d8babbe6d54e912aaf70d3f` at
+  schema `20260904_0040`. API, worker, internal reader, and PostgreSQL are
+  healthy with restart count 0; company classification remains 1,144 and
+  journal-entry/posting counts remain 0/0.
+- The final encrypted backup is
+  `/srv/ai-center/backups/ledgerbridge/20260903T181734Z-d716fc52b09d`;
+  isolated restore report `restore-rehearsal-20260903T181810Z.json` passed.
