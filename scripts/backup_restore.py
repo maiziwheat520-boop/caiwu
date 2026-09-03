@@ -2350,6 +2350,184 @@ STATEMENT_REPORT_FACT_INDEPENDENCE_REVISION = "20260902_0033"
 BANK_STATEMENT_REVIEW_API_GRANT_REVISION = "20260902_0035"
 CASH_RECONCILIATION_REVISION = "20260903_0036"
 COMPANY_TRANSACTION_CLASSIFICATION_REVISION = "20260903_0037"
+COMPANY_TRANSACTION_CLASSIFICATION_TABLE = "company_transaction_classification"
+COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES = {
+    ("public", "r1_validate_company_transaction_classification"): "",
+    ("internal_import", "seed_company_transaction_classification"): (
+        "p_transaction_ref uuid, p_operation_id uuid, p_status text, p_category_code text, "
+        "p_actor_ref text, p_reason text, p_rule_version text"
+    ),
+    ("internal_command", "review_company_transaction_classification"): (
+        "p_transaction_ref uuid, p_entity_ref uuid, p_operation_id uuid, "
+        "p_assertion_jti uuid, p_actor_ref text, p_workload_principal_ref text, "
+        "p_expected_revision integer, p_category_code text, p_reason text"
+    ),
+    ("internal_read", "list_company_transaction_classifications_as_of"): (
+        "p_entity_ref uuid, p_status text, p_audit_horizon_sequence bigint, "
+        "p_audit_horizon_hash bytea, p_limit integer"
+    ),
+    ("internal_read", "get_company_transaction_classification_summary_as_of"): (
+        "p_entity_ref uuid, p_from_date date, p_to_date_exclusive date, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
+}
+COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_RESULTS = {
+    ("public", "r1_validate_company_transaction_classification"): "trigger",
+    ("internal_import", "seed_company_transaction_classification"): "jsonb",
+    ("internal_command", "review_company_transaction_classification"): "jsonb",
+    ("internal_read", "list_company_transaction_classifications_as_of"): "TABLE(item jsonb)",
+    ("internal_read", "get_company_transaction_classification_summary_as_of"): "jsonb",
+}
+COMPANY_TRANSACTION_CLASSIFICATION_SECURITY_DEFINER_FUNCTIONS = frozenset(
+    key
+    for key in COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES
+    if key != ("public", "r1_validate_company_transaction_classification")
+)
+COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS = {
+    ("internal_import", "seed_company_transaction_classification"): "ledgerbridge_worker",
+    ("internal_command", "review_company_transaction_classification"): "ledgerbridge_api",
+    ("internal_read", "list_company_transaction_classifications_as_of"): ("ledgerbridge_reader"),
+    ("internal_read", "get_company_transaction_classification_summary_as_of"): (
+        "ledgerbridge_reader"
+    ),
+}
+COMPANY_TRANSACTION_CLASSIFICATION_TRIGGER_CONTRACT = {
+    "company_transaction_classification_append_only": (
+        "r1_bank_statement_append_only",
+        27,
+    ),
+    "validate_company_transaction_classification": (
+        "r1_validate_company_transaction_classification",
+        7,
+    ),
+}
+COMPANY_TRANSACTION_CLASSIFICATION_REQUIRED_COLUMNS = {
+    "transaction_ref": ("uuid", True),
+    "revision": ("integer", True),
+    "status": ("character varying", True),
+    "category_code": ("character varying", False),
+    "source": ("character varying", True),
+    "rule_version": ("character varying", True),
+    "operation_id": ("uuid", True),
+    "assertion_jti": ("uuid", False),
+    "actor_ref": ("character varying", True),
+    "workload_principal_ref": ("character varying", False),
+    "expected_revision": ("integer", False),
+    "command_sha256": ("bytea", True),
+    "audit_event_id": ("uuid", True),
+    "classified_at": ("timestamp with time zone", True),
+}
+_COMPANY_TRANSACTION_CLASSIFICATION_FUNCTIONS_SQL = ", ".join(
+    f"('{schema}', '{name}', '{arguments}')"
+    for (schema, name), arguments in (
+        COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES.items()
+    )
+)
+_COMPANY_TRANSACTION_CLASSIFICATION_ROLES_SQL = ", ".join(
+    f"('{role}'::name)" for role in R1_CONTROLLED_ROLES
+)
+COMPANY_TRANSACTION_CLASSIFICATION_SECURITY_SQL = (
+    ""  # nosec B608 - replacements use only fixed repository allowlists.
+    """
+WITH expected_roles(role_name) AS (VALUES __CLASSIFICATION_ROLES_SQL__),
+present_roles(role_name) AS (
+ SELECT e.role_name FROM expected_roles e JOIN pg_roles r ON r.rolname=e.role_name
+), expected_functions(schema_name,function_name,identity_arguments) AS (
+ VALUES __CLASSIFICATION_FUNCTIONS_SQL__
+), observed_table AS (
+ SELECT c.relname table_name,pg_get_userbyid(c.relowner) owner,c.relkind kind,c.oid,c.relacl
+ FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='public' AND c.relname='company_transaction_classification'
+), observed_functions AS (
+ SELECT n.nspname schema_name,p.proname function_name,
+  pg_get_function_identity_arguments(p.oid) identity_arguments,
+  pg_get_function_result(p.oid) result,pg_get_userbyid(p.proowner) owner,
+  p.prosecdef security_definer,COALESCE(to_json(p.proconfig),'[]'::json) proconfig,
+  p.oid,p.proacl,p.proowner
+ FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+ WHERE EXISTS (SELECT 1 FROM expected_functions e
+  WHERE e.schema_name=n.nspname AND e.function_name=p.proname)
+), observed_triggers AS (
+ SELECT t.tgname trigger_name,t.tgenabled enabled,t.tgtype trigger_type,
+  fnn.nspname function_schema,fn.proname function_name
+ FROM pg_trigger t JOIN observed_table c ON c.oid=t.tgrelid
+ JOIN pg_proc fn ON fn.oid=t.tgfoid JOIN pg_namespace fnn ON fnn.oid=fn.pronamespace
+ WHERE NOT t.tgisinternal
+), observed_columns AS (
+ SELECT column_name,data_type,is_nullable='NO' not_null,ordinal_position
+ FROM information_schema.columns
+ WHERE table_schema='public' AND table_name='company_transaction_classification'
+), observed_constraints AS (
+ SELECT con.conname constraint_name,con.contype constraint_type,
+  con.convalidated is_validated,con.condeferrable is_deferrable,
+  con.condeferred is_initially_deferred,pg_get_constraintdef(con.oid,false) definition
+ FROM pg_constraint con JOIN observed_table t ON t.oid=con.conrelid
+), table_acls AS (
+ SELECT CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM observed_table t CROSS JOIN LATERAL
+  aclexplode(COALESCE(t.relacl,acldefault('r',t.owner::regrole))) a
+), function_acls AS (
+ SELECT f.schema_name,f.function_name,f.identity_arguments,
+  CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM observed_functions f CROSS JOIN LATERAL
+  aclexplode(COALESCE(f.proacl,acldefault('f',f.proowner))) a
+), table_privileges AS (
+ SELECT r.role_name role,
+  has_table_privilege(r.role_name,'public.company_transaction_classification','SELECT') can_select,
+  has_table_privilege(r.role_name,'public.company_transaction_classification','INSERT') can_insert,
+  has_table_privilege(r.role_name,'public.company_transaction_classification','UPDATE') can_update,
+  has_table_privilege(r.role_name,'public.company_transaction_classification','DELETE') can_delete
+ FROM present_roles r
+), function_privileges AS (
+ SELECT r.role_name role,f.schema_name,f.function_name,f.identity_arguments,
+  has_function_privilege(r.role_name,f.oid,'EXECUTE') can_execute
+ FROM present_roles r CROSS JOIN observed_functions f
+)
+SELECT json_build_object(
+ 'company_transaction_classification_row_count',
+  (SELECT count(*) FROM public.company_transaction_classification),
+ 'company_transaction_classification_table',COALESCE((SELECT json_build_object(
+  'table',table_name,'owner',owner,'kind',kind) FROM observed_table),'null'::json),
+ 'company_transaction_classification_functions',COALESCE((SELECT json_agg(json_build_object(
+  'schema',schema_name,'name',function_name,'identity_arguments',identity_arguments,
+  'result',result,'owner',owner,'security_definer',security_definer,'proconfig',proconfig)
+  ORDER BY schema_name,function_name,identity_arguments) FROM observed_functions),'[]'::json),
+ 'company_transaction_classification_triggers',COALESCE((SELECT json_agg(json_build_object(
+  'name',trigger_name,'enabled',enabled,'trigger_type',trigger_type,
+  'function_schema',function_schema,'function_name',function_name)
+  ORDER BY trigger_name) FROM observed_triggers),'[]'::json),
+ 'company_transaction_classification_columns',COALESCE((SELECT json_agg(json_build_object(
+  'column',column_name,'data_type',data_type,'not_null',not_null)
+  ORDER BY ordinal_position) FROM observed_columns),'[]'::json),
+ 'company_transaction_classification_constraints',COALESCE((SELECT json_agg(json_build_object(
+  'name',constraint_name,'type',constraint_type,'validated',is_validated,
+  'deferrable',is_deferrable,'initially_deferred',is_initially_deferred,
+  'definition',definition) ORDER BY constraint_name) FROM observed_constraints),'[]'::json),
+ 'company_transaction_classification_table_acls',COALESCE((SELECT json_agg(json_build_object(
+  'grantee',grantee,'privilege',privilege,'grantable',grantable)
+  ORDER BY grantee,privilege) FROM table_acls),'[]'::json),
+ 'company_transaction_classification_function_acls',COALESCE((SELECT json_agg(json_build_object(
+  'schema',schema_name,'name',function_name,'identity_arguments',identity_arguments,
+  'grantee',grantee,'privilege',privilege,'grantable',grantable)
+  ORDER BY schema_name,function_name,identity_arguments,grantee) FROM function_acls),'[]'::json),
+ 'company_transaction_classification_effective_table_privileges',COALESCE((SELECT json_agg(
+  json_build_object('role',role,'select',can_select,'insert',can_insert,
+  'update',can_update,'delete',can_delete) ORDER BY role) FROM table_privileges),'[]'::json),
+ 'company_transaction_classification_effective_function_privileges',COALESCE((SELECT json_agg(
+  json_build_object('role',role,'schema',schema_name,'name',function_name,
+  'identity_arguments',identity_arguments,'execute',can_execute)
+  ORDER BY role,schema_name,function_name,identity_arguments)
+  FROM function_privileges),'[]'::json)
+)::text;
+    """.replace("__CLASSIFICATION_ROLES_SQL__", _COMPANY_TRANSACTION_CLASSIFICATION_ROLES_SQL)
+    .replace(
+        "__CLASSIFICATION_FUNCTIONS_SQL__",
+        _COMPANY_TRANSACTION_CLASSIFICATION_FUNCTIONS_SQL,
+    )
+    .strip()
+)
 MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
     {
         ACCOUNT_REGISTRY_SECURITY_REVISION,
@@ -3601,6 +3779,28 @@ def _database_metadata(
         ):
             raise BackupError("classification batch security query returned an incomplete object")
         metadata.update(cast(dict[str, Any], classification_batch_security))
+    if revision >= COMPANY_TRANSACTION_CLASSIFICATION_REVISION:
+        company_classification_security = query(COMPANY_TRANSACTION_CLASSIFICATION_SECURITY_SQL)
+        required_company_classification_keys = {
+            "company_transaction_classification_row_count",
+            "company_transaction_classification_table",
+            "company_transaction_classification_functions",
+            "company_transaction_classification_triggers",
+            "company_transaction_classification_columns",
+            "company_transaction_classification_constraints",
+            "company_transaction_classification_table_acls",
+            "company_transaction_classification_function_acls",
+            "company_transaction_classification_effective_table_privileges",
+            "company_transaction_classification_effective_function_privileges",
+        }
+        if (
+            not isinstance(company_classification_security, dict)
+            or set(company_classification_security) != required_company_classification_keys
+        ):
+            raise BackupError(
+                "company transaction classification security query returned an incomplete object"
+            )
+        metadata.update(cast(dict[str, Any], company_classification_security))
     if revision >= "20260821_0003":
         artifact_sql = (
             R1_ARTIFACT_MANIFEST_SQL if revision >= "20260824_0012" else ARTIFACT_MANIFEST_SQL
@@ -6243,6 +6443,158 @@ def _validate_classification_batch_security(metadata: dict[str, Any]) -> None:
             raise BackupError("restored classification batch function privilege matrix is invalid")
 
 
+def _validate_company_transaction_classification_security(
+    metadata: dict[str, Any],
+) -> None:
+    def _list(name: str) -> list[dict[str, Any]]:
+        value = metadata.get(name)
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise BackupError(
+                f"restored company transaction classification metadata is invalid: {name}"
+            )
+        return cast(list[dict[str, Any]], value)
+
+    owner = metadata.get("database_owner")
+    row_count = metadata.get("company_transaction_classification_row_count")
+    table = metadata.get("company_transaction_classification_table")
+    if not isinstance(owner, str) or not isinstance(row_count, int) or row_count < 0:
+        raise BackupError("restored company transaction classification inventory is invalid")
+    if table != {
+        "table": COMPANY_TRANSACTION_CLASSIFICATION_TABLE,
+        "owner": owner,
+        "kind": "r",
+    }:
+        raise BackupError("restored company transaction classification table is invalid")
+
+    functions = _list("company_transaction_classification_functions")
+    expected_functions = {
+        (schema, name, arguments)
+        for (schema, name), arguments in (
+            COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES.items()
+        )
+    }
+    actual_functions = {
+        (item.get("schema"), item.get("name"), item.get("identity_arguments")) for item in functions
+    }
+    if len(actual_functions) != len(functions) or actual_functions != expected_functions:
+        raise BackupError("restored company transaction classification functions are invalid")
+    for item in functions:
+        function_key = cast(tuple[str, str], (item.get("schema"), item.get("name")))
+        if (
+            item.get("owner") != owner
+            or item.get("security_definer")
+            is not (function_key in COMPANY_TRANSACTION_CLASSIFICATION_SECURITY_DEFINER_FUNCTIONS)
+            or item.get("proconfig") != ["search_path=pg_catalog"]
+            or item.get("result")
+            != COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_RESULTS.get(function_key)
+        ):
+            raise BackupError(
+                "restored company transaction classification function boundary is invalid"
+            )
+
+    triggers = _list("company_transaction_classification_triggers")
+    actual_triggers = {
+        item.get("name"): (item.get("function_name"), item.get("trigger_type")) for item in triggers
+    }
+    if (
+        len(actual_triggers) != len(triggers)
+        or actual_triggers != COMPANY_TRANSACTION_CLASSIFICATION_TRIGGER_CONTRACT
+        or any(
+            item.get("enabled") != "O" or item.get("function_schema") != "public"
+            for item in triggers
+        )
+    ):
+        raise BackupError("restored company transaction classification triggers are invalid")
+
+    columns = _list("company_transaction_classification_columns")
+    actual_columns = {
+        item.get("column"): (item.get("data_type"), item.get("not_null")) for item in columns
+    }
+    if (
+        len(actual_columns) != len(columns)
+        or actual_columns != COMPANY_TRANSACTION_CLASSIFICATION_REQUIRED_COLUMNS
+    ):
+        raise BackupError("restored company transaction classification columns are invalid")
+
+    constraints = _list("company_transaction_classification_constraints")
+    constraint_names = {item.get("name") for item in constraints}
+    if (
+        len(constraint_names) != len(constraints)
+        or not {"p", "u", "f", "c"}.issubset({item.get("type") for item in constraints})
+        or any(
+            item.get("validated") is not True
+            or item.get("deferrable") is not False
+            or item.get("initially_deferred") is not False
+            for item in constraints
+        )
+        or any(
+            item.get("type") == "f" and "ON DELETE RESTRICT" not in str(item.get("definition"))
+            for item in constraints
+        )
+    ):
+        raise BackupError("restored company transaction classification constraints are invalid")
+
+    table_acls = _list("company_transaction_classification_table_acls")
+    if any(
+        item.get("grantee") != owner or item.get("grantable") not in {False, "NO"}
+        for item in table_acls
+    ):
+        raise BackupError("restored company transaction classification table ACL is invalid")
+
+    function_acls = _list("company_transaction_classification_function_acls")
+    for item in function_acls:
+        function_key = cast(tuple[str, str], (item.get("schema"), item.get("name")))
+        executor = COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS.get(function_key)
+        allowed_grantees = {owner} if executor is None else {owner, executor}
+        if (
+            item.get("grantee") not in allowed_grantees
+            or item.get("privilege") != "EXECUTE"
+            or item.get("grantable") not in {False, "NO"}
+        ):
+            raise BackupError("restored company transaction classification function ACL is invalid")
+
+    roles = _list("r1_role_matrix")
+    active_roles = {item.get("role") for item in roles if item.get("role") in R1_CONTROLLED_ROLES}
+    table_privileges = _list("company_transaction_classification_effective_table_privileges")
+    if (
+        {item.get("role") for item in table_privileges} != active_roles
+        or len(table_privileges) != len(active_roles)
+        or any(
+            item.get(privilege) is not False
+            for item in table_privileges
+            for privilege in ("select", "insert", "update", "delete")
+        )
+    ):
+        raise BackupError(
+            "restored company transaction classification table privilege matrix is invalid"
+        )
+
+    function_privileges = _list("company_transaction_classification_effective_function_privileges")
+    expected_privilege_keys = {
+        (role, schema, name, arguments)
+        for role in active_roles
+        for schema, name, arguments in expected_functions
+    }
+    actual_privilege_keys = {
+        (item.get("role"), item.get("schema"), item.get("name"), item.get("identity_arguments"))
+        for item in function_privileges
+    }
+    if (
+        len(actual_privilege_keys) != len(function_privileges)
+        or actual_privilege_keys != expected_privilege_keys
+    ):
+        raise BackupError(
+            "restored company transaction classification function privilege matrix is incomplete"
+        )
+    for item in function_privileges:
+        function_key = cast(tuple[str, str], (item.get("schema"), item.get("name")))
+        executor = COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS.get(function_key)
+        if item.get("execute") is not (item.get("role") == executor):
+            raise BackupError(
+                "restored company transaction classification function privilege matrix is invalid"
+            )
+
+
 def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
     if metadata.get("metadata_version") != 2:
         raise BackupError("restored database lacks v2 metadata observations")
@@ -6264,6 +6616,8 @@ def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
         _validate_evidence_unlock_security(metadata)
     if revision >= CLASSIFICATION_BATCH_SECURITY_REVISION:
         _validate_classification_batch_security(metadata)
+    if revision >= COMPANY_TRANSACTION_CLASSIFICATION_REVISION:
+        _validate_company_transaction_classification_security(metadata)
     if metadata.get("database_temp_denied") is not True:
         raise BackupError("restored database TEMP privilege invariant failed")
     functions = metadata.get("security_functions")

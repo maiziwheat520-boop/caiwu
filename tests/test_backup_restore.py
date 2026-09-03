@@ -30,6 +30,8 @@ from scripts.backup_restore import (
     BANK_STATEMENT_SECURITY_SQL,
     BANK_STATEMENT_TABLES,
     BANK_STATEMENT_TRIGGER_CONTRACT,
+    CASH_RECONCILIATION_FUNCTION_KEYS,
+    CASH_RECONCILIATION_TRIGGER_NAMES,
     CLASSIFICATION_BATCH_CONSTRAINT_DEFINITION_MARKERS,
     CLASSIFICATION_BATCH_CONSTRAINT_TABLES,
     CLASSIFICATION_BATCH_FUNCTION_EXECUTORS,
@@ -820,6 +822,12 @@ def _counterparty_database_metadata() -> dict[str, object]:
 def _bank_statement_database_metadata() -> dict[str, object]:
     metadata = _counterparty_database_metadata()
     metadata["alembic_version"] = "20260830_0021"
+    function_signatures = dict(BANK_STATEMENT_FUNCTION_SIGNATURES)
+    for function_key in CASH_RECONCILIATION_FUNCTION_KEYS:
+        function_signatures.pop(function_key)
+    trigger_contract = dict(BANK_STATEMENT_TRIGGER_CONTRACT)
+    for trigger_name in CASH_RECONCILIATION_TRIGGER_NAMES:
+        trigger_contract.pop(trigger_name)
     schema_rows = cast(list[dict[str, object]], metadata["r1_effective_schema_privileges"])
     metadata["r1_effective_schema_privileges"] = [
         {**item, "usage": True}
@@ -846,7 +854,7 @@ def _bank_statement_database_metadata() -> dict[str, object]:
             "security_definer": (schema, name) in BANK_STATEMENT_SECURITY_DEFINER_FUNCTIONS,
             "proconfig": ["search_path=pg_catalog"],
         }
-        for (schema, name), args in BANK_STATEMENT_FUNCTION_SIGNATURES.items()
+        for (schema, name), args in function_signatures.items()
     ]
     metadata["bank_statement_triggers"] = [
         {
@@ -867,7 +875,7 @@ def _bank_statement_database_metadata() -> dict[str, object]:
             deferrable,
             initially_deferred,
             function_name,
-        ) in sorted(BANK_STATEMENT_TRIGGER_CONTRACT.items())
+        ) in sorted(trigger_contract.items())
     ]
     metadata["bank_statement_constraints"] = [
         {
@@ -915,7 +923,7 @@ def _bank_statement_database_metadata() -> dict[str, object]:
             "privilege": "EXECUTE",
             "grantable": False,
         }
-        for (schema, name), args in BANK_STATEMENT_FUNCTION_SIGNATURES.items()
+        for (schema, name), args in function_signatures.items()
         for grantee in (
             ["ledgerbridge_owner", executors[(schema, name)]]
             if (schema, name) in executors
@@ -967,7 +975,7 @@ def _bank_statement_database_metadata() -> dict[str, object]:
             "execute": role == executors.get((schema, name)),
         }
         for role in roles
-        for (schema, name), args in BANK_STATEMENT_FUNCTION_SIGNATURES.items()
+        for (schema, name), args in function_signatures.items()
     ]
     schema_users = {
         "internal_import": {"ledgerbridge_worker"},
@@ -991,6 +999,8 @@ def _account_registry_database_metadata() -> dict[str, object]:
     metadata = _bank_statement_database_metadata()
     metadata["alembic_version"] = "20260830_0023"
     bank_triggers = dict(BANK_STATEMENT_TRIGGER_CONTRACT)
+    for trigger_name in CASH_RECONCILIATION_TRIGGER_NAMES:
+        bank_triggers.pop(trigger_name)
     bank_triggers.pop("validate_managed_account_audit")
     bank_triggers.pop("require_statement_backed_account")
     bank_triggers.update(ACCOUNT_REGISTRY_MANAGED_ACCOUNT_TRIGGER_CONTRACT)
@@ -1158,7 +1168,7 @@ def _company_reporting_database_metadata(*, composition: bool = False) -> dict[s
     metadata["alembic_version"] = "20260901_0028" if composition else "20260830_0024"
     function_signatures = dict(COMPANY_REPORTING_FUNCTION_SIGNATURES)
     reader_functions = set(COMPANY_REPORTING_READER_FUNCTIONS)
-    required_tables = COMPANY_REPORTING_REQUIRED_TABLES
+    required_tables: tuple[str, ...] = COMPANY_REPORTING_REQUIRED_TABLES
     if not composition:
         function_signatures.pop("get_company_report_composition_v1_as_of")
         reader_functions.discard("get_company_report_composition_v1_as_of")
