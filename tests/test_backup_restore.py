@@ -43,6 +43,8 @@ from scripts.backup_restore import (
     CLASSIFICATION_BATCH_SECURITY_SQL,
     CLASSIFICATION_BATCH_TABLES,
     CLASSIFICATION_BATCH_TRIGGER_CONTRACT,
+    COMPANY_AUTO_CLASSIFICATION_FUNCTION_KEYS,
+    COMPANY_AUTO_CLASSIFICATION_TRIGGER_NAMES,
     COMPANY_REPORTING_BASE_REQUIRED_TABLES,
     COMPANY_REPORTING_FUNCTION_RESULTS,
     COMPANY_REPORTING_FUNCTION_SIGNATURES,
@@ -828,8 +830,12 @@ def _bank_statement_database_metadata() -> dict[str, object]:
         function_signatures.pop(function_key)
     for function_key in CASH_RECONCILIATION_V2_FUNCTION_KEYS:
         function_signatures.pop(function_key)
+    for function_key in COMPANY_AUTO_CLASSIFICATION_FUNCTION_KEYS:
+        function_signatures.pop(function_key)
     trigger_contract = dict(BANK_STATEMENT_TRIGGER_CONTRACT)
     for trigger_name in CASH_RECONCILIATION_TRIGGER_NAMES:
+        trigger_contract.pop(trigger_name)
+    for trigger_name in COMPANY_AUTO_CLASSIFICATION_TRIGGER_NAMES:
         trigger_contract.pop(trigger_name)
     schema_rows = cast(list[dict[str, object]], metadata["r1_effective_schema_privileges"])
     metadata["r1_effective_schema_privileges"] = [
@@ -1003,6 +1009,8 @@ def _account_registry_database_metadata() -> dict[str, object]:
     metadata["alembic_version"] = "20260830_0023"
     bank_triggers = dict(BANK_STATEMENT_TRIGGER_CONTRACT)
     for trigger_name in CASH_RECONCILIATION_TRIGGER_NAMES:
+        bank_triggers.pop(trigger_name)
+    for trigger_name in COMPANY_AUTO_CLASSIFICATION_TRIGGER_NAMES:
         bank_triggers.pop(trigger_name)
     bank_triggers.pop("validate_managed_account_audit")
     bank_triggers.pop("require_statement_backed_account")

@@ -835,6 +835,9 @@ CASH_RECONCILIATION_FUNCTION_KEYS = frozenset(
 CASH_RECONCILIATION_V2_FUNCTION_KEYS = frozenset(
     {("internal_read", "cash_reconciliation_month_v2")}
 )
+COMPANY_AUTO_CLASSIFICATION_FUNCTION_KEYS = frozenset(
+    {("internal_import", "auto_classify_confirmed_company_statement")}
+)
 BANK_STATEMENT_TRIGGER_CONTRACT = {
     "bank_statement_transaction_correction_append_only": (
         "bank_statement_transaction_correction",
@@ -1011,6 +1014,7 @@ CASH_RECONCILIATION_TRIGGER_NAMES = frozenset(
         "cash_reconciliation_adjustment_append_only",
     }
 )
+COMPANY_AUTO_CLASSIFICATION_TRIGGER_NAMES = frozenset({"auto_classify_confirmed_company_statement"})
 BANK_STATEMENT_REQUIRED_TRIGGERS = frozenset(BANK_STATEMENT_TRIGGER_CONTRACT)
 BANK_STATEMENT_CONSTRAINT_CONTRACT = {
     "bank_statement_transaction_correction_audit_event_id_fkey": (
@@ -5537,6 +5541,9 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
     if revision < CASH_RECONCILIATION_V2_REVISION:
         for function_key in CASH_RECONCILIATION_V2_FUNCTION_KEYS:
             expected_function_signatures.pop(function_key)
+    if revision < COMPANY_AUTO_CLASSIFICATION_REVISION:
+        for function_key in COMPANY_AUTO_CLASSIFICATION_FUNCTION_KEYS:
+            expected_function_signatures.pop(function_key)
     expected_functions = {
         (schema, name, args) for (schema, name), args in expected_function_signatures.items()
     }
@@ -5588,6 +5595,9 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
     if revision < CASH_RECONCILIATION_REVISION:
         for trigger_name in CASH_RECONCILIATION_TRIGGER_NAMES:
             expected_trigger_contract.pop(trigger_name)
+    if revision < COMPANY_AUTO_CLASSIFICATION_REVISION:
+        for trigger_name in COMPANY_AUTO_CLASSIFICATION_TRIGGER_NAMES:
+            expected_trigger_contract.pop(trigger_name)
     if revision >= ACCOUNT_REGISTRY_SECURITY_REVISION:
         expected_trigger_contract.pop("validate_managed_account_audit")
         expected_trigger_contract.pop("require_statement_backed_account")
@@ -5600,7 +5610,14 @@ def _validate_bank_statement_security(metadata: dict[str, Any]) -> None:
             "restored bank statement trigger contract differs from the required baseline"
         )
     if any(
-        item.get("enabled") != "O" or item.get("function_schema") != "public" for item in triggers
+        item.get("enabled") != "O"
+        or item.get("function_schema")
+        != (
+            "internal_import"
+            if item.get("name") in COMPANY_AUTO_CLASSIFICATION_TRIGGER_NAMES
+            else "public"
+        )
+        for item in triggers
     ):
         raise BackupError("restored bank statement trigger security boundary is invalid")
 
