@@ -15,6 +15,7 @@ const CATEGORY_OPTIONS: Array<{ value: CompanyTransactionCategory; label: string
   { value: 'BOTTLED_WATER', label: '瓶装水' },
   { value: 'INTERNAL_TRANSFER', label: '公司内部划转' },
   { value: 'RENT', label: '房租' },
+  { value: 'RENTAL_INCOME', label: '经营租赁收入' },
   { value: 'BANK_INTEREST', label: '银行利息' },
   { value: 'LINEN_LAUNDRY', label: '布草洗涤' },
   { value: 'OPERATING_FEE', label: '运营费' },

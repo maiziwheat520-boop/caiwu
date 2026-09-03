@@ -385,20 +385,28 @@ function classificationFor(reports: CompanyReportsResponse, companyRef: string) 
 
 function classificationDashboard(summary: CompanyTransactionClassificationSummary) {
   const incomeCategories = summary.categories.filter(
-    (item) => item.cashflow_role === 'OPERATING_INCOME' && item.inflow_minor > 0,
+    (item) => item.cashflow_role === 'OPERATING_INCOME'
+      && item.inflow_minor > item.outflow_minor,
   )
   const expenseCategories = summary.categories.filter(
-    (item) => item.cashflow_role === 'OPERATING_EXPENSE' && item.outflow_minor > 0,
+    (item) => item.cashflow_role === 'OPERATING_EXPENSE'
+      && item.outflow_minor > item.inflow_minor,
   )
-  const incomeMinor = incomeCategories.reduce((total, item) => total + item.inflow_minor, 0)
-  const expenseMinor = expenseCategories.reduce((total, item) => total + item.outflow_minor, 0)
+  const incomeMinor = incomeCategories.reduce(
+    (total, item) => total + item.inflow_minor - item.outflow_minor,
+    0,
+  )
+  const expenseMinor = expenseCategories.reduce(
+    (total, item) => total + item.outflow_minor - item.inflow_minor,
+    0,
+  )
   return {
     available: true,
     incomeMinor,
     expenseMinor,
     netMinor: incomeMinor - expenseMinor,
-    incomeComposition: classificationComposition(incomeCategories, 'inflow_minor'),
-    expenseComposition: classificationComposition(expenseCategories, 'outflow_minor'),
+    incomeComposition: classificationComposition(incomeCategories, 'OPERATING_INCOME'),
+    expenseComposition: classificationComposition(expenseCategories, 'OPERATING_EXPENSE'),
     nonOperatingCategories: summary.categories.filter(
       (item) => item.cashflow_role === 'NON_OPERATING',
     ),
@@ -409,15 +417,18 @@ function classificationDashboard(summary: CompanyTransactionClassificationSummar
 
 function classificationComposition(
   categories: CompanyTransactionCategorySummary[],
-  amountField: 'inflow_minor' | 'outflow_minor',
+  role: 'OPERATING_INCOME' | 'OPERATING_EXPENSE',
 ): CompanyReportCategoryComposition {
+  const amount = (item: CompanyTransactionCategorySummary) => role === 'OPERATING_INCOME'
+    ? item.inflow_minor - item.outflow_minor
+    : item.outflow_minor - item.inflow_minor
   return {
-    total_minor: categories.reduce((total, item) => total + item[amountField], 0),
+    total_minor: categories.reduce((total, item) => total + amount(item), 0),
     fact_count: categories.reduce((total, item) => total + item.transaction_count, 0),
     items: categories.map((item) => ({
       category_code: item.category_code,
       category_label: classificationLabel(item.category_code),
-      amount_minor: item[amountField],
+      amount_minor: amount(item),
       fact_count: item.transaction_count,
     })).sort((left, right) => right.amount_minor - left.amount_minor),
   }
@@ -521,6 +532,7 @@ function classificationLabel(code: CompanyTransactionCategorySummary['category_c
     BOTTLED_WATER: '瓶装水',
     INTERNAL_TRANSFER: '公司内部划转',
     RENT: '房租',
+    RENTAL_INCOME: '经营租赁收入',
     BANK_INTEREST: '银行利息',
     LINEN_LAUNDRY: '布草洗涤',
     OPERATING_FEE: '运营费',

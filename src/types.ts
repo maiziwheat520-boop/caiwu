@@ -502,6 +502,7 @@ export type CompanyTransactionCategory =
   | 'BOTTLED_WATER'
   | 'INTERNAL_TRANSFER'
   | 'RENT'
+  | 'RENTAL_INCOME'
   | 'BANK_INTEREST'
   | 'LINEN_LAUNDRY'
   | 'OPERATING_FEE'
