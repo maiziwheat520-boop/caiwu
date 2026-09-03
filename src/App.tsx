@@ -67,6 +67,7 @@ import type {
 import { ErrorState, LoadingState, Metric, PageHeader } from './shared/PagePrimitives'
 import { PersonalBankTransactionsPanel } from './personal-finance/PersonalBankTransactionsPanel'
 import { CompanyBankStatementReviewPanel } from './company-reports/CompanyBankStatementReviewPanel'
+import { CompanyTransactionClassificationPanel } from './company-reports/CompanyTransactionClassificationPanel'
 
 const CompanyReportsPage = lazy(() => import('./company-reports/CompanyReportsPage')
   .then((module) => ({ default: module.CompanyReportsPage })))
@@ -820,6 +821,7 @@ function App() {
           </section>
           <section className="overview-section" id="review" aria-label="待审核">
             <CompanyBankStatementReviewPanel csrfToken={session?.csrf_token ?? ''} />
+            <CompanyTransactionClassificationPanel csrfToken={session?.csrf_token ?? ''} />
             <ReviewQueue
               candidates={pendingCandidates}
               bankStatements={pendingBankStatements}
@@ -853,7 +855,7 @@ function App() {
       )
     }
     if (page === 'company-reports') {
-      return <CompanyReportsPage csrfToken={session?.csrf_token ?? ''} />
+      return <CompanyReportsPage />
     }
     if (page === 'payroll') {
       return <PayrollWorkspacePage />

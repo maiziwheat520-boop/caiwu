@@ -75,7 +75,7 @@ describe('CompanyReportsPage', () => {
   it('makes missing company attribution explicit instead of presenting a complete report', async () => {
     vi.spyOn(api, 'getCompanyReports').mockResolvedValue(reports)
 
-    render(<CompanyReportsPage csrfToken="csrf-test" />)
+    render(<CompanyReportsPage />)
 
     expect(await screen.findByText('待完成公司归属')).toBeInTheDocument()
     expect(screen.getByText(/216 条已确认来源待账户或经济性质归属/)).toBeInTheDocument()
@@ -85,7 +85,7 @@ describe('CompanyReportsPage', () => {
   it('shows totals and ranked category shares for the selected test company', async () => {
     vi.spyOn(api, 'getCompanyReports').mockResolvedValue(reports)
 
-    render(<CompanyReportsPage csrfToken="csrf-test" />)
+    render(<CompanyReportsPage />)
 
     const dashboard = await screen.findByRole('region', {
       name: 'LedgerBridge controlled reconciliation 财务汇总',
@@ -119,7 +119,7 @@ describe('CompanyReportsPage', () => {
     })
     vi.spyOn(api, 'getCompanyReports').mockResolvedValue(response)
 
-    render(<CompanyReportsPage csrfToken="csrf-test" />)
+    render(<CompanyReportsPage />)
 
     const dashboard = await screen.findByRole('region', {
       name: 'LedgerBridge controlled reconciliation 财务汇总',
@@ -184,7 +184,7 @@ describe('CompanyReportsPage', () => {
     }
     vi.spyOn(api, 'getCompanyReports').mockResolvedValue(response)
 
-    render(<CompanyReportsPage csrfToken="csrf-test" />)
+    render(<CompanyReportsPage />)
 
     await screen.findByRole('region', {
       name: 'LedgerBridge controlled reconciliation 财务汇总',
@@ -242,7 +242,7 @@ describe('CompanyReportsPage', () => {
     }
     vi.spyOn(api, 'getCompanyReports').mockResolvedValue(response)
 
-    render(<CompanyReportsPage csrfToken="csrf-test" />)
+    render(<CompanyReportsPage />)
 
     await screen.findByRole('region', {
       name: 'LedgerBridge controlled reconciliation 财务汇总',
@@ -290,7 +290,7 @@ describe('CompanyReportsPage', () => {
     response.compositions![0].items.push(secondComposition)
     const getReports = vi.spyOn(api, 'getCompanyReports').mockResolvedValue(response)
 
-    render(<CompanyReportsPage csrfToken="csrf-test" />)
+    render(<CompanyReportsPage />)
     await screen.findByRole('region', { name: '薇旭公司 财务汇总' })
     fireEvent.click(screen.getByRole('tab', { name: '景怡公司' }))
 
@@ -333,7 +333,7 @@ describe('CompanyReportsPage', () => {
     }
     const getReports = vi.spyOn(api, 'getCompanyReports').mockResolvedValue(response)
 
-    render(<CompanyReportsPage csrfToken="csrf-test" />)
+    render(<CompanyReportsPage />)
 
     const companyTabs = await screen.findByRole('tablist', { name: '选择公司' })
     expect(within(companyTabs).getAllByRole('tab')).toHaveLength(6)
@@ -389,7 +389,7 @@ describe('CompanyReportsPage', () => {
     })
     vi.spyOn(api, 'getCompanyReports').mockResolvedValue(response)
 
-    render(<CompanyReportsPage csrfToken="csrf-test" />)
+    render(<CompanyReportsPage />)
     await screen.findByRole('region', { name: 'LedgerBridge controlled reconciliation 财务汇总' })
     fireEvent.click(screen.getByRole('button', { name: '正式账簿' }))
 

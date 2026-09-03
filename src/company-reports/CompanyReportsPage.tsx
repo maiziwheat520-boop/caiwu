@@ -15,12 +15,10 @@ import type {
   CompanyTransactionCategorySummary,
 } from '../types'
 import { ErrorState, LoadingState, PageHeader } from '../shared/PagePrimitives'
-import { CompanyBankStatementReviewPanel } from './CompanyBankStatementReviewPanel'
-import { CompanyTransactionClassificationPanel } from './CompanyTransactionClassificationPanel'
 
 const ALL_COMPANIES = '__all_companies__'
 
-export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
+export function CompanyReportsPage() {
   const [reports, setReports] = useState<CompanyReportsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -66,9 +64,9 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
   )
 
   if (loading) {
-    return <>{header}<CompanyBankStatementReviewPanel csrfToken={csrfToken} /><CompanyTransactionClassificationPanel csrfToken={csrfToken} /><LoadingState title="正在读取公司报表" description="正在分别读取已确认来源、账户流水与正式入账投影。" /></>
+    return <>{header}<LoadingState title="正在读取公司报表" description="正在分别读取已确认来源、账户流水与正式入账投影。" /></>
   }
-  if (error) return <>{header}<CompanyBankStatementReviewPanel csrfToken={csrfToken} /><CompanyTransactionClassificationPanel csrfToken={csrfToken} /><ErrorState message={error} onRetry={() => void loadReports()} /></>
+  if (error) return <>{header}<ErrorState message={error} onRetry={() => void loadReports()} /></>
   if (!reports) return null
 
   const companyIndex = new Map<string, { name: string; currencyCode: string }>()
@@ -131,8 +129,6 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
       <>
         {header}
         {toolbar}
-        <CompanyBankStatementReviewPanel csrfToken={csrfToken} />
-        <CompanyTransactionClassificationPanel csrfToken={csrfToken} />
         <section className="empty-state company-report-empty">
           <Database size={34} weight="light" />
           <h2>当前期间没有可展示的公司报表</h2>
@@ -215,10 +211,8 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
           </aside>
         </div>
       </section>
-      <CompanyBankStatementReviewPanel csrfToken={csrfToken} />
-      <CompanyTransactionClassificationPanel csrfToken={csrfToken} />
       <details className="company-report-detail-drawer">
-        <summary>查看三层事实与逐月明细</summary>
+        <summary>查看数据处理阶段与逐月明细</summary>
         <div className="company-report-list">
           {(showAllCompanies ? companies : activeCompany ? [[activeCompanyRef, activeCompany] as const] : []).map(([companyRef, identity]) => (
             <CompanyReportCard key={companyRef} companyRef={companyRef} companyName={identity.name} currencyCode={identity.currencyCode} postedLedgerStatus={reports.posted_ledger_status} layers={reports.layers} />
@@ -698,7 +692,7 @@ function CompanyReportCard({ companyRef, companyName, currencyCode, postedLedger
         </section>
       ) : null}
 
-      <section className="company-report-layers" aria-label={`${companyName} 三层事实`}>
+      <section className="company-report-layers" aria-label={`${companyName} 数据处理阶段`}>
         <div>
           <span>已确认来源</span>
           <strong>已确认来源 {candidateData?.confirmed_count ?? 0} 条</strong>
