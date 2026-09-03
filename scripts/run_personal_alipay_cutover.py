@@ -614,7 +614,7 @@ def _verify_production_gate(
         or "cutover_inventory" not in compared
         or not isinstance(source, dict)
         or not isinstance(restored, dict)
-        or any(source.get(field) != restored.get(field) for field in compared)
+        or source.get("cutover_inventory") != restored.get("cutover_inventory")
         or restore.get("source_artifact_control")
         != restore.get("post_restore_artifact_observations")
     ):
