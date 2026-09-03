@@ -9,7 +9,11 @@ from pydantic import ValidationError
 from ledgerbridge.company_transaction_classification import (
     CompanyTransactionClassification,
 )
-from scripts.backfill_company_transaction_classifications import Transaction, classify
+from scripts.backfill_company_transaction_classifications import (
+    Transaction,
+    classify,
+    migration_database_url,
+)
 from scripts.backup_restore import (
     COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS,
     COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_RESULTS,
@@ -246,6 +250,23 @@ def test_user_approved_company_transaction_rules() -> None:
         classify(Transaction(UUID(int=17), -100, "租户", "退还宿舍押金"), companies)
         == "RELATED_PARTY_CURRENT"
     )
+
+
+def test_backfill_requires_the_migration_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LEDGERBRIDGE_MIGRATION_DATABASE_URL", raising=False)
+    with pytest.raises(RuntimeError, match="MIGRATION_DATABASE_URL is required"):
+        migration_database_url()
+
+    monkeypatch.setenv(
+        "LEDGERBRIDGE_MIGRATION_DATABASE_URL",
+        "postgresql+psycopg://ledgerbridge_worker:secret@db/ledgerbridge",
+    )
+    with pytest.raises(RuntimeError, match="must identify ledgerbridge_owner"):
+        migration_database_url()
+
+    owner_url = "postgresql+psycopg://ledgerbridge_owner:secret@db/ledgerbridge"
+    monkeypatch.setenv("LEDGERBRIDGE_MIGRATION_DATABASE_URL", owner_url)
+    assert migration_database_url() == owner_url
 
 
 def test_pending_wire_item_cannot_claim_a_category() -> None:
