@@ -1054,22 +1054,22 @@ BOC_PROJECTION_REPAIR_TRIGGER_NAMES = frozenset(
 )
 BANK_STATEMENT_REQUIRED_TRIGGERS = frozenset(BANK_STATEMENT_TRIGGER_CONTRACT)
 BANK_STATEMENT_CONSTRAINT_CONTRACT = {
-    "bank_statement_transaction_projection_correction_audit_event_id_fkey": (
+    "bank_statement_transaction_projection_corre_audit_event_id_fkey": (
         "bank_statement_transaction_projection_correction",
         "f",
         "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
     ),
-    "bank_statement_transaction_projection_correction_audit_event_id_key": (
+    "bank_statement_transaction_projection_correc_audit_event_id_key": (
         "bank_statement_transaction_projection_correction",
         "u",
         "UNIQUE (audit_event_id)",
     ),
-    "bank_statement_transaction_projection_correction_command_sha256_check": (
+    "bank_statement_transaction_projection_corr_command_sha256_check": (
         "bank_statement_transaction_projection_correction",
         "c",
         "CHECK ((octet_length(command_sha256) = 32))",
     ),
-    "bank_statement_transaction_projection_correction_parser_facts_sha256_check": (
+    "bank_statement_transaction_projection_parser_facts_sha256_check": (
         "bank_statement_transaction_projection_correction",
         "c",
         "CHECK ((octet_length(parser_facts_sha256) = 32))",
@@ -1079,22 +1079,22 @@ BANK_STATEMENT_CONSTRAINT_CONTRACT = {
         "p",
         "PRIMARY KEY (transaction_ref)",
     ),
-    "bank_statement_transaction_projection_correction_reason_code_check": (
+    "bank_statement_transaction_projection_correct_reason_code_check": (
         "bank_statement_transaction_projection_correction",
         "c",
         "CHECK (((reason_code)::text = 'BOC_PDF_PARSER_REPLAY_V2'::text))",
     ),
-    "bank_statement_transaction_projection_correction_source_row_sha256_check": (
+    "bank_statement_transaction_projection_c_source_row_sha256_check": (
         "bank_statement_transaction_projection_correction",
         "c",
         "CHECK ((octet_length(source_row_sha256) = 32))",
     ),
-    "bank_statement_transaction_projection_correction_transaction_set_sha256_check": (
+    "bank_statement_transaction_project_transaction_set_sha256_check": (
         "bank_statement_transaction_projection_correction",
         "c",
         "CHECK ((octet_length(transaction_set_sha256) = 32))",
     ),
-    "bank_statement_transaction_projection_correction_transaction_ref_fkey": (
+    "bank_statement_transaction_projection_corr_transaction_ref_fkey": (
         "bank_statement_transaction_projection_correction",
         "f",
         "FOREIGN KEY (transaction_ref) REFERENCES bank_statement_transaction(transaction_ref) "

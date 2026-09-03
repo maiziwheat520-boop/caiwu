@@ -1835,6 +1835,7 @@ def test_bank_statement_restore_metadata_covers_0021_contract() -> None:
     assert "observed_constraints AS" in BANK_STATEMENT_SECURITY_SQL
     assert "'bank_statement_constraints'" in BANK_STATEMENT_SECURITY_SQL
     assert len(BANK_STATEMENT_CONSTRAINT_CONTRACT) == 76
+    assert all(len(name) <= 63 for name in BANK_STATEMENT_CONSTRAINT_CONTRACT)
 
 
 def test_pre_0041_backup_queries_do_not_reference_projection_repair_objects() -> None:
