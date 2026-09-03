@@ -19,6 +19,7 @@ OPERATION_NAMESPACE = UUID("5ab5f435-b4ab-5fd7-b7be-16e09a210de0")
 @dataclass(frozen=True, slots=True)
 class Transaction:
     transaction_ref: UUID
+    amount_minor: int
     counterparty_name: str
     transaction_name: str
 
@@ -26,7 +27,7 @@ class Transaction:
 def classify(item: Transaction, company_names: frozenset[str]) -> str | None:
     counterparty = item.counterparty_name.strip()
     name = item.transaction_name.strip()
-    if counterparty == "陈明哲":
+    if counterparty in {"陈明哲", "陈明毅", "陈婵娟"} or "往来款" in name:
         return "RELATED_PARTY_CURRENT"
     if counterparty in company_names or "资金归集" in name:
         return "INTERNAL_TRANSFER"
@@ -34,7 +35,7 @@ def classify(item: Transaction, company_names: frozenset[str]) -> str | None:
         return "PAYROLL"
     if "网商银行" in counterparty or "贷款" in name:
         return "FINANCING"
-    if "龙发综合商店" in counterparty or "瓶装水" in name:
+    if "龙发综合商店" in counterparty or "汇泽丰酒业" in counterparty or "瓶装水" in name:
         return "BOTTLED_WATER"
     if "亿洁洗涤" in counterparty or "布草" in name:
         return "LINEN_LAUNDRY"
@@ -45,9 +46,17 @@ def classify(item: Transaction, company_names: frozenset[str]) -> str | None:
         or "房款结算" in name
     ):
         return "PLATFORM_ROOM_REVENUE"
+    if item.amount_minor > 0 and any(marker in name for marker in ("房租", "租金", "水电费")):
+        return "RENTAL_INCOME"
     if "房租" in name:
         return "RENT"
-    if "运营费" in name or "唐仁酒店" in counterparty:
+    if (
+        "运营费" in name
+        or "唐仁酒店" in counterparty
+        or "邦厨生鲜" in counterparty
+        or "港泰酒店用品" in counterparty
+        or "太平财产保险" in counterparty
+    ):
         return "OPERATING_FEE"
     if "活期存款应付利息" in counterparty or "结息" in name:
         return "BANK_INTEREST"
@@ -60,8 +69,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--from-date", type=date.fromisoformat, default=date(2026, 1, 1))
     parser.add_argument("--to-date-exclusive", type=date.fromisoformat, default=date(2026, 10, 1))
     parser.add_argument("--expected-unique", type=int, default=1033)
-    parser.add_argument("--expected-confirmed", type=int, default=1004)
-    parser.add_argument("--expected-pending", type=int, default=29)
+    parser.add_argument("--expected-confirmed", type=int, default=1033)
+    parser.add_argument("--expected-pending", type=int, default=0)
     parser.add_argument("--actor", default="system:company-classification-backfill")
     parser.add_argument(
         "--reason",
@@ -91,6 +100,7 @@ def main() -> int:
                 """
                 SELECT DISTINCT ON (transaction.transaction_ref)
                        transaction.transaction_ref,
+                       transaction.amount_minor,
                        coalesce(transaction.counterparty_name, ''),
                        transaction.transaction_name
                   FROM public.bank_statement_transaction AS transaction
@@ -114,7 +124,7 @@ def main() -> int:
             {"from_date": args.from_date, "to_date": args.to_date_exclusive},
         )
         transactions = tuple(
-            Transaction(UUID(str(row[0])), str(row[1]), str(row[2])) for row in rows
+            Transaction(UUID(str(row[0])), int(row[1]), str(row[2]), str(row[3])) for row in rows
         )
         planned = tuple((item, classify(item, company_names)) for item in transactions)
         counts = Counter(category or "UNCLASSIFIED" for _, category in planned)

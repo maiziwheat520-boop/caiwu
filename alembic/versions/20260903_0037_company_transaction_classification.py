@@ -42,7 +42,7 @@ CREATE TABLE public.company_transaction_classification (
     CHECK (
         category_code IS NULL OR category_code IN (
             'PLATFORM_ROOM_REVENUE','RELATED_PARTY_CURRENT','PAYROLL','FINANCING',
-            'BOTTLED_WATER','INTERNAL_TRANSFER','RENT','BANK_INTEREST',
+            'BOTTLED_WATER','INTERNAL_TRANSFER','RENT','RENTAL_INCOME','BANK_INTEREST',
             'LINEN_LAUNDRY','OPERATING_FEE'
         )
     ),
@@ -152,7 +152,7 @@ BEGIN
        OR ((p_status = 'PENDING') <> (p_category_code IS NULL))
        OR p_category_code IS NOT NULL AND p_category_code NOT IN (
             'PLATFORM_ROOM_REVENUE','RELATED_PARTY_CURRENT','PAYROLL','FINANCING',
-            'BOTTLED_WATER','INTERNAL_TRANSFER','RENT','BANK_INTEREST',
+            'BOTTLED_WATER','INTERNAL_TRANSFER','RENT','RENTAL_INCOME','BANK_INTEREST',
             'LINEN_LAUNDRY','OPERATING_FEE')
        OR p_actor_ref IS NULL OR btrim(p_actor_ref) = '' OR length(p_actor_ref) > 200
        OR p_reason IS NULL OR btrim(p_reason) = '' OR length(p_reason) > 1000
@@ -221,7 +221,7 @@ BEGIN
        OR p_assertion_jti IS NULL OR p_expected_revision IS NULL OR p_expected_revision < 1
        OR p_category_code IS NULL OR p_category_code NOT IN (
             'PLATFORM_ROOM_REVENUE','RELATED_PARTY_CURRENT','PAYROLL','FINANCING',
-            'BOTTLED_WATER','INTERNAL_TRANSFER','RENT','BANK_INTEREST',
+            'BOTTLED_WATER','INTERNAL_TRANSFER','RENT','RENTAL_INCOME','BANK_INTEREST',
             'LINEN_LAUNDRY','OPERATING_FEE')
        OR p_actor_ref IS NULL OR btrim(p_actor_ref) = '' OR length(p_actor_ref) > 200
        OR p_workload_principal_ref IS NULL OR btrim(p_workload_principal_ref) = ''
@@ -330,6 +330,7 @@ BEGIN
         'cashflow_role', CASE current.category_code
             WHEN 'PLATFORM_ROOM_REVENUE' THEN 'OPERATING_INCOME'
             WHEN 'BANK_INTEREST' THEN 'OPERATING_INCOME'
+            WHEN 'RENTAL_INCOME' THEN 'OPERATING_INCOME'
             WHEN 'PAYROLL' THEN 'OPERATING_EXPENSE'
             WHEN 'BOTTLED_WATER' THEN 'OPERATING_EXPENSE'
             WHEN 'LINEN_LAUNDRY' THEN 'OPERATING_EXPENSE'
@@ -418,6 +419,7 @@ BEGIN
             'cashflow_role', CASE categories.category_code
                 WHEN 'PLATFORM_ROOM_REVENUE' THEN 'OPERATING_INCOME'
                 WHEN 'BANK_INTEREST' THEN 'OPERATING_INCOME'
+                WHEN 'RENTAL_INCOME' THEN 'OPERATING_INCOME'
                 WHEN 'PAYROLL' THEN 'OPERATING_EXPENSE'
                 WHEN 'BOTTLED_WATER' THEN 'OPERATING_EXPENSE'
                 WHEN 'LINEN_LAUNDRY' THEN 'OPERATING_EXPENSE'

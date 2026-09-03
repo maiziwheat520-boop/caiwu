@@ -184,19 +184,57 @@ def test_approved_rule_precedence_and_exact_related_party_match() -> None:
     companies = frozenset({"宁波薇旭酒店管理有限公司"})
 
     assert (
-        classify(Transaction(UUID(int=1), "宁波薇旭酒店管理有限公司", "陈明哲转账"), companies)
+        classify(Transaction(UUID(int=1), 100, "宁波薇旭酒店管理有限公司", "陈明哲转账"), companies)
         == "INTERNAL_TRANSFER"
     )
-    assert classify(Transaction(UUID(int=2), "陈明哲", "转入"), companies) == (
+    assert classify(Transaction(UUID(int=2), 100, "陈明哲", "转入"), companies) == (
         "RELATED_PARTY_CURRENT"
     )
-    assert classify(Transaction(UUID(int=5), "陈明哲", "资金归集"), companies) == (
+    assert classify(Transaction(UUID(int=5), 100, "陈明哲", "资金归集"), companies) == (
         "RELATED_PARTY_CURRENT"
     )
-    assert classify(Transaction(UUID(int=3), "陈明哲贸易", "转入"), companies) is None
+    assert classify(Transaction(UUID(int=3), 100, "陈明哲贸易", "转入"), companies) is None
     assert classify(
-        Transaction(UUID(int=4), "支付宝支付科技有限公司", "飞猪房款结算"), companies
+        Transaction(UUID(int=4), 100, "支付宝支付科技有限公司", "飞猪房款结算"), companies
     ) == ("PLATFORM_ROOM_REVENUE")
+
+
+def test_user_approved_company_transaction_rules() -> None:
+    companies = frozenset()
+
+    assert (
+        classify(Transaction(UUID(int=6), 100, "陈明毅", "转账"), companies)
+        == "RELATED_PARTY_CURRENT"
+    )
+    assert (
+        classify(Transaction(UUID(int=7), 100, "陈婵娟", "转账"), companies)
+        == "RELATED_PARTY_CURRENT"
+    )
+    assert (
+        classify(Transaction(UUID(int=8), 100, "某公司", "往来款"), companies)
+        == "RELATED_PARTY_CURRENT"
+    )
+    assert (
+        classify(Transaction(UUID(int=9), -100, "深圳市汇泽丰酒业有限公司", "货款"), companies)
+        == "BOTTLED_WATER"
+    )
+    assert classify(Transaction(UUID(int=10), 100, "租户", "5月房租"), companies) == "RENTAL_INCOME"
+    assert (
+        classify(Transaction(UUID(int=11), 100, "租户", "租金水电费"), companies) == "RENTAL_INCOME"
+    )
+    assert classify(Transaction(UUID(int=12), -100, "租户", "支付房租"), companies) == "RENT"
+    assert (
+        classify(Transaction(UUID(int=13), -100, "深圳市邦厨生鲜配送有限公司", "货款"), companies)
+        == "OPERATING_FEE"
+    )
+    assert (
+        classify(Transaction(UUID(int=14), -100, "深圳市港泰酒店用品有限公司", "货款"), companies)
+        == "OPERATING_FEE"
+    )
+    assert (
+        classify(Transaction(UUID(int=15), 100, "太平财产保险有限公司", "退款"), companies)
+        == "OPERATING_FEE"
+    )
 
 
 def test_pending_wire_item_cannot_claim_a_category() -> None:
