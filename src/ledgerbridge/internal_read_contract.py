@@ -76,12 +76,8 @@ READ_ROUTE_CAPABILITIES: Mapping[str, Capability] = {
     "GET /internal/v1/company-report-composition": Capability.COMPANY_REPORT_READ,
     "GET /internal/v1/personal-finance": Capability.LEDGER_READ,
     "GET /internal/v1/company-bank-statements/{id}": Capability.BANK_STATEMENT_REVIEW_READ,
-    "GET /internal/v1/company-transaction-classifications": (
-        Capability.BANK_STATEMENT_REVIEW_READ
-    ),
-    "GET /internal/v1/company-transaction-classification-summary": (
-        Capability.COMPANY_REPORT_READ
-    ),
+    "GET /internal/v1/company-transaction-classifications": (Capability.BANK_STATEMENT_REVIEW_READ),
+    "GET /internal/v1/company-transaction-classification-summary": (Capability.COMPANY_REPORT_READ),
 }
 
 READ_ROUTE_SCOPE_MODES: Mapping[str, ScopeMode] = {
@@ -144,7 +140,9 @@ class CapabilitiesResponse(_FrozenModel):
 
 class CandidatePage(_FrozenModel):
     items: tuple[CandidateProjection, ...] = Field(max_length=100)
-    next_cursor: str | None = Field(default=None, min_length=1, max_length=512)
+    # One signed keyset position per authorized scope, so the bound has to
+    # scale with how many business units a principal may read.
+    next_cursor: str | None = Field(default=None, min_length=1, max_length=2048)
 
 
 class BusinessUnitDimension(_FrozenModel):

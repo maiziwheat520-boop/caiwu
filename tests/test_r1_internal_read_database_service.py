@@ -751,7 +751,8 @@ def test_database_candidate_reader_issues_and_verifies_a_keyset_cursor() -> None
         page.next_cursor, _principal(), month=None, status=None, business_unit=None
     )
     assert claims["horizon_sequence"] == 7
-    assert claims["last_candidate_id"] == page.items[-1].candidate_ref
+    # One position per authorized scope; this principal has exactly one.
+    assert claims["scope_positions"] == ((page.items[-1].created_at, page.items[-1].candidate_ref),)
 
 
 def test_database_reconciliation_reader_projects_rows_and_hides_missing() -> None:
@@ -934,8 +935,12 @@ def test_database_reader_verifies_cursor_and_row_scope_before_returning() -> Non
         business_unit=None,
         horizon_sequence=7,
         horizon_hash=b"h" * 32,
-        last_created_at=datetime(2026, 8, 23, tzinfo=UTC),
-        last_candidate_id=UUID("30000000-0000-4000-8000-000000000001"),
+        scope_positions=[
+            (
+                datetime(2026, 8, 23, tzinfo=UTC),
+                UUID("30000000-0000-4000-8000-000000000001"),
+            )
+        ],
     )
     page = DatabaseInternalReadService(lambda: cast(Session, session), signer).list_candidates(
         principal, cursor=token

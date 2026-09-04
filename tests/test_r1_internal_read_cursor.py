@@ -50,8 +50,9 @@ def test_cursor_round_trip_binds_horizon_filters_and_principal() -> None:
         business_unit="unit-demo-a",
         horizon_sequence=19,
         horizon_hash=b"h" * 32,
-        last_created_at=datetime(2026, 8, 24, 12, 0, tzinfo=UTC),
-        last_candidate_id=UUID("30000000-0000-4000-8000-000000000002"),
+        scope_positions=[
+            (datetime(2026, 8, 24, 12, 0, tzinfo=UTC), UUID("30000000-0000-4000-8000-000000000002"))
+        ],
     )
 
     claims = signer.verify(
@@ -64,7 +65,9 @@ def test_cursor_round_trip_binds_horizon_filters_and_principal() -> None:
 
     assert claims["horizon_sequence"] == 19
     assert claims["horizon_hash"] == b"h" * 32
-    assert claims["last_candidate_id"] == UUID("30000000-0000-4000-8000-000000000002")
+    assert claims["scope_positions"] == (
+        (datetime(2026, 8, 24, 12, 0, tzinfo=UTC), UUID("30000000-0000-4000-8000-000000000002")),
+    )
 
     with pytest.raises(CursorInvalid):
         signer.verify(
@@ -82,8 +85,9 @@ def test_cursor_rejects_tampering_and_changed_grants() -> None:
         business_unit=None,
         horizon_sequence=1,
         horizon_hash=b"h" * 32,
-        last_created_at=datetime(2026, 8, 24, tzinfo=UTC),
-        last_candidate_id=UUID("30000000-0000-4000-8000-000000000002"),
+        scope_positions=[
+            (datetime(2026, 8, 24, tzinfo=UTC), UUID("30000000-0000-4000-8000-000000000002"))
+        ],
     )
     body, mac = token.split(".")
     tampered = ("A" if body[0] != "A" else "B") + body[1:] + "." + mac
@@ -114,33 +118,30 @@ def test_cursor_issue_rejects_invalid_horizon_and_naive_timestamp() -> None:
             principal,
             horizon_sequence=0,
             horizon_hash=b"h" * 32,
-            last_created_at=datetime(2026, 8, 24, tzinfo=UTC),
+            scope_positions=[(datetime(2026, 8, 24, tzinfo=UTC), candidate_id)],
             month=None,
             status=None,
             business_unit=None,
-            last_candidate_id=candidate_id,
         )
     with pytest.raises(CursorInvalid, match="horizon"):
         signer.issue(
             principal,
             horizon_sequence=1,
             horizon_hash=b"h" * 31,
-            last_created_at=datetime(2026, 8, 24, tzinfo=UTC),
+            scope_positions=[(datetime(2026, 8, 24, tzinfo=UTC), candidate_id)],
             month=None,
             status=None,
             business_unit=None,
-            last_candidate_id=candidate_id,
         )
     with pytest.raises(CursorInvalid, match="timezone"):
         signer.issue(
             principal,
             horizon_sequence=1,
             horizon_hash=b"h" * 32,
-            last_created_at=datetime(2026, 8, 24),
+            scope_positions=[(datetime(2026, 8, 24), candidate_id)],
             month=None,
             status=None,
             business_unit=None,
-            last_candidate_id=candidate_id,
         )
 
 
@@ -158,8 +159,9 @@ def test_cursor_verify_rejects_length_encoding_and_claim_shapes() -> None:
         **verify_kwargs,
         horizon_sequence=1,
         horizon_hash=b"h" * 32,
-        last_created_at=datetime(2026, 8, 24, tzinfo=UTC),
-        last_candidate_id=UUID("30000000-0000-4000-8000-000000000002"),
+        scope_positions=[
+            (datetime(2026, 8, 24, tzinfo=UTC), UUID("30000000-0000-4000-8000-000000000002"))
+        ],
     )
     _, _mac = token.split(".")
     malformed = base64.urlsafe_b64encode(b"not-json").rstrip(b"=").decode()

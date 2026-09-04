@@ -7,15 +7,17 @@ import hashlib
 import hmac
 import json
 import zlib
-from datetime import datetime
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
 from ledgerbridge.internal_read_contract import READ_CONTRACT_VERSION, WorkloadPrincipal
 
-_VERSION = 1
-_MAX_CURSOR_BYTES = 512
-_MAX_BODY_BYTES = 2048
+_VERSION = 2
+_MAX_CURSOR_BYTES = 2048
+_MAX_SCOPES = 32
+_MAX_BODY_BYTES = 8192
 
 
 class CursorInvalid(ValueError):
@@ -39,13 +41,30 @@ class ReadCursorSigner:
         business_unit: str | None,
         horizon_sequence: int,
         horizon_hash: bytes,
-        last_created_at: datetime,
-        last_candidate_id: UUID,
+        scope_positions: Sequence[tuple[datetime, UUID] | None],
     ) -> str:
+        """Issue a cursor carrying one keyset position per authorized scope.
+
+        A merged multi-scope page cannot resume from a single global position:
+        the reader functions fail closed when a cursor candidate does not
+        belong to the scope being queried.  Each scope therefore resumes from
+        the last row of its own stream that the previous page emitted.
+        """
         if horizon_sequence <= 0 or len(horizon_hash) != 32:
             raise CursorInvalid("cursor horizon is malformed")
-        if last_created_at.tzinfo is None:
-            raise CursorInvalid("cursor timestamp must be timezone-aware")
+        if not 1 <= len(scope_positions) <= _MAX_SCOPES:
+            raise CursorInvalid("cursor scope count is invalid")
+        encoded_scopes: list[list[int | str] | None] = []
+        for position in scope_positions:
+            if position is None:
+                encoded_scopes.append(None)
+                continue
+            created_at, candidate_id = position
+            if created_at.tzinfo is None:
+                raise CursorInvalid("cursor timestamp must be timezone-aware")
+            encoded_scopes.append([_epoch_micros(created_at), candidate_id.hex])
+        if all(item is None for item in encoded_scopes):
+            raise CursorInvalid("cursor must advance at least one scope")
         payload: dict[str, Any] = {
             "v": _VERSION,
             "contract": READ_CONTRACT_VERSION,
@@ -54,7 +73,7 @@ class ReadCursorSigner:
             "grant_digest": grant_digest(principal),
             "filters": [month, status, business_unit],
             "horizon": [horizon_sequence, horizon_hash.hex()],
-            "last": [last_created_at.isoformat(), str(last_candidate_id)],
+            "scopes": encoded_scopes,
         }
         body = zlib.compress(_canonical_json(payload), level=9)
         token = f"{_encode(body)}.{_encode(self._mac(body))}"
@@ -96,12 +115,22 @@ class ReadCursorSigner:
                 business_unit=business_unit,
             )
             horizon = payload["horizon"]
-            last = payload["last"]
-            if not isinstance(horizon, list) or not isinstance(last, list):
+            scopes = payload["scopes"]
+            if not isinstance(horizon, list) or not isinstance(scopes, list):
                 raise TypeError
-            created_at = datetime.fromisoformat(last[0])
-            candidate_ref = UUID(last[1])
-            if created_at.tzinfo is None:
+            if not 1 <= len(scopes) <= _MAX_SCOPES:
+                raise ValueError
+            positions: list[tuple[datetime, UUID] | None] = []
+            for entry in scopes:
+                if entry is None:
+                    positions.append(None)
+                    continue
+                if not isinstance(entry, list) or len(entry) != 2:
+                    raise TypeError
+                if not isinstance(entry[0], int) or not isinstance(entry[1], str):
+                    raise TypeError
+                positions.append((_from_epoch_micros(entry[0]), UUID(hex=entry[1])))
+            if all(item is None for item in positions):
                 raise ValueError
             if not isinstance(horizon[0], int) or not isinstance(horizon[1], str):
                 raise TypeError
@@ -111,8 +140,7 @@ class ReadCursorSigner:
             return {
                 "horizon_sequence": horizon[0],
                 "horizon_hash": horizon_hash,
-                "last_created_at": created_at,
-                "last_candidate_id": candidate_ref,
+                "scope_positions": tuple(positions),
             }
         except (KeyError, TypeError, ValueError, json.JSONDecodeError, zlib.error) as exc:
             raise CursorInvalid("cursor claims are invalid") from exc
@@ -156,11 +184,22 @@ def grant_digest(principal: WorkloadPrincipal) -> str:
         for grant in principal.grants
     ]
     grants.sort(key=lambda value: cast(str, value["entity_ref"]))
-    return hashlib.sha256(_canonical_json(grants)).hexdigest()
+    return hashlib.sha256(_canonical_json(grants)).hexdigest()[:_DIGEST_HEX_CHARS]
+
+
+_DIGEST_HEX_CHARS = 32
+
+
+def _epoch_micros(value: datetime) -> int:
+    return int(value.timestamp() * 1_000_000)
+
+
+def _from_epoch_micros(value: int) -> datetime:
+    return datetime.fromtimestamp(value / 1_000_000, tz=UTC)
 
 
 def _digest_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:_DIGEST_HEX_CHARS]
 
 
 def _canonical_json(value: Any) -> bytes:

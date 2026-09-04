@@ -11,7 +11,7 @@ import hashlib
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from importlib import resources
 from typing import Annotated, Literal, cast
 from uuid import UUID
@@ -651,14 +651,23 @@ class DatabaseInternalReadService:
             if grant.allow_unassigned_candidates:
                 scopes_by_grant.append((grant, None))
 
+        # Scope order must be stable across pages: a cursor carries one keyset
+        # position per scope and resumes them by index.
+        scopes_by_grant.sort(
+            key=lambda item: (
+                str(item[0].entity_ref),
+                "" if item[1] is None else str(item[1]),
+            )
+        )
+
         if cursor is not None and self._cursor_signer is None:
             raise InternalReadBackendUnavailable("signed cursor key is unavailable")
         try:
             with self._session_factory() as session:
+                scope_positions: tuple[tuple[datetime, UUID] | None, ...]
                 if cursor is None:
                     sequence, horizon_hash = self._audit_horizon(session)
-                    last_created_at = None
-                    last_candidate_id = None
+                    scope_positions = tuple(None for _ in scopes_by_grant)
                 else:
                     cursor_signer = self._cursor_signer
                     if cursor_signer is None:
@@ -672,17 +681,24 @@ class DatabaseInternalReadService:
                     )
                     sequence = cursor_claims["horizon_sequence"]
                     horizon_hash = cursor_claims["horizon_hash"]
-                    last_created_at = cursor_claims["last_created_at"]
-                    last_candidate_id = cursor_claims["last_candidate_id"]
+                    scope_positions = cursor_claims["scope_positions"]
+                    if len(scope_positions) != len(scopes_by_grant):
+                        raise CursorInvalid("cursor scope binding does not match the principal")
                 rows: list[Mapping[str, object]] = []
                 seen: set[UUID] = set()
                 raw_has_more = False
                 row_scopes: dict[UUID, tuple[EntityGrant, UUID | None]] = {}
-                for grant, business_unit_id in scopes_by_grant:
+                scope_index_by_candidate: dict[UUID, int] = {}
+                for scope_index, (grant, business_unit_id) in enumerate(scopes_by_grant):
                     if business_unit is not None and business_unit_id is None:
                         continue
-                    query_last_created_at = last_created_at
-                    query_last_candidate_id = last_candidate_id
+                    scope_position = scope_positions[scope_index]
+                    query_last_created_at = (
+                        scope_position[0] if scope_position is not None else None
+                    )
+                    query_last_candidate_id = (
+                        scope_position[1] if scope_position is not None else None
+                    )
                     while True:
                         params = {
                             "entity_id": grant.entity_ref,
@@ -743,6 +759,7 @@ class DatabaseInternalReadService:
                             seen.add(candidate.candidate_ref)
                             rows.append(row_map)
                             row_scopes[candidate.candidate_ref] = (grant, business_unit_id)
+                            scope_index_by_candidate[candidate.candidate_ref] = scope_index
                         if not (month is not None and scope_has_more and len(rows) < 100):
                             break
                         boundary = self._candidate(raw_rows[99])
@@ -806,10 +823,15 @@ class DatabaseInternalReadService:
         has_more = len(candidates) > 100 or raw_has_more
         page_items = tuple(candidates[:100])
         next_cursor = None
-        if has_more:
+        # An empty page cannot advance any scope position, so emitting a cursor
+        # here would loop forever on the same rows.
+        if has_more and page_items:
             if self._cursor_signer is None:
                 raise InternalReadBackendUnavailable("signed cursor key is unavailable")
-            boundary = page_items[-1]
+            next_positions = list(scope_positions)
+            for candidate in page_items:
+                scope_index = scope_index_by_candidate[candidate.candidate_ref]
+                next_positions[scope_index] = (candidate.created_at, candidate.candidate_ref)
             try:
                 next_cursor = self._cursor_signer.issue(
                     principal,
@@ -818,8 +840,7 @@ class DatabaseInternalReadService:
                     business_unit=business_unit,
                     horizon_sequence=sequence,
                     horizon_hash=horizon_hash,
-                    last_created_at=boundary.created_at,
-                    last_candidate_id=boundary.candidate_ref,
+                    scope_positions=next_positions,
                 )
             except CursorInvalid as exc:
                 raise InternalReadBackendUnavailable("signed cursor could not be issued") from exc
