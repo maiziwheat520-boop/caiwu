@@ -750,6 +750,9 @@ class ClassificationCoreClient(FakeCoreClient):
 
 
 class CompanyTransactionClassificationCoreClient(FakeCoreClient):
+    reporting_item_code: str | None = "RELATED_PARTY_CURRENT.OTHER"
+    reporting_item_revision: int | None = 1
+
     def json(
         self,
         method: str,
@@ -788,6 +791,8 @@ class CompanyTransactionClassificationCoreClient(FakeCoreClient):
                 "transaction_ref": COMPANY_TRANSACTION_ID,
                 "status": "CONFIRMED",
                 "category_code": request["category_code"],
+                "reporting_item_code": self.reporting_item_code,
+                "reporting_item_revision": self.reporting_item_revision,
                 "revision": 2,
                 "created": True,
             }
@@ -1817,6 +1822,8 @@ class CoreBackedAdapterTests(unittest.TestCase):
         self.assertEqual(page["items"][0]["company_name"], "演示公司")  # type: ignore[index]
         self.assertEqual(status, 200)
         self.assertEqual(receipt["category_code"], "RELATED_PARTY_CURRENT")
+        self.assertEqual(receipt["reporting_item_code"], "RELATED_PARTY_CURRENT.OTHER")
+        self.assertEqual(receipt["reporting_item_revision"], 1)
         self.assertEqual(primary_client.calls, [])
         method, path, body, headers = review_client.calls[-1]
         self.assertEqual(method, "POST")
@@ -1833,6 +1840,60 @@ class CoreBackedAdapterTests(unittest.TestCase):
         )
         self.assertEqual(claims["resource_ref"], COMPANY_TRANSACTION_ID)
         self.assertEqual(claims["expected_revision"], 1)
+
+    def test_company_classification_review_rejects_an_incomplete_reporting_item_pair(self) -> None:
+        review_client = CompanyTransactionClassificationCoreClient()
+        review_client.reporting_item_revision = None
+        state = build_state(
+            FakeCoreClient(),
+            company_bank_review_client=review_client,
+            company_bank_statement_mappings=((
+                "70000000-0000-4000-8000-000000000001",
+                ENTITY_ID,
+                "演示公司",
+            ),),
+        )
+
+        with self.assertRaises(CoreBackendError) as raised:
+            state.review_company_transaction_classification(
+                COMPANY_TRANSACTION_ID,
+                str(uuid.uuid4()),
+                {
+                    "entity_ref": ENTITY_ID,
+                    "expected_revision": 1,
+                    "category_code": "RELATED_PARTY_CURRENT",
+                    "reason": "人工逐笔确认往来款",
+                },
+            )
+
+        self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_company_classification_review_accepts_the_core_reporting_item_text_contract(self) -> None:
+        review_client = CompanyTransactionClassificationCoreClient()
+        review_client.reporting_item_code = " RELATED_PARTY_CURRENT.OTHER "
+        state = build_state(
+            FakeCoreClient(),
+            company_bank_review_client=review_client,
+            company_bank_statement_mappings=((
+                "70000000-0000-4000-8000-000000000001",
+                ENTITY_ID,
+                "演示公司",
+            ),),
+        )
+
+        status, receipt = state.review_company_transaction_classification(
+            COMPANY_TRANSACTION_ID,
+            str(uuid.uuid4()),
+            {
+                "entity_ref": ENTITY_ID,
+                "expected_revision": 1,
+                "category_code": "RELATED_PARTY_CURRENT",
+                "reason": "人工逐笔确认往来款",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(receipt["reporting_item_code"], " RELATED_PARTY_CURRENT.OTHER ")
 
     def test_company_reports_are_unavailable_without_the_dedicated_client(self) -> None:
         primary_client = FakeCoreClient()

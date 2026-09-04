@@ -594,6 +594,8 @@ export type CompanyTransactionClassificationReviewReceipt = {
   transaction_ref: string
   status: 'CONFIRMED'
   category_code: CompanyTransactionCategory
+  reporting_item_code: string | null
+  reporting_item_revision: number | null
   revision: number
   created: boolean
 }
