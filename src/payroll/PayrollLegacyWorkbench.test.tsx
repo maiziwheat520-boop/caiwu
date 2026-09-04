@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../api'
 import type {
   PayrollLegacyCommandResult,
+  PayrollDisbursementRecordPage,
   PayrollLegacyEmployeeRule,
   PayrollLegacyWorkspace,
   PayrollTestWorkspaceReadResponse,
@@ -75,6 +76,30 @@ const legacyWorkspace: PayrollLegacyWorkspace = {
   payment_submission_supported: false, payable: false, submission_supported: false,
 }
 
+const disbursementRecords: PayrollDisbursementRecordPage = {
+  schema_version: 'ledgerbridge.payroll-disbursement-records.v1',
+  pay_period: '2026-08', source_artifact_count: 1, record_count: 1, unmatched_count: 1,
+  records: [{
+    record_ref: '20000000-0000-4000-8000-000000000001',
+    entity_ref: '20000000-0000-4000-8000-000000000002', company_name: '测试公司一',
+    pay_period: '2026-08', occurred_at: '2026-09-20T08:00:00+08:00',
+    actual_amount_minor: 530000, direction: 'OUTFLOW', currency: 'CNY',
+    source_channel: 'MYBANK', source_system: 'mybank_statement_v1',
+    source_artifact_ref: '30000000-0000-4000-8000-000000000001',
+    source_statement_ref: '40000000-0000-4000-8000-000000000001', source_row_number: 7,
+    ingested_at: '2026-09-21T08:00:00+08:00',
+    managed_account_ref: '50000000-0000-4000-8000-000000000001',
+    disbursement_account_masked: '****1234', counterparty_name: '批量代发',
+    counterparty_account_masked: null, transaction_name: '批量代发',
+    classification_revision: 1, classification_source: 'AUTO_RULE',
+    classification_rule_version: 'company-payroll-autoclassifier.2026-09.v1',
+    period_assignment_source: 'NEXT_MONTH_RULE',
+    period_assignment_rule_version: 'payroll-next-month-disbursement.2026-09.v1',
+    parse_status: 'PARSED', link_status: 'UNMATCHED', payable: false, submission_supported: false,
+  }],
+  payable: false, submission_supported: false,
+}
+
 const commandResult = (
   action: PayrollLegacyCommandResult['data']['action'],
   workspace = legacyWorkspace,
@@ -89,6 +114,11 @@ function mockRead(workspace = legacyWorkspace) {
   vi.spyOn(api, 'getPayrollLegacyWorkspace').mockResolvedValue({
     contract_version: 'ledgerbridge.payroll-legacy-feature-read.v1',
     entity_ref: testWorkspace.entity_ref, company_id: testWorkspace.company_id, data: workspace,
+  })
+  vi.spyOn(api, 'getPayrollDisbursementRecords').mockResolvedValue({
+    contract_version: 'ledgerbridge.payroll-read.v1',
+    entity_ref: testWorkspace.entity_ref, company_id: testWorkspace.company_id,
+    data: disbursementRecords,
   })
 }
 
@@ -230,7 +260,10 @@ describe('PayrollLegacyWorkbench', () => {
     fireEvent.click(screen.getByRole('button', { name: '复核本月已发并更新汇总' }))
 
     const review = screen.getByRole('region', { name: '发放复核分类' })
-    expect(within(review).getByText('测试公司一 · 网商银行')).toBeInTheDocument()
+    expect(await within(review).findByRole('region', { name: '已入库工资流水' })).toBeInTheDocument()
+    expect(within(review).getByText('源文件只在入库时解析一次')).toBeInTheDocument()
+    expect(within(review).getByText('待关联')).toBeInTheDocument()
+    expect(within(review).getAllByText('测试公司一 · 网商银行')).toHaveLength(2)
     expect(within(review).getAllByText('证据缺失')).toHaveLength(2)
     expect(within(review).getByText('示例员工甲')).toBeInTheDocument()
     expect(within(review).getByText(/主楼 · 网商银行 · \*{4}0138/)).toBeInTheDocument()
@@ -282,8 +315,8 @@ describe('PayrollLegacyWorkbench', () => {
     await screen.findByRole('region', { name: '工资概览' })
     fireEvent.click(screen.getByRole('button', { name: '复核本月已发并更新汇总' }))
     const review = screen.getByRole('region', { name: '发放复核分类' })
-    expect(within(review).getByText('接收 5/5')).toBeInTheDocument()
-    expect(within(review).getAllByText('接收 1/1')).toHaveLength(2)
+    expect(await within(review).findByText(/已直接读取入库时归类的 1 笔工资流水/)).toBeInTheDocument()
+    expect(within(review).getByText('源文件只在入库时解析一次')).toBeInTheDocument()
     expect(within(review).getAllByText('完全一致')).toHaveLength(2)
     expect(within(review).getAllByText('¥5,300.00').length).toBeGreaterThanOrEqual(2)
     expect(command).not.toHaveBeenCalled()

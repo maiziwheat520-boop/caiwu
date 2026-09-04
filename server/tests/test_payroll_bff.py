@@ -620,6 +620,50 @@ class FakePayrollCoreClient:
                         }
                     ],
                 }
+            elif path == "/internal/v1/payroll/disbursement-records/2026-07":
+                data = {
+                    "schema_version": "ledgerbridge.payroll-disbursement-records.v1",
+                    "pay_period": "2026-07",
+                    "source_artifact_count": 1,
+                    "record_count": 1,
+                    "unmatched_count": 1,
+                    "records": [{
+                        "record_ref": "20000000-0000-4000-8000-000000000001",
+                        "entity_ref": "20000000-0000-4000-8000-000000000002",
+                        "company_name": "示例公司",
+                        "pay_period": "2026-07",
+                        "occurred_at": "2026-08-20T08:00:00+08:00",
+                        "actual_amount_minor": 500000,
+                        "direction": "OUTFLOW",
+                        "currency": "CNY",
+                        "source_channel": "MYBANK",
+                        "source_system": "mybank_statement_v1",
+                        "source_artifact_ref": "30000000-0000-4000-8000-000000000001",
+                        "source_statement_ref": "40000000-0000-4000-8000-000000000001",
+                        "source_row_number": 7,
+                        "ingested_at": "2026-08-21T08:00:00+08:00",
+                        "managed_account_ref": "50000000-0000-4000-8000-000000000001",
+                        "disbursement_account_masked": "****1234",
+                        "counterparty_name": "批量代发",
+                        "counterparty_account_masked": None,
+                        "transaction_name": "批量代发",
+                        "classification_revision": 1,
+                        "classification_source": "AUTO_RULE",
+                        "classification_rule_version": (
+                            "company-payroll-autoclassifier.2026-09.v1"
+                        ),
+                        "period_assignment_source": "NEXT_MONTH_RULE",
+                        "period_assignment_rule_version": (
+                            "payroll-next-month-disbursement.2026-09.v1"
+                        ),
+                        "parse_status": "PARSED",
+                        "link_status": "UNMATCHED",
+                        "payable": False,
+                        "submission_supported": False,
+                    }],
+                    "payable": False,
+                    "submission_supported": False,
+                }
             elif path == "/internal/v1/payroll/verification":
                 data = {
                     "schema_version": "ledgerbridge.payroll-verification-list.v1",
@@ -1476,6 +1520,29 @@ class PayrollBffTests(unittest.TestCase):
                             for evidence in VERIFICATION_EVIDENCE
                         ],
                     )
+
+    def test_reads_persisted_payroll_disbursement_projection_without_query_input(self) -> None:
+        public_path = "/api/v1/payroll/disbursement-records/2026-07"
+        core_path = "/internal/v1/payroll/disbursement-records/2026-07"
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.server.server_port}{public_path}",
+            headers={"Cookie": f"{COOKIE_NAME}=session-token"},
+        )
+
+        with urllib.request.urlopen(request, timeout=2) as response:
+            payload = json.load(response)
+
+        self.assertEqual(payload["data"]["record_count"], 1)
+        self.assertEqual(payload["data"]["records"][0]["parse_status"], "PARSED")
+        method, actual_path, body, headers = self.client.calls[-1]
+        self.assertEqual((method, actual_path, body), ("GET", core_path, None))
+        _, encoded, _ = headers["X-LedgerBridge-User-Assertion"].split(".")
+        claims = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        self.assertEqual(claims["action"], "payroll.disbursement-records.read")
+        self.assertEqual(
+            claims["resource_ref"],
+            "payroll-disbursement-records:2026-07",
+        )
 
     def test_material_detail_read_is_not_a_public_bff_route(self) -> None:
         request = urllib.request.Request(

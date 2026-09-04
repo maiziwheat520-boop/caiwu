@@ -34,6 +34,9 @@ EVIDENCE_UNLOCK_CORE_PATH = "/internal/v1/evidence/unlocks"
 EVIDENCE_UNLOCK_STATUSES = {"NOT_REQUIRED", "PASSWORD_REQUIRED", "UNLOCKED"}
 PAYROLL_STATUS_CORE_PATH = "/internal/v1/payroll/status"
 PAYROLL_TEST_WORKSPACES_CORE_PATH = "/internal/v1/payroll/test-workspaces"
+PAYROLL_DISBURSEMENT_RECORDS_CORE_PATH = re.compile(
+    r"^/internal/v1/payroll/disbursement-records/([0-9]{4}-(0[1-9]|1[0-2]))$"
+)
 PAYROLL_USER_ASSERTION_VERSION = "ledgerbridge.payroll-bff-user-assertion.v1"
 PAYROLL_RESOURCE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PAYROLL_PROJECTION_REVISION = re.compile(r"^[0-9a-f]{64}$")
@@ -1645,6 +1648,23 @@ class CoreBackedState:
         _payroll_available_evidence_ids(payload)
         return payload
 
+    def payroll_disbursement_records(
+        self,
+        session_token: str,
+        session_subject: str,
+        pay_period: str,
+    ) -> dict[str, object]:
+        if PAYROLL_PERIOD.fullmatch(pay_period) is None:
+            raise CoreBackendError(400, _problem(400, "INVALID_PAYROLL_PERIOD"))
+        path = f"/internal/v1/payroll/disbursement-records/{pay_period}"
+        return self._payroll_read(
+            session_token=session_token,
+            session_subject=session_subject,
+            action="payroll.disbursement-records.read",
+            path=path,
+            resource_ref=f"payroll-disbursement-records:{pay_period}",
+        )
+
     def payroll_batch_command(
         self,
         *,
@@ -1799,7 +1819,13 @@ class CoreBackedState:
             expected_contract_version="ledgerbridge.payroll-read.v1",
             expected_entity_ref=self.entity_ref,
         )
-        if path != PAYROLL_STATUS_CORE_PATH:
+        disbursement_records_match = PAYROLL_DISBURSEMENT_RECORDS_CORE_PATH.fullmatch(path)
+        if disbursement_records_match is not None:
+            _validate_payroll_disbursement_records(
+                payload["data"],
+                pay_period=disbursement_records_match.group(1),
+            )
+        elif path != PAYROLL_STATUS_CORE_PATH:
             _validate_payroll_view_data(
                 payload["data"],
                 path=path,
@@ -5174,6 +5200,143 @@ def _validate_payroll_view_data(
         _validate_payroll_batches(value, company_id=company_id)
     else:
         _validate_payroll_verification(value, company_id=company_id)
+    _reject_unsafe_payroll_values(value)
+
+
+def _validate_payroll_disbursement_records(
+    value: object,
+    *,
+    pay_period: str,
+) -> None:
+    fields = {
+        "schema_version",
+        "pay_period",
+        "source_artifact_count",
+        "record_count",
+        "unmatched_count",
+        "records",
+        "payable",
+        "submission_supported",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    records = value.get("records")
+    if (
+        value.get("schema_version") != "ledgerbridge.payroll-disbursement-records.v1"
+        or value.get("pay_period") != pay_period
+        or PAYROLL_PERIOD.fullmatch(pay_period) is None
+        or not isinstance(records, list)
+        or len(records) > 500
+        or value.get("record_count") != len(records)
+        or value.get("unmatched_count") != len(records)
+        or value.get("payable") is not False
+        or value.get("submission_supported") is not False
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    record_fields = {
+        "record_ref",
+        "entity_ref",
+        "company_name",
+        "pay_period",
+        "occurred_at",
+        "actual_amount_minor",
+        "direction",
+        "currency",
+        "source_channel",
+        "source_system",
+        "source_artifact_ref",
+        "source_statement_ref",
+        "source_row_number",
+        "ingested_at",
+        "managed_account_ref",
+        "disbursement_account_masked",
+        "counterparty_name",
+        "counterparty_account_masked",
+        "transaction_name",
+        "classification_revision",
+        "classification_source",
+        "classification_rule_version",
+        "period_assignment_source",
+        "period_assignment_rule_version",
+        "parse_status",
+        "link_status",
+        "payable",
+        "submission_supported",
+    }
+    artifacts: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict) or set(record) != record_fields:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        try:
+            uuid_fields = (
+                "record_ref",
+                "entity_ref",
+                "source_artifact_ref",
+                "source_statement_ref",
+                "managed_account_ref",
+            )
+            valid_uuids = all(
+                str(uuid.UUID(str(record[field]))) == str(record[field]).lower()
+                for field in uuid_fields
+            )
+            timestamps = [
+                datetime.fromisoformat(str(record[field]).replace("Z", "+00:00"))
+                for field in ("occurred_at", "ingested_at")
+            ]
+        except (KeyError, TypeError, ValueError):
+            valid_uuids = False
+            timestamps = []
+        counterparty_name = record.get("counterparty_name")
+        counterparty_account = record.get("counterparty_account_masked")
+        if (
+            not valid_uuids
+            or len(timestamps) != 2
+            or any(item.tzinfo is None or item.utcoffset() is None for item in timestamps)
+            or record.get("pay_period") != pay_period
+            or not isinstance(record.get("company_name"), str)
+            or not str(record["company_name"]).strip()
+            or len(str(record["company_name"])) > 200
+            or type(record.get("actual_amount_minor")) is not int
+            or not 0 <= int(record["actual_amount_minor"]) <= JSON_SAFE_INTEGER
+            or record.get("direction") not in {"OUTFLOW", "INFLOW", "ZERO"}
+            or record.get("currency") != "CNY"
+            or record.get("source_channel") not in {"MYBANK", "BOC", "BANK"}
+            or not isinstance(record.get("source_system"), str)
+            or not 1 <= len(str(record["source_system"])) <= 64
+            or type(record.get("source_row_number")) is not int
+            or not 1 <= int(record["source_row_number"]) <= JSON_SAFE_INTEGER
+            or re.fullmatch(r"\*{4}[0-9]{4,8}", str(record.get("disbursement_account_masked")))
+            is None
+            or (counterparty_name is not None and (
+                not isinstance(counterparty_name, str) or len(counterparty_name) > 300
+            ))
+            or (counterparty_account is not None and (
+                not isinstance(counterparty_account, str)
+                or re.fullmatch(r"\*{4}[0-9]{4}", counterparty_account) is None
+            ))
+            or not isinstance(record.get("transaction_name"), str)
+            or not 1 <= len(str(record["transaction_name"])) <= 300
+            or type(record.get("classification_revision")) is not int
+            or not 1 <= int(record["classification_revision"]) <= JSON_SAFE_INTEGER
+            or record.get("classification_source") not in {
+                "AUTO_RULE",
+                "HUMAN_REVIEW",
+                "BACKFILL",
+            }
+            or not isinstance(record.get("classification_rule_version"), str)
+            or not 1 <= len(str(record["classification_rule_version"])) <= 100
+            or record.get("period_assignment_source") != "NEXT_MONTH_RULE"
+            or record.get("period_assignment_rule_version")
+            != "payroll-next-month-disbursement.2026-09.v1"
+            or record.get("parse_status") != "PARSED"
+            or record.get("link_status") not in {"UNMATCHED", "UNSUPPORTED_DIRECTION"}
+            or record.get("payable") is not False
+            or record.get("submission_supported") is not False
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        artifacts.add(str(record["source_artifact_ref"]))
+    if value.get("source_artifact_count") != len(artifacts):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
     _reject_unsafe_payroll_values(value)
 
 
