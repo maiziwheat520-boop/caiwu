@@ -257,9 +257,11 @@ export function PayrollLegacyWorkbench({
         tone: 'error',
         text: status === 409
           ? '工作区已被更新，请刷新后重试'
-          : error instanceof ApiError
-            ? error.message
-            : '工资功能操作暂时未完成',
+          : status === 422
+            ? '工资生成条件不完整，请刷新后核对素材、员工参数和上月待办'
+            : error instanceof ApiError
+              ? error.message
+              : '工资功能操作暂时未完成',
       })
     } finally {
       setBusy(false)

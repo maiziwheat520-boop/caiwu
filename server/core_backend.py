@@ -4722,11 +4722,10 @@ def _validate_payroll_legacy_workspace_data(
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
         review_rule_ids.add(str(rule_id))
         review_rule_types.add(str(rule_type))
-    batch_fields = {
+    required_batch_fields = {
         "batch_id",
         "period",
         "revision",
-        "main_material_id",
         "supporting_material_ids",
         "lines",
         "adjustments",
@@ -4737,9 +4736,14 @@ def _validate_payroll_legacy_workspace_data(
         "pending_items",
         "checks",
     }
+    allowed_batch_fields = required_batch_fields | {"main_material_id"}
     periods: set[str] = set()
     for batch in batches:
-        if not isinstance(batch, dict) or set(batch) != batch_fields:
+        if (
+            not isinstance(batch, dict)
+            or not required_batch_fields.issubset(batch)
+            or bool(set(batch) - allowed_batch_fields)
+        ):
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
         period = batch.get("period")
         lines = batch.get("lines")
@@ -4751,7 +4755,10 @@ def _validate_payroll_legacy_workspace_data(
             or period in periods
             or type(batch.get("revision")) is not int
             or not 1 <= int(batch["revision"]) <= JSON_SAFE_INTEGER
-            or not _payroll_identifier(batch.get("main_material_id"))
+            or (
+                "main_material_id" in batch
+                and not _payroll_identifier(batch.get("main_material_id"))
+            )
             or not isinstance(supporting, dict)
             or any(not _payroll_identifier(item) for item in supporting.values())
             or not isinstance(lines, list)

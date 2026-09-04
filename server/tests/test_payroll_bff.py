@@ -1087,6 +1087,18 @@ class PayrollBffTests(unittest.TestCase):
             state.payroll_legacy_workspace("session-token", "ledgerbridge-owner")
         self.assertEqual(raised.exception.payload["code"], "PAYROLL_PAYMENT_MODE_NOT_ALLOWED")
 
+    def test_legacy_feature_workspace_accepts_generated_batch_without_main_material(self) -> None:
+        state = build_state(self.client, payroll_test_workspace_enabled=True)
+        batches = self.client.legacy_workspace()["batches"]
+        batches[0].pop("main_material_id")
+        self.client.legacy_workspace_updates = {"batches": batches}
+
+        workspace = state.payroll_legacy_workspace(
+            "session-token", "ledgerbridge-owner"
+        )
+
+        self.assertNotIn("main_material_id", workspace["data"]["batches"][0])
+
     def test_legacy_feature_workspace_accepts_rules_before_first_batch(self) -> None:
         state = build_state(self.client, payroll_test_workspace_enabled=True)
         self.client.legacy_workspace_updates = {
