@@ -31,6 +31,7 @@ import type {
   PayrollBatchListData,
   PayrollCommandResult,
   PayrollDashboardData,
+  PayrollDisbursementRecordPage,
   PayrollMaterialListData,
   PayrollReadResponse,
   PayrollStatusData,
@@ -513,6 +514,11 @@ export const api = {
 
   getPayrollLegacyWorkspace: () =>
     requestJson<PayrollLegacyWorkspaceReadResponse>('/api/v1/payroll/legacy-workspace'),
+
+  getPayrollDisbursementRecords: (payPeriod: string) =>
+    requestJson<PayrollReadResponse<PayrollDisbursementRecordPage>>(
+      `/api/v1/payroll/disbursement-records/${encodeURIComponent(payPeriod)}`,
+    ),
 
   runPayrollLegacyCommand: ({ action, expectedRevision, payload, csrfToken }: {
     action: PayrollLegacyAction

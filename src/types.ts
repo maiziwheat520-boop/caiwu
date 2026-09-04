@@ -767,6 +767,48 @@ export type PayrollReadResponse<T> = {
   data: T
 }
 
+export type PayrollDisbursementSourceRecord = {
+  record_ref: string
+  entity_ref: string
+  company_name: string
+  pay_period: string
+  occurred_at: string
+  actual_amount_minor: number
+  direction: 'OUTFLOW' | 'INFLOW' | 'ZERO'
+  currency: 'CNY'
+  source_channel: 'MYBANK' | 'BOC' | 'BANK'
+  source_system: string
+  source_artifact_ref: string
+  source_statement_ref: string
+  source_row_number: number
+  ingested_at: string
+  managed_account_ref: string
+  disbursement_account_masked: string
+  counterparty_name: string | null
+  counterparty_account_masked: string | null
+  transaction_name: string
+  classification_revision: number
+  classification_source: 'AUTO_RULE' | 'HUMAN_REVIEW' | 'BACKFILL'
+  classification_rule_version: string
+  period_assignment_source: 'NEXT_MONTH_RULE'
+  period_assignment_rule_version: 'payroll-next-month-disbursement.2026-09.v1'
+  parse_status: 'PARSED'
+  link_status: 'UNMATCHED' | 'UNSUPPORTED_DIRECTION'
+  payable: false
+  submission_supported: false
+}
+
+export type PayrollDisbursementRecordPage = {
+  schema_version: 'ledgerbridge.payroll-disbursement-records.v1'
+  pay_period: string
+  source_artifact_count: number
+  record_count: number
+  unmatched_count: number
+  records: PayrollDisbursementSourceRecord[]
+  payable: false
+  submission_supported: false
+}
+
 export type PayrollTestRoutingStatus = 'AUTO_TEST' | 'REVIEW_REQUIRED' | 'DATE_UNKNOWN'
 
 export type PayrollTestMaterialType =
