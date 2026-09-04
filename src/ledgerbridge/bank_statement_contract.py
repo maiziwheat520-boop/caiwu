@@ -23,6 +23,7 @@ class BankStatementParserProfile(StrEnum):
     CCB_PERSONAL_XLS_V1 = "ccb_personal_xls_v1"
     BOC_PERSONAL_PDF_V1 = "boc_personal_pdf_v1"
     ABC_PERSONAL_PDF_V1 = "abc_personal_pdf_v1"
+    ABC_COMPANY_XLS_V1 = "abc_company_xls_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +84,14 @@ ABC_PERSONAL_PDF_V1: Final = BankStatementParserSpec(
     display_extension=".pdf",
     allowed_owner_kinds=frozenset({"PERSON"}),
 )
+ABC_COMPANY_XLS_V1: Final = BankStatementParserSpec(
+    profile=BankStatementParserProfile.ABC_COMPANY_XLS_V1,
+    institution_code="abc",
+    source_system="abc_company_xls_export",
+    declared_media_type="application/vnd.ms-excel",
+    display_extension=".xls",
+    allowed_owner_kinds=frozenset({"COMPANY"}),
+)
 
 _SPECS: Final = {
     spec.profile: spec
@@ -93,6 +102,7 @@ _SPECS: Final = {
         CCB_PERSONAL_XLS_V1,
         BOC_PERSONAL_PDF_V1,
         ABC_PERSONAL_PDF_V1,
+        ABC_COMPANY_XLS_V1,
     )
 }
 _DIGEST: Final = re.compile(r"^[0-9a-f]{64}$")
