@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ledgerbridge.internal_read_contract import Capability, EntityGrant, WorkloadPrincipal
 from ledgerbridge.production_mtls import (
+    LoadedMtlsWorkloadPolicy,
     MtlsWorkloadIdentity,
     MtlsWorkloadPolicy,
     MtlsWorkloadPolicyV2,
@@ -25,7 +26,7 @@ from ledgerbridge.production_mtls import (
 )
 
 MAX_REPORT_IDENTITY_BYTES = 64 * 1024
-MAX_REPORT_COMPANIES = 20
+EXPECTED_REPORT_COMPANIES = 6
 
 
 class CompanyReportPolicyError(RuntimeError):
@@ -40,7 +41,10 @@ class CompanyReportIdentityInput(BaseModel):
     certificate_serial: str = Field(pattern=r"^[0-9A-F]{2,40}$")
     principal_ref: Literal["workload:ledgerbridge-company-reports"]
     san_uri: Literal["spiffe://ledgerbridge.local/web/company-reports"]
-    grants: tuple[EntityGrant, ...] = Field(min_length=1, max_length=MAX_REPORT_COMPANIES)
+    grants: tuple[EntityGrant, ...] = Field(
+        min_length=EXPECTED_REPORT_COMPANIES,
+        max_length=EXPECTED_REPORT_COMPANIES,
+    )
 
     @model_validator(mode="after")
     def grants_are_distinct_reporting_scopes(self) -> CompanyReportIdentityInput:
@@ -59,7 +63,7 @@ class CompanyReportIdentityInput(BaseModel):
 
 
 def build_candidate_policy(
-    current: MtlsWorkloadPolicy,
+    current: LoadedMtlsWorkloadPolicy,
     report_identity: CompanyReportIdentityInput,
     *,
     expected_generation: int,
@@ -72,9 +76,6 @@ def build_candidate_policy(
         or target_generation != expected_generation + 1
     ):
         raise CompanyReportPolicyError("POLICY_GENERATION_TRANSITION_INVALID")
-    primary_principal = current.principal.model_copy(
-        update={"policy_generation": target_generation}
-    )
     report_principal = WorkloadPrincipal(
         principal_ref=report_identity.principal_ref,
         san_uri=report_identity.san_uri,
@@ -83,9 +84,11 @@ def build_candidate_policy(
         grants=report_identity.grants,
     )
     try:
-        return MtlsWorkloadPolicyV2(
-            policy_generation=target_generation,
-            identities=(
+        if isinstance(current, MtlsWorkloadPolicy):
+            primary_principal = current.principal.model_copy(
+                update={"policy_generation": target_generation}
+            )
+            identities: tuple[MtlsWorkloadIdentity, ...] = (
                 MtlsWorkloadIdentity(
                     certificate_serial=current.certificate_serial,
                     principal=primary_principal,
@@ -94,7 +97,35 @@ def build_candidate_policy(
                     certificate_serial=report_identity.certificate_serial,
                     principal=report_principal,
                 ),
-            ),
+            )
+        else:
+            report_matches = [
+                identity
+                for identity in current.identities
+                if identity.principal.principal_ref == report_identity.principal_ref
+            ]
+            if (
+                len(report_matches) != 1
+                or report_matches[0].certificate_serial != report_identity.certificate_serial
+                or report_matches[0].principal.san_uri != report_identity.san_uri
+            ):
+                raise CompanyReportPolicyError("CURRENT_REPORT_IDENTITY_INVALID")
+            identities = tuple(
+                MtlsWorkloadIdentity(
+                    certificate_serial=identity.certificate_serial,
+                    principal=(
+                        report_principal
+                        if identity.principal.principal_ref == report_identity.principal_ref
+                        else identity.principal.model_copy(
+                            update={"policy_generation": target_generation}
+                        )
+                    ),
+                )
+                for identity in current.identities
+            )
+        return MtlsWorkloadPolicyV2(
+            policy_generation=target_generation,
+            identities=identities,
         )
     except ValueError as exc:
         raise CompanyReportPolicyError("CANDIDATE_POLICY_INVALID") from exc
@@ -169,8 +200,6 @@ def main() -> int:
             expected_policy_generation=args.expected_generation,
             require_root_owner=False,
         )
-        if not isinstance(current, MtlsWorkloadPolicy):
-            raise CompanyReportPolicyError("CURRENT_POLICY_MUST_BE_V1")
         report_identity = _read_report_identity(args.report_identity)
         candidate = build_candidate_policy(
             current,
@@ -182,13 +211,15 @@ def main() -> int:
             _write_new_candidate(args.output, candidate)
             print(
                 "POLICY_WRITTEN "
-                f"generation={candidate.policy_generation} identities=2 "
+                f"generation={candidate.policy_generation} "
+                f"identities={len(candidate.identities)} "
                 f"report_companies={len(report_identity.grants)}"
             )
         else:
             print(
                 "PLAN_READY "
-                f"generation={candidate.policy_generation} identities=2 "
+                f"generation={candidate.policy_generation} "
+                f"identities={len(candidate.identities)} "
                 f"report_companies={len(report_identity.grants)}"
             )
     except (CompanyReportPolicyError, OSError, ValueError) as exc:

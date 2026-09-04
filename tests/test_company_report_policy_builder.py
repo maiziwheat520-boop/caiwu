@@ -5,7 +5,9 @@ from uuid import UUID
 import pytest
 
 from ledgerbridge.internal_read_contract import Capability, EntityGrant, WorkloadPrincipal
-from ledgerbridge.production_mtls import MtlsWorkloadPolicy
+from ledgerbridge.production_mtls import (
+    MtlsWorkloadPolicy,
+)
 from scripts.build_company_report_mtls_policy import (
     CompanyReportIdentityInput,
     CompanyReportPolicyError,
@@ -51,7 +53,7 @@ def _report_identity() -> CompanyReportIdentityInput:
         certificate_serial="81B10A3D",
         principal_ref="workload:ledgerbridge-company-reports",
         san_uri="spiffe://ledgerbridge.local/web/company-reports",
-        grants=tuple(_grant(ordinal) for ordinal in range(1, 6)),
+        grants=tuple(_grant(ordinal) for ordinal in range(1, 7)),
     )
 
 
@@ -71,7 +73,7 @@ def test_builder_preserves_primary_authority_and_isolates_company_reports() -> N
     assert primary.principal.policy_generation == 6
     assert report.certificate_serial == "81B10A3D"
     assert report.principal.capabilities == frozenset({Capability.COMPANY_REPORT_READ})
-    assert len(report.principal.grants) == 5
+    assert len(report.principal.grants) == 6
     assert not report.principal.capabilities & {
         Capability.CANDIDATE_READ,
         Capability.CANDIDATE_DECIDE,
@@ -103,22 +105,23 @@ def test_builder_rejects_generation_drift_and_certificate_reuse() -> None:
         )
 
 
-def test_report_identity_requires_at_least_one_bound_company_grant() -> None:
-    with pytest.raises(ValueError, match="at least 1 item"):
+def test_report_identity_requires_exactly_six_bound_company_grants() -> None:
+    with pytest.raises(ValueError, match="at least 6 items"):
         CompanyReportIdentityInput(
             certificate_serial="81B10A3D",
             principal_ref="workload:ledgerbridge-company-reports",
             san_uri="spiffe://ledgerbridge.local/web/company-reports",
-            grants=(),
+            grants=tuple(_grant(ordinal) for ordinal in range(1, 6)),
         )
 
 
-def test_report_identity_accepts_six_distinct_bound_company_grants() -> None:
-    identity = _report_identity().model_copy(
-        update={"grants": tuple(_grant(ordinal) for ordinal in range(1, 7))}
-    )
-
-    assert len(CompanyReportIdentityInput.model_validate(identity).grants) == 6
+    with pytest.raises(ValueError, match="at most 6 items"):
+        CompanyReportIdentityInput(
+            certificate_serial="81B10A3D",
+            principal_ref="workload:ledgerbridge-company-reports",
+            san_uri="spiffe://ledgerbridge.local/web/company-reports",
+            grants=tuple(_grant(ordinal) for ordinal in range(1, 8)),
+        )
     with pytest.raises(ValueError, match="immutable reporting-unit bindings"):
         CompanyReportIdentityInput(
             certificate_serial="81B10A3D",
@@ -130,7 +133,46 @@ def test_report_identity_accepts_six_distinct_bound_company_grants() -> None:
                         entity_ref=UUID("10000000-0000-4000-8000-000000000001"),
                         allow_unassigned_candidates=True,
                     ),
-                    *[_grant(ordinal) for ordinal in range(2, 6)],
+                    *[_grant(ordinal) for ordinal in range(2, 7)],
                 ]
             ),
+        )
+
+
+def test_builder_updates_existing_v2_report_identity_without_dropping_primary() -> None:
+    initial = build_candidate_policy(
+        _current_policy(),
+        _report_identity(),
+        expected_generation=5,
+        target_generation=6,
+    )
+    updated = build_candidate_policy(
+        initial,
+        _report_identity(),
+        expected_generation=6,
+        target_generation=7,
+    )
+
+    assert len(updated.identities) == 2
+    assert updated.identities[0].certificate_serial == initial.identities[0].certificate_serial
+    assert updated.identities[0].principal.grants == initial.identities[0].principal.grants
+    assert updated.identities[1].certificate_serial == initial.identities[1].certificate_serial
+    assert updated.identities[1].principal.grants == _report_identity().grants
+
+
+def test_builder_rejects_v2_report_certificate_drift() -> None:
+    initial = build_candidate_policy(
+        _current_policy(),
+        _report_identity(),
+        expected_generation=5,
+        target_generation=6,
+    )
+    mismatched = _report_identity().model_copy(update={"certificate_serial": "99FF"})
+
+    with pytest.raises(CompanyReportPolicyError, match="CURRENT_REPORT_IDENTITY_INVALID"):
+        build_candidate_policy(
+            initial,
+            mismatched,
+            expected_generation=6,
+            target_generation=7,
         )
