@@ -2576,17 +2576,36 @@ def _company_transaction_classification_receipt_from_core(
         "transaction_ref",
         "status",
         "category_code",
+        "reporting_item_code",
+        "reporting_item_revision",
         "revision",
         "created",
     }:
         raise invalid
     category = payload.get("category_code")
+    reporting_item_code = payload.get("reporting_item_code")
+    reporting_item_revision = payload.get("reporting_item_revision")
     if (
         payload.get("contract_version")
         != "ledgerbridge.company-transaction-classification-review.v1"
         or payload.get("transaction_ref") != transaction_ref
         or payload.get("status") != "CONFIRMED"
         or category not in _COMPANY_TRANSACTION_CATEGORIES
+        or (reporting_item_code is None) != (reporting_item_revision is None)
+        or (
+            reporting_item_code is not None
+            and (
+                not isinstance(reporting_item_code, str)
+                or not 1 <= len(reporting_item_code) <= 100
+            )
+        )
+        or (
+            reporting_item_revision is not None
+            and (
+                type(reporting_item_revision) is not int
+                or not 1 <= reporting_item_revision <= JSON_SAFE_INTEGER
+            )
+        )
         or type(payload.get("revision")) is not int
         or int(payload["revision"]) < 2
         or type(payload.get("created")) is not bool

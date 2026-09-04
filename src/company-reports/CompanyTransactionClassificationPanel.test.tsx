@@ -35,6 +35,8 @@ describe('CompanyTransactionClassificationPanel', () => {
       transaction_ref: transactionRef,
       status: 'CONFIRMED',
       category_code: 'RELATED_PARTY_CURRENT',
+      reporting_item_code: 'NON_OPERATING.RELATED_PARTY_CURRENT',
+      reporting_item_revision: 1,
       revision: 2,
       created: true,
     })
