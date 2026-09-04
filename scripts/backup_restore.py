@@ -7092,10 +7092,16 @@ def _validate_company_transaction_classification_security(
         ):
             raise BackupError("restored cash reconciliation state columns are invalid")
         state_constraints = _list("cash_reconciliation_classification_state_constraints")
+        def _normalize_state_definition(constraint_type: Any, definition: Any) -> str:
+            normalized = str(definition or "")
+            if constraint_type == "c":
+                normalized = _canonical_check_constraint_definition(normalized)
+            return " ".join(normalized.split())
+
         actual_state_constraints = {
             (item.get("table"), item.get("name")): (
                 item.get("type"),
-                " ".join(str(item.get("definition", "")).split()),
+                _normalize_state_definition(item.get("type"), item.get("definition")),
                 item.get("validated"),
                 item.get("deferrable"),
                 item.get("initially_deferred"),
@@ -7103,7 +7109,13 @@ def _validate_company_transaction_classification_security(
             for item in state_constraints
         }
         expected_state_constraints = {
-            key: (constraint_type, " ".join(definition.split()), True, False, False)
+            key: (
+                constraint_type,
+                _normalize_state_definition(constraint_type, definition),
+                True,
+                False,
+                False,
+            )
             for key, (constraint_type, definition) in (
                 CASH_RECONCILIATION_CLASSIFICATION_STATE_CONSTRAINTS.items()
             )
