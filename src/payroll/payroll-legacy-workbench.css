@@ -400,6 +400,41 @@
 .payroll-verification-total.matched { color: #176b46; background: #effaf4; }
 .payroll-verification-total.attention { color: #9a5910; background: #fff7e8; }
 
+.payroll-disbursement-review,
+.payroll-disbursement-groups,
+.payroll-disbursement-categories,
+.payroll-disbursement-rows { display: grid; gap: 12px; }
+.payroll-evidence-stage-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.payroll-evidence-stage-grid article { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; padding: 11px 12px; border: 1px solid #dce6f0; border-radius: 9px; background: #fff; }
+.payroll-evidence-stage-grid article strong { grid-column: 1 / -1; color: #274b72; font-size: var(--font-small); }
+.payroll-evidence-stage-grid article span { color: #64768b; font-size: var(--font-caption); }
+.payroll-verification-read-status { margin: 0; padding: 11px 13px; border-radius: 9px; font-size: var(--font-small); font-weight: 750; }
+.payroll-verification-read-status.available { color: #176b46; background: #effaf4; }
+.payroll-verification-read-status.blocked { border: 1px solid #ead7aa; color: #805d17; background: #fff9e9; }
+.payroll-disbursement-group { overflow: hidden; border: 1px solid #d9e3ee; border-radius: 12px; background: #fff; }
+.payroll-disbursement-group > header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 13px 15px; border-bottom: 1px solid #e4eaf1; background: #f7fafd; }
+.payroll-disbursement-group > header > div { display: grid; gap: 3px; }
+.payroll-disbursement-group > header strong { color: #1d466f; font-size: var(--font-body); }
+.payroll-disbursement-group > header span { color: #718196; font-size: var(--font-caption); }
+.payroll-disbursement-group dl { display: flex; gap: 22px; margin: 0; }
+.payroll-disbursement-group dl div { display: grid; gap: 3px; text-align: right; }
+.payroll-disbursement-group dt { color: #78889a; font-size: var(--font-caption); }
+.payroll-disbursement-group dd { margin: 0; color: #294e78; font-size: var(--font-small); font-weight: 800; }
+.payroll-disbursement-categories { padding: 12px; }
+.payroll-disbursement-categories details { border: 1px solid #e1e7ef; border-radius: 9px; background: #fcfdff; }
+.payroll-disbursement-categories summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; color: #405a76; font-size: var(--font-small); font-weight: 800; cursor: pointer; }
+.payroll-disbursement-categories summary b { color: #667b92; font-size: var(--font-caption); }
+.payroll-disbursement-rows { padding: 0 10px 10px; }
+.payroll-disbursement-rows > article { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(360px, 1.4fr) auto; align-items: center; gap: 14px; padding: 10px; border-top: 1px solid #edf1f5; }
+.payroll-disbursement-person { display: grid; gap: 4px; }
+.payroll-disbursement-person strong { color: #243d59; font-size: var(--font-small); }
+.payroll-disbursement-person span { color: #75869a; font-size: var(--font-caption); }
+.payroll-disbursement-rows dl { justify-content: flex-end; gap: 18px; }
+.payroll-disbursement-status { min-width: 78px; padding: 6px 8px; border-radius: 999px; text-align: center; font-size: var(--font-caption); font-weight: 850; }
+.payroll-disbursement-status.matched { color: #176b46; background: #eaf7ef; }
+.payroll-disbursement-status.attention { color: #966014; background: #fff3d8; }
+.payroll-verification-footnote { margin: 0; color: #6e7f92; font-size: var(--font-caption); line-height: 1.6; }
+
 .payroll-summary-strip,
 .payroll-check-result,
 .payroll-draft-list > div {
@@ -534,6 +569,11 @@
   .payroll-ledger-layout aside { grid-template-columns: repeat(2, minmax(0, 1fr)); border-right: 0; border-bottom: 1px solid #e0e6ee; }
   .payroll-ledger-layout aside > strong,
   .payroll-ledger-layout aside > small { grid-column: 1 / -1; }
+  .payroll-evidence-stage-grid { grid-template-columns: 1fr; }
+  .payroll-disbursement-group > header { align-items: flex-start; flex-direction: column; }
+  .payroll-disbursement-group > header dl { width: 100%; justify-content: space-between; }
+  .payroll-disbursement-rows > article { grid-template-columns: 1fr; }
+  .payroll-disbursement-rows dl { justify-content: flex-start; }
 }
 
 @media (max-width: 680px) {
