@@ -1,0 +1,4533 @@
+{
+  "contract_version": "ledgerbridge.internal-contract.v1",
+  "models": {
+    "AccountingDimensions": {
+      "$defs": {
+        "BusinessUnitDimension": {
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Label",
+              "type": "string"
+            },
+            "ref": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Ref",
+              "type": "string"
+            }
+          },
+          "required": [
+            "ref",
+            "label"
+          ],
+          "title": "BusinessUnitDimension",
+          "type": "object"
+        },
+        "ReportingCategoryDimension": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Code",
+              "type": "string"
+            },
+            "label": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Label",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "label"
+          ],
+          "title": "ReportingCategoryDimension",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "business_units": {
+          "items": {
+            "$ref": "#/$defs/BusinessUnitDimension"
+          },
+          "maxItems": 1000,
+          "title": "Business Units",
+          "type": "array"
+        },
+        "categories": {
+          "items": {
+            "$ref": "#/$defs/ReportingCategoryDimension"
+          },
+          "maxItems": 1000,
+          "title": "Categories",
+          "type": "array"
+        },
+        "contract_version": {
+          "const": "ledgerbridge.accounting-dimensions.v1",
+          "default": "ledgerbridge.accounting-dimensions.v1",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "entity_ref": {
+          "format": "uuid",
+          "title": "Entity Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_ref",
+        "business_units",
+        "categories"
+      ],
+      "title": "AccountingDimensions",
+      "type": "object"
+    },
+    "CandidateClassificationBatchReceipt": {
+      "$defs": {
+        "Blocker": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/BlockerCode"
+            },
+            "conflict_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Conflict Ref"
+            },
+            "evidence_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Evidence Ref"
+            },
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "business_unit",
+                    "category",
+                    "amount_minor",
+                    "accounting_month"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Field"
+            },
+            "message": {
+              "maxLength": 300,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "Blocker",
+          "type": "object"
+        },
+        "BlockerCode": {
+          "enum": [
+            "MISSING_BUSINESS_UNIT",
+            "MISSING_CATEGORY",
+            "MISSING_AMOUNT",
+            "MISSING_ACCOUNTING_MONTH",
+            "AMBIGUOUS_EXTRACTION",
+            "PARSE_FAILED",
+            "DEPENDENCY_UNAVAILABLE",
+            "EVIDENCE_INCOMPLETE",
+            "UNSUPPORTED_ATTACHMENT",
+            "DUPLICATE_MESSAGE",
+            "DUPLICATE_ATTACHMENT",
+            "BUSINESS_KEY_CONFLICT",
+            "CROSS_FORMAT_DUPLICATE",
+            "ACCOUNT_UNREGISTERED",
+            "COUNTERPARTY_STATEMENT_REQUIRED"
+          ],
+          "title": "BlockerCode",
+          "type": "string"
+        },
+        "CandidateAction": {
+          "enum": [
+            "COMPLETE_FIELDS",
+            "RESOLVE_CONFLICT",
+            "CORRECT_AND_CONFIRM",
+            "CONFIRM",
+            "IGNORE",
+            "SUPERSEDE"
+          ],
+          "title": "CandidateAction",
+          "type": "string"
+        },
+        "CandidateEvent": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "$ref": "#/$defs/CandidateAction"
+            },
+            "actor_ref": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Actor Ref",
+              "type": "string"
+            },
+            "candidate_ref": {
+              "format": "uuid",
+              "title": "Candidate Ref",
+              "type": "string"
+            },
+            "changes": {
+              "items": {
+                "$ref": "#/$defs/FieldChange"
+              },
+              "minItems": 1,
+              "title": "Changes",
+              "type": "array"
+            },
+            "command_fingerprint": {
+              "pattern": "^[a-f0-9]{64}$",
+              "title": "Command Fingerprint",
+              "type": "string"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "derived_candidate_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Derived Candidate Ref"
+            },
+            "from_revision": {
+              "minimum": 1,
+              "title": "From Revision",
+              "type": "integer"
+            },
+            "from_status": {
+              "$ref": "#/$defs/CandidateStatus"
+            },
+            "operation_id": {
+              "format": "uuid",
+              "title": "Operation Id",
+              "type": "string"
+            },
+            "prior_projection": {
+              "$ref": "#/$defs/CandidateProjection"
+            },
+            "reason": {
+              "title": "Reason",
+              "type": "string"
+            },
+            "resolved_conflicts": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/ResolvedConflict"
+              },
+              "title": "Resolved Conflicts",
+              "type": "array"
+            },
+            "result_derived_candidate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CandidateProjection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "result_projection": {
+              "$ref": "#/$defs/CandidateProjection"
+            },
+            "to_revision": {
+              "minimum": 2,
+              "title": "To Revision",
+              "type": "integer"
+            },
+            "to_status": {
+              "$ref": "#/$defs/CandidateStatus"
+            }
+          },
+          "required": [
+            "operation_id",
+            "command_fingerprint",
+            "candidate_ref",
+            "action",
+            "from_revision",
+            "to_revision",
+            "from_status",
+            "to_status",
+            "changes",
+            "reason",
+            "actor_ref",
+            "created_at",
+            "prior_projection",
+            "result_projection"
+          ],
+          "title": "CandidateEvent",
+          "type": "object"
+        },
+        "CandidateProjection": {
+          "additionalProperties": false,
+          "properties": {
+            "accounting_month": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Accounting Month"
+            },
+            "amount_minor": {
+              "anyOf": [
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Amount Minor"
+            },
+            "blockers": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Blocker"
+              },
+              "title": "Blockers",
+              "type": "array"
+            },
+            "business_unit_label": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Business Unit Label"
+            },
+            "business_unit_ref": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Business Unit Ref"
+            },
+            "candidate_ref": {
+              "format": "uuid",
+              "title": "Candidate Ref",
+              "type": "string"
+            },
+            "category_code": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Category Code"
+            },
+            "category_label": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Category Label"
+            },
+            "confidence_basis_points": {
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Confidence Basis Points",
+              "type": "integer"
+            },
+            "contract_version": {
+              "const": "ledgerbridge.candidate.v1",
+              "default": "ledgerbridge.candidate.v1",
+              "title": "Contract Version",
+              "type": "string"
+            },
+            "counterparty_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CounterpartyClass"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "counterparty_ref": {
+              "anyOf": [
+                {
+                  "pattern": "^cp_[a-z0-9_]{1,96}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counterparty Ref"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "currency": {
+              "const": "CNY",
+              "default": "CNY",
+              "title": "Currency",
+              "type": "string"
+            },
+            "entity_ref": {
+              "format": "uuid",
+              "title": "Entity Ref",
+              "type": "string"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/$defs/EvidenceReference"
+              },
+              "minItems": 1,
+              "title": "Evidence",
+              "type": "array"
+            },
+            "review_risks": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/ReviewRisk"
+              },
+              "title": "Review Risks",
+              "type": "array"
+            },
+            "review_summary": {
+              "$ref": "#/$defs/ReviewSummary"
+            },
+            "revision": {
+              "minimum": 1,
+              "title": "Revision",
+              "type": "integer"
+            },
+            "short_id": {
+              "pattern": "^C-[A-Z0-9]{4,8}$",
+              "title": "Short Id",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/SourceProjection"
+            },
+            "status": {
+              "$ref": "#/$defs/CandidateStatus"
+            },
+            "summary": {
+              "maxLength": 500,
+              "minLength": 1,
+              "title": "Summary",
+              "type": "string"
+            },
+            "superseded_by_candidate_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Superseded By Candidate Ref"
+            },
+            "supersedes_candidate_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Supersedes Candidate Ref"
+            },
+            "updated_at": {
+              "format": "date-time",
+              "title": "Updated At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "candidate_ref",
+            "short_id",
+            "revision",
+            "status",
+            "entity_ref",
+            "summary",
+            "confidence_basis_points",
+            "source",
+            "evidence",
+            "review_summary",
+            "created_at",
+            "updated_at"
+          ],
+          "title": "CandidateProjection",
+          "type": "object"
+        },
+        "CandidateStatus": {
+          "enum": [
+            "INCOMPLETE",
+            "CONFLICTED",
+            "PENDING",
+            "CONFIRMED",
+            "IGNORED",
+            "SUPERSEDED"
+          ],
+          "title": "CandidateStatus",
+          "type": "string"
+        },
+        "ClassificationBatchMemberResult": {
+          "additionalProperties": false,
+          "properties": {
+            "candidate": {
+              "$ref": "#/$defs/CandidateProjection"
+            },
+            "candidate_ref": {
+              "format": "uuid",
+              "title": "Candidate Ref",
+              "type": "string"
+            },
+            "events": {
+              "items": {
+                "$ref": "#/$defs/CandidateEvent"
+              },
+              "maxItems": 2,
+              "minItems": 1,
+              "title": "Events",
+              "type": "array"
+            },
+            "operation_id": {
+              "format": "uuid",
+              "title": "Operation Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "APPLIED",
+                "REPLAYED"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "candidate_ref",
+            "operation_id",
+            "status",
+            "candidate",
+            "events"
+          ],
+          "title": "ClassificationBatchMemberResult",
+          "type": "object"
+        },
+        "ClassificationTarget": {
+          "additionalProperties": false,
+          "properties": {
+            "business_unit_ref": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Business Unit Ref",
+              "type": "string"
+            },
+            "category_code": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Category Code",
+              "type": "string"
+            }
+          },
+          "required": [
+            "business_unit_ref",
+            "category_code"
+          ],
+          "title": "ClassificationTarget",
+          "type": "object"
+        },
+        "CounterpartyClass": {
+          "enum": [
+            "self_managed",
+            "related_party",
+            "known_business",
+            "unknown"
+          ],
+          "title": "CounterpartyClass",
+          "type": "string"
+        },
+        "EvidenceKind": {
+          "enum": [
+            "MESSAGE_ENVELOPE",
+            "MAIL_ENVELOPE",
+            "ATTACHMENT"
+          ],
+          "title": "EvidenceKind",
+          "type": "string"
+        },
+        "EvidenceReference": {
+          "additionalProperties": false,
+          "properties": {
+            "display_name": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Display Name"
+            },
+            "download_available": {
+              "title": "Download Available",
+              "type": "boolean"
+            },
+            "evidence_ref": {
+              "format": "uuid",
+              "title": "Evidence Ref",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/EvidenceKind"
+            },
+            "media_type": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Media Type",
+              "type": "string"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Source Ref"
+            },
+            "unlock_status": {
+              "$ref": "#/$defs/EvidenceUnlockStatus",
+              "default": "NOT_REQUIRED"
+            }
+          },
+          "required": [
+            "evidence_ref",
+            "kind",
+            "media_type",
+            "download_available"
+          ],
+          "title": "EvidenceReference",
+          "type": "object"
+        },
+        "EvidenceUnlockStatus": {
+          "enum": [
+            "NOT_REQUIRED",
+            "PASSWORD_REQUIRED",
+            "UNLOCKED"
+          ],
+          "title": "EvidenceUnlockStatus",
+          "type": "string"
+        },
+        "FieldChange": {
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "enum": [
+                "business_unit_ref",
+                "business_unit_label",
+                "category_code",
+                "category_label",
+                "amount_minor",
+                "accounting_month",
+                "status"
+              ],
+              "title": "Field",
+              "type": "string"
+            },
+            "new_value": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "New Value"
+            },
+            "previous_value": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Previous Value"
+            }
+          },
+          "required": [
+            "field",
+            "previous_value",
+            "new_value"
+          ],
+          "title": "FieldChange",
+          "type": "object"
+        },
+        "IngestChannel": {
+          "enum": [
+            "HERMES",
+            "OUTLOOK",
+            "CONTROLLED_UPLOAD",
+            "SYNTHETIC"
+          ],
+          "title": "IngestChannel",
+          "type": "string"
+        },
+        "ResolvedConflict": {
+          "additionalProperties": false,
+          "properties": {
+            "conflict_ref": {
+              "format": "uuid",
+              "title": "Conflict Ref",
+              "type": "string"
+            },
+            "resolution": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "title": "Resolution",
+              "type": "string"
+            }
+          },
+          "required": [
+            "conflict_ref",
+            "resolution"
+          ],
+          "title": "ResolvedConflict",
+          "type": "object"
+        },
+        "ReviewRisk": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ReviewRiskCode"
+            },
+            "message": {
+              "maxLength": 300,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "ReviewRisk",
+          "type": "object"
+        },
+        "ReviewRiskCode": {
+          "enum": [
+            "FUNDING_STATEMENT_REQUIRED",
+            "RELATED_ACCOUNT_STATEMENT_REQUIRED",
+            "HOTEL_PAYOUT_STATEMENT_REQUIRED",
+            "TRANSFER_REVIEW_REQUIRED",
+            "REVERSAL_MATCH_REQUIRED",
+            "UNSETTLED_TRANSACTION"
+          ],
+          "title": "ReviewRiskCode",
+          "type": "string"
+        },
+        "ReviewSummary": {
+          "additionalProperties": false,
+          "properties": {
+            "current_revision": {
+              "minimum": 1,
+              "title": "Current Revision",
+              "type": "integer"
+            },
+            "event_count": {
+              "minimum": 0,
+              "title": "Event Count",
+              "type": "integer"
+            },
+            "last_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CandidateAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "last_decided_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Last Decided At"
+            }
+          },
+          "required": [
+            "event_count",
+            "current_revision"
+          ],
+          "title": "ReviewSummary",
+          "type": "object"
+        },
+        "SourceProjection": {
+          "additionalProperties": false,
+          "properties": {
+            "display_label": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Display Label",
+              "type": "string"
+            },
+            "ingest_channel": {
+              "$ref": "#/$defs/IngestChannel"
+            },
+            "source_event_ref": {
+              "format": "uuid",
+              "title": "Source Event Ref",
+              "type": "string"
+            },
+            "source_system": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Source System",
+              "type": "string"
+            }
+          },
+          "required": [
+            "ingest_channel",
+            "source_system",
+            "source_event_ref",
+            "display_label"
+          ],
+          "title": "SourceProjection",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "accounting_month": {
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+          "title": "Accounting Month",
+          "type": "string"
+        },
+        "acknowledged_risk_codes": {
+          "items": {
+            "$ref": "#/$defs/ReviewRiskCode"
+          },
+          "maxItems": 6,
+          "title": "Acknowledged Risk Codes",
+          "type": "array"
+        },
+        "contract_version": {
+          "const": "ledgerbridge.classification-batch.v1",
+          "default": "ledgerbridge.classification-batch.v1",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "group_ref": {
+          "pattern": "^cg_[0-9a-f]{32}$",
+          "title": "Group Ref",
+          "type": "string"
+        },
+        "operation_id": {
+          "format": "uuid",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "replayed": {
+          "title": "Replayed",
+          "type": "boolean"
+        },
+        "results": {
+          "items": {
+            "$ref": "#/$defs/ClassificationBatchMemberResult"
+          },
+          "maxItems": 100,
+          "minItems": 2,
+          "title": "Results",
+          "type": "array"
+        },
+        "source_candidate_ref": {
+          "format": "uuid",
+          "title": "Source Candidate Ref",
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/ClassificationTarget"
+        }
+      },
+      "required": [
+        "operation_id",
+        "replayed",
+        "group_ref",
+        "accounting_month",
+        "source_candidate_ref",
+        "target",
+        "acknowledged_risk_codes",
+        "results"
+      ],
+      "title": "CandidateClassificationBatchReceipt",
+      "type": "object"
+    },
+    "CandidateDecisionReceipt": {
+      "$defs": {
+        "Blocker": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/BlockerCode"
+            },
+            "conflict_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Conflict Ref"
+            },
+            "evidence_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Evidence Ref"
+            },
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "business_unit",
+                    "category",
+                    "amount_minor",
+                    "accounting_month"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Field"
+            },
+            "message": {
+              "maxLength": 300,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "Blocker",
+          "type": "object"
+        },
+        "BlockerCode": {
+          "enum": [
+            "MISSING_BUSINESS_UNIT",
+            "MISSING_CATEGORY",
+            "MISSING_AMOUNT",
+            "MISSING_ACCOUNTING_MONTH",
+            "AMBIGUOUS_EXTRACTION",
+            "PARSE_FAILED",
+            "DEPENDENCY_UNAVAILABLE",
+            "EVIDENCE_INCOMPLETE",
+            "UNSUPPORTED_ATTACHMENT",
+            "DUPLICATE_MESSAGE",
+            "DUPLICATE_ATTACHMENT",
+            "BUSINESS_KEY_CONFLICT",
+            "CROSS_FORMAT_DUPLICATE",
+            "ACCOUNT_UNREGISTERED",
+            "COUNTERPARTY_STATEMENT_REQUIRED"
+          ],
+          "title": "BlockerCode",
+          "type": "string"
+        },
+        "CandidateAction": {
+          "enum": [
+            "COMPLETE_FIELDS",
+            "RESOLVE_CONFLICT",
+            "CORRECT_AND_CONFIRM",
+            "CONFIRM",
+            "IGNORE",
+            "SUPERSEDE"
+          ],
+          "title": "CandidateAction",
+          "type": "string"
+        },
+        "CandidateEvent": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "$ref": "#/$defs/CandidateAction"
+            },
+            "actor_ref": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Actor Ref",
+              "type": "string"
+            },
+            "candidate_ref": {
+              "format": "uuid",
+              "title": "Candidate Ref",
+              "type": "string"
+            },
+            "changes": {
+              "items": {
+                "$ref": "#/$defs/FieldChange"
+              },
+              "minItems": 1,
+              "title": "Changes",
+              "type": "array"
+            },
+            "command_fingerprint": {
+              "pattern": "^[a-f0-9]{64}$",
+              "title": "Command Fingerprint",
+              "type": "string"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "derived_candidate_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Derived Candidate Ref"
+            },
+            "from_revision": {
+              "minimum": 1,
+              "title": "From Revision",
+              "type": "integer"
+            },
+            "from_status": {
+              "$ref": "#/$defs/CandidateStatus"
+            },
+            "operation_id": {
+              "format": "uuid",
+              "title": "Operation Id",
+              "type": "string"
+            },
+            "prior_projection": {
+              "$ref": "#/$defs/CandidateProjection"
+            },
+            "reason": {
+              "title": "Reason",
+              "type": "string"
+            },
+            "resolved_conflicts": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/ResolvedConflict"
+              },
+              "title": "Resolved Conflicts",
+              "type": "array"
+            },
+            "result_derived_candidate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CandidateProjection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "result_projection": {
+              "$ref": "#/$defs/CandidateProjection"
+            },
+            "to_revision": {
+              "minimum": 2,
+              "title": "To Revision",
+              "type": "integer"
+            },
+            "to_status": {
+              "$ref": "#/$defs/CandidateStatus"
+            }
+          },
+          "required": [
+            "operation_id",
+            "command_fingerprint",
+            "candidate_ref",
+            "action",
+            "from_revision",
+            "to_revision",
+            "from_status",
+            "to_status",
+            "changes",
+            "reason",
+            "actor_ref",
+            "created_at",
+            "prior_projection",
+            "result_projection"
+          ],
+          "title": "CandidateEvent",
+          "type": "object"
+        },
+        "CandidateProjection": {
+          "additionalProperties": false,
+          "properties": {
+            "accounting_month": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Accounting Month"
+            },
+            "amount_minor": {
+              "anyOf": [
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Amount Minor"
+            },
+            "blockers": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Blocker"
+              },
+              "title": "Blockers",
+              "type": "array"
+            },
+            "business_unit_label": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Business Unit Label"
+            },
+            "business_unit_ref": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Business Unit Ref"
+            },
+            "candidate_ref": {
+              "format": "uuid",
+              "title": "Candidate Ref",
+              "type": "string"
+            },
+            "category_code": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Category Code"
+            },
+            "category_label": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Category Label"
+            },
+            "confidence_basis_points": {
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Confidence Basis Points",
+              "type": "integer"
+            },
+            "contract_version": {
+              "const": "ledgerbridge.candidate.v1",
+              "default": "ledgerbridge.candidate.v1",
+              "title": "Contract Version",
+              "type": "string"
+            },
+            "counterparty_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CounterpartyClass"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "counterparty_ref": {
+              "anyOf": [
+                {
+                  "pattern": "^cp_[a-z0-9_]{1,96}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counterparty Ref"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "currency": {
+              "const": "CNY",
+              "default": "CNY",
+              "title": "Currency",
+              "type": "string"
+            },
+            "entity_ref": {
+              "format": "uuid",
+              "title": "Entity Ref",
+              "type": "string"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/$defs/EvidenceReference"
+              },
+              "minItems": 1,
+              "title": "Evidence",
+              "type": "array"
+            },
+            "review_risks": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/ReviewRisk"
+              },
+              "title": "Review Risks",
+              "type": "array"
+            },
+            "review_summary": {
+              "$ref": "#/$defs/ReviewSummary"
+            },
+            "revision": {
+              "minimum": 1,
+              "title": "Revision",
+              "type": "integer"
+            },
+            "short_id": {
+              "pattern": "^C-[A-Z0-9]{4,8}$",
+              "title": "Short Id",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/SourceProjection"
+            },
+            "status": {
+              "$ref": "#/$defs/CandidateStatus"
+            },
+            "summary": {
+              "maxLength": 500,
+              "minLength": 1,
+              "title": "Summary",
+              "type": "string"
+            },
+            "superseded_by_candidate_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Superseded By Candidate Ref"
+            },
+            "supersedes_candidate_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Supersedes Candidate Ref"
+            },
+            "updated_at": {
+              "format": "date-time",
+              "title": "Updated At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "candidate_ref",
+            "short_id",
+            "revision",
+            "status",
+            "entity_ref",
+            "summary",
+            "confidence_basis_points",
+            "source",
+            "evidence",
+            "review_summary",
+            "created_at",
+            "updated_at"
+          ],
+          "title": "CandidateProjection",
+          "type": "object"
+        },
+        "CandidateStatus": {
+          "enum": [
+            "INCOMPLETE",
+            "CONFLICTED",
+            "PENDING",
+            "CONFIRMED",
+            "IGNORED",
+            "SUPERSEDED"
+          ],
+          "title": "CandidateStatus",
+          "type": "string"
+        },
+        "CounterpartyClass": {
+          "enum": [
+            "self_managed",
+            "related_party",
+            "known_business",
+            "unknown"
+          ],
+          "title": "CounterpartyClass",
+          "type": "string"
+        },
+        "EvidenceKind": {
+          "enum": [
+            "MESSAGE_ENVELOPE",
+            "MAIL_ENVELOPE",
+            "ATTACHMENT"
+          ],
+          "title": "EvidenceKind",
+          "type": "string"
+        },
+        "EvidenceReference": {
+          "additionalProperties": false,
+          "properties": {
+            "display_name": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Display Name"
+            },
+            "download_available": {
+              "title": "Download Available",
+              "type": "boolean"
+            },
+            "evidence_ref": {
+              "format": "uuid",
+              "title": "Evidence Ref",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/EvidenceKind"
+            },
+            "media_type": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Media Type",
+              "type": "string"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Source Ref"
+            },
+            "unlock_status": {
+              "$ref": "#/$defs/EvidenceUnlockStatus",
+              "default": "NOT_REQUIRED"
+            }
+          },
+          "required": [
+            "evidence_ref",
+            "kind",
+            "media_type",
+            "download_available"
+          ],
+          "title": "EvidenceReference",
+          "type": "object"
+        },
+        "EvidenceUnlockStatus": {
+          "enum": [
+            "NOT_REQUIRED",
+            "PASSWORD_REQUIRED",
+            "UNLOCKED"
+          ],
+          "title": "EvidenceUnlockStatus",
+          "type": "string"
+        },
+        "FieldChange": {
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "enum": [
+                "business_unit_ref",
+                "business_unit_label",
+                "category_code",
+                "category_label",
+                "amount_minor",
+                "accounting_month",
+                "status"
+              ],
+              "title": "Field",
+              "type": "string"
+            },
+            "new_value": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "New Value"
+            },
+            "previous_value": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Previous Value"
+            }
+          },
+          "required": [
+            "field",
+            "previous_value",
+            "new_value"
+          ],
+          "title": "FieldChange",
+          "type": "object"
+        },
+        "IngestChannel": {
+          "enum": [
+            "HERMES",
+            "OUTLOOK",
+            "CONTROLLED_UPLOAD",
+            "SYNTHETIC"
+          ],
+          "title": "IngestChannel",
+          "type": "string"
+        },
+        "ResolvedConflict": {
+          "additionalProperties": false,
+          "properties": {
+            "conflict_ref": {
+              "format": "uuid",
+              "title": "Conflict Ref",
+              "type": "string"
+            },
+            "resolution": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "title": "Resolution",
+              "type": "string"
+            }
+          },
+          "required": [
+            "conflict_ref",
+            "resolution"
+          ],
+          "title": "ResolvedConflict",
+          "type": "object"
+        },
+        "ReviewRisk": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ReviewRiskCode"
+            },
+            "message": {
+              "maxLength": 300,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "ReviewRisk",
+          "type": "object"
+        },
+        "ReviewRiskCode": {
+          "enum": [
+            "FUNDING_STATEMENT_REQUIRED",
+            "RELATED_ACCOUNT_STATEMENT_REQUIRED",
+            "HOTEL_PAYOUT_STATEMENT_REQUIRED",
+            "TRANSFER_REVIEW_REQUIRED",
+            "REVERSAL_MATCH_REQUIRED",
+            "UNSETTLED_TRANSACTION"
+          ],
+          "title": "ReviewRiskCode",
+          "type": "string"
+        },
+        "ReviewSummary": {
+          "additionalProperties": false,
+          "properties": {
+            "current_revision": {
+              "minimum": 1,
+              "title": "Current Revision",
+              "type": "integer"
+            },
+            "event_count": {
+              "minimum": 0,
+              "title": "Event Count",
+              "type": "integer"
+            },
+            "last_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CandidateAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "last_decided_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Last Decided At"
+            }
+          },
+          "required": [
+            "event_count",
+            "current_revision"
+          ],
+          "title": "ReviewSummary",
+          "type": "object"
+        },
+        "SourceProjection": {
+          "additionalProperties": false,
+          "properties": {
+            "display_label": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Display Label",
+              "type": "string"
+            },
+            "ingest_channel": {
+              "$ref": "#/$defs/IngestChannel"
+            },
+            "source_event_ref": {
+              "format": "uuid",
+              "title": "Source Event Ref",
+              "type": "string"
+            },
+            "source_system": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Source System",
+              "type": "string"
+            }
+          },
+          "required": [
+            "ingest_channel",
+            "source_system",
+            "source_event_ref",
+            "display_label"
+          ],
+          "title": "SourceProjection",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "candidate": {
+          "$ref": "#/$defs/CandidateProjection"
+        },
+        "contract_version": {
+          "const": "ledgerbridge.candidate-decision.v1",
+          "default": "ledgerbridge.candidate-decision.v1",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "events": {
+          "items": {
+            "$ref": "#/$defs/CandidateEvent"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "title": "Events",
+          "type": "array"
+        },
+        "operation_id": {
+          "format": "uuid",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "replayed": {
+          "title": "Replayed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "operation_id",
+        "replayed",
+        "candidate",
+        "events"
+      ],
+      "title": "CandidateDecisionReceipt",
+      "type": "object"
+    },
+    "CandidateEventPage": {
+      "$defs": {
+        "Blocker": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/BlockerCode"
+            },
+            "conflict_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Conflict Ref"
+            },
+            "evidence_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Evidence Ref"
+            },
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "business_unit",
+                    "category",
+                    "amount_minor",
+                    "accounting_month"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Field"
+            },
+            "message": {
+              "maxLength": 300,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "Blocker",
+          "type": "object"
+        },
+        "BlockerCode": {
+          "enum": [
+            "MISSING_BUSINESS_UNIT",
+            "MISSING_CATEGORY",
+            "MISSING_AMOUNT",
+            "MISSING_ACCOUNTING_MONTH",
+            "AMBIGUOUS_EXTRACTION",
+            "PARSE_FAILED",
+            "DEPENDENCY_UNAVAILABLE",
+            "EVIDENCE_INCOMPLETE",
+            "UNSUPPORTED_ATTACHMENT",
+            "DUPLICATE_MESSAGE",
+            "DUPLICATE_ATTACHMENT",
+            "BUSINESS_KEY_CONFLICT",
+            "CROSS_FORMAT_DUPLICATE",
+            "ACCOUNT_UNREGISTERED",
+            "COUNTERPARTY_STATEMENT_REQUIRED"
+          ],
+          "title": "BlockerCode",
+          "type": "string"
+        },
+        "CandidateAction": {
+          "enum": [
+            "COMPLETE_FIELDS",
+            "RESOLVE_CONFLICT",
+            "CORRECT_AND_CONFIRM",
+            "CONFIRM",
+            "IGNORE",
+            "SUPERSEDE"
+          ],
+          "title": "CandidateAction",
+          "type": "string"
+        },
+        "CandidateEvent": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "$ref": "#/$defs/CandidateAction"
+            },
+            "actor_ref": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Actor Ref",
+              "type": "string"
+            },
+            "candidate_ref": {
+              "format": "uuid",
+              "title": "Candidate Ref",
+              "type": "string"
+            },
+            "changes": {
+              "items": {
+                "$ref": "#/$defs/FieldChange"
+              },
+              "minItems": 1,
+              "title": "Changes",
+              "type": "array"
+            },
+            "command_fingerprint": {
+              "pattern": "^[a-f0-9]{64}$",
+              "title": "Command Fingerprint",
+              "type": "string"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "derived_candidate_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Derived Candidate Ref"
+            },
+            "from_revision": {
+              "minimum": 1,
+              "title": "From Revision",
+              "type": "integer"
+            },
+            "from_status": {
+              "$ref": "#/$defs/CandidateStatus"
+            },
+            "operation_id": {
+              "format": "uuid",
+              "title": "Operation Id",
+              "type": "string"
+            },
+            "prior_projection": {
+              "$ref": "#/$defs/CandidateProjection"
+            },
+            "reason": {
+              "title": "Reason",
+              "type": "string"
+            },
+            "resolved_conflicts": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/ResolvedConflict"
+              },
+              "title": "Resolved Conflicts",
+              "type": "array"
+            },
+            "result_derived_candidate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CandidateProjection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "result_projection": {
+              "$ref": "#/$defs/CandidateProjection"
+            },
+            "to_revision": {
+              "minimum": 2,
+              "title": "To Revision",
+              "type": "integer"
+            },
+            "to_status": {
+              "$ref": "#/$defs/CandidateStatus"
+            }
+          },
+          "required": [
+            "operation_id",
+            "command_fingerprint",
+            "candidate_ref",
+            "action",
+            "from_revision",
+            "to_revision",
+            "from_status",
+            "to_status",
+            "changes",
+            "reason",
+            "actor_ref",
+            "created_at",
+            "prior_projection",
+            "result_projection"
+          ],
+          "title": "CandidateEvent",
+          "type": "object"
+        },
+        "CandidateProjection": {
+          "additionalProperties": false,
+          "properties": {
+            "accounting_month": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Accounting Month"
+            },
+            "amount_minor": {
+              "anyOf": [
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Amount Minor"
+            },
+            "blockers": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Blocker"
+              },
+              "title": "Blockers",
+              "type": "array"
+            },
+            "business_unit_label": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Business Unit Label"
+            },
+            "business_unit_ref": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Business Unit Ref"
+            },
+            "candidate_ref": {
+              "format": "uuid",
+              "title": "Candidate Ref",
+              "type": "string"
+            },
+            "category_code": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Category Code"
+            },
+            "category_label": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Category Label"
+            },
+            "confidence_basis_points": {
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Confidence Basis Points",
+              "type": "integer"
+            },
+            "contract_version": {
+              "const": "ledgerbridge.candidate.v1",
+              "default": "ledgerbridge.candidate.v1",
+              "title": "Contract Version",
+              "type": "string"
+            },
+            "counterparty_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CounterpartyClass"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "counterparty_ref": {
+              "anyOf": [
+                {
+                  "pattern": "^cp_[a-z0-9_]{1,96}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counterparty Ref"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "currency": {
+              "const": "CNY",
+              "default": "CNY",
+              "title": "Currency",
+              "type": "string"
+            },
+            "entity_ref": {
+              "format": "uuid",
+              "title": "Entity Ref",
+              "type": "string"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/$defs/EvidenceReference"
+              },
+              "minItems": 1,
+              "title": "Evidence",
+              "type": "array"
+            },
+            "review_risks": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/ReviewRisk"
+              },
+              "title": "Review Risks",
+              "type": "array"
+            },
+            "review_summary": {
+              "$ref": "#/$defs/ReviewSummary"
+            },
+            "revision": {
+              "minimum": 1,
+              "title": "Revision",
+              "type": "integer"
+            },
+            "short_id": {
+              "pattern": "^C-[A-Z0-9]{4,8}$",
+              "title": "Short Id",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/SourceProjection"
+            },
+            "status": {
+              "$ref": "#/$defs/CandidateStatus"
+            },
+            "summary": {
+              "maxLength": 500,
+              "minLength": 1,
+              "title": "Summary",
+              "type": "string"
+            },
+            "superseded_by_candidate_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Superseded By Candidate Ref"
+            },
+            "supersedes_candidate_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Supersedes Candidate Ref"
+            },
+            "updated_at": {
+              "format": "date-time",
+              "title": "Updated At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "candidate_ref",
+            "short_id",
+            "revision",
+            "status",
+            "entity_ref",
+            "summary",
+            "confidence_basis_points",
+            "source",
+            "evidence",
+            "review_summary",
+            "created_at",
+            "updated_at"
+          ],
+          "title": "CandidateProjection",
+          "type": "object"
+        },
+        "CandidateStatus": {
+          "enum": [
+            "INCOMPLETE",
+            "CONFLICTED",
+            "PENDING",
+            "CONFIRMED",
+            "IGNORED",
+            "SUPERSEDED"
+          ],
+          "title": "CandidateStatus",
+          "type": "string"
+        },
+        "CounterpartyClass": {
+          "enum": [
+            "self_managed",
+            "related_party",
+            "known_business",
+            "unknown"
+          ],
+          "title": "CounterpartyClass",
+          "type": "string"
+        },
+        "EvidenceKind": {
+          "enum": [
+            "MESSAGE_ENVELOPE",
+            "MAIL_ENVELOPE",
+            "ATTACHMENT"
+          ],
+          "title": "EvidenceKind",
+          "type": "string"
+        },
+        "EvidenceReference": {
+          "additionalProperties": false,
+          "properties": {
+            "display_name": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Display Name"
+            },
+            "download_available": {
+              "title": "Download Available",
+              "type": "boolean"
+            },
+            "evidence_ref": {
+              "format": "uuid",
+              "title": "Evidence Ref",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/EvidenceKind"
+            },
+            "media_type": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Media Type",
+              "type": "string"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Source Ref"
+            },
+            "unlock_status": {
+              "$ref": "#/$defs/EvidenceUnlockStatus",
+              "default": "NOT_REQUIRED"
+            }
+          },
+          "required": [
+            "evidence_ref",
+            "kind",
+            "media_type",
+            "download_available"
+          ],
+          "title": "EvidenceReference",
+          "type": "object"
+        },
+        "EvidenceUnlockStatus": {
+          "enum": [
+            "NOT_REQUIRED",
+            "PASSWORD_REQUIRED",
+            "UNLOCKED"
+          ],
+          "title": "EvidenceUnlockStatus",
+          "type": "string"
+        },
+        "FieldChange": {
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "enum": [
+                "business_unit_ref",
+                "business_unit_label",
+                "category_code",
+                "category_label",
+                "amount_minor",
+                "accounting_month",
+                "status"
+              ],
+              "title": "Field",
+              "type": "string"
+            },
+            "new_value": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "New Value"
+            },
+            "previous_value": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Previous Value"
+            }
+          },
+          "required": [
+            "field",
+            "previous_value",
+            "new_value"
+          ],
+          "title": "FieldChange",
+          "type": "object"
+        },
+        "IngestChannel": {
+          "enum": [
+            "HERMES",
+            "OUTLOOK",
+            "CONTROLLED_UPLOAD",
+            "SYNTHETIC"
+          ],
+          "title": "IngestChannel",
+          "type": "string"
+        },
+        "ResolvedConflict": {
+          "additionalProperties": false,
+          "properties": {
+            "conflict_ref": {
+              "format": "uuid",
+              "title": "Conflict Ref",
+              "type": "string"
+            },
+            "resolution": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "title": "Resolution",
+              "type": "string"
+            }
+          },
+          "required": [
+            "conflict_ref",
+            "resolution"
+          ],
+          "title": "ResolvedConflict",
+          "type": "object"
+        },
+        "ReviewRisk": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ReviewRiskCode"
+            },
+            "message": {
+              "maxLength": 300,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "ReviewRisk",
+          "type": "object"
+        },
+        "ReviewRiskCode": {
+          "enum": [
+            "FUNDING_STATEMENT_REQUIRED",
+            "RELATED_ACCOUNT_STATEMENT_REQUIRED",
+            "HOTEL_PAYOUT_STATEMENT_REQUIRED",
+            "TRANSFER_REVIEW_REQUIRED",
+            "REVERSAL_MATCH_REQUIRED",
+            "UNSETTLED_TRANSACTION"
+          ],
+          "title": "ReviewRiskCode",
+          "type": "string"
+        },
+        "ReviewSummary": {
+          "additionalProperties": false,
+          "properties": {
+            "current_revision": {
+              "minimum": 1,
+              "title": "Current Revision",
+              "type": "integer"
+            },
+            "event_count": {
+              "minimum": 0,
+              "title": "Event Count",
+              "type": "integer"
+            },
+            "last_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CandidateAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "last_decided_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Last Decided At"
+            }
+          },
+          "required": [
+            "event_count",
+            "current_revision"
+          ],
+          "title": "ReviewSummary",
+          "type": "object"
+        },
+        "SourceProjection": {
+          "additionalProperties": false,
+          "properties": {
+            "display_label": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Display Label",
+              "type": "string"
+            },
+            "ingest_channel": {
+              "$ref": "#/$defs/IngestChannel"
+            },
+            "source_event_ref": {
+              "format": "uuid",
+              "title": "Source Event Ref",
+              "type": "string"
+            },
+            "source_system": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Source System",
+              "type": "string"
+            }
+          },
+          "required": [
+            "ingest_channel",
+            "source_system",
+            "source_event_ref",
+            "display_label"
+          ],
+          "title": "SourceProjection",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/CandidateEvent"
+          },
+          "maxItems": 100,
+          "title": "Items",
+          "type": "array"
+        },
+        "next_cursor": {
+          "default": null,
+          "title": "Next Cursor",
+          "type": "null"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "title": "CandidateEventPage",
+      "type": "object"
+    },
+    "CandidatePage": {
+      "$defs": {
+        "Blocker": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/BlockerCode"
+            },
+            "conflict_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Conflict Ref"
+            },
+            "evidence_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Evidence Ref"
+            },
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "business_unit",
+                    "category",
+                    "amount_minor",
+                    "accounting_month"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Field"
+            },
+            "message": {
+              "maxLength": 300,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "Blocker",
+          "type": "object"
+        },
+        "BlockerCode": {
+          "enum": [
+            "MISSING_BUSINESS_UNIT",
+            "MISSING_CATEGORY",
+            "MISSING_AMOUNT",
+            "MISSING_ACCOUNTING_MONTH",
+            "AMBIGUOUS_EXTRACTION",
+            "PARSE_FAILED",
+            "DEPENDENCY_UNAVAILABLE",
+            "EVIDENCE_INCOMPLETE",
+            "UNSUPPORTED_ATTACHMENT",
+            "DUPLICATE_MESSAGE",
+            "DUPLICATE_ATTACHMENT",
+            "BUSINESS_KEY_CONFLICT",
+            "CROSS_FORMAT_DUPLICATE",
+            "ACCOUNT_UNREGISTERED",
+            "COUNTERPARTY_STATEMENT_REQUIRED"
+          ],
+          "title": "BlockerCode",
+          "type": "string"
+        },
+        "CandidateAction": {
+          "enum": [
+            "COMPLETE_FIELDS",
+            "RESOLVE_CONFLICT",
+            "CORRECT_AND_CONFIRM",
+            "CONFIRM",
+            "IGNORE",
+            "SUPERSEDE"
+          ],
+          "title": "CandidateAction",
+          "type": "string"
+        },
+        "CandidateProjection": {
+          "additionalProperties": false,
+          "properties": {
+            "accounting_month": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Accounting Month"
+            },
+            "amount_minor": {
+              "anyOf": [
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Amount Minor"
+            },
+            "blockers": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Blocker"
+              },
+              "title": "Blockers",
+              "type": "array"
+            },
+            "business_unit_label": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Business Unit Label"
+            },
+            "business_unit_ref": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Business Unit Ref"
+            },
+            "candidate_ref": {
+              "format": "uuid",
+              "title": "Candidate Ref",
+              "type": "string"
+            },
+            "category_code": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Category Code"
+            },
+            "category_label": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Category Label"
+            },
+            "confidence_basis_points": {
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Confidence Basis Points",
+              "type": "integer"
+            },
+            "contract_version": {
+              "const": "ledgerbridge.candidate.v1",
+              "default": "ledgerbridge.candidate.v1",
+              "title": "Contract Version",
+              "type": "string"
+            },
+            "counterparty_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CounterpartyClass"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "counterparty_ref": {
+              "anyOf": [
+                {
+                  "pattern": "^cp_[a-z0-9_]{1,96}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counterparty Ref"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "currency": {
+              "const": "CNY",
+              "default": "CNY",
+              "title": "Currency",
+              "type": "string"
+            },
+            "entity_ref": {
+              "format": "uuid",
+              "title": "Entity Ref",
+              "type": "string"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/$defs/EvidenceReference"
+              },
+              "minItems": 1,
+              "title": "Evidence",
+              "type": "array"
+            },
+            "review_risks": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/ReviewRisk"
+              },
+              "title": "Review Risks",
+              "type": "array"
+            },
+            "review_summary": {
+              "$ref": "#/$defs/ReviewSummary"
+            },
+            "revision": {
+              "minimum": 1,
+              "title": "Revision",
+              "type": "integer"
+            },
+            "short_id": {
+              "pattern": "^C-[A-Z0-9]{4,8}$",
+              "title": "Short Id",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/SourceProjection"
+            },
+            "status": {
+              "$ref": "#/$defs/CandidateStatus"
+            },
+            "summary": {
+              "maxLength": 500,
+              "minLength": 1,
+              "title": "Summary",
+              "type": "string"
+            },
+            "superseded_by_candidate_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Superseded By Candidate Ref"
+            },
+            "supersedes_candidate_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Supersedes Candidate Ref"
+            },
+            "updated_at": {
+              "format": "date-time",
+              "title": "Updated At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "candidate_ref",
+            "short_id",
+            "revision",
+            "status",
+            "entity_ref",
+            "summary",
+            "confidence_basis_points",
+            "source",
+            "evidence",
+            "review_summary",
+            "created_at",
+            "updated_at"
+          ],
+          "title": "CandidateProjection",
+          "type": "object"
+        },
+        "CandidateStatus": {
+          "enum": [
+            "INCOMPLETE",
+            "CONFLICTED",
+            "PENDING",
+            "CONFIRMED",
+            "IGNORED",
+            "SUPERSEDED"
+          ],
+          "title": "CandidateStatus",
+          "type": "string"
+        },
+        "CounterpartyClass": {
+          "enum": [
+            "self_managed",
+            "related_party",
+            "known_business",
+            "unknown"
+          ],
+          "title": "CounterpartyClass",
+          "type": "string"
+        },
+        "EvidenceKind": {
+          "enum": [
+            "MESSAGE_ENVELOPE",
+            "MAIL_ENVELOPE",
+            "ATTACHMENT"
+          ],
+          "title": "EvidenceKind",
+          "type": "string"
+        },
+        "EvidenceReference": {
+          "additionalProperties": false,
+          "properties": {
+            "display_name": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Display Name"
+            },
+            "download_available": {
+              "title": "Download Available",
+              "type": "boolean"
+            },
+            "evidence_ref": {
+              "format": "uuid",
+              "title": "Evidence Ref",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/EvidenceKind"
+            },
+            "media_type": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Media Type",
+              "type": "string"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Source Ref"
+            },
+            "unlock_status": {
+              "$ref": "#/$defs/EvidenceUnlockStatus",
+              "default": "NOT_REQUIRED"
+            }
+          },
+          "required": [
+            "evidence_ref",
+            "kind",
+            "media_type",
+            "download_available"
+          ],
+          "title": "EvidenceReference",
+          "type": "object"
+        },
+        "EvidenceUnlockStatus": {
+          "enum": [
+            "NOT_REQUIRED",
+            "PASSWORD_REQUIRED",
+            "UNLOCKED"
+          ],
+          "title": "EvidenceUnlockStatus",
+          "type": "string"
+        },
+        "IngestChannel": {
+          "enum": [
+            "HERMES",
+            "OUTLOOK",
+            "CONTROLLED_UPLOAD",
+            "SYNTHETIC"
+          ],
+          "title": "IngestChannel",
+          "type": "string"
+        },
+        "ReviewRisk": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ReviewRiskCode"
+            },
+            "message": {
+              "maxLength": 300,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "ReviewRisk",
+          "type": "object"
+        },
+        "ReviewRiskCode": {
+          "enum": [
+            "FUNDING_STATEMENT_REQUIRED",
+            "RELATED_ACCOUNT_STATEMENT_REQUIRED",
+            "HOTEL_PAYOUT_STATEMENT_REQUIRED",
+            "TRANSFER_REVIEW_REQUIRED",
+            "REVERSAL_MATCH_REQUIRED",
+            "UNSETTLED_TRANSACTION"
+          ],
+          "title": "ReviewRiskCode",
+          "type": "string"
+        },
+        "ReviewSummary": {
+          "additionalProperties": false,
+          "properties": {
+            "current_revision": {
+              "minimum": 1,
+              "title": "Current Revision",
+              "type": "integer"
+            },
+            "event_count": {
+              "minimum": 0,
+              "title": "Event Count",
+              "type": "integer"
+            },
+            "last_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CandidateAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "last_decided_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Last Decided At"
+            }
+          },
+          "required": [
+            "event_count",
+            "current_revision"
+          ],
+          "title": "ReviewSummary",
+          "type": "object"
+        },
+        "SourceProjection": {
+          "additionalProperties": false,
+          "properties": {
+            "display_label": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Display Label",
+              "type": "string"
+            },
+            "ingest_channel": {
+              "$ref": "#/$defs/IngestChannel"
+            },
+            "source_event_ref": {
+              "format": "uuid",
+              "title": "Source Event Ref",
+              "type": "string"
+            },
+            "source_system": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Source System",
+              "type": "string"
+            }
+          },
+          "required": [
+            "ingest_channel",
+            "source_system",
+            "source_event_ref",
+            "display_label"
+          ],
+          "title": "SourceProjection",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/CandidateProjection"
+          },
+          "maxItems": 100,
+          "title": "Items",
+          "type": "array"
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Next Cursor"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "title": "CandidatePage",
+      "type": "object"
+    },
+    "CandidateProjection": {
+      "$defs": {
+        "Blocker": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/BlockerCode"
+            },
+            "conflict_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Conflict Ref"
+            },
+            "evidence_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Evidence Ref"
+            },
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "business_unit",
+                    "category",
+                    "amount_minor",
+                    "accounting_month"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Field"
+            },
+            "message": {
+              "maxLength": 300,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "Blocker",
+          "type": "object"
+        },
+        "BlockerCode": {
+          "enum": [
+            "MISSING_BUSINESS_UNIT",
+            "MISSING_CATEGORY",
+            "MISSING_AMOUNT",
+            "MISSING_ACCOUNTING_MONTH",
+            "AMBIGUOUS_EXTRACTION",
+            "PARSE_FAILED",
+            "DEPENDENCY_UNAVAILABLE",
+            "EVIDENCE_INCOMPLETE",
+            "UNSUPPORTED_ATTACHMENT",
+            "DUPLICATE_MESSAGE",
+            "DUPLICATE_ATTACHMENT",
+            "BUSINESS_KEY_CONFLICT",
+            "CROSS_FORMAT_DUPLICATE",
+            "ACCOUNT_UNREGISTERED",
+            "COUNTERPARTY_STATEMENT_REQUIRED"
+          ],
+          "title": "BlockerCode",
+          "type": "string"
+        },
+        "CandidateAction": {
+          "enum": [
+            "COMPLETE_FIELDS",
+            "RESOLVE_CONFLICT",
+            "CORRECT_AND_CONFIRM",
+            "CONFIRM",
+            "IGNORE",
+            "SUPERSEDE"
+          ],
+          "title": "CandidateAction",
+          "type": "string"
+        },
+        "CandidateStatus": {
+          "enum": [
+            "INCOMPLETE",
+            "CONFLICTED",
+            "PENDING",
+            "CONFIRMED",
+            "IGNORED",
+            "SUPERSEDED"
+          ],
+          "title": "CandidateStatus",
+          "type": "string"
+        },
+        "CounterpartyClass": {
+          "enum": [
+            "self_managed",
+            "related_party",
+            "known_business",
+            "unknown"
+          ],
+          "title": "CounterpartyClass",
+          "type": "string"
+        },
+        "EvidenceKind": {
+          "enum": [
+            "MESSAGE_ENVELOPE",
+            "MAIL_ENVELOPE",
+            "ATTACHMENT"
+          ],
+          "title": "EvidenceKind",
+          "type": "string"
+        },
+        "EvidenceReference": {
+          "additionalProperties": false,
+          "properties": {
+            "display_name": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Display Name"
+            },
+            "download_available": {
+              "title": "Download Available",
+              "type": "boolean"
+            },
+            "evidence_ref": {
+              "format": "uuid",
+              "title": "Evidence Ref",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/EvidenceKind"
+            },
+            "media_type": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Media Type",
+              "type": "string"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Source Ref"
+            },
+            "unlock_status": {
+              "$ref": "#/$defs/EvidenceUnlockStatus",
+              "default": "NOT_REQUIRED"
+            }
+          },
+          "required": [
+            "evidence_ref",
+            "kind",
+            "media_type",
+            "download_available"
+          ],
+          "title": "EvidenceReference",
+          "type": "object"
+        },
+        "EvidenceUnlockStatus": {
+          "enum": [
+            "NOT_REQUIRED",
+            "PASSWORD_REQUIRED",
+            "UNLOCKED"
+          ],
+          "title": "EvidenceUnlockStatus",
+          "type": "string"
+        },
+        "IngestChannel": {
+          "enum": [
+            "HERMES",
+            "OUTLOOK",
+            "CONTROLLED_UPLOAD",
+            "SYNTHETIC"
+          ],
+          "title": "IngestChannel",
+          "type": "string"
+        },
+        "ReviewRisk": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ReviewRiskCode"
+            },
+            "message": {
+              "maxLength": 300,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "ReviewRisk",
+          "type": "object"
+        },
+        "ReviewRiskCode": {
+          "enum": [
+            "FUNDING_STATEMENT_REQUIRED",
+            "RELATED_ACCOUNT_STATEMENT_REQUIRED",
+            "HOTEL_PAYOUT_STATEMENT_REQUIRED",
+            "TRANSFER_REVIEW_REQUIRED",
+            "REVERSAL_MATCH_REQUIRED",
+            "UNSETTLED_TRANSACTION"
+          ],
+          "title": "ReviewRiskCode",
+          "type": "string"
+        },
+        "ReviewSummary": {
+          "additionalProperties": false,
+          "properties": {
+            "current_revision": {
+              "minimum": 1,
+              "title": "Current Revision",
+              "type": "integer"
+            },
+            "event_count": {
+              "minimum": 0,
+              "title": "Event Count",
+              "type": "integer"
+            },
+            "last_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CandidateAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "last_decided_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Last Decided At"
+            }
+          },
+          "required": [
+            "event_count",
+            "current_revision"
+          ],
+          "title": "ReviewSummary",
+          "type": "object"
+        },
+        "SourceProjection": {
+          "additionalProperties": false,
+          "properties": {
+            "display_label": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Display Label",
+              "type": "string"
+            },
+            "ingest_channel": {
+              "$ref": "#/$defs/IngestChannel"
+            },
+            "source_event_ref": {
+              "format": "uuid",
+              "title": "Source Event Ref",
+              "type": "string"
+            },
+            "source_system": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Source System",
+              "type": "string"
+            }
+          },
+          "required": [
+            "ingest_channel",
+            "source_system",
+            "source_event_ref",
+            "display_label"
+          ],
+          "title": "SourceProjection",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "accounting_month": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accounting Month"
+        },
+        "amount_minor": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Amount Minor"
+        },
+        "blockers": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Blocker"
+          },
+          "title": "Blockers",
+          "type": "array"
+        },
+        "business_unit_label": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Business Unit Label"
+        },
+        "business_unit_ref": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Business Unit Ref"
+        },
+        "candidate_ref": {
+          "format": "uuid",
+          "title": "Candidate Ref",
+          "type": "string"
+        },
+        "category_code": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Category Code"
+        },
+        "category_label": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Category Label"
+        },
+        "confidence_basis_points": {
+          "maximum": 10000,
+          "minimum": 0,
+          "title": "Confidence Basis Points",
+          "type": "integer"
+        },
+        "contract_version": {
+          "const": "ledgerbridge.candidate.v1",
+          "default": "ledgerbridge.candidate.v1",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "counterparty_class": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CounterpartyClass"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "counterparty_ref": {
+          "anyOf": [
+            {
+              "pattern": "^cp_[a-z0-9_]{1,96}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Counterparty Ref"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "currency": {
+          "const": "CNY",
+          "default": "CNY",
+          "title": "Currency",
+          "type": "string"
+        },
+        "entity_ref": {
+          "format": "uuid",
+          "title": "Entity Ref",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/EvidenceReference"
+          },
+          "minItems": 1,
+          "title": "Evidence",
+          "type": "array"
+        },
+        "review_risks": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReviewRisk"
+          },
+          "title": "Review Risks",
+          "type": "array"
+        },
+        "review_summary": {
+          "$ref": "#/$defs/ReviewSummary"
+        },
+        "revision": {
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "short_id": {
+          "pattern": "^C-[A-Z0-9]{4,8}$",
+          "title": "Short Id",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceProjection"
+        },
+        "status": {
+          "$ref": "#/$defs/CandidateStatus"
+        },
+        "summary": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "superseded_by_candidate_ref": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Superseded By Candidate Ref"
+        },
+        "supersedes_candidate_ref": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Supersedes Candidate Ref"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidate_ref",
+        "short_id",
+        "revision",
+        "status",
+        "entity_ref",
+        "summary",
+        "confidence_basis_points",
+        "source",
+        "evidence",
+        "review_summary",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "CandidateProjection",
+      "type": "object"
+    },
+    "CapabilitiesResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_contract_version": {
+          "const": "ledgerbridge.candidate.v1",
+          "default": "ledgerbridge.candidate.v1",
+          "title": "Candidate Contract Version",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": "ledgerbridge.internal-read.v1",
+          "default": "ledgerbridge.internal-read.v1",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "data_mode": {
+          "default": "synthetic",
+          "enum": [
+            "synthetic",
+            "database"
+          ],
+          "title": "Data Mode",
+          "type": "string"
+        },
+        "enabled_modules": {
+          "items": {
+            "enum": [
+              "accounting-dimensions",
+              "candidates",
+              "evidence",
+              "reconciliations",
+              "ledger-summary",
+              "company-reporting",
+              "personal-finance"
+            ],
+            "type": "string"
+          },
+          "title": "Enabled Modules",
+          "type": "array"
+        },
+        "state_graph_version": {
+          "const": "ledgerbridge.candidate-state.v1",
+          "default": "ledgerbridge.candidate-state.v1",
+          "title": "State Graph Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "enabled_modules"
+      ],
+      "title": "CapabilitiesResponse",
+      "type": "object"
+    },
+    "ClassificationGroupPage": {
+      "$defs": {
+        "CandidateStatus": {
+          "enum": [
+            "INCOMPLETE",
+            "CONFLICTED",
+            "PENDING",
+            "CONFIRMED",
+            "IGNORED",
+            "SUPERSEDED"
+          ],
+          "title": "CandidateStatus",
+          "type": "string"
+        },
+        "ClassificationDirection": {
+          "enum": [
+            "INFLOW",
+            "OUTFLOW",
+            "NEUTRAL"
+          ],
+          "title": "ClassificationDirection",
+          "type": "string"
+        },
+        "ClassificationGroup": {
+          "additionalProperties": false,
+          "properties": {
+            "accounting_month": {
+              "title": "Accounting Month",
+              "type": "string"
+            },
+            "active_rule": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LearnedClassificationRule"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "batch_member_count": {
+              "minimum": 0,
+              "title": "Batch Member Count",
+              "type": "integer"
+            },
+            "conditions": {
+              "$ref": "#/$defs/SimilarityConditions"
+            },
+            "contract_version": {
+              "const": "ledgerbridge.classification-group.v1",
+              "default": "ledgerbridge.classification-group.v1",
+              "title": "Contract Version",
+              "type": "string"
+            },
+            "group_ref": {
+              "pattern": "^cg_[0-9a-f]{32}$",
+              "title": "Group Ref",
+              "type": "string"
+            },
+            "members": {
+              "items": {
+                "$ref": "#/$defs/ClassificationGroupMember"
+              },
+              "minItems": 1,
+              "title": "Members",
+              "type": "array"
+            },
+            "one_click_member_count": {
+              "minimum": 0,
+              "title": "One Click Member Count",
+              "type": "integer"
+            },
+            "rule_learning_blocks": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/RuleLearningBlockCode"
+              },
+              "title": "Rule Learning Blocks",
+              "type": "array"
+            },
+            "rule_learning_eligible": {
+              "title": "Rule Learning Eligible",
+              "type": "boolean"
+            },
+            "terminal_classifications": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Terminal Classifications",
+              "type": "array"
+            },
+            "terminal_statuses": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/CandidateStatus"
+              },
+              "title": "Terminal Statuses",
+              "type": "array"
+            }
+          },
+          "required": [
+            "group_ref",
+            "accounting_month",
+            "conditions",
+            "members",
+            "batch_member_count",
+            "one_click_member_count",
+            "rule_learning_eligible"
+          ],
+          "title": "ClassificationGroup",
+          "type": "object"
+        },
+        "ClassificationGroupMember": {
+          "additionalProperties": false,
+          "properties": {
+            "accounting_month": {
+              "title": "Accounting Month",
+              "type": "string"
+            },
+            "amount_minor": {
+              "title": "Amount Minor",
+              "type": "integer"
+            },
+            "amount_outlier": {
+              "default": false,
+              "title": "Amount Outlier",
+              "type": "boolean"
+            },
+            "batch_eligible": {
+              "title": "Batch Eligible",
+              "type": "boolean"
+            },
+            "candidate_ref": {
+              "format": "uuid",
+              "title": "Candidate Ref",
+              "type": "string"
+            },
+            "confidence_basis_points": {
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Confidence Basis Points",
+              "type": "integer"
+            },
+            "exclusion_codes": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/GroupExclusionCode"
+              },
+              "title": "Exclusion Codes",
+              "type": "array"
+            },
+            "one_click_eligible": {
+              "title": "One Click Eligible",
+              "type": "boolean"
+            },
+            "review_risk_codes": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Review Risk Codes",
+              "type": "array"
+            },
+            "revision": {
+              "minimum": 1,
+              "title": "Revision",
+              "type": "integer"
+            },
+            "short_id": {
+              "title": "Short Id",
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/CandidateStatus"
+            }
+          },
+          "required": [
+            "candidate_ref",
+            "short_id",
+            "revision",
+            "status",
+            "amount_minor",
+            "accounting_month",
+            "confidence_basis_points",
+            "batch_eligible",
+            "one_click_eligible"
+          ],
+          "title": "ClassificationGroupMember",
+          "type": "object"
+        },
+        "GroupExclusionCode": {
+          "enum": [
+            "NOT_PENDING",
+            "LOW_CONFIDENCE",
+            "BLOCKED",
+            "STRUCTURAL_RISK",
+            "AMOUNT_OUTLIER"
+          ],
+          "title": "GroupExclusionCode",
+          "type": "string"
+        },
+        "LearnedClassificationRule": {
+          "additionalProperties": false,
+          "properties": {
+            "business_unit_ref": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Business Unit Ref",
+              "type": "string"
+            },
+            "category_code": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Category Code",
+              "type": "string"
+            },
+            "conditions": {
+              "$ref": "#/$defs/SimilarityConditions"
+            },
+            "contract_version": {
+              "const": "ledgerbridge.classification-rule.v1",
+              "default": "ledgerbridge.classification-rule.v1",
+              "title": "Contract Version",
+              "type": "string"
+            },
+            "created_at": {
+              "title": "Created At",
+              "type": "string"
+            },
+            "disabled_at": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Disabled At"
+            },
+            "effective_from": {
+              "format": "date",
+              "title": "Effective From",
+              "type": "string"
+            },
+            "effective_to": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Effective To"
+            },
+            "group_ref": {
+              "pattern": "^cg_[0-9a-f]{32}$",
+              "title": "Group Ref",
+              "type": "string"
+            },
+            "revision": {
+              "minimum": 1,
+              "title": "Revision",
+              "type": "integer"
+            },
+            "rule_ref": {
+              "format": "uuid",
+              "title": "Rule Ref",
+              "type": "string"
+            },
+            "source_candidate_ref": {
+              "format": "uuid",
+              "title": "Source Candidate Ref",
+              "type": "string"
+            },
+            "source_decision_operation_id": {
+              "format": "uuid",
+              "title": "Source Decision Operation Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "ACTIVE",
+                "DISABLED"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "rule_ref",
+            "revision",
+            "status",
+            "group_ref",
+            "conditions",
+            "business_unit_ref",
+            "category_code",
+            "source_candidate_ref",
+            "source_decision_operation_id",
+            "effective_from",
+            "created_at"
+          ],
+          "title": "LearnedClassificationRule",
+          "type": "object"
+        },
+        "RuleLearningBlockCode": {
+          "enum": [
+            "PROVISIONAL_BASIS",
+            "TERMINAL_DECISION_CONFLICT",
+            "REVIEW_RISK_PRESENT",
+            "AMOUNT_OUTLIER",
+            "NO_CONFIRMED_SOURCE"
+          ],
+          "title": "RuleLearningBlockCode",
+          "type": "string"
+        },
+        "SimilarityBasis": {
+          "enum": [
+            "REGISTRY_COUNTERPARTY",
+            "EXACT_PLATFORM_SUMMARY_V1"
+          ],
+          "title": "SimilarityBasis",
+          "type": "string"
+        },
+        "SimilarityConditions": {
+          "additionalProperties": false,
+          "properties": {
+            "counterparty_basis": {
+              "$ref": "#/$defs/SimilarityBasis"
+            },
+            "counterparty_key": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Counterparty Key",
+              "type": "string"
+            },
+            "counterparty_label": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Counterparty Label",
+              "type": "string"
+            },
+            "currency": {
+              "const": "CNY",
+              "default": "CNY",
+              "title": "Currency",
+              "type": "string"
+            },
+            "direction": {
+              "$ref": "#/$defs/ClassificationDirection"
+            },
+            "entity_ref": {
+              "format": "uuid",
+              "title": "Entity Ref",
+              "type": "string"
+            },
+            "funding_instrument": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Funding Instrument",
+              "type": "string"
+            },
+            "key_version": {
+              "const": "ledgerbridge.classification-key.v1",
+              "default": "ledgerbridge.classification-key.v1",
+              "title": "Key Version",
+              "type": "string"
+            },
+            "platform": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Platform",
+              "type": "string"
+            },
+            "risk_signature": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Risk Signature",
+              "type": "array"
+            },
+            "source_kind": {
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "Source Kind",
+              "type": "string"
+            },
+            "source_system": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Source System",
+              "type": "string"
+            },
+            "transaction_status": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Transaction Status",
+              "type": "string"
+            },
+            "transaction_type": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Transaction Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "entity_ref",
+            "source_system",
+            "source_kind",
+            "platform",
+            "direction",
+            "transaction_type",
+            "counterparty_key",
+            "counterparty_label",
+            "counterparty_basis",
+            "funding_instrument",
+            "transaction_status"
+          ],
+          "title": "SimilarityConditions",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": "ledgerbridge.classification-groups.v1",
+          "default": "ledgerbridge.classification-groups.v1",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ClassificationGroup"
+          },
+          "maxItems": 10000,
+          "title": "Items",
+          "type": "array"
+        },
+        "next_cursor": {
+          "default": null,
+          "title": "Next Cursor",
+          "type": "null"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "title": "ClassificationGroupPage",
+      "type": "object"
+    },
+    "LedgerSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "business_unit_ref": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Business Unit Ref",
+          "type": "string"
+        },
+        "currency": {
+          "const": "CNY",
+          "default": "CNY",
+          "title": "Currency",
+          "type": "string"
+        },
+        "entity_ref": {
+          "format": "uuid",
+          "title": "Entity Ref",
+          "type": "string"
+        },
+        "from_month": {
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+          "title": "From Month",
+          "type": "string"
+        },
+        "posting_status": {
+          "const": "POSTED",
+          "default": "POSTED",
+          "title": "Posting Status",
+          "type": "string"
+        },
+        "to_month": {
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+          "title": "To Month",
+          "type": "string"
+        },
+        "totals_minor": {
+          "additionalProperties": {
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          "title": "Totals Minor",
+          "type": "object"
+        }
+      },
+      "required": [
+        "entity_ref",
+        "business_unit_ref",
+        "from_month",
+        "to_month",
+        "totals_minor"
+      ],
+      "title": "LedgerSummary",
+      "type": "object"
+    },
+    "ReconciliationProjection": {
+      "$defs": {
+        "Blocker": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/BlockerCode"
+            },
+            "conflict_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Conflict Ref"
+            },
+            "evidence_ref": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Evidence Ref"
+            },
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "business_unit",
+                    "category",
+                    "amount_minor",
+                    "accounting_month"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Field"
+            },
+            "message": {
+              "maxLength": 300,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "Blocker",
+          "type": "object"
+        },
+        "BlockerCode": {
+          "enum": [
+            "MISSING_BUSINESS_UNIT",
+            "MISSING_CATEGORY",
+            "MISSING_AMOUNT",
+            "MISSING_ACCOUNTING_MONTH",
+            "AMBIGUOUS_EXTRACTION",
+            "PARSE_FAILED",
+            "DEPENDENCY_UNAVAILABLE",
+            "EVIDENCE_INCOMPLETE",
+            "UNSUPPORTED_ATTACHMENT",
+            "DUPLICATE_MESSAGE",
+            "DUPLICATE_ATTACHMENT",
+            "BUSINESS_KEY_CONFLICT",
+            "CROSS_FORMAT_DUPLICATE",
+            "ACCOUNT_UNREGISTERED",
+            "COUNTERPARTY_STATEMENT_REQUIRED"
+          ],
+          "title": "BlockerCode",
+          "type": "string"
+        },
+        "ReconciliationProposal": {
+          "additionalProperties": false,
+          "properties": {
+            "amount_minor": {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "title": "Amount Minor",
+              "type": "integer"
+            },
+            "currency": {
+              "const": "CNY",
+              "default": "CNY",
+              "title": "Currency",
+              "type": "string"
+            },
+            "proposal_ref": {
+              "format": "uuid",
+              "title": "Proposal Ref",
+              "type": "string"
+            },
+            "relation": {
+              "enum": [
+                "1:1",
+                "1:N",
+                "N:1"
+              ],
+              "title": "Relation",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "PROPOSED",
+                "CONFIRMED",
+                "REJECTED"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "proposal_ref",
+            "relation",
+            "status",
+            "amount_minor"
+          ],
+          "title": "ReconciliationProposal",
+          "type": "object"
+        },
+        "SuspenseProjection": {
+          "additionalProperties": false,
+          "properties": {
+            "amount_minor": {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "title": "Amount Minor",
+              "type": "integer"
+            },
+            "currency": {
+              "const": "CNY",
+              "default": "CNY",
+              "title": "Currency",
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "UNKNOWN_COUNTERPARTY",
+                "UNMATCHED_TRANSFER",
+                "BALANCE_GAP",
+                "LOAN_BREAKDOWN"
+              ],
+              "title": "Reason",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "OPEN",
+                "RESOLVED"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "suspense_ref": {
+              "format": "uuid",
+              "title": "Suspense Ref",
+              "type": "string"
+            }
+          },
+          "required": [
+            "suspense_ref",
+            "status",
+            "reason",
+            "amount_minor"
+          ],
+          "title": "SuspenseProjection",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "blockers": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Blocker"
+          },
+          "title": "Blockers",
+          "type": "array"
+        },
+        "business_unit_ref": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Business Unit Ref",
+          "type": "string"
+        },
+        "currency": {
+          "const": "CNY",
+          "default": "CNY",
+          "title": "Currency",
+          "type": "string"
+        },
+        "entity_ref": {
+          "format": "uuid",
+          "title": "Entity Ref",
+          "type": "string"
+        },
+        "month": {
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+          "title": "Month",
+          "type": "string"
+        },
+        "posted_amount_minor": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "title": "Posted Amount Minor",
+          "type": "integer"
+        },
+        "proposals": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReconciliationProposal"
+          },
+          "title": "Proposals",
+          "type": "array"
+        },
+        "snapshot_revision": {
+          "minimum": 1,
+          "title": "Snapshot Revision",
+          "type": "integer"
+        },
+        "suspense": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SuspenseProjection"
+          },
+          "title": "Suspense",
+          "type": "array"
+        }
+      },
+      "required": [
+        "entity_ref",
+        "business_unit_ref",
+        "month",
+        "snapshot_revision",
+        "posted_amount_minor"
+      ],
+      "title": "ReconciliationProjection",
+      "type": "object"
+    }
+  }
+}
