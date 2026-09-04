@@ -181,6 +181,7 @@ export function PayrollLegacyWorkbench({
   const [period, setPeriod] = useState('')
   const [generationPeriod, setGenerationPeriod] = useState<string>(confirmedMaterials?.period ?? '2026-08')
   const [adjustments, setAdjustments] = useState<PayrollLegacyAdjustment[]>([])
+  const [adjustmentPeriod, setAdjustmentPeriod] = useState('')
   const [rules, setRules] = useState<EditableRule[]>([])
   const [reviewRules, setReviewRules] = useState<PayrollLegacyReviewRule[]>([])
   const [evidenceSlots, setEvidenceSlots] = useState<EvidenceSlot[]>(emptyEvidenceSlots)
@@ -199,6 +200,7 @@ export function PayrollLegacyWorkbench({
     setReceipts(batch ? receiptsFromBatch(batch) : [])
     setEvidenceSlots(batch ? evidenceSlotsFromBatch(batch) : emptyEvidenceSlots())
     setAdjustments(batch ? batch.adjustments.filter((item) => !item.source_pending_id) : [])
+    setAdjustmentPeriod(batch?.period ?? '')
   }, [])
 
   const load = useCallback(async () => {
@@ -230,6 +232,13 @@ export function PayrollLegacyWorkbench({
   }, [load])
 
   const activeBatch = activeBatchFrom(workspace, period)
+  const generationBatch = activeBatchFrom(workspace, generationPeriod)
+  const materialsConfirmedForGeneration = confirmedMaterials?.period === generationPeriod
+  const materialsAvailableForGeneration = materialsConfirmedForGeneration || Boolean(generationBatch)
+  const generationAdjustments = adjustmentPeriod === generationPeriod
+    ? adjustments
+    : generationBatch?.adjustments.filter((item) => !item.source_pending_id) ?? []
+
   const previousOpenItems = useMemo(() => {
     if (!workspace || !generationPeriod) return []
     return workspace.batches
@@ -273,7 +282,7 @@ export function PayrollLegacyWorkbench({
     void execute('GENERATE_MONTHLY_PAYROLL', {
       period: generationPeriod,
       supporting_material_ids: confirmedMaterials.material_ids,
-      adjustments,
+      adjustments: generationAdjustments,
       pending_resolutions: previousOpenItems.map((item) => ({
         pending_id: item.pending_id,
         ...pendingDecisions[item.pending_id],
@@ -377,16 +386,30 @@ export function PayrollLegacyWorkbench({
     }])
   }
 
-  const currentTotal = activeBatch?.lines.reduce((sum, line) => sum + line.net_pay_cents, 0) ?? 0
+  const currentTotal = generationBatch?.lines.reduce(
+    (sum, line) => sum + line.net_pay_cents,
+    0,
+  ) ?? 0
   const completedSteps = [
-    Boolean(confirmedMaterials),
-    Boolean(activeBatch),
-    Boolean(activeBatch?.verification),
+    materialsAvailableForGeneration,
+    Boolean(generationBatch),
+    Boolean(generationBatch?.verification),
   ].filter(Boolean).length
   const goToMaterials = () => document.getElementById('payroll-test-actions-heading')?.scrollIntoView({
     behavior: 'smooth',
     block: 'start',
   })
+  const openGenerationVerification = () => {
+    if (workspace && generationBatch) applyWorkspace(workspace, generationPeriod)
+    setTask('verify')
+  }
+  const changeGenerationPeriod = (nextPeriod: string) => {
+    const batch = activeBatchFrom(workspace, nextPeriod)
+    setGenerationPeriod(nextPeriod)
+    setAdjustments(batch?.adjustments.filter((item) => !item.source_pending_id) ?? [])
+    setAdjustmentPeriod(nextPeriod)
+    setPendingDecisions({})
+  }
 
   return (
     <section className="payroll-legacy-workbench" aria-labelledby="payroll-legacy-heading">
@@ -442,9 +465,9 @@ export function PayrollLegacyWorkbench({
             <section className="payroll-flow-overview" aria-label="本月工资处理进度">
               <div className="payroll-flow-steps">
                 {[
-                  ['01', '物料确认', Boolean(confirmedMaterials)],
-                  ['02', '生成工资', Boolean(activeBatch)],
-                  ['03', '发放对账', Boolean(activeBatch?.verification)],
+                  ['01', '物料确认', materialsAvailableForGeneration],
+                  ['02', '生成工资', Boolean(generationBatch)],
+                  ['03', '发放对账', Boolean(generationBatch?.verification)],
                 ].map(([number, label, done], index) => (
                   <div className={done ? 'done' : index === completedSteps ? 'current' : ''} key={String(number)}>
                     <span>{done ? <CheckCircle size={18} weight="fill" /> : number}</span>
@@ -454,18 +477,18 @@ export function PayrollLegacyWorkbench({
               </div>
               <div className="payroll-flow-focus">
                 <span>当前任务</span>
-                <strong>{activeBatch ? '本月工资已生成' : confirmedMaterials ? '生成本月工资' : '先确认本月三类工资素材'}</strong>
-                <p>{activeBatch ? '工资已按选定期间生成，请继续进行发放复核。' : confirmedMaterials ? '所需素材已确认，可以按员工参数和全局规则生成。' : '考勤表、阿姨考勤表和好评统计必须各选定一个版本。'}</p>
+                <strong>{generationBatch ? '本月工资已生成' : materialsConfirmedForGeneration ? '生成本月工资' : '先确认本月三类工资素材'}</strong>
+                <p>{generationBatch ? '工资已按选定期间生成，请继续进行发放复核。' : materialsConfirmedForGeneration ? '所需素材已确认，可以按员工参数和全局规则生成。' : '考勤表、阿姨考勤表和好评统计必须各选定一个版本。'}</p>
                 <label className="payroll-flow-period">
                   <span>工资月份</span>
-                  <select value={generationPeriod} onChange={(event) => setGenerationPeriod(event.target.value)}>
+                  <select value={generationPeriod} onChange={(event) => changeGenerationPeriod(event.target.value)}>
                     <option value="2026-07">2026-07</option>
                     <option value="2026-08">2026-08</option>
                   </select>
                 </label>
-                {activeBatch ? (
-                  <button type="button" className="primary" onClick={() => setTask('verify')}>进入发放复核</button>
-                ) : confirmedMaterials?.period === generationPeriod ? (
+                {generationBatch ? (
+                  <button type="button" className="primary" onClick={openGenerationVerification}>进入发放复核</button>
+                ) : materialsConfirmedForGeneration ? (
                   <button type="button" className="primary" disabled={!workspace || workspace.rules.employees.length === 0 || !pendingComplete || busy} onClick={generateMonthlyPayroll}>{busy ? '正在生成' : '确认并生成当月工资表'}</button>
                 ) : (
                   <button type="button" className="primary" onClick={goToMaterials}>查看并确认素材</button>
@@ -475,8 +498,8 @@ export function PayrollLegacyWorkbench({
                 <strong>生成前检查</strong>
                 <span className={workspace?.rules.employees.length ? 'ready' : ''}>{workspace?.rules.employees.length ? '已完成' : '待完成'} · 员工参数</span>
                 <span className={reviewRules.length ? 'ready' : ''}>{reviewRules.length ? '已完成' : '待完成'} · 工资规则</span>
-                <span className={confirmedMaterials ? 'ready' : ''}>{confirmedMaterials ? '已完成' : '待完成'} · 三类素材</span>
-                <span className={activeBatch ? 'ready' : ''}>{activeBatch ? '已生成' : '待生成'} · 本月工资</span>
+                <span className={materialsAvailableForGeneration ? 'ready' : ''}>{materialsAvailableForGeneration ? '已完成' : '待完成'} · 三类素材</span>
+                <span className={generationBatch ? 'ready' : ''}>{generationBatch ? '已生成' : '待生成'} · 本月工资</span>
               </aside>
             </section>
           ) : null}
@@ -498,7 +521,7 @@ export function PayrollLegacyWorkbench({
             </button>
           </div> : null}
 
-          {task === 'generate' && (activeBatch?.period === generationPeriod || previousOpenItems.length > 0) ? (
+          {task === 'generate' && (generationBatch || previousOpenItems.length > 0) ? (
             <details className="payroll-task-panel payroll-generate-details">
               <summary>调整与重新生成</summary>
               {confirmedMaterials?.period === generationPeriod ? (
@@ -509,11 +532,14 @@ export function PayrollLegacyWorkbench({
                   <span>好评统计 {confirmedMaterials.material_ids.review_statistics.slice(-8).toUpperCase()}</span>
                 </div>
               ) : <div className="payroll-inline-warning"><Warning size={17} />请在本步骤确认这个月份的考勤表、阿姨考勤表和好评统计。</div>}
-              {activeBatch?.period === generationPeriod ? (
+              {generationBatch ? (
                 <AdjustmentEditor
-                  lines={activeBatch.lines}
-                  adjustments={adjustments}
-                  onChange={setAdjustments}
+                  lines={generationBatch.lines}
+                  adjustments={generationAdjustments}
+                  onChange={(nextAdjustments) => {
+                    setAdjustments(nextAdjustments)
+                    setAdjustmentPeriod(generationPeriod)
+                  }}
                 />
               ) : null}
               <div className="payroll-rule-section-title"><strong>上月待办并入本次生成</strong><span>有待办时必须逐项决定；没有待办可直接生成。</span></div>
