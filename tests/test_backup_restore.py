@@ -183,7 +183,7 @@ def test_mybank_restore_inventory_accepts_current_integrated_schema_revision() -
 
 @pytest.mark.parametrize(
     "schema_revision",
-    ("20260902_0031", "20260902_0032", "20260902_0033"),
+    ("20260902_0031", "20260902_0032", "20260902_0033", "20260904_0044"),
 )
 def test_bank_statement_restore_inventory_accepts_reviewed_profile_revision(
     schema_revision: str,
