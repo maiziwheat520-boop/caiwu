@@ -55,7 +55,7 @@ def _report_identity() -> CompanyReportIdentityInput:
     )
 
 
-def test_builder_preserves_primary_authority_and_isolates_five_company_reports() -> None:
+def test_builder_preserves_primary_authority_and_isolates_company_reports() -> None:
     candidate = build_candidate_policy(
         _current_policy(),
         _report_identity(),
@@ -103,14 +103,22 @@ def test_builder_rejects_generation_drift_and_certificate_reuse() -> None:
         )
 
 
-def test_report_identity_requires_exactly_five_bound_company_grants() -> None:
-    with pytest.raises(ValueError, match="at least 5 items"):
+def test_report_identity_requires_at_least_one_bound_company_grant() -> None:
+    with pytest.raises(ValueError, match="at least 1 item"):
         CompanyReportIdentityInput(
             certificate_serial="81B10A3D",
             principal_ref="workload:ledgerbridge-company-reports",
             san_uri="spiffe://ledgerbridge.local/web/company-reports",
-            grants=tuple(_grant(ordinal) for ordinal in range(1, 5)),
+            grants=(),
         )
+
+
+def test_report_identity_accepts_six_distinct_bound_company_grants() -> None:
+    identity = _report_identity().model_copy(
+        update={"grants": tuple(_grant(ordinal) for ordinal in range(1, 7))}
+    )
+
+    assert len(CompanyReportIdentityInput.model_validate(identity).grants) == 6
     with pytest.raises(ValueError, match="immutable reporting-unit bindings"):
         CompanyReportIdentityInput(
             certificate_serial="81B10A3D",

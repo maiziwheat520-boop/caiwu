@@ -1,4 +1,4 @@
-"""Build, but never activate, one dedicated five-company report mTLS policy.
+"""Build, but never activate, one dedicated company-report mTLS policy.
 
 The input files remain private deployment material. By default the command only
 validates the transition; ``--write`` creates a new mode-0600 candidate file and
@@ -25,6 +25,7 @@ from ledgerbridge.production_mtls import (
 )
 
 MAX_REPORT_IDENTITY_BYTES = 64 * 1024
+MAX_REPORT_COMPANIES = 20
 
 
 class CompanyReportPolicyError(RuntimeError):
@@ -39,13 +40,13 @@ class CompanyReportIdentityInput(BaseModel):
     certificate_serial: str = Field(pattern=r"^[0-9A-F]{2,40}$")
     principal_ref: Literal["workload:ledgerbridge-company-reports"]
     san_uri: Literal["spiffe://ledgerbridge.local/web/company-reports"]
-    grants: tuple[EntityGrant, ...] = Field(min_length=5, max_length=5)
+    grants: tuple[EntityGrant, ...] = Field(min_length=1, max_length=MAX_REPORT_COMPANIES)
 
     @model_validator(mode="after")
-    def grants_are_five_distinct_reporting_scopes(self) -> CompanyReportIdentityInput:
+    def grants_are_distinct_reporting_scopes(self) -> CompanyReportIdentityInput:
         entity_refs = [grant.entity_ref for grant in self.grants]
         if len(entity_refs) != len(set(entity_refs)):
-            raise ValueError("company report grants must contain five distinct entities")
+            raise ValueError("company report grants must contain distinct entities")
         if any(
             grant.allow_account_registry
             or not grant.business_unit_refs
@@ -170,9 +171,10 @@ def main() -> int:
         )
         if not isinstance(current, MtlsWorkloadPolicy):
             raise CompanyReportPolicyError("CURRENT_POLICY_MUST_BE_V1")
+        report_identity = _read_report_identity(args.report_identity)
         candidate = build_candidate_policy(
             current,
-            _read_report_identity(args.report_identity),
+            report_identity,
             expected_generation=args.expected_generation,
             target_generation=args.target_generation,
         )
@@ -180,12 +182,14 @@ def main() -> int:
             _write_new_candidate(args.output, candidate)
             print(
                 "POLICY_WRITTEN "
-                f"generation={candidate.policy_generation} identities=2 report_companies=5"
+                f"generation={candidate.policy_generation} identities=2 "
+                f"report_companies={len(report_identity.grants)}"
             )
         else:
             print(
                 "PLAN_READY "
-                f"generation={candidate.policy_generation} identities=2 report_companies=5"
+                f"generation={candidate.policy_generation} identities=2 "
+                f"report_companies={len(report_identity.grants)}"
             )
     except (CompanyReportPolicyError, OSError, ValueError) as exc:
         code = str(exc) if isinstance(exc, CompanyReportPolicyError) else "POLICY_BUILD_FAILED"
