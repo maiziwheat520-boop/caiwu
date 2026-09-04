@@ -273,8 +273,8 @@ def test_database_owner_target_is_one_fixed_assertion() -> None:
     exact = _Result(
         rows=[
             {
-                "current_user": "ledgerbridge",
-                "session_user": "ledgerbridge",
+                "current_user": "ledgerbridge_owner",
+                "session_user": "ledgerbridge_owner",
                 "database_name": "ledgerbridge",
                 "schema_revision": "20260904_0043",
                 "transaction_read_only": "off",

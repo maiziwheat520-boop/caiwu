@@ -371,8 +371,8 @@ def _require_database_owner_target(session: Session) -> None:
         .one()
     )
     if dict(row) != {
-        "current_user": "ledgerbridge",
-        "session_user": "ledgerbridge",
+        "current_user": "ledgerbridge_owner",
+        "session_user": "ledgerbridge_owner",
         "database_name": "ledgerbridge",
         "schema_revision": ACCOUNT_REGISTRY_INTAKE_SCHEMA_REVISION,
         "transaction_read_only": "off",
