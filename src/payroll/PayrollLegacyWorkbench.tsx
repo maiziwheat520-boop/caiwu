@@ -300,28 +300,29 @@ export function PayrollLegacyWorkbench({
     : generationBatch?.adjustments.filter((item) => !item.source_pending_id) ?? []
 
   useEffect(() => {
-    if (!reviewPeriod) {
-      setDisbursementRecords(null)
-      setDisbursementRecordsFailed(false)
-      return
-    }
+    if (!reviewPeriod) return
     let cancelled = false
-    setDisbursementRecordsLoading(true)
-    setDisbursementRecordsFailed(false)
-    void api.getPayrollDisbursementRecords(reviewPeriod)
-      .then((result) => {
-        if (!cancelled) setDisbursementRecords(result.data)
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setDisbursementRecords(null)
-          setDisbursementRecordsFailed(true)
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setDisbursementRecordsLoading(false)
-      })
-    return () => { cancelled = true }
+    const timer = window.setTimeout(() => {
+      setDisbursementRecordsLoading(true)
+      setDisbursementRecordsFailed(false)
+      void api.getPayrollDisbursementRecords(reviewPeriod)
+        .then((result) => {
+          if (!cancelled) setDisbursementRecords(result.data)
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setDisbursementRecords(null)
+            setDisbursementRecordsFailed(true)
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setDisbursementRecordsLoading(false)
+        })
+    }, 0)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
   }, [reviewPeriod])
 
   const previousOpenItems = useMemo(() => {
