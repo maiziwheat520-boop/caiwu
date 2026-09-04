@@ -95,6 +95,7 @@ def test_artifact_directory_and_database_temp_privilege_are_hardened() -> None:
     assert "LEDGERBRIDGE_API_DB_PASSWORD:?" in init_script
     assert "LEDGERBRIDGE_WORKER_DB_PASSWORD:?" in init_script
     assert "runtime database passwords must be distinct" in init_script
+    assert "CASE WHEN rolcanlogin THEN 'LOGIN' ELSE 'NOLOGIN' END" in init_script
 
 
 def test_example_generic_database_url_uses_the_compatibility_role() -> None:

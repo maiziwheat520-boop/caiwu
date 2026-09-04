@@ -30,9 +30,16 @@ SELECT format(
 )
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_app') \gexec
 
-ALTER ROLE ledgerbridge_app
-    LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS
-    PASSWORD :'app_password';
+-- Preserve the irreversible production retirement performed by migration 0007.
+-- This bootstrap also runs during later deploys, so an existing NOLOGIN role
+-- must never be reactivated merely because runtime passwords are rotated.
+SELECT format(
+    'ALTER ROLE ledgerbridge_app %s NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD %L',
+    CASE WHEN rolcanlogin THEN 'LOGIN' ELSE 'NOLOGIN' END,
+    :'app_password'
+)
+FROM pg_roles
+WHERE rolname = 'ledgerbridge_app' \gexec
 
 SELECT format(
     'CREATE ROLE ledgerbridge_api LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD %L',
