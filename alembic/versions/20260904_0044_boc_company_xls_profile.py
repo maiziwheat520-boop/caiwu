@@ -33,12 +33,14 @@ DECLARE
        AND (p_request->>'source_system') = 'ccb_personal_xls_export'$replacement$;
     v_owner_anchor text := $anchor$           v_profile IN (
                'mybank_company_daily_xlsx_v2',
-               'mybank_company_range_xlsx_v3'
+               'mybank_company_range_xlsx_v3',
+               'abc_company_xls_v1'
            )
            AND v_account_owner_kind <> 'COMPANY'$anchor$;
     v_owner_replacement text := $replacement$           v_profile IN (
                'mybank_company_daily_xlsx_v2',
                'mybank_company_range_xlsx_v3',
+               'abc_company_xls_v1',
                'boc_company_xls_v1'
            )
            AND v_account_owner_kind <> 'COMPANY'$replacement$;
