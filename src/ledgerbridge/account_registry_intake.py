@@ -41,7 +41,7 @@ from ledgerbridge.text import contains_unstorable_text
 
 ACCOUNT_REGISTRY_INTAKE_PLAN_SCHEMA = "ledgerbridge.account-registry-intake-plan.v1"
 ACCOUNT_REGISTRY_INTAKE_RECEIPT_SCHEMA = "ledgerbridge.account-registry-intake-receipt.v1"
-ACCOUNT_REGISTRY_INTAKE_SCHEMA_REVISION = "20260901_0028"
+ACCOUNT_REGISTRY_INTAKE_SCHEMA_REVISION = "20260904_0043"
 
 _HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
