@@ -18,6 +18,7 @@ from scripts.backfill_company_transaction_classifications import (
     Transaction,
     classify,
     migration_database_url,
+    parse_args,
 )
 from scripts.backup_restore import (
     CASH_RECONCILIATION_CLASSIFICATION_STATE_COLUMNS,
@@ -416,6 +417,18 @@ def test_backfill_requires_the_migration_owner(monkeypatch: pytest.MonkeyPatch) 
     owner_url = "postgresql+psycopg://ledgerbridge_owner:secret@db/ledgerbridge"
     monkeypatch.setenv("LEDGERBRIDGE_MIGRATION_DATABASE_URL", owner_url)
     assert migration_database_url() == owner_url
+
+
+def test_backfill_accepts_an_explicit_statement_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statement_ref = UUID("c092f46c-7678-54fa-8ba2-8b5219b85429")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["backfill_company_transaction_classifications.py", "--statement-ref", str(statement_ref)],
+    )
+
+    assert parse_args().statement_ref == statement_ref
 
 
 def test_pending_wire_item_cannot_claim_a_category() -> None:

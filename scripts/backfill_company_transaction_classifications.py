@@ -80,6 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-unique", type=int, default=1033)
     parser.add_argument("--expected-confirmed", type=int, default=1033)
     parser.add_argument("--expected-pending", type=int, default=0)
+    parser.add_argument("--statement-ref", type=UUID)
     parser.add_argument("--actor", default="system:company-classification-backfill")
     parser.add_argument(
         "--reason",
@@ -132,12 +133,17 @@ def main() -> int:
                   ) AS latest_review ON true
                  WHERE account.owner_kind = 'COMPANY'
                    AND latest_review.status = 'CONFIRMED'
+                   AND (:statement_ref IS NULL OR observation.statement_ref = :statement_ref)
                    AND transaction.occurred_at >= :from_date
                    AND transaction.occurred_at < :to_date
                  ORDER BY transaction.transaction_ref
                 """
             ),
-            {"from_date": args.from_date, "to_date": args.to_date_exclusive},
+            {
+                "statement_ref": args.statement_ref,
+                "from_date": args.from_date,
+                "to_date": args.to_date_exclusive,
+            },
         )
         transactions = tuple(
             Transaction(UUID(str(row[0])), int(row[1]), str(row[2]), str(row[3])) for row in rows
@@ -152,6 +158,7 @@ def main() -> int:
             "rule_version": RULE_VERSION,
             "from_date": args.from_date.isoformat(),
             "to_date_exclusive": args.to_date_exclusive.isoformat(),
+            "statement_ref": str(args.statement_ref) if args.statement_ref else None,
             "unique_transactions": len(planned),
             "confirmed": confirmed,
             "pending": pending,
