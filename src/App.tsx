@@ -66,6 +66,7 @@ import type {
 } from './types'
 import { ErrorState, LoadingState, Metric, PageHeader } from './shared/PagePrimitives'
 import { PersonalBankTransactionsPanel } from './personal-finance/PersonalBankTransactionsPanel'
+import { useCompleteCandidatePages } from './personal-finance/useCompleteCandidatePages'
 import { CompanyBankStatementReviewPanel } from './company-reports/CompanyBankStatementReviewPanel'
 import { CompanyTransactionClassificationPanel } from './company-reports/CompanyTransactionClassificationPanel'
 
@@ -857,7 +858,7 @@ function App() {
       )
     }
     if (page === 'personal-finance') {
-      return <PersonalFinanceOverview candidates={candidates} onNavigate={navigate} onOpenCandidate={openCandidate} csrfToken={session?.csrf_token ?? ''} />
+      return <PersonalFinanceOverview onNavigate={navigate} onOpenCandidate={openCandidate} csrfToken={session?.csrf_token ?? ''} />
     }
     if (page === 'reconciliation') {
       return (
@@ -1582,12 +1583,15 @@ function StatusLine({ icon, label, detail, tone }: { icon: React.ReactNode; labe
   )
 }
 
-function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate, csrfToken }: {
-  candidates: Candidate[]
+function PersonalFinanceOverview({ onNavigate, onOpenCandidate, csrfToken }: {
   onNavigate: (page: Page) => void
   onOpenCandidate: (candidate: Candidate) => void
   csrfToken: string
 }) {
+  const completeCandidatePages = useCompleteCandidatePages()
+  const candidates = completeCandidatePages.candidates?.map(toCandidate) ?? []
+  const completeCandidatesAvailable = completeCandidatePages.candidates !== null
+
   const pending = candidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
   const personalSelection = selectPersonalFinanceEntries(candidates)
   const financialEntries = personalSelection.entries
@@ -1637,6 +1641,31 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate, csrf
         description="正式银行流水与测试候选分层展示；归属待校准与会计过账仍严格分开。"
         action={<Button onClick={() => onNavigate('review')}><ListChecks size={17} />处理待审核</Button>}
       />
+
+      {!completeCandidatesAvailable ? (
+        completeCandidatePages.error ? (
+          <ErrorState
+            message={`${completeCandidatePages.error}；未显示不完整的收支合计。`}
+            onRetry={() => { void completeCandidatePages.reload() }}
+          />
+        ) : (
+          <LoadingState
+            title="正在核对完整个人财务范围"
+            description="正在逐页读取已授权候选；全部读取完成前不会显示收支合计。"
+          />
+        )
+      ) : <>
+        {completeCandidatePages.error ? (
+          <div className="personal-finance-boundary" role="alert">
+            <span>完整汇总刷新失败，已保留上一次成功读取的结果：{completeCandidatePages.error}</span>
+            <Button size="1" variant="soft" disabled={completeCandidatePages.loading} onClick={() => { void completeCandidatePages.reload() }}>
+              <ArrowsClockwise className={completeCandidatePages.loading ? 'state-spinner' : undefined} size={14} />
+              重新读取
+            </Button>
+          </div>
+        ) : completeCandidatePages.loading ? (
+          <div className="personal-finance-boundary" role="status">正在刷新完整候选分页，当前仍显示上一次完整结果。</div>
+        ) : null}
 
       <section className="panel personal-posting-status" aria-label="个人财务入账状态">
         <div>
@@ -1733,6 +1762,7 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate, csrf
           ) : <p className="personal-finance-empty">暂无已确认归属月份的收支数据。</p>}
         </section>
       </div>
+      </>}
 
       <PersonalBankTransactionsPanel csrfToken={csrfToken} />
 

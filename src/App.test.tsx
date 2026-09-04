@@ -2184,6 +2184,54 @@ describe('LedgerBridge Web API client', () => {
     expect(within(formal).getByText('正式对方乙')).toBeInTheDocument()
   })
 
+  it('loads every authorized candidate page before presenting complete personal totals', async () => {
+    const firstPageCandidate: ApiCandidate = {
+      ...candidates[3],
+      id: 'candidate-first-page-company',
+      short_id: 'C-COMP',
+      business_unit: '景怡公司',
+      business_unit_ref: 'company-jingyi',
+      amount_minor: 990000,
+      accounting_month: '2026-08',
+      category: '公司收入',
+      category_code: 'COMPANY_INCOME',
+      summary: '支付宝 | 2026-08-01 | 收入 | 公司收入 | 平台 | 余额 | 交易成功',
+    }
+    const laterPersonalCandidate: ApiCandidate = {
+      ...candidates[3],
+      id: 'candidate-later-page-personal',
+      short_id: 'C-PAGE',
+      business_unit: '个人',
+      business_unit_ref: 'personal-main',
+      amount_minor: 8800,
+      accounting_month: '2026-08',
+      category: '测试收入',
+      category_code: 'TEST_INCOME',
+      summary: '支付宝 | 2026-08-02 | 收入 | 测试收入 | 测试对象 | 余额 | 交易成功',
+    }
+    let releaseLaterPage!: () => void
+    const laterCandidatePageGate = new Promise<void>((resolve) => {
+      releaseLaterPage = resolve
+    })
+    installFetch({
+      candidatePages: [
+        { items: [firstPageCandidate], next_cursor: 'candidate-page-2' },
+        { items: [laterPersonalCandidate], next_cursor: null },
+      ],
+      laterCandidatePageGate,
+    })
+    renderApp()
+    await screen.findByText('当前没有待审核事项')
+    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+
+    expect(await screen.findByRole('heading', { name: '正在核对完整个人财务范围' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '个人财务收支概览' })).not.toBeInTheDocument()
+    releaseLaterPage()
+    const summary = await screen.findByRole('region', { name: '个人财务收支概览' })
+    expect(await within(summary).findAllByText('¥88.00')).toHaveLength(2)
+    expect(within(summary).getByText('1 条已确认收入，含归属待校准')).toBeInTheDocument()
+  })
+
   it('shows multiple formal bank statements in one reconciled list', async () => {
     const formalFacts = structuredClone(personalBankTransactions())
     const secondStatementRef = '70000000-0000-4000-8000-000000000009'
@@ -2292,8 +2340,8 @@ describe('LedgerBridge Web API client', () => {
     await screen.findByText('早上好，今天有几项需要确认')
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
 
-    const review = screen.getByRole('region', { name: '个人财务待审核' })
-    const summary = screen.getByRole('region', { name: '个人财务收支概览' })
+    const review = await screen.findByRole('region', { name: '个人财务待审核' })
+    const summary = await screen.findByRole('region', { name: '个人财务收支概览' })
     const postingStatus = screen.getByRole('region', { name: '个人财务入账状态' })
     expect(review.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(within(postingStatus).getByText('正式过账未启用')).toBeInTheDocument()
@@ -2377,7 +2425,7 @@ describe('LedgerBridge Web API client', () => {
     await screen.findByRole('heading', { name: '当前没有待审核事项' })
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
 
-    const summary = screen.getByRole('region', { name: '个人财务收支概览' })
+    const summary = await screen.findByRole('region', { name: '个人财务收支概览' })
     expect(within(summary).getByText('¥450.00')).toBeInTheDocument()
     expect(within(summary).getByText('4 条已确认支出，含归属待校准')).toBeInTheDocument()
     expect(screen.getByText('2 条跨来源重复记录已合并')).toBeInTheDocument()
@@ -2401,7 +2449,7 @@ describe('LedgerBridge Web API client', () => {
     await screen.findByRole('heading', { name: '当前没有待审核事项' })
     fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
 
-    const unassigned = screen.getByRole('region', { name: '个人财务归属待校准' })
+    const unassigned = await screen.findByRole('region', { name: '个人财务归属待校准' })
     expect(within(unassigned).getByText('C-UA01')).toBeInTheDocument()
     expect(within(unassigned).getByText('C-UA07')).toBeInTheDocument()
     expect(screen.getByText('7 条归属待校准')).toBeInTheDocument()
