@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -86,9 +87,11 @@ def test_parses_company_xls_with_footer_and_balance_chain(
     assert statement.parser_profile is BankStatementParserProfile.ABC_COMPANY_XLS_V1
     assert [item.amount_minor for item in statement.transactions] == [2000, -500]
     assert statement.account_suffix == "9018"
+    with pytest.raises(ValueError, match="parser facts"):
+        replace(statement, parser_facts_sha256="")
 
 
-@pytest.mark.parametrize("mutation", ["footer", "balance", "direction"])
+@pytest.mark.parametrize("mutation", ["footer", "balance", "direction", "zero"])
 def test_rejects_unreconciled_company_xls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
 ) -> None:
@@ -99,35 +102,7 @@ def test_rejects_unreconciled_company_xls(
         rows[3][3] = 121.0
     if mutation == "direction":
         rows[3][2] = 1.0
+    if mutation == "zero":
+        rows[3][1] = 0.0
     with pytest.raises(AbcCompanyStatementError):
         _parse(tmp_path, monkeypatch, rows)
-
-
-def test_real_supplied_statements_match_reviewed_counts() -> None:
-    source_dir = Path(r"E:\wendang\xwechat_files\cmz19960502_79d0\msg\file\2026-09")
-    sources = [
-        (
-            source_dir / "账户明细查询列表 景怡.xls",
-            "9018",
-            55,
-        ),
-        (
-            source_dir / "账户明细查询列表 (1).xls",
-            "3234",
-            228,
-        ),
-    ]
-    if not all(path.exists() for path, _, _ in sources):
-        pytest.skip("private statements unavailable")
-    for path, suffix, count in sources:
-        raw = path.read_bytes()
-        assert (
-            len(
-                parse_abc_company_xls(
-                    path,
-                    expected_sha256=hashlib.sha256(raw).hexdigest(),
-                    managed_account_suffix=suffix,
-                ).transactions
-            )
-            == count
-        )

@@ -103,6 +103,8 @@ def parse_abc_company_xls(
         expense = _optional_minor(values[2], field="expense")
         if (income is None) == (expense is None):
             raise AbcCompanyStatementError("statement transaction direction is ambiguous")
+        if (income is not None and income <= 0) or (expense is not None and expense <= 0):
+            raise AbcCompanyStatementError("statement transaction amount must be positive")
         amount_minor = income if income is not None else -expense  # type: ignore[operator]
         incomes += int(income is not None)
         expenses += int(expense is not None)
