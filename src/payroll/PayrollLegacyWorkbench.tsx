@@ -16,9 +16,8 @@ import type {
   PayrollLegacyAction,
   PayrollLegacyAdjustment,
   PayrollLegacyBatch,
+  PayrollLegacyCurrentPaidVerification,
   PayrollLegacyEmployeeRule,
-  PayrollLegacyEvidenceDocument,
-  PayrollLegacyEvidenceType,
   PayrollLegacyLine,
   PayrollLegacyReviewRule,
   PayrollLegacyReviewRuleType,
@@ -46,18 +45,29 @@ type EditableRule = Omit<PayrollLegacyEmployeeRule, 'payment_channel'> & {
   payment_channel: '' | PayrollLegacyEmployeeRule['payment_channel']
 }
 
-type ReceiptInput = {
+type DisbursementReviewStatus =
+  | PayrollLegacyCurrentPaidVerification['results'][number]['status']
+  | 'EVIDENCE_MISSING'
+
+type DisbursementReviewRow = {
   employee_id: string
-  account_id: string
+  employee_name: string
+  location: string
   account_masked: string
   payment_channel: string
+  source_key: string
+  source_label: string
   expected_amount_cents: number
-  amount: string
-  status: '' | 'SUCCEEDED' | 'FAILED'
+  actual_amount_cents: number | null
+  difference_cents: number | null
+  status: DisbursementReviewStatus
 }
 
-type EvidenceSlot = PayrollLegacyEvidenceDocument & {
+type DisbursementReviewGroup = {
+  key: string
   label: string
+  channel: string
+  rows: DisbursementReviewRow[]
 }
 
 const tasks: Array<{
@@ -108,19 +118,40 @@ const reviewRuleDefinitions: ReadonlyArray<{
     default_threshold_cents: 1,
   },
 ]
-const evidenceSlotDefinitions: Array<{ evidence_type: PayrollLegacyEvidenceType; label: string }> = [
-  ...Array.from({ length: 5 }, (_, index) => ({
-    evidence_type: 'MYBANK_STATEMENT' as const,
-    label: `网商银行发放流水${index + 1}`,
-  })),
-  { evidence_type: 'BOC_RECEIPT', label: '中国银行实际发放流水' },
-  { evidence_type: 'WECHAT_RECEIPT', label: '李勇微信实际转账记录' },
+const disbursementEvidenceRequirements = [
+  { evidence_type: 'MYBANK_STATEMENT', label: '网商银行实际发放流水', required_count: 5, channel: 'MYBANK' },
+  { evidence_type: 'BOC_RECEIPT', label: '中国银行实际发放流水', required_count: 1, channel: 'BOC' },
+  { evidence_type: 'WECHAT_RECEIPT', label: '李勇微信实际转账记录', required_count: 1, channel: 'WECHAT' },
+] as const
+
+const disbursementStatusLabels: Record<DisbursementReviewStatus, string> = {
+  MATCHED: '完全一致',
+  UNDERPAID: '金额差异',
+  OVERPAID: '金额差异',
+  PAYMENT_FAILED: '应发未发',
+  MISSING_RECEIPT: '证据缺失',
+  IDENTITY_MISMATCH: '无法自动匹配',
+  EVIDENCE_MISSING: '证据缺失',
+}
+
+const disbursementCategories: Array<{
+  key: string
+  label: string
+  statuses: DisbursementReviewStatus[]
+}> = [
+  { key: 'amount-difference', label: '金额差异', statuses: ['UNDERPAID', 'OVERPAID'] },
+  { key: 'payment-failed', label: '应发未发', statuses: ['PAYMENT_FAILED'] },
+  { key: 'evidence-missing', label: '证据缺失', statuses: ['MISSING_RECEIPT', 'EVIDENCE_MISSING'] },
+  { key: 'identity-mismatch', label: '无法自动匹配', statuses: ['IDENTITY_MISMATCH'] },
+  { key: 'matched', label: '完全一致', statuses: ['MATCHED'] },
 ]
 
-const emptyEvidenceSlots = (): EvidenceSlot[] => evidenceSlotDefinitions.map((item) => ({
-  ...item,
-  evidence_ref: '',
-}))
+const channelLabel = (channel: string) => ({
+  MYBANK: '网商银行',
+  BOC: '中国银行特殊发放',
+  WECHAT: '李勇微信转账',
+  CASH: '现金发放',
+}[channel] ?? channel)
 
 const money = (cents: number) => new Intl.NumberFormat('zh-CN', {
   style: 'currency',
@@ -137,33 +168,61 @@ function rulesFromWorkspace(workspace: PayrollLegacyWorkspace): EditableRule[] {
   return workspace.rules.employees.map((rule) => ({ ...rule }))
 }
 
-function receiptsFromBatch(batch: PayrollLegacyBatch): ReceiptInput[] {
-  return batch.lines.map((line) => ({
-    employee_id: line.employee_id,
-    account_id: line.account_id,
-    account_masked: line.account_masked,
-    payment_channel: line.payment_channel,
-    expected_amount_cents: line.net_pay_cents,
-    amount: '',
-    status: '' as const,
-  }))
-}
+function disbursementReviewGroups(
+  batch: PayrollLegacyBatch,
+  employeeRules: PayrollLegacyEmployeeRule[],
+): DisbursementReviewGroup[] {
+  const verification = batch.verification?.schema_version === 'payroll-current-paid-verification/v2'
+    ? batch.verification
+    : null
+  const results = new Map(verification?.results.map((result) => [
+    `${result.employee_id}\u0000${result.account_id}`,
+    result,
+  ]) ?? [])
+  const rules = new Map(employeeRules.map((rule) => [
+    `${rule.employee_id}\u0000${rule.account_id}`,
+    rule,
+  ]))
+  const groups = new Map<string, DisbursementReviewGroup>()
 
-function evidenceSlotsFromBatch(batch: PayrollLegacyBatch): EvidenceSlot[] {
-  const slots = emptyEvidenceSlots()
-  if (batch.verification?.schema_version !== 'payroll-current-paid-verification/v2') return slots
-  const byType = new Map<PayrollLegacyEvidenceType, PayrollLegacyEvidenceDocument[]>()
-  for (const document of batch.verification.evidence_documents) {
-    const current = byType.get(document.evidence_type) ?? []
-    current.push(document)
-    byType.set(document.evidence_type, current)
+  for (const line of batch.lines) {
+    const result = results.get(`${line.employee_id}\u0000${line.account_id}`)
+    const employeeRule = rules.get(`${line.employee_id}\u0000${line.account_id}`)
+    const disbursementCompany = line.disbursement_company || employeeRule?.disbursement_company || '代发公司待确认'
+    const sourceKey = line.payment_channel === 'MYBANK'
+      ? `MYBANK\u0000${disbursementCompany}`
+      : line.payment_channel
+    const sourceLabel = line.payment_channel === 'MYBANK'
+      ? `${disbursementCompany} · 网商银行`
+      : channelLabel(line.payment_channel)
+    const row: DisbursementReviewRow = {
+      employee_id: line.employee_id,
+      employee_name: line.employee_name || employeeRule?.employee_name || '员工姓名待确认',
+      location: line.location || employeeRule?.location || '门店待确认',
+      account_masked: line.account_masked,
+      payment_channel: line.payment_channel,
+      source_key: sourceKey,
+      source_label: sourceLabel,
+      expected_amount_cents: line.net_pay_cents,
+      actual_amount_cents: result?.actual_amount_cents ?? null,
+      difference_cents: result?.difference_cents ?? null,
+      status: result?.status ?? 'EVIDENCE_MISSING',
+    }
+    const group = groups.get(sourceKey) ?? {
+      key: sourceKey,
+      label: sourceLabel,
+      channel: line.payment_channel,
+      rows: [],
+    }
+    group.rows.push(row)
+    groups.set(sourceKey, group)
   }
-  const offsets = new Map<PayrollLegacyEvidenceType, number>()
-  return slots.map((slot) => {
-    const offset = offsets.get(slot.evidence_type) ?? 0
-    offsets.set(slot.evidence_type, offset + 1)
-    return { ...slot, evidence_ref: byType.get(slot.evidence_type)?.[offset]?.evidence_ref ?? '' }
-  })
+
+  const channelOrder = new Map([['MYBANK', 0], ['BOC', 1], ['WECHAT', 2], ['CASH', 3]])
+  return [...groups.values()].sort((left, right) => (
+    (channelOrder.get(left.channel) ?? 9) - (channelOrder.get(right.channel) ?? 9) ||
+    left.label.localeCompare(right.label, 'zh-CN')
+  ))
 }
 
 export function PayrollLegacyWorkbench({
@@ -184,8 +243,6 @@ export function PayrollLegacyWorkbench({
   const [adjustmentPeriod, setAdjustmentPeriod] = useState('')
   const [rules, setRules] = useState<EditableRule[]>([])
   const [reviewRules, setReviewRules] = useState<PayrollLegacyReviewRule[]>([])
-  const [evidenceSlots, setEvidenceSlots] = useState<EvidenceSlot[]>(emptyEvidenceSlots)
-  const [receipts, setReceipts] = useState<ReceiptInput[]>([])
   const [pendingDecisions, setPendingDecisions] = useState<Record<string, {
     decision: '' | 'ADD_TO_MAIN' | 'SUPPLEMENT' | 'IGNORE'
     reason: string
@@ -197,8 +254,6 @@ export function PayrollLegacyWorkbench({
     setPeriod(nextPeriod)
     setRules(rulesFromWorkspace(nextWorkspace))
     setReviewRules(nextWorkspace.rules.review_rules ?? [])
-    setReceipts(batch ? receiptsFromBatch(batch) : [])
-    setEvidenceSlots(batch ? evidenceSlotsFromBatch(batch) : emptyEvidenceSlots())
     setAdjustments(batch ? batch.adjustments.filter((item) => !item.source_pending_id) : [])
     setAdjustmentPeriod(batch?.period ?? '')
   }, [])
@@ -218,8 +273,6 @@ export function PayrollLegacyWorkbench({
       setPeriod('')
       setRules([])
       setReviewRules([])
-      setReceipts([])
-      setEvidenceSlots(emptyEvidenceSlots())
       setAdjustments([])
     } finally {
       setLoading(false)
@@ -327,13 +380,6 @@ export function PayrollLegacyWorkbench({
     (rule) => rule.employee_name.trim() && /^\*{4}(?:\d{4}|\?{4})$/.test(rule.account_masked) &&
       rule.disbursement_company.trim() && rule.payment_channel &&
       rule.job_group.trim() && rule.location.trim(),
-  )
-  const evidenceRefs = evidenceSlots.map((item) => item.evidence_ref.trim())
-  const evidenceComplete = evidenceRefs.every(
-    (value) => /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/.test(value),
-  ) && new Set(evidenceRefs).size === evidenceSlots.length
-  const receiptsComplete = evidenceComplete && receipts.length > 0 && receipts.every(
-    (receipt) => receipt.status && receipt.amount !== '' && Number(receipt.amount) >= 0,
   )
   const pendingComplete = previousOpenItems.length === 0 || previousOpenItems.every((item) => {
     const resolution = pendingDecisions[item.pending_id]
@@ -662,56 +708,9 @@ export function PayrollLegacyWorkbench({
 
           {task === 'verify' && activeBatch ? (
             <div className="payroll-task-panel">
-              <div className="payroll-task-heading"><div><span>04</span><h3>复核本月已发并更新汇总</h3></div><p>系统生成工资表是理论应发基准；先核对五份网商流水、一份中国银行流水和李勇微信转账，逐人及总额全部一致后才更新汇总。</p></div>
-              <div className="payroll-evidence-collection">
-                <div>
-                  <strong>账单收集完整度</strong>
-                  <span>工资表理论总额：{money(activeBatch.lines.reduce((sum, line) => sum + line.net_pay_cents, 0))}</span>
-                </div>
-                <ul>
-                  <li>网商银行实际发放流水 {evidenceSlots.filter((item) => item.evidence_type === 'MYBANK_STATEMENT' && item.evidence_ref.trim()).length}/5</li>
-                  <li>中国银行实际发放流水 {evidenceSlots.some((item) => item.evidence_type === 'BOC_RECEIPT' && item.evidence_ref.trim()) ? 1 : 0}/1</li>
-                  <li>李勇微信实际转账记录 {evidenceSlots.some((item) => item.evidence_type === 'WECHAT_RECEIPT' && item.evidence_ref.trim()) ? 1 : 0}/1</li>
-                </ul>
-                <div className="payroll-evidence-reference-grid">
-                  {evidenceSlots.map((slot, index) => (
-                    <label key={`${slot.evidence_type}-${index}`}>
-                      <span>{slot.label}</span>
-                      <input
-                        aria-label={slot.label}
-                        value={slot.evidence_ref}
-                        onChange={(event) => setEvidenceSlots((current) => current.map(
-                          (item, itemIndex) => itemIndex === index
-                            ? { ...item, evidence_ref: event.target.value }
-                            : item,
-                        ))}
-                        placeholder="填写已接收账单的证据编号"
-                      />
-                    </label>
-                  ))}
-                </div>
-              </div>
-              {receipts.length ? (
-                <>
-                  <div className="payroll-receipt-list">
-                    {receipts.map((receipt) => (
-                      <div key={receipt.employee_id}>
-                        <span>{receipt.employee_id}<small>{receipt.account_masked} · 应发 {money(receipt.expected_amount_cents)}</small></span>
-                        <input aria-label={`${receipt.employee_id}实际到账金额`} type="number" min="0" step="0.01" value={receipt.amount} onChange={(event) => setReceipts((current) => current.map((item) => item.employee_id === receipt.employee_id ? { ...item, amount: event.target.value } : item))} placeholder="实际到账元" />
-                        <select aria-label={`${receipt.employee_id}回单状态`} value={receipt.status} onChange={(event) => setReceipts((current) => current.map((item) => item.employee_id === receipt.employee_id ? { ...item, status: event.target.value as ReceiptInput['status'] } : item))}><option value="">请选择</option><option value="SUCCEEDED">已成功</option><option value="FAILED">失败</option></select>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              ) : <p className="payroll-empty-task">当前工资表没有可核对人员。</p>}
-              {activeBatch.verification?.schema_version === 'payroll-current-paid-verification/v2' ? (
-                <div className={`payroll-verification-total ${activeBatch.verification.totals_match ? 'matched' : 'attention'}`}>
-                  <strong>{activeBatch.verification.totals_match ? '理论总额与实际总额一致' : '理论总额与实际总额不一致'}</strong>
-                  <span>理论 {money(activeBatch.verification.theoretical_total_cents)} · 实际 {money(activeBatch.verification.actual_total_cents)} · 差额 {money(activeBatch.verification.difference_cents)}</span>
-                </div>
-              ) : null}
+              <div className="payroll-task-heading"><div><span>04</span><h3>复核本月已发并更新汇总</h3></div><p>系统直接读取工资结果和已保存的发放验证，先按来源分组、再按复核结果分类；一致项只读展示，只有异常进入后续处理。</p></div>
+              <DisbursementReview batch={activeBatch} employeeRules={workspace?.rules.employees ?? []} />
               {activeBatch.summary ? <SummaryView batch={activeBatch} /> : <p className="payroll-empty-task">汇总尚未更新；必须先完成匹配复核。</p>}
-              <button type="button" className="primary" disabled={!receiptsComplete || busy} onClick={() => void execute('VERIFY_AND_UPDATE_SUMMARY', { period: activeBatch.period, evidence_documents: evidenceSlots.map(({ evidence_type, evidence_ref }) => ({ evidence_type, evidence_ref: evidence_ref.trim() })), receipts: receipts.map((receipt) => ({ employee_id: receipt.employee_id, account_id: receipt.account_id, payment_channel: receipt.payment_channel, amount_cents: Math.round(Number(receipt.amount) * 100), status: receipt.status })) })}>先复核本月已发，匹配后更新汇总</button>
             </div>
           ) : null}
 
@@ -724,6 +723,111 @@ export function PayrollLegacyWorkbench({
           {message ? <p className={`payroll-legacy-message ${message.tone}`} role={message.tone === 'error' ? 'alert' : 'status'}>{message.text}</p> : null}
         </div>
       )}
+    </section>
+  )
+}
+
+function DisbursementReview({
+  batch,
+  employeeRules,
+}: {
+  batch: PayrollLegacyBatch
+  employeeRules: PayrollLegacyEmployeeRule[]
+}) {
+  const verification = batch.verification?.schema_version === 'payroll-current-paid-verification/v2'
+    ? batch.verification
+    : null
+  const groups = disbursementReviewGroups(batch, employeeRules)
+  const evidenceSummary = new Map(verification?.evidence_summary.map((item) => [
+    item.evidence_type,
+    item.received_count,
+  ]) ?? [])
+
+  return (
+    <section className="payroll-disbursement-review" aria-label="发放复核分类">
+      <div className="payroll-evidence-collection">
+        <div>
+          <strong>系统读取的发放证据</strong>
+          <span>工资表理论总额：{money(batch.lines.reduce((sum, line) => sum + line.net_pay_cents, 0))}</span>
+        </div>
+        <div className="payroll-evidence-stage-grid">
+          {disbursementEvidenceRequirements.map((requirement) => {
+            const received = evidenceSummary.get(requirement.evidence_type) ?? 0
+            const channelRows = groups.flatMap((group) => group.rows).filter(
+              (row) => row.payment_channel === requirement.channel,
+            )
+            const matched = channelRows.length > 0 && channelRows.every((row) => row.status === 'MATCHED')
+            return (
+              <article key={requirement.evidence_type}>
+                <strong>{requirement.label}</strong>
+                <span>接收 {received}/{requirement.required_count}</span>
+                <span>解析 {verification ? '已完成' : '等待证据'}</span>
+                <span>逐人匹配 {matched ? '已完成' : '未完成'}</span>
+              </article>
+            )
+          })}
+        </div>
+      </div>
+
+      <p className={`payroll-verification-read-status ${verification ? 'available' : 'blocked'}`} role="status">
+        {verification
+          ? '已读取保存的发放验证；正常项只读展示，异常项保留原始状态和差额。'
+          : `当前账期未读取到实际发放证据；${batch.lines.length} 名员工已统一归入“证据缺失”，汇总继续阻断。`}
+      </p>
+
+      <div className="payroll-disbursement-groups">
+        {groups.map((group) => {
+          const expectedTotal = group.rows.reduce((sum, row) => sum + row.expected_amount_cents, 0)
+          const actualRows = group.rows.filter((row) => row.actual_amount_cents !== null)
+          const actualTotal = actualRows.reduce((sum, row) => sum + (row.actual_amount_cents ?? 0), 0)
+          const allActualKnown = actualRows.length === group.rows.length
+          return (
+            <article className="payroll-disbursement-group" key={group.key}>
+              <header>
+                <div><strong>{group.label}</strong><span>{group.rows.length} 人</span></div>
+                <dl>
+                  <div><dt>理论应发</dt><dd>{money(expectedTotal)}</dd></div>
+                  <div><dt>实际到账</dt><dd>{allActualKnown ? money(actualTotal) : '等待证据'}</dd></div>
+                  <div><dt>差额</dt><dd>{allActualKnown ? money(actualTotal - expectedTotal) : '—'}</dd></div>
+                </dl>
+              </header>
+              <div className="payroll-disbursement-categories">
+                {disbursementCategories.map((category) => {
+                  const rows = group.rows.filter((row) => category.statuses.includes(row.status))
+                  if (rows.length === 0) return null
+                  return (
+                    <details key={category.key} open={category.key !== 'matched' || undefined}>
+                      <summary><span>{category.label}</span><b>{rows.length} 人</b></summary>
+                      <div className="payroll-disbursement-rows">
+                        {rows.map((row) => (
+                          <article key={`${row.employee_id}-${row.account_masked}`}>
+                            <div className="payroll-disbursement-person">
+                              <strong>{row.employee_name}</strong>
+                              <span>{row.location} · {channelLabel(row.payment_channel)} · {row.account_masked}</span>
+                            </div>
+                            <dl>
+                              <div><dt>理论应发</dt><dd>{money(row.expected_amount_cents)}</dd></div>
+                              <div><dt>实际到账</dt><dd>{row.actual_amount_cents === null ? '等待证据' : money(row.actual_amount_cents)}</dd></div>
+                              <div><dt>差额</dt><dd>{row.difference_cents === null ? '—' : money(row.difference_cents)}</dd></div>
+                            </dl>
+                            <span className={`payroll-disbursement-status ${row.status === 'MATCHED' ? 'matched' : 'attention'}`}>
+                              {disbursementStatusLabels[row.status]}
+                            </span>
+                          </article>
+                        ))}
+                      </div>
+                    </details>
+                  )
+                })}
+              </div>
+            </article>
+          )
+        })}
+      </div>
+
+      <p className="payroll-verification-footnote">
+        名单外发放必须由实际来源记录识别；当前没有来源记录时不会猜测或把空值当作已核对。
+      </p>
     </section>
   )
 }

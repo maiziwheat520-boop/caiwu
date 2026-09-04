@@ -206,8 +206,9 @@ describe('PayrollLegacyWorkbench', () => {
     const flow = await screen.findByRole('region', { name: '本月工资处理进度' })
     expect(within(flow).getByText('物料确认').closest('div')).toHaveClass('done')
     fireEvent.click(within(flow).getByRole('button', { name: '进入发放复核' }))
-    expect(await screen.findByLabelText('emp_preview_001实际到账金额')).toBeInTheDocument()
-    expect(screen.queryByLabelText('emp_july_001实际到账金额')).not.toBeInTheDocument()
+    const review = await screen.findByRole('region', { name: '发放复核分类' })
+    expect(within(review).getByText('示例员工甲')).toBeInTheDocument()
+    expect(within(review).queryByText('七月示例员工')).not.toBeInTheDocument()
   })
 
   it('shows five payroll-list previews and the wage-disbursement table', async () => {
@@ -221,9 +222,52 @@ describe('PayrollLegacyWorkbench', () => {
     expect(screen.getByText(/示例员工甲 · MYBANK · 测试公司一/)).toBeInTheDocument()
   })
 
-  it('uses the merged verify-then-update-summary action after seven statements are entered', async () => {
+  it('classifies disbursement review from stored payroll facts without manual re-entry', async () => {
     mockRead()
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
+
+    await screen.findByRole('region', { name: '工资概览' })
+    fireEvent.click(screen.getByRole('button', { name: '复核本月已发并更新汇总' }))
+
+    const review = screen.getByRole('region', { name: '发放复核分类' })
+    expect(within(review).getByText('测试公司一 · 网商银行')).toBeInTheDocument()
+    expect(within(review).getAllByText('证据缺失')).toHaveLength(2)
+    expect(within(review).getByText('示例员工甲')).toBeInTheDocument()
+    expect(within(review).getByText(/主楼 · 网商银行 · \*{4}0138/)).toBeInTheDocument()
+    expect(within(review).getAllByText('理论应发')).toHaveLength(2)
+    expect(within(review).getAllByText('实际到账')).toHaveLength(2)
+    expect(screen.queryByLabelText('emp_preview_001实际到账金额')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('网商银行发放流水1')).not.toBeInTheDocument()
+  })
+
+  it('reads stored evidence and matched results without issuing a write command', async () => {
     const verifiedWorkspace = structuredClone(legacyWorkspace)
+    verifiedWorkspace.batches[0].verification = {
+      schema_version: 'payroll-current-paid-verification/v2', company_id: 'company_live_hotel',
+      batch_id: 'payroll_history_through_2026_08_2026_08', period: '2026-08',
+      evidence_documents: [
+        ...Array.from({ length: 5 }, (_, index) => ({
+          evidence_type: 'MYBANK_STATEMENT' as const,
+          evidence_ref: `mybank_company_${index + 1}_2026_08`,
+        })),
+        { evidence_type: 'BOC_RECEIPT', evidence_ref: 'boc_cash_2026_08' },
+        { evidence_type: 'WECHAT_RECEIPT', evidence_ref: 'wechat_separate_2026_08' },
+      ],
+      evidence_summary: [
+        { evidence_type: 'MYBANK_STATEMENT', required_count: 5, received_count: 5 },
+        { evidence_type: 'BOC_RECEIPT', required_count: 1, received_count: 1 },
+        { evidence_type: 'WECHAT_RECEIPT', required_count: 1, received_count: 1 },
+      ],
+      theoretical_total_cents: 530000, actual_total_cents: 530000,
+      difference_cents: 0, totals_match: true,
+      by_payment_channel: [{ payment_channel: 'MYBANK', expected_amount_cents: 530000,
+        actual_amount_cents: 530000, difference_cents: 0, totals_match: true }],
+      overall_status: 'MATCHED',
+      results: [{ employee_id: 'emp_preview_001', account_id: 'acct_preview_001',
+        payment_channel: 'MYBANK', expected_amount_cents: 530000, actual_amount_cents: 530000,
+        difference_cents: 0, status: 'MATCHED' }],
+      verified_at: '2026-09-01T03:00:00.000Z', payable: false, submission_supported: false,
+    }
     verifiedWorkspace.batches[0].summary = {
       schema_version: 'payroll-monthly-summary/v1', company_id: 'company_live_hotel',
       batch_id: 'payroll_history_through_2026_08_2026_08', period: '2026-08',
@@ -232,24 +276,18 @@ describe('PayrollLegacyWorkbench', () => {
       by_location: [{ location: '主楼', employee_count: 1, gross_pay_cents: 530000, net_pay_cents: 530000 }],
       payable: false, submission_supported: false,
     }
-    vi.spyOn(api, 'runPayrollLegacyCommand').mockResolvedValue(
-      commandResult('VERIFY_AND_UPDATE_SUMMARY', verifiedWorkspace),
-    )
+    mockRead(verifiedWorkspace)
+    const command = vi.spyOn(api, 'runPayrollLegacyCommand')
     render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
     await screen.findByRole('region', { name: '工资概览' })
     fireEvent.click(screen.getByRole('button', { name: '复核本月已发并更新汇总' }))
-    for (let index = 1; index <= 5; index += 1) fireEvent.change(
-      screen.getByLabelText(`网商银行发放流水${index}`),
-      { target: { value: `mybank_company_${index}_2026_08` } },
-    )
-    fireEvent.change(screen.getByLabelText('中国银行实际发放流水'), { target: { value: 'boc_cash_2026_08' } })
-    fireEvent.change(screen.getByLabelText('李勇微信实际转账记录'), { target: { value: 'wechat_separate_2026_08' } })
-    fireEvent.change(screen.getByLabelText('emp_preview_001实际到账金额'), { target: { value: '5300.00' } })
-    fireEvent.change(screen.getByLabelText('emp_preview_001回单状态'), { target: { value: 'SUCCEEDED' } })
-    fireEvent.click(screen.getByRole('button', { name: '先复核本月已发，匹配后更新汇总' }))
-    await waitFor(() => expect(api.runPayrollLegacyCommand).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'VERIFY_AND_UPDATE_SUMMARY' }),
-    ))
+    const review = screen.getByRole('region', { name: '发放复核分类' })
+    expect(within(review).getByText('接收 5/5')).toBeInTheDocument()
+    expect(within(review).getAllByText('接收 1/1')).toHaveLength(2)
+    expect(within(review).getAllByText('完全一致')).toHaveLength(2)
+    expect(within(review).getAllByText('¥5,300.00').length).toBeGreaterThanOrEqual(2)
+    expect(command).not.toHaveBeenCalled()
+    expect(screen.queryByLabelText('emp_preview_001实际到账金额')).not.toBeInTheDocument()
     expect(await screen.findByRole('heading', { name: '各店当月工资汇总' })).toBeInTheDocument()
     expect(screen.getByText('主楼 · 1 人')).toBeInTheDocument()
   })
