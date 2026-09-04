@@ -32,6 +32,7 @@ type Props = {
   testWorkspace: PayrollTestWorkspaceReadResponse
   csrfToken: string
   confirmedMaterials?: PayrollConfirmedMaterials | null
+  materialsPanel?: ReactNode
 }
 
 type TaskId =
@@ -165,7 +166,12 @@ function evidenceSlotsFromBatch(batch: PayrollLegacyBatch): EvidenceSlot[] {
   })
 }
 
-export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMaterials = null }: Props) {
+export function PayrollLegacyWorkbench({
+  testWorkspace,
+  csrfToken,
+  confirmedMaterials = null,
+  materialsPanel = null,
+}: Props) {
   const [workspace, setWorkspace] = useState<PayrollLegacyWorkspace | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadFailed, setLoadFailed] = useState(false)
@@ -422,6 +428,10 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
         })}
       </nav>
 
+      {task === 'generate' && materialsPanel ? (
+        <div className="payroll-flow-materials">{materialsPanel}</div>
+      ) : null}
+
       {loading ? (
         <div className="payroll-legacy-loading"><ArrowClockwise size={20} />正在读取工资规则和月度结果</div>
       ) : (
@@ -456,7 +466,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
                 ) : confirmedMaterials?.period === generationPeriod ? (
                   <button type="button" className="primary" disabled={!workspace || workspace.rules.employees.length === 0 || !pendingComplete || busy} onClick={generateMonthlyPayroll}>{busy ? '正在生成' : '确认并生成当月工资表'}</button>
                 ) : (
-                  <button type="button" className="primary" onClick={goToMaterials}>前往素材确认</button>
+                  <button type="button" className="primary" onClick={goToMaterials}>查看并确认素材</button>
                 )}
               </div>
               <aside>
@@ -496,7 +506,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
                   <span>阿姨考勤表 {confirmedMaterials.material_ids.aunt_attendance.slice(-8).toUpperCase()}</span>
                   <span>好评统计 {confirmedMaterials.material_ids.review_statistics.slice(-8).toUpperCase()}</span>
                 </div>
-              ) : <div className="payroll-inline-warning"><Warning size={17} />请在下方素材库选择这个月份，并为考勤表、阿姨考勤表、好评统计各唯一确认一个版本。</div>}
+              ) : <div className="payroll-inline-warning"><Warning size={17} />请在本步骤确认这个月份的考勤表、阿姨考勤表和好评统计。</div>}
               {activeBatch?.period === generationPeriod ? (
                 <AdjustmentEditor
                   lines={activeBatch.lines}

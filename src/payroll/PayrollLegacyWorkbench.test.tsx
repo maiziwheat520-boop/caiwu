@@ -119,13 +119,16 @@ describe('PayrollLegacyWorkbench', () => {
 
   it('keeps the initial payroll task inside the compact workflow instead of repeating a full form', async () => {
     mockRead({ ...legacyWorkspace, active_period: '', batches: [] })
-    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test"
+      materialsPanel={<section aria-label="工资素材整理">素材确认内容</section>} />)
     await screen.findByRole('region', { name: '工资概览' })
-    const flow = screen.getByRole('region', { name: '本月工资处理进度' })
+    const flow = await screen.findByRole('region', { name: '本月工资处理进度' })
     expect(within(flow).getByText('物料确认')).toBeInTheDocument()
     expect(within(flow).getByText('生成工资')).toBeInTheDocument()
     expect(within(flow).getByText('发放对账')).toBeInTheDocument()
-    expect(within(flow).getByRole('button', { name: '前往素材确认' })).toBeInTheDocument()
+    expect(within(flow).getByRole('button', { name: '查看并确认素材' })).toBeInTheDocument()
+    const workbench = screen.getByRole('region', { name: '本月工资处理' })
+    expect(within(workbench).getByRole('region', { name: '工资素材整理' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: '生成当月工资' })).not.toBeInTheDocument()
   })
 

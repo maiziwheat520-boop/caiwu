@@ -619,6 +619,11 @@
 .payroll-legacy-taskbar button.active { box-shadow: inset 0 -3px #2f6ac1; }
 .payroll-legacy-taskbar small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+.payroll-flow-materials {
+  grid-column: 1;
+  grid-row: auto;
+}
+
 .payroll-legacy-body {
   grid-column: 1;
   grid-row: auto;

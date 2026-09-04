@@ -254,6 +254,14 @@ export function PayrollWorkspacePage() {
               testWorkspace={testWorkspace}
               csrfToken={csrfToken}
               confirmedMaterials={confirmedMaterials}
+              materialsPanel={(
+                <PayrollTestWorkspaceActionsPanel
+                  workspace={testWorkspace}
+                  csrfToken={csrfToken}
+                  onWorkspaceChange={setTestWorkspace}
+                  onConfirmedMaterials={setConfirmedMaterials}
+                />
+              )}
             />
           ) : null}
           <PayrollHistorySummary key={testWorkspace.data.workspace_revision} workspace={testWorkspace} />
@@ -270,14 +278,6 @@ export function PayrollWorkspacePage() {
             </div>
             <Badge color={testWorkspace ? 'blue' : 'amber'}>{testWorkspaceReady ? '七八月测试账本' : testWorkspace ? '暂无七八月素材' : '待接通'}</Badge>
           </div>
-          {testWorkspace && csrfToken ? (
-            <PayrollTestWorkspaceActionsPanel
-              workspace={testWorkspace}
-              csrfToken={csrfToken}
-              onWorkspaceChange={setTestWorkspace}
-              onConfirmedMaterials={setConfirmedMaterials}
-            />
-          ) : null}
           {status.data.setup_summary?.provider_connected ? (
             <section className="panel payroll-setup-progress" aria-label="工资材料接入进度">
               <Database size={28} weight="light" />
@@ -303,17 +303,6 @@ export function PayrollWorkspacePage() {
             </article>
           </section>
         </>
-      ) : null}
-
-      {!loading && !error && status?.data.live_data_ready && testWorkspace ? (
-        csrfToken ? (
-          <PayrollTestWorkspaceActionsPanel
-            workspace={testWorkspace}
-            csrfToken={csrfToken}
-            onWorkspaceChange={setTestWorkspace}
-            onConfirmedMaterials={setConfirmedMaterials}
-          />
-        ) : null
       ) : null}
 
       {!loading && !error && dashboard && verification ? (
