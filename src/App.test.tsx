@@ -493,6 +493,7 @@ function installFetch(options: {
   items?: ApiCandidate[]
   failSessionOnce?: boolean
   failReconciliationAfterDecision?: boolean
+  failInitialReconciliation?: boolean
   authStatus?: AuthStatus
   recoveryCodes?: string[]
   recoverySetupRequired?: boolean
@@ -525,11 +526,13 @@ function installFetch(options: {
   failPersonalBank?: boolean
   originalReconciliation?: OriginalReconciliation
   originalReconciliationGate?: Promise<void>
+  candidateListGate?: Promise<void>
 } = {}) {
   const {
     items = candidates,
     failSessionOnce = false,
     failReconciliationAfterDecision = false,
+    failInitialReconciliation = false,
     authStatus = authenticatedStatus,
     recoveryCodes = ['RECOVERY-ONE', 'RECOVERY-TWO'],
     recoverySetupRequired = false,
@@ -594,6 +597,7 @@ function installFetch(options: {
     failPersonalBank = false,
     originalReconciliation = originalReconciliationFixture,
     originalReconciliationGate,
+    candidateListGate,
   } = options
   let shouldFailSession = failSessionOnce
   let shouldFailClassificationGroups = failClassificationGroupsOnce
@@ -662,6 +666,7 @@ function installFetch(options: {
       return response(personalBankResponse)
     }
     if (url === '/api/v1/candidates' || url.startsWith('/api/v1/candidates?')) {
+      if (candidateListGate) await candidateListGate
       candidateListRequestCount += 1
       if (shouldFailCandidatesAfterFirst && candidateListRequestCount > 1) {
         shouldFailCandidatesAfterFirst = false
@@ -695,6 +700,7 @@ function installFetch(options: {
       return response({ ...cashProjection, accounting_month: requestedMonth })
     }
     if (url.startsWith('/api/v1/reconciliations/') && init?.method !== 'POST') {
+      if (!decisionSaved && failInitialReconciliation) return response({ title: '本月对账尚未建立', status: 404, code: 'NOT_FOUND' }, 404)
       if (decisionSaved && failReconciliationAfterDecision) return response({ title: '对账投影暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
       return response(reconciliation)
     }
@@ -2446,6 +2452,26 @@ describe('LedgerBridge Web API client', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /各公司报表/ })[0])
     expect(await screen.findByRole('heading', { name: '各公司报表' })).toBeInTheDocument()
     expect(await screen.findByText('当前期间没有可展示的公司报表')).toBeInTheDocument()
+  })
+
+  it('opens monthly reconciliation without waiting for the global candidate feed', async () => {
+    window.history.replaceState({}, '', '/reconciliation')
+    const candidateListGate = new Promise<void>(() => undefined)
+    installFetch({ candidateListGate })
+
+    renderApp()
+
+    expect(await screen.findByRole('heading', { name: '月度对账' })).toBeInTheDocument()
+    expect(screen.queryByText('正在读取财务数据')).not.toBeInTheDocument()
+  })
+
+  it('keeps the overview readable when the optional monthly reconciliation is absent', async () => {
+    installFetch({ failInitialReconciliation: true })
+
+    renderApp()
+
+    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(screen.queryByText('本月对账尚未建立')).not.toBeInTheDocument()
   })
 
   it('keeps processing-stage and business-unit diagnostics out of the company report page', async () => {

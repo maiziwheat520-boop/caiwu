@@ -442,6 +442,10 @@ function App() {
         (value) => ({ status: 'fulfilled' as const, value }),
         () => ({ status: 'rejected' as const }),
       )
+      const reconciliationRequest = api.getReconciliation(selectedMonth).then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        () => ({ status: 'rejected' as const }),
+      )
       const [
         candidateData,
         reconciliationData,
@@ -450,7 +454,7 @@ function App() {
         personalBankResult,
       ] = await Promise.all([
         api.listCandidates(),
-        api.getReconciliation(selectedMonth),
+        reconciliationRequest,
         api.listConnections(),
         classificationGroupRequest,
         personalBankRequest,
@@ -472,7 +476,7 @@ function App() {
       }
       setAuditCandidates([])
       candidateCursorRef.current = null
-      setReconciliation(reconciliationData)
+      setReconciliation(reconciliationData.status === 'fulfilled' ? reconciliationData.value : null)
       setConnections(connectionData)
       setPersonalBankData(personalBankResult.status === 'fulfilled' ? personalBankResult.value : null)
       businessDataLoadedRef.current = true
@@ -888,6 +892,7 @@ function App() {
   }
 
   const isCoreBacked = session?.runtime_mode === 'core-backed'
+  const pageLoadsIndependently = page === 'payroll' || page === 'reconciliation' || page === 'company-reports'
 
   return (
     <div className="app-shell">
@@ -957,7 +962,7 @@ function App() {
 
         <main className="content">
           <Suspense fallback={<LoadingState title="正在加载功能模块" description="只加载当前打开的功能区。" />}>
-            {page === 'payroll'
+            {pageLoadsIndependently
               ? renderPage()
               : loading
                 ? <LoadingState />
