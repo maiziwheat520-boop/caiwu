@@ -58,10 +58,56 @@ describe('CompanyTransactionClassificationPanel', () => {
     await waitFor(() => expect(review).toHaveBeenCalledWith({
       transaction: page.items[0],
       categoryCode: 'RELATED_PARTY_CURRENT',
+      reportingItemCode: null,
       reason: '人工核对后确认为往来款',
       csrfToken: 'csrf-test',
     }))
     expect(await screen.findByText('0 条待确认')).toBeInTheDocument()
     expect(screen.getByText('本笔流水已追加人工确认记录；未生成分录或过账。')).toBeInTheDocument()
+  })
+
+  it('requires the shared operating-fee detail for every company', async () => {
+    const anotherCompanyPage: CompanyTransactionClassificationsResponse = {
+      ...page,
+      items: [{ ...page.items[0], company_name: '另一家公司' }],
+    }
+    vi.spyOn(api, 'getCompanyTransactionClassifications').mockResolvedValue(anotherCompanyPage)
+    const review = vi.spyOn(api, 'reviewCompanyTransactionClassification').mockResolvedValue({
+      contract_version: 'ledgerbridge.company-transaction-classification-review.v1',
+      transaction_ref: transactionRef,
+      status: 'CONFIRMED',
+      category_code: 'OPERATING_FEE',
+      reporting_item_code: 'TAX',
+      reporting_item_revision: 1,
+      revision: 2,
+      created: true,
+    })
+
+    render(<CompanyTransactionClassificationPanel csrfToken="csrf-test" />)
+
+    expect(await screen.findByText('另一家公司')).toBeInTheDocument()
+    const approve = screen.getByRole('button', { name: '确认本笔分类' })
+    fireEvent.change(screen.getByLabelText(`确认分类 ${transactionRef}`), {
+      target: { value: 'OPERATING_FEE' },
+    })
+    fireEvent.change(screen.getByLabelText(`审批理由 ${transactionRef}`), {
+      target: { value: '人工核对税费缴款' },
+    })
+    expect(approve).toBeDisabled()
+    expect(screen.getByRole('option', { name: '银行手续费' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '税费' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '其他营运费' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText(`营运费明细 ${transactionRef}`), {
+      target: { value: 'TAX' },
+    })
+    fireEvent.click(approve)
+
+    await waitFor(() => expect(review).toHaveBeenCalledWith({
+      transaction: anotherCompanyPage.items[0],
+      categoryCode: 'OPERATING_FEE',
+      reportingItemCode: 'TAX',
+      reason: '人工核对税费缴款',
+      csrfToken: 'csrf-test',
+    }))
   })
 })

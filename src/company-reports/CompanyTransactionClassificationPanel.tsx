@@ -5,6 +5,7 @@ import type {
   CompanyTransactionCategory,
   CompanyTransactionClassification,
   CompanyTransactionClassificationsResponse,
+  CompanyOperatingFeeReportingItem,
 } from '../types'
 
 const CATEGORY_OPTIONS: Array<{ value: CompanyTransactionCategory; label: string }> = [
@@ -18,10 +19,31 @@ const CATEGORY_OPTIONS: Array<{ value: CompanyTransactionCategory; label: string
   { value: 'RENTAL_INCOME', label: '经营租赁收入' },
   { value: 'BANK_INTEREST', label: '银行利息' },
   { value: 'LINEN_LAUNDRY', label: '布草洗涤' },
-  { value: 'OPERATING_FEE', label: '运营费' },
+  { value: 'OPERATING_FEE', label: '营运费' },
 ]
 
-type Draft = { categoryCode: CompanyTransactionCategory | ''; reason: string }
+const OPERATING_FEE_OPTIONS: Array<{
+  value: CompanyOperatingFeeReportingItem
+  label: string
+}> = [
+  { value: 'BANK_FEES', label: '银行手续费' },
+  { value: 'TAX', label: '税费' },
+  { value: 'INSURANCE', label: '保险费' },
+  { value: 'DISINFECTION', label: '消杀费用' },
+  { value: 'ELEVATOR', label: '电梯费用' },
+  { value: 'FIRE_SAFETY', label: '消防费用' },
+  { value: 'FRESH_FOOD', label: '生鲜' },
+  { value: 'MOONCAKE', label: '月饼' },
+  { value: 'HOTEL_TECH', label: '酒店智能设备' },
+  { value: 'HOTEL_SUPPLIES', label: '酒店用品' },
+  { value: 'OPERATING_FEE', label: '其他营运费' },
+]
+
+type Draft = {
+  categoryCode: CompanyTransactionCategory | ''
+  reportingItemCode: CompanyOperatingFeeReportingItem | ''
+  reason: string
+}
 
 export function CompanyTransactionClassificationPanel({ csrfToken }: { csrfToken: string }) {
   const [page, setPage] = useState<CompanyTransactionClassificationsResponse | null>(null)
@@ -54,6 +76,7 @@ export function CompanyTransactionClassificationPanel({ csrfToken }: { csrfToken
       ...current,
       [transactionRef]: {
         categoryCode: current[transactionRef]?.categoryCode ?? '',
+        reportingItemCode: current[transactionRef]?.reportingItemCode ?? '',
         reason: current[transactionRef]?.reason ?? '',
         ...patch,
       },
@@ -66,6 +89,10 @@ export function CompanyTransactionClassificationPanel({ csrfToken }: { csrfToken
       setError('请选择分类并填写本笔审批理由。')
       return
     }
+    if (draft.categoryCode === 'OPERATING_FEE' && !draft.reportingItemCode) {
+      setError('请选择营运费明细。')
+      return
+    }
     setSavingRef(transaction.transaction_ref)
     setError(null)
     setNotice(null)
@@ -73,6 +100,9 @@ export function CompanyTransactionClassificationPanel({ csrfToken }: { csrfToken
       await api.reviewCompanyTransactionClassification({
         transaction,
         categoryCode: draft.categoryCode,
+        reportingItemCode: draft.categoryCode === 'OPERATING_FEE'
+          ? draft.reportingItemCode as CompanyOperatingFeeReportingItem
+          : null,
         reason: draft.reason.trim(),
         csrfToken,
       })
@@ -111,6 +141,7 @@ export function CompanyTransactionClassificationPanel({ csrfToken }: { csrfToken
           {items.map((transaction) => {
             const draft = drafts[transaction.transaction_ref] ?? {
               categoryCode: '',
+              reportingItemCode: '',
               reason: '',
             }
             return (
@@ -128,6 +159,7 @@ export function CompanyTransactionClassificationPanel({ csrfToken }: { csrfToken
                       value={draft.categoryCode}
                       onChange={(event) => updateDraft(transaction.transaction_ref, {
                         categoryCode: event.target.value as CompanyTransactionCategory | '',
+                        reportingItemCode: '',
                       })}
                     >
                       <option value="">请选择</option>
@@ -136,6 +168,23 @@ export function CompanyTransactionClassificationPanel({ csrfToken }: { csrfToken
                       ))}
                     </select>
                   </label>
+                  {draft.categoryCode === 'OPERATING_FEE' ? (
+                    <label>
+                      <span>营运费明细</span>
+                      <select
+                        aria-label={`营运费明细 ${transaction.transaction_ref}`}
+                        value={draft.reportingItemCode}
+                        onChange={(event) => updateDraft(transaction.transaction_ref, {
+                          reportingItemCode: event.target.value as CompanyOperatingFeeReportingItem | '',
+                        })}
+                      >
+                        <option value="">请选择</option>
+                        {OPERATING_FEE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
                   <label>
                     <span>审批理由</span>
                     <input
@@ -151,7 +200,12 @@ export function CompanyTransactionClassificationPanel({ csrfToken }: { csrfToken
                   <button
                     type="button"
                     className="primary-button"
-                    disabled={savingRef !== null || !draft.categoryCode || !draft.reason.trim()}
+                    disabled={
+                      savingRef !== null
+                      || !draft.categoryCode
+                      || !draft.reason.trim()
+                      || (draft.categoryCode === 'OPERATING_FEE' && !draft.reportingItemCode)
+                    }
                     onClick={() => void approve(transaction)}
                   >
                     {savingRef === transaction.transaction_ref ? '正在确认' : '确认本笔分类'}

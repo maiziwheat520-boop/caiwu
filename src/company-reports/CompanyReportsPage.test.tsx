@@ -155,7 +155,7 @@ describe('CompanyReportsPage', () => {
     const response = structuredClone(reports)
     response.contract_version = 'ledgerbridge.company-reports-bff.v3'
     response.transaction_classifications = {
-      contract_version: 'ledgerbridge.company-transaction-classification-summary.v1',
+      contract_version: 'ledgerbridge.company-transaction-classification-summary.v2',
       items: [{
         entity_ref: response.layers[0].items[0].company_ref,
         company_name: response.layers[0].items[0].company_name,
@@ -167,6 +167,8 @@ describe('CompanyReportsPage', () => {
         categories: [
           {
             category_code: 'PLATFORM_ROOM_REVENUE',
+            reporting_item_code: null,
+            reporting_item_label: null,
             cashflow_role: 'OPERATING_INCOME',
             transaction_count: 2,
             inflow_minor: 150000,
@@ -178,6 +180,8 @@ describe('CompanyReportsPage', () => {
           },
           {
             category_code: 'RELATED_PARTY_CURRENT',
+            reporting_item_code: null,
+            reporting_item_label: null,
             cashflow_role: 'NON_OPERATING',
             transaction_count: 1,
             inflow_minor: 600000,
@@ -212,7 +216,7 @@ describe('CompanyReportsPage', () => {
     const response = structuredClone(reports)
     response.contract_version = 'ledgerbridge.company-reports-bff.v3'
     response.transaction_classifications = {
-      contract_version: 'ledgerbridge.company-transaction-classification-summary.v1',
+      contract_version: 'ledgerbridge.company-transaction-classification-summary.v2',
       items: [{
         entity_ref: response.layers[0].items[0].company_ref,
         company_name: response.layers[0].items[0].company_name,
@@ -224,6 +228,8 @@ describe('CompanyReportsPage', () => {
         categories: [
           {
             category_code: 'RENTAL_INCOME',
+            reporting_item_code: null,
+            reporting_item_label: null,
             cashflow_role: 'OPERATING_INCOME',
             transaction_count: 2,
             inflow_minor: 150000,
@@ -235,6 +241,8 @@ describe('CompanyReportsPage', () => {
           },
           {
             category_code: 'PAYROLL',
+            reporting_item_code: null,
+            reporting_item_label: null,
             cashflow_role: 'OPERATING_EXPENSE',
             transaction_count: 2,
             inflow_minor: 20000,
@@ -263,6 +271,61 @@ describe('CompanyReportsPage', () => {
       .toBeInTheDocument()
     expect(within(within(dashboard).getByText('经营净现金流').parentElement!).getByText('¥600.00'))
       .toBeInTheDocument()
+  })
+
+  it('shows operating fees by their reviewed detail instead of one combined row', async () => {
+    const response = structuredClone(reports)
+    response.contract_version = 'ledgerbridge.company-reports-bff.v3'
+    response.transaction_classifications = {
+      contract_version: 'ledgerbridge.company-transaction-classification-summary.v2',
+      items: [{
+        entity_ref: response.layers[0].items[0].company_ref,
+        company_name: response.layers[0].items[0].company_name,
+        from_date: '2026-05-01',
+        to_date_exclusive: '2026-06-01',
+        confirmed_count: 2,
+        pending_count: 0,
+        confirmed_gross_minor: 30000,
+        categories: [
+          {
+            category_code: 'OPERATING_FEE',
+            reporting_item_code: 'BANK_FEES',
+            reporting_item_label: '银行手续费',
+            cashflow_role: 'OPERATING_EXPENSE',
+            transaction_count: 1,
+            inflow_minor: 0,
+            outflow_minor: 10000,
+            net_minor: -10000,
+            gross_minor: 10000,
+            transaction_share_ppm: 500000,
+            gross_share_ppm: 333333,
+          },
+          {
+            category_code: 'OPERATING_FEE',
+            reporting_item_code: 'TAX',
+            reporting_item_label: '税费',
+            cashflow_role: 'OPERATING_EXPENSE',
+            transaction_count: 1,
+            inflow_minor: 0,
+            outflow_minor: 20000,
+            net_minor: -20000,
+            gross_minor: 20000,
+            transaction_share_ppm: 500000,
+            gross_share_ppm: 666667,
+          },
+        ],
+      }],
+    }
+    vi.spyOn(api, 'getCompanyReports').mockResolvedValue(response)
+
+    render(<CompanyReportsPage />)
+
+    const dashboard = await screen.findByRole('region', {
+      name: 'LedgerBridge controlled reconciliation 财务汇总',
+    })
+    expect(within(dashboard).getByText('银行手续费')).toBeInTheDocument()
+    expect(within(dashboard).getByText('税费')).toBeInTheDocument()
+    expect(within(dashboard).queryByText('营运费')).not.toBeInTheDocument()
   })
 
   it('switches companies and requests an applied month range', async () => {

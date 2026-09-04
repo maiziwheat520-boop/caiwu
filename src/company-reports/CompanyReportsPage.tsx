@@ -385,8 +385,8 @@ function classificationComposition(
     total_minor: categories.reduce((total, item) => total + amount(item), 0),
     fact_count: categories.reduce((total, item) => total + item.transaction_count, 0),
     items: categories.map((item) => ({
-      category_code: item.category_code,
-      category_label: classificationLabel(item.category_code),
+      category_code: item.reporting_item_code ?? item.category_code,
+      category_label: item.reporting_item_label ?? classificationLabel(item.category_code),
       amount_minor: amount(item),
       fact_count: item.transaction_count,
     })).sort((left, right) => right.amount_minor - left.amount_minor),
@@ -488,7 +488,7 @@ function classificationLabel(code: CompanyTransactionCategorySummary['category_c
     RENTAL_INCOME: '经营租赁收入',
     BANK_INTEREST: '银行利息',
     LINEN_LAUNDRY: '布草洗涤',
-    OPERATING_FEE: '运营费',
+    OPERATING_FEE: '营运费',
   }[code]
 }
 

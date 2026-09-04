@@ -115,6 +115,19 @@ COMPANY_TRANSACTION_CATEGORIES = {
     "LINEN_LAUNDRY",
     "OPERATING_FEE",
 }
+COMPANY_OPERATING_FEE_REPORTING_ITEMS = {
+    "BANK_FEES",
+    "TAX",
+    "INSURANCE",
+    "DISINFECTION",
+    "ELEVATOR",
+    "FIRE_SAFETY",
+    "FRESH_FOOD",
+    "MOONCAKE",
+    "HOTEL_TECH",
+    "HOTEL_SUPPLIES",
+    "OPERATING_FEE",
+}
 
 
 def _utc_timestamp() -> str:
@@ -1994,6 +2007,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 "entity_ref",
                 "expected_revision",
                 "category_code",
+                "reporting_item_code",
                 "reason",
             }:
                 self._send_json(
@@ -2006,6 +2020,8 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 )
                 return
             revision = request.get("expected_revision")
+            category_code = request.get("category_code")
+            reporting_item_code = request.get("reporting_item_code")
             reason = request.get("reason")
             try:
                 entity_ref = str(uuid.UUID(str(request.get("entity_ref"))))
@@ -2016,7 +2032,12 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 or isinstance(revision, bool)
                 or not isinstance(revision, int)
                 or revision < 1
-                or request.get("category_code") not in COMPANY_TRANSACTION_CATEGORIES
+                or category_code not in COMPANY_TRANSACTION_CATEGORIES
+                or (
+                    category_code == "OPERATING_FEE"
+                    and reporting_item_code not in COMPANY_OPERATING_FEE_REPORTING_ITEMS
+                )
+                or (category_code != "OPERATING_FEE" and reporting_item_code is not None)
                 or not isinstance(reason, str)
                 or not 1 <= len(reason.strip()) <= 1000
             ):

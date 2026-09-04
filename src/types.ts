@@ -534,6 +534,19 @@ export type CompanyTransactionCategory =
   | 'LINEN_LAUNDRY'
   | 'OPERATING_FEE'
 
+export type CompanyOperatingFeeReportingItem =
+  | 'BANK_FEES'
+  | 'TAX'
+  | 'INSURANCE'
+  | 'DISINFECTION'
+  | 'ELEVATOR'
+  | 'FIRE_SAFETY'
+  | 'FRESH_FOOD'
+  | 'MOONCAKE'
+  | 'HOTEL_TECH'
+  | 'HOTEL_SUPPLIES'
+  | 'OPERATING_FEE'
+
 export type CompanyTransactionCashflowRole =
   | 'OPERATING_INCOME'
   | 'OPERATING_EXPENSE'
@@ -563,6 +576,8 @@ export type CompanyTransactionClassificationsResponse = {
 
 export type CompanyTransactionCategorySummary = {
   category_code: CompanyTransactionCategory
+  reporting_item_code: string | null
+  reporting_item_label: string | null
   cashflow_role: CompanyTransactionCashflowRole
   transaction_count: number
   inflow_minor: number
@@ -585,7 +600,7 @@ export type CompanyTransactionClassificationSummary = {
 }
 
 export type CompanyTransactionClassificationSummaryPage = {
-  contract_version: 'ledgerbridge.company-transaction-classification-summary.v1'
+  contract_version: 'ledgerbridge.company-transaction-classification-summary.v2'
   items: CompanyTransactionClassificationSummary[]
 }
 

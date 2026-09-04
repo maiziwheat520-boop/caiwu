@@ -2460,7 +2460,7 @@ def _company_transaction_classification_summary_from_core(
     if (
         set(payload) != {"contract_version", "items"}
         or payload.get("contract_version")
-        != "ledgerbridge.company-transaction-classification-summary.v1"
+        != "ledgerbridge.company-transaction-classification-summary.v2"
         or not isinstance(payload.get("items"), list)
         or not 1 <= len(payload["items"]) <= 50  # type: ignore[arg-type]
     ):
@@ -2478,14 +2478,14 @@ def _company_transaction_classification_summary_from_core(
         }:
             raise invalid
         categories = raw.get("categories")
-        if not isinstance(categories, list) or len(categories) > len(
-            _COMPANY_TRANSACTION_CATEGORIES
-        ):
+        if not isinstance(categories, list) or len(categories) > 100:
             raise invalid
         safe_categories: list[dict[str, object]] = []
         for category in categories:
             if not isinstance(category, dict) or set(category) != {
                 "category_code",
+                "reporting_item_code",
+                "reporting_item_label",
                 "cashflow_role",
                 "transaction_count",
                 "inflow_minor",
@@ -2497,6 +2497,16 @@ def _company_transaction_classification_summary_from_core(
             }:
                 raise invalid
             code = category.get("category_code")
+            reporting_item_code = category.get("reporting_item_code")
+            reporting_item_label = category.get("reporting_item_label")
+            has_reporting_item = (
+                isinstance(reporting_item_code, str)
+                and 1 <= len(reporting_item_code) <= 100
+                and reporting_item_code == reporting_item_code.strip()
+                and isinstance(reporting_item_label, str)
+                and 1 <= len(reporting_item_label) <= 300
+                and reporting_item_label == reporting_item_label.strip()
+            )
             numeric = {
                 key: _company_report_integer(category.get(key), nonnegative=key != "net_minor")
                 for key in (
@@ -2511,6 +2521,11 @@ def _company_transaction_classification_summary_from_core(
             }
             if (
                 code not in _COMPANY_TRANSACTION_CATEGORIES
+                or (code == "OPERATING_FEE") is not has_reporting_item
+                or (
+                    code != "OPERATING_FEE"
+                    and (reporting_item_code is not None or reporting_item_label is not None)
+                )
                 or category.get("cashflow_role")
                 != _COMPANY_TRANSACTION_CATEGORY_ROLES.get(str(code))
                 or numeric["net_minor"]
@@ -2522,7 +2537,10 @@ def _company_transaction_classification_summary_from_core(
             ):
                 raise invalid
             safe_categories.append({**category, **numeric})
-        codes = [str(item["category_code"]) for item in safe_categories]
+        category_keys = [
+            (str(item["category_code"]), str(item["reporting_item_code"] or ""))
+            for item in safe_categories
+        ]
         confirmed_count = _company_report_integer(
             raw.get("confirmed_count"), nonnegative=True
         )
@@ -2534,8 +2552,8 @@ def _company_transaction_classification_summary_from_core(
             raw.get("to_date_exclusive"), maximum=10
         )
         if (
-            codes != sorted(codes)
-            or len(codes) != len(set(codes))
+            category_keys != sorted(category_keys)
+            or len(category_keys) != len(set(category_keys))
             or from_date != expected_from_date
             or to_date_exclusive != expected_to_date_exclusive
             or confirmed_count

@@ -422,36 +422,53 @@ def core_company_report_composition(basis: str) -> dict[str, object]:
 
 def core_company_transaction_classification_summary() -> dict[str, object]:
     return {
-        "contract_version": "ledgerbridge.company-transaction-classification-summary.v1",
+        "contract_version": "ledgerbridge.company-transaction-classification-summary.v2",
         "items": [{
             "entity_ref": ENTITY_ID,
             "from_date": "2026-01-01",
             "to_date_exclusive": "2026-09-01",
-            "confirmed_count": 2,
+            "confirmed_count": 3,
             "pending_count": 1,
-            "confirmed_gross_minor": 900000,
+            "confirmed_gross_minor": 1000000,
             "categories": [
                 {
                     "category_code": "BANK_INTEREST",
+                    "reporting_item_code": None,
+                    "reporting_item_label": None,
                     "cashflow_role": "OPERATING_INCOME",
                     "transaction_count": 1,
                     "inflow_minor": 100000,
                     "outflow_minor": 0,
                     "net_minor": 100000,
                     "gross_minor": 100000,
-                    "transaction_share_ppm": 500000,
-                    "gross_share_ppm": 111111,
+                    "transaction_share_ppm": 333333,
+                    "gross_share_ppm": 100000,
+                },
+                {
+                    "category_code": "OPERATING_FEE",
+                    "reporting_item_code": "BANK_FEES",
+                    "reporting_item_label": "银行手续费",
+                    "cashflow_role": "OPERATING_EXPENSE",
+                    "transaction_count": 1,
+                    "inflow_minor": 0,
+                    "outflow_minor": 100000,
+                    "net_minor": -100000,
+                    "gross_minor": 100000,
+                    "transaction_share_ppm": 333333,
+                    "gross_share_ppm": 100000,
                 },
                 {
                     "category_code": "RELATED_PARTY_CURRENT",
+                    "reporting_item_code": None,
+                    "reporting_item_label": None,
                     "cashflow_role": "NON_OPERATING",
                     "transaction_count": 1,
                     "inflow_minor": 600000,
                     "outflow_minor": 200000,
                     "net_minor": 400000,
                     "gross_minor": 800000,
-                    "transaction_share_ppm": 500000,
-                    "gross_share_ppm": 888889,
+                    "transaction_share_ppm": 333334,
+                    "gross_share_ppm": 800000,
                 },
             ],
         }],
@@ -1815,6 +1832,7 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 "entity_ref": ENTITY_ID,
                 "expected_revision": 1,
                 "category_code": "RELATED_PARTY_CURRENT",
+                "reporting_item_code": None,
                 "reason": "人工逐笔确认往来款",
             },
         )
@@ -1862,6 +1880,7 @@ class CoreBackedAdapterTests(unittest.TestCase):
                     "entity_ref": ENTITY_ID,
                     "expected_revision": 1,
                     "category_code": "RELATED_PARTY_CURRENT",
+                    "reporting_item_code": None,
                     "reason": "人工逐笔确认往来款",
                 },
             )
@@ -1888,12 +1907,45 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 "entity_ref": ENTITY_ID,
                 "expected_revision": 1,
                 "category_code": "RELATED_PARTY_CURRENT",
+                "reporting_item_code": None,
                 "reason": "人工逐笔确认往来款",
             },
         )
 
         self.assertEqual(status, 200)
         self.assertEqual(receipt["reporting_item_code"], " RELATED_PARTY_CURRENT.OTHER ")
+
+    def test_company_classification_forwards_the_shared_operating_fee_detail(self) -> None:
+        review_client = CompanyTransactionClassificationCoreClient()
+        review_client.reporting_item_code = "TAX"
+        state = build_state(
+            FakeCoreClient(),
+            company_bank_review_client=review_client,
+            company_bank_statement_mappings=((
+                "70000000-0000-4000-8000-000000000001",
+                ENTITY_ID,
+                "另一家公司",
+            ),),
+        )
+
+        status, receipt = state.review_company_transaction_classification(
+            COMPANY_TRANSACTION_ID,
+            str(uuid.uuid4()),
+            {
+                "entity_ref": ENTITY_ID,
+                "expected_revision": 1,
+                "category_code": "OPERATING_FEE",
+                "reporting_item_code": "TAX",
+                "reason": "人工核对税费缴款",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(receipt["reporting_item_code"], "TAX")
+        self.assertEqual(
+            json.loads(review_client.calls[-1][2] or b"{}") ["reporting_item_code"],
+            "TAX",
+        )
 
     def test_company_reports_are_unavailable_without_the_dedicated_client(self) -> None:
         primary_client = FakeCoreClient()
