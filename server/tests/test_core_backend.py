@@ -970,6 +970,24 @@ class CoreBackedAdapterTests(unittest.TestCase):
         self.assertIn("/internal/v1/candidates?business_unit=unit-demo-a", requested_paths)
         self.assertNotIn(f"/internal/v1/candidates/{CANDIDATE_ID}", requested_paths)
 
+    def test_candidate_detail_reuses_the_candidate_loaded_for_the_page(self) -> None:
+        client = FakeCoreClient()
+        state = build_state(
+            client,
+            candidate_business_unit_refs=("unit-demo-a", "unit-demo-b"),
+        )
+        state.list_candidates(status="PENDING", month=None, cursor=None)
+        client.calls.clear()
+
+        detail = state.candidate_detail(CANDIDATE_ID)
+
+        self.assertIsNotNone(detail)
+        requested_paths = [path for method, path, *_ in client.calls if method == "GET"]
+        self.assertEqual(
+            requested_paths,
+            [f"/internal/v1/candidate-events?candidate_ref={CANDIDATE_ID}"],
+        )
+
     def test_candidates_page_across_each_explicitly_allowed_business_unit(self) -> None:
         client = FakeCoreClient()
         state = build_state(

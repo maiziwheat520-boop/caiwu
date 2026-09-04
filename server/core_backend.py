@@ -26,6 +26,8 @@ from urllib.request import (
 
 MAX_JSON_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_EVIDENCE_RESPONSE_BYTES = 128 * 1024 * 1024
+CANDIDATE_DETAIL_CACHE_TTL_SECONDS = 60.0
+CANDIDATE_DETAIL_CACHE_MAX_ITEMS = 1_000
 JSON_SAFE_INTEGER = 9_007_199_254_740_991
 SAFE_HEADER_VALUE = re.compile(r"^[\x21-\x7e]+$")
 EVIDENCE_UNLOCK_CORE_PATH = "/internal/v1/evidence/unlocks"
@@ -393,6 +395,9 @@ class CoreBackedState:
         self.cookie_name = "__Host-ledgerbridge_session"
         self.session_id = ""
         self.csrf_token = ""
+        self._candidate_detail_cache: dict[
+            str, tuple[float, dict[str, object]]
+        ] = {}
 
     def session_active(self) -> bool:
         return False
@@ -422,6 +427,15 @@ class CoreBackedState:
         items = payload.get("items")
         if not isinstance(items, list):
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        now = time.monotonic()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            candidate_ref = item.get("candidate_ref")
+            if isinstance(candidate_ref, str):
+                self._candidate_detail_cache[candidate_ref] = (now, deepcopy(item))
+        if len(self._candidate_detail_cache) > CANDIDATE_DETAIL_CACHE_MAX_ITEMS:
+            self._candidate_detail_cache.clear()
         next_core_cursor = payload.get("next_cursor")
         if next_core_cursor is not None and not isinstance(next_core_cursor, str):
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
@@ -470,10 +484,17 @@ class CoreBackedState:
 
     def candidate_detail(self, candidate_id: str) -> dict[str, object] | None:
         candidate_ref = str(uuid.UUID(candidate_id))
+        cached = self._candidate_detail_cache.get(candidate_ref)
         payload: dict[str, object] | None = None
+        if cached is not None:
+            cached_at, cached_payload = cached
+            if time.monotonic() - cached_at <= CANDIDATE_DETAIL_CACHE_TTL_SECONDS:
+                payload = deepcopy(cached_payload)
+            else:
+                self._candidate_detail_cache.pop(candidate_ref, None)
         visited: set[str] = set()
         page_count = 0
-        for business_unit in self.candidate_business_unit_refs:
+        for business_unit in (() if payload is not None else self.candidate_business_unit_refs):
             cursor: str | None = None
             while True:
                 query = {"business_unit": business_unit}
