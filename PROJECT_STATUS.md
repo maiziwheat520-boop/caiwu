@@ -950,3 +950,26 @@ ingestion require their later explicit gates.
   as production commit `fdf8568` and adds no new failure.
 - No posting command is added. Production deployment remains pending the
   unified `core,web` release lock, encrypted backup, and isolated restore gate.
+
+## Dual formal statement intake and monthly-consumer verification (2026-09-04)
+
+- Production Core revision `f7c5544eb9cbf15e3ede264034dcc4177afe7e21`
+  runs schema `20260904_0045`. CCB personal account 7564 contributed 371
+  transactions and BOC company account 6492 contributed 29; both statements
+  are confirmed at revision 2 and exact import replay passed.
+- Company classification backfill now supports an explicit `--statement-ref`
+  scope (`20e3764`). The BOC statement was scoped to exactly 29 facts: 2 bank
+  interest and 5 related-party-current facts are confirmed, while 22 remain
+  pending human review. Two apply runs produced the same receipt.
+- The monthly v2 consumer includes all 29 BOC facts across 2026-03 through
+  2026-08 (7 matched, 22 pending). The CCB November 2025 Jingyi bank-receipt
+  rule yields exactly one fact for CNY 1,157.60 with no conflicts.
+- Production totals are 15 statements, 2,919 unique transactions, 3,139
+  observations, 1,754 latest company classifications (1,732 confirmed and 22
+  pending), and zero journal entries or postings.
+- Final encrypted backup
+  `/srv/ai-center/backups/ledgerbridge/20260904T135331Z-f7c5544eb9cb` passed
+  isolated restore rehearsal. Web production revision is
+  `eede8352d43b9d47ffee28df17a30acd2ddc22de` and presents 7 companies / 8
+  formal company statements; the superseded 9-row Weixu sample remains audit
+  evidence only.
