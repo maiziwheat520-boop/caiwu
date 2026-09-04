@@ -98,7 +98,7 @@ describe('PayrollLegacyWorkbench', () => {
   it('separates global payroll rules from employee payroll parameters', async () => {
     mockRead()
     render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
-    await screen.findByText('工资工作区版本 1')
+    await screen.findByRole('region', { name: '工资概览' })
     const navigation = screen.getByRole('navigation', { name: '工资工作流程' })
     expect(within(navigation).getAllByRole('button')).toHaveLength(5)
     for (const name of ['生成当月工资', '查看代发表与发放表',
@@ -115,6 +115,18 @@ describe('PayrollLegacyWorkbench', () => {
     expect(screen.getByRole('region', { name: '本月工资处理进度' })).toBeInTheDocument()
     expect(within(overview).getByText('员工参数')).toBeInTheDocument()
     expect(within(overview).getByText('1 人')).toBeInTheDocument()
+  })
+
+  it('keeps the initial payroll task inside the compact workflow instead of repeating a full form', async () => {
+    mockRead({ ...legacyWorkspace, active_period: '', batches: [] })
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
+    await screen.findByRole('region', { name: '工资概览' })
+    const flow = screen.getByRole('region', { name: '本月工资处理进度' })
+    expect(within(flow).getByText('物料确认')).toBeInTheDocument()
+    expect(within(flow).getByText('生成工资')).toBeInTheDocument()
+    expect(within(flow).getByText('发放对账')).toBeInTheDocument()
+    expect(within(flow).getByRole('button', { name: '前往素材确认' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '生成当月工资' })).not.toBeInTheDocument()
   })
 
   it('generates monthly payroll from the three explicitly confirmed materials', async () => {
@@ -140,7 +152,7 @@ describe('PayrollLegacyWorkbench', () => {
   it('shows five payroll-list previews and the wage-disbursement table', async () => {
     mockRead()
     render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
-    await screen.findByText('工资工作区版本 1')
+    await screen.findByRole('region', { name: '工资概览' })
     fireEvent.click(screen.getByRole('button', { name: '查看代发表与发放表' }))
     expect(screen.getByRole('heading', { name: '五家公司代发表预览' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: '工资发放表' })).toBeInTheDocument()
@@ -163,7 +175,7 @@ describe('PayrollLegacyWorkbench', () => {
       commandResult('VERIFY_AND_UPDATE_SUMMARY', verifiedWorkspace),
     )
     render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
-    await screen.findByText('工资工作区版本 1')
+    await screen.findByRole('region', { name: '工资概览' })
     fireEvent.click(screen.getByRole('button', { name: '复核本月已发并更新汇总' }))
     for (let index = 1; index <= 5; index += 1) fireEvent.change(
       screen.getByLabelText(`网商银行发放流水${index}`),
@@ -185,7 +197,7 @@ describe('PayrollLegacyWorkbench', () => {
     const rulesOnly = { ...legacyWorkspace, batches: [] }
     mockRead(rulesOnly)
     render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
-    await screen.findByText('工资工作区版本 1')
+    await screen.findByRole('region', { name: '工资概览' })
     fireEvent.click(screen.getByRole('button', { name: '管理工资规则' }))
     expect(screen.getByRole('heading', { name: '全局工资规则' })).toBeInTheDocument()
     expect(screen.getByText('发放渠道完整性')).toBeInTheDocument()
@@ -198,7 +210,7 @@ describe('PayrollLegacyWorkbench', () => {
     mockRead(rulesOnly)
     vi.spyOn(api, 'runPayrollLegacyCommand').mockResolvedValue(commandResult('SAVE_RULES', rulesOnly))
     render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
-    await screen.findByText('工资工作区版本 1')
+    await screen.findByRole('region', { name: '工资概览' })
     fireEvent.click(screen.getByRole('button', { name: '管理员工工资参数' }))
     expect(screen.getByRole('heading', { name: '员工工资参数' })).toBeInTheDocument()
     expect(screen.queryByText('发放渠道完整性')).not.toBeInTheDocument()

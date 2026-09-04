@@ -378,7 +378,7 @@
 
 .payroll-history-summary {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 0;
   overflow: hidden;
   border: 1px solid #d7e0ed;
@@ -401,8 +401,11 @@
 
 .payroll-history-summary-controls {
   grid-column: 2;
-  grid-row: 1 / span 2;
-  padding: 22px;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 22px;
   border: 0;
   border-left: 1px solid #e0e7f0;
   border-radius: 0;
@@ -410,13 +413,31 @@
 }
 
 .payroll-history-summary-results {
-  grid-column: 1;
+  grid-column: 1 / -1;
   grid-row: 2;
   gap: 16px;
   padding: 22px 26px 20px;
   border: 0;
   border-radius: 0;
 }
+
+.payroll-page-title-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.payroll-history-control-heading,
+.payroll-history-authority { display: none; }
+.payroll-history-control-fields { display: flex; gap: 10px; }
+.payroll-history-summary-controls label { min-width: 180px; }
+.payroll-summary-title-row { display: none; }
 
 .payroll-summary-total-card {
   min-width: 230px;
@@ -426,7 +447,7 @@
 
 .payroll-summary-comparison-table { overflow-x: auto; }
 .payroll-summary-comparison-table .payroll-summary-store-row {
-  grid-template-columns: minmax(140px, 1.15fr) repeat(var(--payroll-period-count), minmax(126px, 1fr));
+  grid-template-columns: minmax(140px, 1.15fr) repeat(var(--payroll-period-count), minmax(126px, 1fr)) minmax(105px, .8fr) minmax(90px, .65fr);
   min-width: max-content;
   padding: 0;
 }
@@ -448,6 +469,9 @@
 .payroll-summary-comparison-table .selected { color: #175fbd; background: #f1f6fd; }
 .payroll-summary-comparison-table .header .selected { background: #eaf2fd; }
 .payroll-summary-comparison-table .total .selected { background: #e7f0fb; }
+.payroll-summary-comparison-table .trend-positive { color: #17804f; font-weight: 800; }
+.payroll-summary-comparison-table .trend-negative { color: #b45353; font-weight: 800; }
+.payroll-generated-badge { display: inline-flex; padding: 3px 8px; border-radius: 6px; color: #23704d; background: #eaf7ef; font-size: 10px; }
 
 @media (max-width: 900px) {
   .payroll-history-summary { grid-template-columns: 1fr; }
@@ -455,5 +479,6 @@
   .payroll-history-summary-results,
   .payroll-history-summary-controls { grid-column: 1; grid-row: auto; }
   .payroll-history-summary-controls { border-top: 1px solid #e0e7f0; border-left: 0; }
+  .payroll-history-control-fields { flex-direction: column; width: 100%; }
   .payroll-summary-title-row { flex-direction: column; }
 }

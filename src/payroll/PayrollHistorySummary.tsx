@@ -73,7 +73,7 @@ export function PayrollHistorySummary({ workspace }: Props) {
   const selectedMonth = selectedSummary?.data.periods.find(
     (item) => item.period === selectedPeriod,
   ) ?? selectedSummary?.data.periods[0]
-  const comparisonPeriods = selectedSummary?.data.periods ?? []
+  const comparisonPeriods = (selectedSummary?.data.periods ?? []).slice(0, 4)
   const storeNames = Array.from(new Set(
     comparisonPeriods.flatMap((period) => period.stores.map((store) => store.store_name)),
   ))
@@ -83,6 +83,16 @@ export function PayrollHistorySummary({ workspace }: Props) {
     const selected = summaries.find((summary) => summary.material_id === materialId)
     setSelectedPeriod(selected?.data.latest_period ?? '')
   }
+  const storeTrend = (storeName: string) => {
+    const current = comparisonPeriods[0]?.stores.find((store) => store.store_name === storeName)?.net_pay_cents
+    const previous = comparisonPeriods[1]?.stores.find((store) => store.store_name === storeName)?.net_pay_cents
+    if (current === undefined || previous === undefined || previous === 0) return null
+    return ((current - previous) / previous) * 100
+  }
+  const totalTrend = comparisonPeriods.length > 1 && comparisonPeriods[1].total_net_pay_cents !== 0
+    ? ((comparisonPeriods[0].total_net_pay_cents - comparisonPeriods[1].total_net_pay_cents)
+      / comparisonPeriods[1].total_net_pay_cents) * 100
+    : null
 
   return (
     <section className="panel payroll-history-summary" aria-labelledby="payroll-history-summary-heading">
@@ -181,22 +191,29 @@ export function PayrollHistorySummary({ workspace }: Props) {
               {comparisonPeriods.map((period) => (
                 <span role="columnheader" className={period.period === selectedMonth.period ? 'selected' : ''} key={period.period}>{period.period}</span>
               ))}
+              <span role="columnheader">本期环比</span>
+              <span role="columnheader">状态</span>
             </div>
-            {storeNames.map((storeName) => (
-              <div className="payroll-summary-store-row" role="row" key={storeName}>
+            {storeNames.map((storeName) => {
+              const trend = storeTrend(storeName)
+              return <div className="payroll-summary-store-row" role="row" key={storeName}>
                 <strong role="cell">{storeName}</strong>
                 {comparisonPeriods.map((period) => (
                   <span role="cell" className={period.period === selectedMonth.period ? 'selected' : ''} key={period.period}>
                     {formatMoney(period.stores.find((store) => store.store_name === storeName)?.net_pay_cents ?? 0)}
                   </span>
                 ))}
+                <span role="cell" className={trend !== null && trend >= 0 ? 'trend-positive' : 'trend-negative'}>{trend === null ? '—' : `${trend >= 0 ? '+' : ''}${trend.toFixed(2)}%`}</span>
+                <span role="cell"><b className="payroll-generated-badge">已生成</b></span>
               </div>
-            ))}
+            })}
             <div className="payroll-summary-store-row total" role="row">
               <strong role="cell">总计</strong>
               {comparisonPeriods.map((period) => (
                 <strong role="cell" className={period.period === selectedMonth.period ? 'selected' : ''} key={period.period}>{formatMoney(period.total_net_pay_cents)}</strong>
               ))}
+              <strong role="cell" className={totalTrend !== null && totalTrend >= 0 ? 'trend-positive' : 'trend-negative'}>{totalTrend === null ? '—' : `${totalTrend >= 0 ? '+' : ''}${totalTrend.toFixed(2)}%`}</strong>
+              <strong role="cell">—</strong>
             </div>
           </div>
           <footer>
