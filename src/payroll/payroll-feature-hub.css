@@ -83,7 +83,7 @@
 
 .payroll-feature-grid > * > div span,
 .payroll-feature-grid small {
-  font-size: 12px;
+  font-size: var(--font-body);
 }
 
 .payroll-feature-grid p {
