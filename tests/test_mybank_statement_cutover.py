@@ -520,7 +520,7 @@ def test_cutover_creates_whole_statement_facts_without_candidates(tmp_path: Path
 
 @pytest.mark.parametrize(
     "schema_revision",
-    ("20260830_0025", "20260902_0032", "20260902_0033", "20260904_0044"),
+    ("20260830_0025", "20260902_0032", "20260902_0033", "20260904_0044", "20260904_0045"),
 )
 def test_cutover_accepts_reviewed_schema_revision(
     tmp_path: Path,
