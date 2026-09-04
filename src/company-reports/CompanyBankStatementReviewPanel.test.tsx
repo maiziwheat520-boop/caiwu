@@ -34,4 +34,17 @@ describe('CompanyBankStatementReviewPanel', () => {
     expect(screen.getByText('公司 1')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '收起账单明细' })).toBeInTheDocument()
   })
+
+  it('replaces backend implementation details with an actionable Chinese read error', async () => {
+    vi.spyOn(api, 'getCompanyBankStatements').mockRejectedValue(
+      new Error('LedgerBridge Core request failed'),
+    )
+
+    render(<CompanyBankStatementReviewPanel csrfToken="csrf-test" />)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('8 份公司账单中至少 1 份暂时无法读取，请重试')
+    expect(alert).not.toHaveTextContent('LedgerBridge Core request failed')
+    expect(screen.getByRole('button', { name: '重试公司流水' })).toBeInTheDocument()
+  })
 })
