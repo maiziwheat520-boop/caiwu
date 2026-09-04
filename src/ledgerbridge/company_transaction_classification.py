@@ -62,7 +62,7 @@ class CompanyTransactionClassification(_FrozenModel):
     category_code: CompanyTransactionCategory | None
     cashflow_role: CashflowRole | None
     revision: int = Field(strict=True, ge=1)
-    source: Literal["AUTO_RULE", "HUMAN_REVIEW"]
+    source: Literal["AUTO_RULE", "HUMAN_REVIEW", "BACKFILL"]
     rule_version: str = Field(min_length=1, max_length=100)
 
     @model_validator(mode="after")

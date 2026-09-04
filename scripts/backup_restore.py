@@ -2549,6 +2549,11 @@ COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES = {
         "p_entity_ref uuid, p_from_date date, p_to_date_exclusive date, "
         "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
     ),
+    ("internal_import", "backfill_company_transaction_reporting_item"): (
+        "p_transaction_ref uuid, p_expected_revision integer, "
+        "p_expected_category_code text, p_reporting_item_code text, "
+        "p_operation_id uuid, p_actor_ref text, p_reason text"
+    ),
 }
 COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_RESULTS = {
     ("public", "r1_validate_company_transaction_classification"): "trigger",
@@ -2556,6 +2561,7 @@ COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_RESULTS = {
     ("internal_command", "review_company_transaction_classification"): "jsonb",
     ("internal_read", "list_company_transaction_classifications_as_of"): "TABLE(item jsonb)",
     ("internal_read", "get_company_transaction_classification_summary_as_of"): "jsonb",
+    ("internal_import", "backfill_company_transaction_reporting_item"): "jsonb",
 }
 COMPANY_TRANSACTION_CLASSIFICATION_SECURITY_DEFINER_FUNCTIONS = frozenset(
     key
@@ -2569,6 +2575,7 @@ COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS = {
     ("internal_read", "get_company_transaction_classification_summary_as_of"): (
         "ledgerbridge_reader"
     ),
+    ("internal_import", "backfill_company_transaction_reporting_item"): "ledgerbridge_worker",
 }
 COMPANY_TRANSACTION_CLASSIFICATION_TRIGGER_CONTRACT = {
     "company_transaction_classification_append_only": (
@@ -2585,6 +2592,7 @@ COMPANY_TRANSACTION_CLASSIFICATION_REQUIRED_COLUMNS = {
     "revision": ("integer", True),
     "status": ("character varying", True),
     "category_code": ("character varying", False),
+    "reporting_item_code": ("character varying", False),
     "source": ("character varying", True),
     "rule_version": ("character varying", True),
     "operation_id": ("uuid", True),
@@ -2711,6 +2719,7 @@ CASH_RECONCILIATION_V2_REVISION = "20260903_0038"
 BOC_COUNTERPARTY_CORRECTION_REVISION = "20260904_0039"
 COMPANY_AUTO_CLASSIFICATION_REVISION = "20260904_0040"
 BOC_PROJECTION_REPAIR_REVISION = "20260904_0041"
+CASH_RECONCILIATION_CLASSIFICATION_REVISION = "20260904_0042"
 MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
     {
         ACCOUNT_REGISTRY_SECURITY_REVISION,
@@ -2732,6 +2741,7 @@ MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
         BOC_COUNTERPARTY_CORRECTION_REVISION,
         COMPANY_AUTO_CLASSIFICATION_REVISION,
         BOC_PROJECTION_REPAIR_REVISION,
+        CASH_RECONCILIATION_CLASSIFICATION_REVISION,
     }
 )
 COMPANY_REPORTING_SCHEMA = "company_reporting_read"
@@ -6675,6 +6685,7 @@ def _validate_classification_batch_security(metadata: dict[str, Any]) -> None:
 
 def _validate_company_transaction_classification_security(
     metadata: dict[str, Any],
+    revision: str = CASH_RECONCILIATION_CLASSIFICATION_REVISION,
 ) -> None:
     def _list(name: str) -> list[dict[str, Any]]:
         value = metadata.get(name)
@@ -6697,11 +6708,14 @@ def _validate_company_transaction_classification_security(
         raise BackupError("restored company transaction classification table is invalid")
 
     functions = _list("company_transaction_classification_functions")
+    expected_function_signatures = dict(COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES)
+    if revision < CASH_RECONCILIATION_CLASSIFICATION_REVISION:
+        expected_function_signatures.pop(
+            ("internal_import", "backfill_company_transaction_reporting_item")
+        )
     expected_functions = {
         (schema, name, arguments)
-        for (schema, name), arguments in (
-            COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES.items()
-        )
+        for (schema, name), arguments in expected_function_signatures.items()
     }
     actual_functions = {
         (item.get("schema"), item.get("name"), item.get("identity_arguments")) for item in functions
@@ -6740,9 +6754,12 @@ def _validate_company_transaction_classification_security(
     actual_columns = {
         item.get("column"): (item.get("data_type"), item.get("not_null")) for item in columns
     }
+    expected_columns = dict(COMPANY_TRANSACTION_CLASSIFICATION_REQUIRED_COLUMNS)
+    if revision < CASH_RECONCILIATION_CLASSIFICATION_REVISION:
+        expected_columns.pop("reporting_item_code")
     if (
         len(actual_columns) != len(columns)
-        or actual_columns != COMPANY_TRANSACTION_CLASSIFICATION_REQUIRED_COLUMNS
+        or actual_columns != expected_columns
     ):
         raise BackupError("restored company transaction classification columns are invalid")
 
@@ -6847,7 +6864,7 @@ def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
     if revision >= CLASSIFICATION_BATCH_SECURITY_REVISION:
         _validate_classification_batch_security(metadata)
     if revision >= COMPANY_TRANSACTION_CLASSIFICATION_REVISION:
-        _validate_company_transaction_classification_security(metadata)
+        _validate_company_transaction_classification_security(metadata, revision)
     if metadata.get("database_temp_denied") is not True:
         raise BackupError("restored database TEMP privilege invariant failed")
     functions = metadata.get("security_functions")

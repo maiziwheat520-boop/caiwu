@@ -288,3 +288,25 @@ def test_pending_wire_item_cannot_claim_a_category() -> None:
                 "rule_version": "company-bank-classification.2026-09.v1",
             }
         )
+
+
+def test_confirmed_wire_item_accepts_reporting_item_backfill_source() -> None:
+    item = CompanyTransactionClassification.model_validate(
+        {
+            "transaction_ref": UUID(int=1),
+            "entity_ref": UUID(int=2),
+            "occurred_at": "2026-09-01T00:00:00Z",
+            "amount_minor": 100,
+            "currency": "CNY",
+            "counterparty_name": "已核对",
+            "transaction_name": "转账",
+            "status": "CONFIRMED",
+            "category_code": "FINANCING",
+            "cashflow_role": "NON_OPERATING",
+            "revision": 2,
+            "source": "BACKFILL",
+            "rule_version": "reporting-item-backfill.v1",
+        }
+    )
+
+    assert item.source == "BACKFILL"
