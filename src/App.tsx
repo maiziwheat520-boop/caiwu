@@ -960,7 +960,7 @@ function App() {
           </div>
         ) : null}
 
-        <main className="content">
+        <main className={`content${page === 'reconciliation' ? ' content-reconciliation' : ''}`}>
           <Suspense fallback={<LoadingState title="正在加载功能模块" description="只加载当前打开的功能区。" />}>
             {pageLoadsIndependently
               ? renderPage()
