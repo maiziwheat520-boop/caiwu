@@ -2552,11 +2552,21 @@ COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES = {
         "p_assertion_jti uuid, p_actor_ref text, p_workload_principal_ref text, "
         "p_expected_revision integer, p_category_code text, p_reason text"
     ),
+    ("internal_command", "review_company_transaction_classification_v2"): (
+        "p_transaction_ref uuid, p_entity_ref uuid, p_operation_id uuid, "
+        "p_assertion_jti uuid, p_actor_ref text, p_workload_principal_ref text, "
+        "p_expected_revision integer, p_category_code text, p_reporting_item_code text, "
+        "p_reason text"
+    ),
     ("internal_read", "list_company_transaction_classifications_as_of"): (
         "p_entity_ref uuid, p_status text, p_audit_horizon_sequence bigint, "
         "p_audit_horizon_hash bytea, p_limit integer"
     ),
     ("internal_read", "get_company_transaction_classification_summary_as_of"): (
+        "p_entity_ref uuid, p_from_date date, p_to_date_exclusive date, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
+    ("internal_read", "get_company_transaction_classification_summary_v2_as_of"): (
         "p_entity_ref uuid, p_from_date date, p_to_date_exclusive date, "
         "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
     ),
@@ -2580,8 +2590,10 @@ COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_RESULTS = {
     ("public", "r1_validate_cash_reconciliation_projection_activation"): "trigger",
     ("internal_import", "seed_company_transaction_classification"): "jsonb",
     ("internal_command", "review_company_transaction_classification"): "jsonb",
+    ("internal_command", "review_company_transaction_classification_v2"): "jsonb",
     ("internal_read", "list_company_transaction_classifications_as_of"): "TABLE(item jsonb)",
     ("internal_read", "get_company_transaction_classification_summary_as_of"): "jsonb",
+    ("internal_read", "get_company_transaction_classification_summary_v2_as_of"): "jsonb",
     ("internal_import", "backfill_company_transaction_reporting_item"): "jsonb",
     ("internal_import", "resolve_company_transaction_reporting_item"): (
         "TABLE(item_code text, item_revision integer)"
@@ -2594,8 +2606,12 @@ COMPANY_TRANSACTION_CLASSIFICATION_SECURITY_DEFINER_FUNCTIONS = frozenset(
 COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS = {
     ("internal_import", "seed_company_transaction_classification"): "ledgerbridge_worker",
     ("internal_command", "review_company_transaction_classification"): "ledgerbridge_api",
+    ("internal_command", "review_company_transaction_classification_v2"): "ledgerbridge_api",
     ("internal_read", "list_company_transaction_classifications_as_of"): ("ledgerbridge_reader"),
     ("internal_read", "get_company_transaction_classification_summary_as_of"): (
+        "ledgerbridge_reader"
+    ),
+    ("internal_read", "get_company_transaction_classification_summary_v2_as_of"): (
         "ledgerbridge_reader"
     ),
     ("internal_import", "backfill_company_transaction_reporting_item"): "ledgerbridge_worker",
@@ -2772,6 +2788,7 @@ ABC_COMPANY_XLS_REVISION = "20260904_0043"
 BOC_COMPANY_XLS_REVISION = "20260904_0044"
 BLANK_COUNTERPARTY_OVERLAP_REVISION = "20260904_0045"
 CANDIDATE_BY_REF_READER_REVISION = "20260905_0046"
+OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION = "20260904_0046"
 CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES = (
     "company_transaction_reporting_item",
     "company_transaction_reporting_item_match",
@@ -3024,6 +3041,7 @@ MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
         BOC_COMPANY_XLS_REVISION,
         BLANK_COUNTERPARTY_OVERLAP_REVISION,
         CANDIDATE_BY_REF_READER_REVISION,
+        OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION,
     }
 )
 COMPANY_REPORTING_SCHEMA = "company_reporting_read"
@@ -7014,6 +7032,27 @@ def _validate_company_transaction_classification_security(
 
     functions = _list("company_transaction_classification_functions")
     expected_function_signatures = dict(COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES)
+    expected_function_executors = dict(COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS)
+    if revision < OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION:
+        expected_function_signatures.pop(
+            ("internal_command", "review_company_transaction_classification_v2")
+        )
+        expected_function_executors.pop(
+            ("internal_command", "review_company_transaction_classification_v2")
+        )
+        expected_function_signatures.pop(
+            ("internal_read", "get_company_transaction_classification_summary_v2_as_of")
+        )
+        expected_function_executors.pop(
+            ("internal_read", "get_company_transaction_classification_summary_v2_as_of")
+        )
+    else:
+        expected_function_executors.pop(
+            ("internal_command", "review_company_transaction_classification")
+        )
+        expected_function_executors.pop(
+            ("internal_read", "get_company_transaction_classification_summary_as_of")
+        )
     if revision < CASH_RECONCILIATION_CLASSIFICATION_REVISION:
         expected_function_signatures.pop(
             ("internal_import", "backfill_company_transaction_reporting_item")
@@ -7279,7 +7318,7 @@ def _validate_company_transaction_classification_security(
     function_acls = _list("company_transaction_classification_function_acls")
     for item in function_acls:
         function_key = cast(tuple[str, str], (item.get("schema"), item.get("name")))
-        executor = COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS.get(function_key)
+        executor = expected_function_executors.get(function_key)
         allowed_grantees = {owner} if executor is None else {owner, executor}
         if (
             item.get("grantee") not in allowed_grantees
@@ -7323,7 +7362,7 @@ def _validate_company_transaction_classification_security(
         )
     for item in function_privileges:
         function_key = cast(tuple[str, str], (item.get("schema"), item.get("name")))
-        executor = COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS.get(function_key)
+        executor = expected_function_executors.get(function_key)
         if item.get("execute") is not (item.get("role") == executor):
             raise BackupError(
                 "restored company transaction classification function privilege matrix is invalid"

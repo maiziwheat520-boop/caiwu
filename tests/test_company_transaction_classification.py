@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from ledgerbridge.company_transaction_classification import (
     CompanyTransactionCategory,
+    CompanyTransactionCategorySummary,
     CompanyTransactionClassification,
     CompanyTransactionClassificationReviewReceipt,
     CompanyTransactionClassificationReviewRequest,
@@ -32,12 +33,16 @@ from scripts.backup_restore import (
     COMPANY_TRANSACTION_CLASSIFICATION_TABLE,
     COMPANY_TRANSACTION_CLASSIFICATION_TRIGGER_CONTRACT,
     MYBANK_CUTOVER_SCHEMA_REVISIONS,
+    OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION,
     R1_ROLES,
     BackupError,
     _validate_company_transaction_classification_security,
 )
 
 MIGRATION = Path("alembic/versions/20260903_0037_company_transaction_classification.py")
+OPERATING_FEE_REVIEW_MIGRATION = Path(
+    "alembic/versions/20260904_0046_operating_fee_reporting_item_review.py"
+)
 
 
 def test_migration_exposes_only_narrow_role_specific_functions() -> None:
@@ -61,8 +66,30 @@ def test_migration_exposes_only_narrow_role_specific_functions() -> None:
     )
 
 
+def test_operating_fee_review_migration_requires_an_active_shared_detail() -> None:
+    source = OPERATING_FEE_REVIEW_MIGRATION.read_text(encoding="utf-8")
+
+    assert f'revision: str = "{OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION}"' in source
+    assert 'down_revision: str | None = "20260904_0045"' in source
+    assert "p_reporting_item_code text" in source
+    assert "p_category_code = 'OPERATING_FEE'" in source
+    assert "registry.status = 'ACTIVE'" in source
+    assert "requested_reporting_item_code" in source
+    assert "get_company_transaction_classification_summary_v2_as_of" in source
+    assert "reporting_item_label" in source
+    assert "TO ledgerbridge_api" in source
+    assert OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION in MYBANK_CUTOVER_SCHEMA_REVISIONS
+
+
 def _restore_metadata() -> dict[str, object]:
     owner = "ledgerbridge_owner"
+    function_executors = dict(COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS)
+    function_executors.pop(
+        ("internal_command", "review_company_transaction_classification")
+    )
+    function_executors.pop(
+        ("internal_read", "get_company_transaction_classification_summary_as_of")
+    )
     functions = [
         {
             "schema": schema,
@@ -253,8 +280,8 @@ def _restore_metadata() -> dict[str, object]:
                 COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES.items()
             )
             for grantee in (
-                [owner, COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS[(schema, name)]]
-                if (schema, name) in COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS
+                [owner, function_executors[(schema, name)]]
+                if (schema, name) in function_executors
                 else [owner]
             )
         ],
@@ -275,7 +302,7 @@ def _restore_metadata() -> dict[str, object]:
                 "name": name,
                 "identity_arguments": arguments,
                 "execute": role
-                == COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS.get((schema, name)),
+                == function_executors.get((schema, name)),
             }
             for role in R1_ROLES
             for (schema, name), arguments in (
@@ -288,7 +315,9 @@ def _restore_metadata() -> dict[str, object]:
 def test_restore_inventory_covers_classification_facts_and_privileges() -> None:
     metadata = _restore_metadata()
 
-    _validate_company_transaction_classification_security(metadata)
+    _validate_company_transaction_classification_security(
+        metadata, revision=OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION
+    )
 
     privileges = metadata["company_transaction_classification_effective_table_privileges"]
     assert isinstance(privileges, list)
@@ -300,7 +329,9 @@ def test_restore_inventory_covers_classification_facts_and_privileges() -> None:
         ],
     }
     with pytest.raises(BackupError, match="table privilege matrix"):
-        _validate_company_transaction_classification_security(drifted)
+        _validate_company_transaction_classification_security(
+            drifted, revision=OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION
+        )
 
 
 @pytest.mark.parametrize("drift", ["remove", "definition", "deferrable"])
@@ -323,7 +354,9 @@ def test_restore_inventory_rejects_reporting_item_constraint_drift(drift: str) -
     metadata["cash_reconciliation_classification_state_constraints"] = changed
 
     with pytest.raises(BackupError, match="state constraints"):
-        _validate_company_transaction_classification_security(metadata)
+        _validate_company_transaction_classification_security(
+            metadata, revision=OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION
+        )
 
 
 def test_approved_rule_precedence_and_exact_related_party_match() -> None:
@@ -485,6 +518,63 @@ def test_review_receipt_rejects_an_incomplete_reporting_item_pair() -> None:
         )
 
 
+def test_operating_fee_summary_requires_a_versioned_detail_label() -> None:
+    values = {
+        "category_code": "OPERATING_FEE",
+        "cashflow_role": "OPERATING_EXPENSE",
+        "transaction_count": 1,
+        "inflow_minor": 0,
+        "outflow_minor": 100,
+        "net_minor": -100,
+        "gross_minor": 100,
+        "transaction_share_ppm": 1_000_000,
+        "gross_share_ppm": 1_000_000,
+    }
+    with pytest.raises(ValidationError, match="only operating fee summaries use"):
+        CompanyTransactionCategorySummary.model_validate(values)
+
+    summary = CompanyTransactionCategorySummary.model_validate(
+        {
+            **values,
+            "reporting_item_code": "BANK_FEES",
+            "reporting_item_label": "银行手续费",
+        }
+    )
+    assert summary.reporting_item_label == "银行手续费"
+
+
+def test_operating_fee_review_request_requires_a_canonical_detail() -> None:
+    base = {
+        "entity_ref": UUID(int=2),
+        "expected_revision": 1,
+        "category_code": "OPERATING_FEE",
+        "reason": "verified",
+    }
+
+    with pytest.raises(ValidationError, match="requires a canonical reporting item"):
+        CompanyTransactionClassificationReviewRequest.model_validate(base)
+    with pytest.raises(ValidationError, match="requires a canonical reporting item"):
+        CompanyTransactionClassificationReviewRequest.model_validate(
+            {**base, "reporting_item_code": " TAX "}
+        )
+
+    request = CompanyTransactionClassificationReviewRequest.model_validate(
+        {**base, "reporting_item_code": "TAX"}
+    )
+    assert request.reporting_item_code == "TAX"
+
+
+def test_non_operating_fee_review_request_rejects_a_detail() -> None:
+    with pytest.raises(ValidationError, match="only accepted for operating fee"):
+        CompanyTransactionClassificationReviewRequest(
+            entity_ref=UUID(int=2),
+            expected_revision=1,
+            category_code=CompanyTransactionCategory.RENT,
+            reporting_item_code="TAX",
+            reason="verified",
+        )
+
+
 def test_review_service_commits_a_receipt_with_reporting_item_fields() -> None:
     entity_ref = UUID(int=2)
 
@@ -503,6 +593,7 @@ def test_review_service_commits_a_receipt_with_reporting_item_fields() -> None:
 
     class Session:
         committed = False
+        parameters: dict[str, object] | None = None
 
         def __enter__(self) -> Session:
             return self
@@ -510,7 +601,10 @@ def test_review_service_commits_a_receipt_with_reporting_item_fields() -> None:
         def __exit__(self, *_args: object) -> None:
             return None
 
-        def execute(self, *_args: object, **_kwargs: object) -> Result:
+        def execute(self, *_args: object, **kwargs: object) -> Result:
+            self.parameters = kwargs.get("params")  # type: ignore[assignment]
+            if self.parameters is None and len(_args) > 1:
+                self.parameters = _args[1]  # type: ignore[assignment]
             return Result()
 
         def commit(self) -> None:
@@ -544,4 +638,70 @@ def test_review_service_commits_a_receipt_with_reporting_item_fields() -> None:
     )
 
     assert receipt.reporting_item_code == "BOTTLED_WATER"
+    assert session.parameters is not None
+    assert session.parameters["reporting_item_code"] is None
     assert session.committed is True
+
+
+def test_review_service_forwards_the_operating_fee_detail() -> None:
+    entity_ref = UUID(int=2)
+
+    class Result:
+        @staticmethod
+        def scalar_one() -> dict[str, object]:
+            return {
+                "transaction_ref": UUID(int=1),
+                "status": "CONFIRMED",
+                "category_code": "OPERATING_FEE",
+                "reporting_item_code": "BANK_FEES",
+                "reporting_item_revision": 1,
+                "revision": 2,
+                "created": True,
+            }
+
+    class Session:
+        parameters: dict[str, object] | None = None
+
+        def __enter__(self) -> Session:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def execute(self, _statement: object, parameters: dict[str, object]) -> Result:
+            self.parameters = parameters
+            return Result()
+
+        def commit(self) -> None:
+            return None
+
+    session = Session()
+    service = DatabaseCompanyTransactionClassificationService(
+        reader_factory=lambda: session, api_factory=lambda: session  # type: ignore[arg-type]
+    )
+    principal = WorkloadPrincipal(
+        principal_ref="test-reviewer",
+        san_uri="spiffe://ledgerbridge.test/reviewer",
+        policy_generation=1,
+        capabilities=frozenset({Capability.BANK_STATEMENT_REVIEW_DECIDE}),
+        grants=(EntityGrant(entity_ref=entity_ref, allow_account_registry=True),),
+    )
+
+    receipt = service.review(
+        principal,
+        transaction_ref=UUID(int=1),
+        operation_id=UUID(int=3),
+        assertion_jti=UUID(int=4),
+        actor_ref="test-reviewer",
+        command=CompanyTransactionClassificationReviewRequest(
+            entity_ref=entity_ref,
+            expected_revision=1,
+            category_code=CompanyTransactionCategory.OPERATING_FEE,
+            reporting_item_code="BANK_FEES",
+            reason="verified",
+        ),
+    )
+
+    assert receipt.reporting_item_code == "BANK_FEES"
+    assert session.parameters is not None
+    assert session.parameters["reporting_item_code"] == "BANK_FEES"
