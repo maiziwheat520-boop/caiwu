@@ -24,9 +24,142 @@ def downgrade() -> None:
 
 
 _UPGRADE_SQL = r"""
+CREATE TABLE public.company_transaction_reporting_item (
+    item_code varchar(100) NOT NULL CHECK (btrim(item_code) <> ''),
+    revision integer NOT NULL CHECK (revision > 0),
+    status text NOT NULL CHECK (status IN ('ACTIVE','RETIRED')),
+    category_code varchar(64) NOT NULL CHECK (category_code IN (
+        'PLATFORM_ROOM_REVENUE','RELATED_PARTY_CURRENT','PAYROLL','FINANCING',
+        'BOTTLED_WATER','INTERNAL_TRANSFER','RENT','RENTAL_INCOME','BANK_INTEREST',
+        'LINEN_LAUNDRY','OPERATING_FEE')),
+    item_label varchar(100) NOT NULL CHECK (btrim(item_label) <> ''),
+    match_counterparty_name varchar(300),
+    audit_event_id uuid NOT NULL REFERENCES public.audit_event(id),
+    created_at timestamptz NOT NULL,
+    PRIMARY KEY (item_code, revision),
+    UNIQUE (category_code, item_code, revision),
+    CHECK (match_counterparty_name IS NULL OR btrim(match_counterparty_name) <> '')
+);
+CREATE UNIQUE INDEX company_transaction_reporting_item_active_match_uq
+    ON public.company_transaction_reporting_item(category_code, match_counterparty_name)
+    WHERE status = 'ACTIVE' AND match_counterparty_name IS NOT NULL;
+CREATE FUNCTION public.r1_validate_company_transaction_reporting_item()
+RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+AS $function$
+DECLARE v_payload jsonb; v_action text; v_rule text; v_time timestamptz;
+BEGIN
+    SELECT payload, action, rule_version, occurred_at
+      INTO v_payload, v_action, v_rule, v_time
+      FROM public.audit_event WHERE id = NEW.audit_event_id;
+    IF v_action IS DISTINCT FROM 'company_transaction_reporting_item.record'
+       OR v_rule IS DISTINCT FROM 'ledgerbridge.company-transaction-reporting-item.v1'
+       OR v_payload->>'item_code' IS DISTINCT FROM NEW.item_code
+       OR v_payload->>'revision' IS DISTINCT FROM NEW.revision::text
+       OR v_payload->>'status' IS DISTINCT FROM NEW.status
+       OR v_payload->>'category_code' IS DISTINCT FROM NEW.category_code
+       OR v_payload->>'item_label' IS DISTINCT FROM NEW.item_label
+       OR v_payload->>'match_counterparty_name' IS DISTINCT FROM NEW.match_counterparty_name
+       OR v_time IS DISTINCT FROM NEW.created_at THEN
+        RAISE EXCEPTION 'company transaction reporting item audit binding is invalid'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END
+$function$;
+CREATE TRIGGER validate_company_transaction_reporting_item
+BEFORE INSERT ON public.company_transaction_reporting_item
+FOR EACH ROW EXECUTE FUNCTION public.r1_validate_company_transaction_reporting_item();
+CREATE TRIGGER company_transaction_reporting_item_append_only
+BEFORE UPDATE OR DELETE ON public.company_transaction_reporting_item
+FOR EACH ROW EXECUTE FUNCTION public.r1_bank_statement_append_only();
+REVOKE ALL ON public.company_transaction_reporting_item
+FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
+
+CREATE TABLE public.company_transaction_reporting_item_match (
+    category_code varchar(64) NOT NULL,
+    counterparty_name varchar(300) NOT NULL CHECK (btrim(counterparty_name) <> ''),
+    item_code varchar(100) NOT NULL,
+    item_revision integer NOT NULL,
+    audit_event_id uuid NOT NULL REFERENCES public.audit_event(id),
+    created_at timestamptz NOT NULL,
+    PRIMARY KEY (category_code, counterparty_name),
+    FOREIGN KEY (category_code, item_code, item_revision)
+        REFERENCES public.company_transaction_reporting_item(category_code, item_code, revision)
+);
+CREATE FUNCTION public.r1_validate_company_transaction_reporting_item_match()
+RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+AS $function$
+DECLARE v_payload jsonb; v_action text; v_rule text; v_time timestamptz;
+BEGIN
+    SELECT payload, action, rule_version, occurred_at
+      INTO v_payload, v_action, v_rule, v_time
+      FROM public.audit_event WHERE id = NEW.audit_event_id;
+    IF v_action IS DISTINCT FROM 'company_transaction_reporting_item_match.record'
+       OR v_rule IS DISTINCT FROM 'ledgerbridge.company-transaction-reporting-item.v1'
+       OR v_payload->>'category_code' IS DISTINCT FROM NEW.category_code
+       OR v_payload->>'counterparty_name' IS DISTINCT FROM NEW.counterparty_name
+       OR v_payload->>'item_code' IS DISTINCT FROM NEW.item_code
+       OR v_payload->>'item_revision' IS DISTINCT FROM NEW.item_revision::text
+       OR v_time IS DISTINCT FROM NEW.created_at THEN
+        RAISE EXCEPTION 'company transaction reporting item match audit binding is invalid'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END
+$function$;
+CREATE TRIGGER validate_company_transaction_reporting_item_match
+BEFORE INSERT ON public.company_transaction_reporting_item_match
+FOR EACH ROW EXECUTE FUNCTION public.r1_validate_company_transaction_reporting_item_match();
+CREATE TRIGGER company_transaction_reporting_item_match_append_only
+BEFORE UPDATE OR DELETE ON public.company_transaction_reporting_item_match
+FOR EACH ROW EXECUTE FUNCTION public.r1_bank_statement_append_only();
+REVOKE ALL ON public.company_transaction_reporting_item_match
+FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
+
+DO $seed$
+DECLARE v_item record; v_audit uuid;
+BEGIN
+    FOR v_item IN SELECT * FROM (VALUES
+        ('FLIGGY','PLATFORM_ROOM_REVENUE','飞猪'),
+        ('MEITUAN','PLATFORM_ROOM_REVENUE','美团'),
+        ('CTRIP','PLATFORM_ROOM_REVENUE','携程'),
+        ('PAYROLL','PAYROLL','工资'),
+        ('FINANCING','FINANCING','融资'),
+        ('BOTTLED_WATER','BOTTLED_WATER','桶装水'),
+        ('INTERNAL_TRANSFER','INTERNAL_TRANSFER','内部转账'),
+        ('RENT','RENT','房租'),
+        ('BANK_INTEREST','BANK_INTEREST','银行利息'),
+        ('LINEN_LAUNDRY','LINEN_LAUNDRY','布草洗涤')
+    ) AS seeded(item_code, category_code, item_label)
+    LOOP
+        v_audit := public.append_audit_event(
+            'migration:20260904_0042', 'company_transaction_reporting_item.record',
+            'seed versioned reporting item registry',
+            'ledgerbridge.company-transaction-reporting-item.v1',
+            jsonb_build_object('item_code', v_item.item_code, 'revision', 1,
+                'status', 'ACTIVE', 'category_code', v_item.category_code,
+                'item_label', v_item.item_label, 'match_counterparty_name', NULL)
+        );
+        INSERT INTO public.company_transaction_reporting_item(
+            item_code, revision, status, category_code, item_label,
+            match_counterparty_name, audit_event_id, created_at)
+        VALUES (v_item.item_code, 1, 'ACTIVE', v_item.category_code,
+            v_item.item_label, NULL, v_audit,
+            (SELECT occurred_at FROM public.audit_event WHERE id = v_audit));
+    END LOOP;
+END
+$seed$;
+
 ALTER TABLE public.company_transaction_classification
-    ADD COLUMN reporting_item_code varchar(100)
-        CHECK (reporting_item_code IS NULL OR btrim(reporting_item_code) <> '');
+    ADD COLUMN reporting_item_code varchar(100),
+    ADD COLUMN reporting_item_revision integer,
+    ADD CONSTRAINT company_transaction_classification_reporting_item_pair_check CHECK (
+        (reporting_item_code IS NULL AND reporting_item_revision IS NULL)
+        OR (reporting_item_code IS NOT NULL AND btrim(reporting_item_code) <> ''
+            AND reporting_item_revision > 0)),
+    ADD CONSTRAINT company_transaction_classification_reporting_item_fk
+        FOREIGN KEY (category_code, reporting_item_code, reporting_item_revision)
+        REFERENCES public.company_transaction_reporting_item(category_code, item_code, revision);
 ALTER TABLE public.company_transaction_classification
     DROP CONSTRAINT company_transaction_classification_source_check;
 ALTER TABLE public.company_transaction_classification
@@ -43,7 +176,8 @@ ALTER TABLE public.company_transaction_classification
             AND status = 'CONFIRMED')
         OR (revision > 1 AND source = 'BACKFILL' AND assertion_jti IS NULL
             AND workload_principal_ref IS NULL AND expected_revision = revision - 1
-            AND status = 'CONFIRMED' AND reporting_item_code IS NOT NULL)
+            AND status = 'CONFIRMED' AND reporting_item_code IS NOT NULL
+            AND reporting_item_revision IS NOT NULL)
     );
 
 CREATE OR REPLACE FUNCTION public.r1_validate_company_transaction_classification()
@@ -68,6 +202,7 @@ BEGIN
        OR v_payload->>'status' IS DISTINCT FROM NEW.status
        OR v_payload->>'category_code' IS DISTINCT FROM NEW.category_code
        OR v_payload->>'reporting_item_code' IS DISTINCT FROM NEW.reporting_item_code
+       OR v_payload->>'reporting_item_revision' IS DISTINCT FROM NEW.reporting_item_revision::text
        OR v_payload->>'source' IS DISTINCT FROM NEW.source
        OR v_payload->>'rule_version' IS DISTINCT FROM NEW.rule_version
        OR v_payload->>'operation_id' IS DISTINCT FROM NEW.operation_id::text
@@ -93,6 +228,78 @@ BEGIN
 END
 $function$;
 
+CREATE FUNCTION internal_import.resolve_company_transaction_reporting_item(
+    p_transaction_ref uuid, p_category_code text, p_actor_ref text, p_reason text
+) RETURNS TABLE(item_code text, item_revision integer)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
+AS $function$
+DECLARE
+    v_transaction public.bank_statement_transaction%ROWTYPE;
+    v_fixed_code text; v_code text; v_audit uuid;
+BEGIN
+    SELECT * INTO v_transaction FROM public.bank_statement_transaction
+     WHERE transaction_ref = p_transaction_ref;
+    IF NOT FOUND THEN RETURN; END IF;
+    v_fixed_code := CASE p_category_code
+        WHEN 'PAYROLL' THEN 'PAYROLL' WHEN 'FINANCING' THEN 'FINANCING'
+        WHEN 'BOTTLED_WATER' THEN 'BOTTLED_WATER'
+        WHEN 'INTERNAL_TRANSFER' THEN 'INTERNAL_TRANSFER'
+        WHEN 'RENT' THEN 'RENT' WHEN 'BANK_INTEREST' THEN 'BANK_INTEREST'
+        WHEN 'LINEN_LAUNDRY' THEN 'LINEN_LAUNDRY' ELSE NULL END;
+    IF p_category_code = 'PLATFORM_ROOM_REVENUE' THEN
+        v_fixed_code := CASE
+            WHEN concat_ws(' ', v_transaction.counterparty_name,
+                v_transaction.transaction_name) ILIKE '%飞猪%' THEN 'FLIGGY'
+            WHEN concat_ws(' ', v_transaction.counterparty_name,
+                v_transaction.transaction_name) ILIKE '%美团%' THEN 'MEITUAN'
+            WHEN concat_ws(' ', v_transaction.counterparty_name,
+                v_transaction.transaction_name) ILIKE '%携程%' THEN 'CTRIP'
+            ELSE NULL END;
+    END IF;
+    IF p_category_code = 'RELATED_PARTY_CURRENT'
+       AND v_transaction.counterparty_name IS NOT NULL
+       AND btrim(v_transaction.counterparty_name) <> ''
+       AND length('COUNTERPARTY:' || btrim(v_transaction.counterparty_name)) <= 100 THEN
+        v_code := 'COUNTERPARTY:' || btrim(v_transaction.counterparty_name);
+        PERFORM pg_advisory_xact_lock(hashtextextended(
+            p_category_code || ':' || v_code, 0));
+        IF NOT EXISTS (SELECT 1 FROM public.company_transaction_reporting_item
+            WHERE category_code = p_category_code AND item_code = v_code
+              AND status = 'ACTIVE') THEN
+            v_audit := public.append_audit_event(
+                p_actor_ref, 'company_transaction_reporting_item.record', p_reason,
+                'ledgerbridge.company-transaction-reporting-item.v1',
+                jsonb_build_object('item_code', v_code, 'revision', 1,
+                    'status', 'ACTIVE', 'category_code', p_category_code,
+                    'item_label', btrim(v_transaction.counterparty_name),
+                    'match_counterparty_name', btrim(v_transaction.counterparty_name)));
+            INSERT INTO public.company_transaction_reporting_item(
+                item_code, revision, status, category_code, item_label,
+                match_counterparty_name, audit_event_id, created_at)
+            VALUES (v_code, 1, 'ACTIVE', p_category_code,
+                btrim(v_transaction.counterparty_name), btrim(v_transaction.counterparty_name),
+                v_audit, (SELECT occurred_at FROM public.audit_event WHERE id = v_audit));
+        END IF;
+        v_fixed_code := v_code;
+    END IF;
+    RETURN QUERY
+    SELECT registry.item_code::text, registry.revision
+      FROM public.company_transaction_reporting_item registry
+     WHERE registry.category_code = p_category_code
+       AND registry.status = 'ACTIVE'
+       AND (registry.item_code = v_fixed_code OR (v_fixed_code IS NULL AND (
+            registry.match_counterparty_name IS NOT DISTINCT FROM v_transaction.counterparty_name
+            OR EXISTS (SELECT 1 FROM public.company_transaction_reporting_item_match match
+                WHERE match.category_code = p_category_code
+                  AND match.counterparty_name = v_transaction.counterparty_name
+                  AND match.item_code = registry.item_code
+                  AND match.item_revision = registry.revision))))
+     ORDER BY registry.revision DESC LIMIT 1;
+END
+$function$;
+REVOKE ALL ON FUNCTION internal_import.resolve_company_transaction_reporting_item(
+    uuid,text,text,text) FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_app;
+
 CREATE FUNCTION internal_import.backfill_company_transaction_reporting_item(
     p_transaction_ref uuid,
     p_expected_revision integer,
@@ -107,6 +314,7 @@ DECLARE
     v_existing public.company_transaction_classification%ROWTYPE;
     v_current public.company_transaction_classification%ROWTYPE;
     v_revision integer;
+    v_item_revision integer;
     v_command bytea;
     v_audit uuid;
 BEGIN
@@ -123,6 +331,7 @@ BEGIN
     v_command := public.digest(convert_to(jsonb_build_array(
         p_transaction_ref, p_expected_revision, p_expected_category_code,
         p_reporting_item_code, p_actor_ref, p_reason)::text, 'UTF8'), 'sha256');
+    PERFORM pg_advisory_xact_lock(hashtextextended(p_operation_id::text, 0));
     SELECT * INTO v_existing
       FROM public.company_transaction_classification
      WHERE operation_id = p_operation_id
@@ -151,6 +360,16 @@ BEGIN
         RAISE EXCEPTION 'company transaction reporting item is already assigned'
             USING ERRCODE = 'LB003';
     END IF;
+    SELECT registry.revision INTO v_item_revision
+      FROM public.company_transaction_reporting_item registry
+     WHERE registry.category_code = p_expected_category_code
+       AND registry.item_code = p_reporting_item_code
+       AND registry.status = 'ACTIVE'
+     ORDER BY registry.revision DESC LIMIT 1;
+    IF v_item_revision IS NULL THEN
+        RAISE EXCEPTION 'company transaction reporting item is not active for category'
+            USING ERRCODE = 'LB003';
+    END IF;
     v_revision := v_current.revision + 1;
     v_audit := public.append_audit_event(
         p_actor_ref, 'company_transaction_classification.reporting_item.backfill', p_reason,
@@ -161,6 +380,7 @@ BEGIN
             'status', 'CONFIRMED',
             'category_code', v_current.category_code,
             'reporting_item_code', p_reporting_item_code,
+            'reporting_item_revision', v_item_revision,
             'source', 'BACKFILL',
             'rule_version', 'reporting-item-backfill.v1',
             'operation_id', p_operation_id,
@@ -169,12 +389,13 @@ BEGIN
     );
     INSERT INTO public.company_transaction_classification(
         transaction_ref, revision, status, category_code, reporting_item_code,
+        reporting_item_revision,
         source, rule_version, operation_id, assertion_jti, actor_ref,
         workload_principal_ref, expected_revision, command_sha256,
         audit_event_id, classified_at
     ) VALUES (
         p_transaction_ref, v_revision, 'CONFIRMED', v_current.category_code,
-        p_reporting_item_code, 'BACKFILL', 'reporting-item-backfill.v1',
+        p_reporting_item_code, v_item_revision, 'BACKFILL', 'reporting-item-backfill.v1',
         p_operation_id, NULL, p_actor_ref, NULL, p_expected_revision, v_command, v_audit,
         (SELECT occurred_at FROM public.audit_event WHERE id = v_audit)
     );
@@ -188,6 +409,173 @@ REVOKE ALL ON FUNCTION internal_import.backfill_company_transaction_reporting_it
 FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_app;
 GRANT EXECUTE ON FUNCTION internal_import.backfill_company_transaction_reporting_item(
     uuid,integer,text,text,uuid,text,text) TO ledgerbridge_worker;
+
+CREATE OR REPLACE FUNCTION internal_import.seed_company_transaction_classification(
+    p_transaction_ref uuid, p_operation_id uuid, p_status text,
+    p_category_code text, p_actor_ref text, p_reason text, p_rule_version text
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
+AS $function$
+DECLARE
+    v_existing public.company_transaction_classification%ROWTYPE;
+    v_command bytea; v_audit uuid; v_item_code text; v_item_revision integer;
+BEGIN
+    IF p_transaction_ref IS NULL OR p_operation_id IS NULL OR p_status IS NULL
+       OR p_status NOT IN ('PENDING','CONFIRMED')
+       OR ((p_status = 'PENDING') <> (p_category_code IS NULL))
+       OR p_category_code IS NOT NULL AND p_category_code NOT IN (
+            'PLATFORM_ROOM_REVENUE','RELATED_PARTY_CURRENT','PAYROLL','FINANCING',
+            'BOTTLED_WATER','INTERNAL_TRANSFER','RENT','RENTAL_INCOME','BANK_INTEREST',
+            'LINEN_LAUNDRY','OPERATING_FEE')
+       OR p_actor_ref IS NULL OR btrim(p_actor_ref) = '' OR length(p_actor_ref) > 200
+       OR p_reason IS NULL OR btrim(p_reason) = '' OR length(p_reason) > 1000
+       OR p_rule_version IS DISTINCT FROM 'company-bank-classification.2026-09.v1' THEN
+        RAISE EXCEPTION 'company transaction classification seed is invalid'
+            USING ERRCODE = 'LB003';
+    END IF;
+    v_command := public.digest(convert_to(jsonb_build_array(
+        p_transaction_ref, p_operation_id, p_status, p_category_code,
+        p_actor_ref, p_reason, p_rule_version)::text, 'UTF8'), 'sha256');
+    PERFORM pg_advisory_xact_lock(hashtextextended(p_transaction_ref::text, 0));
+    SELECT * INTO v_existing FROM public.company_transaction_classification
+     WHERE operation_id = p_operation_id;
+    IF FOUND THEN
+        IF v_existing.transaction_ref IS DISTINCT FROM p_transaction_ref
+           OR v_existing.status IS DISTINCT FROM p_status
+           OR v_existing.category_code IS DISTINCT FROM p_category_code
+           OR v_existing.command_sha256 IS DISTINCT FROM v_command THEN
+            RAISE EXCEPTION 'company transaction classification idempotency conflict'
+                USING ERRCODE = 'LB001';
+        END IF;
+        RETURN jsonb_build_object('transaction_ref', p_transaction_ref,
+            'status', p_status, 'revision', v_existing.revision, 'created', false);
+    END IF;
+    IF EXISTS (SELECT 1 FROM public.company_transaction_classification
+                WHERE transaction_ref = p_transaction_ref) THEN
+        RAISE EXCEPTION 'company transaction is already classified' USING ERRCODE = 'LB003';
+    END IF;
+    IF p_status = 'CONFIRMED' THEN
+        SELECT * INTO v_item_code, v_item_revision
+          FROM internal_import.resolve_company_transaction_reporting_item(
+            p_transaction_ref, p_category_code, p_actor_ref, p_reason);
+    END IF;
+    v_audit := public.append_audit_event(
+        p_actor_ref, 'company_transaction_classification.record', p_reason,
+        'ledgerbridge.company-transaction-classification.v1',
+        jsonb_build_object('transaction_ref', p_transaction_ref, 'revision', 1,
+            'status', p_status, 'category_code', p_category_code,
+            'reporting_item_code', v_item_code,
+            'reporting_item_revision', v_item_revision,
+            'source', 'AUTO_RULE', 'rule_version', p_rule_version,
+            'operation_id', p_operation_id, 'command_sha256', encode(v_command, 'hex')));
+    INSERT INTO public.company_transaction_classification(
+        transaction_ref, revision, status, category_code, reporting_item_code,
+        reporting_item_revision, source, rule_version, operation_id, actor_ref,
+        command_sha256, audit_event_id, classified_at)
+    VALUES (p_transaction_ref, 1, p_status, p_category_code, v_item_code,
+        v_item_revision, 'AUTO_RULE', p_rule_version, p_operation_id, p_actor_ref,
+        v_command, v_audit, (SELECT occurred_at FROM public.audit_event WHERE id = v_audit));
+    RETURN jsonb_build_object('transaction_ref', p_transaction_ref,
+        'status', p_status, 'revision', 1, 'reporting_item_code', v_item_code,
+        'reporting_item_revision', v_item_revision, 'created', true);
+END
+$function$;
+
+CREATE OR REPLACE FUNCTION internal_command.review_company_transaction_classification(
+    p_transaction_ref uuid, p_entity_ref uuid, p_operation_id uuid,
+    p_assertion_jti uuid, p_actor_ref text, p_workload_principal_ref text,
+    p_expected_revision integer, p_category_code text, p_reason text
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
+AS $function$
+DECLARE
+    v_existing public.company_transaction_classification%ROWTYPE;
+    v_current public.company_transaction_classification%ROWTYPE;
+    v_command bytea; v_audit uuid; v_revision integer;
+    v_item_code text; v_item_revision integer;
+BEGIN
+    IF p_transaction_ref IS NULL OR p_entity_ref IS NULL OR p_operation_id IS NULL
+       OR p_assertion_jti IS NULL OR p_expected_revision IS NULL OR p_expected_revision < 1
+       OR p_category_code IS NULL OR p_category_code NOT IN (
+            'PLATFORM_ROOM_REVENUE','RELATED_PARTY_CURRENT','PAYROLL','FINANCING',
+            'BOTTLED_WATER','INTERNAL_TRANSFER','RENT','RENTAL_INCOME','BANK_INTEREST',
+            'LINEN_LAUNDRY','OPERATING_FEE')
+       OR p_actor_ref IS NULL OR btrim(p_actor_ref) = '' OR length(p_actor_ref) > 200
+       OR p_workload_principal_ref IS NULL OR btrim(p_workload_principal_ref) = ''
+       OR length(p_workload_principal_ref) > 200
+       OR p_reason IS NULL OR btrim(p_reason) = '' OR length(p_reason) > 1000 THEN
+        RAISE EXCEPTION 'company transaction review command is invalid' USING ERRCODE = 'LB003';
+    END IF;
+    v_command := public.digest(convert_to(jsonb_build_array(
+        p_transaction_ref, p_entity_ref, p_operation_id, p_assertion_jti,
+        p_actor_ref, p_workload_principal_ref, p_expected_revision,
+        p_category_code, p_reason)::text, 'UTF8'), 'sha256');
+    PERFORM pg_advisory_xact_lock(hashtextextended(p_transaction_ref::text, 0));
+    SELECT * INTO v_existing FROM public.company_transaction_classification
+     WHERE operation_id = p_operation_id OR assertion_jti = p_assertion_jti
+     ORDER BY operation_id = p_operation_id DESC LIMIT 1;
+    IF FOUND THEN
+        IF v_existing.transaction_ref IS DISTINCT FROM p_transaction_ref
+           OR v_existing.category_code IS DISTINCT FROM p_category_code
+           OR v_existing.command_sha256 IS DISTINCT FROM v_command THEN
+            RAISE EXCEPTION 'company transaction review idempotency conflict'
+                USING ERRCODE = 'LB001';
+        END IF;
+        RETURN jsonb_build_object('transaction_ref', p_transaction_ref,
+            'status', v_existing.status, 'category_code', v_existing.category_code,
+            'reporting_item_code', v_existing.reporting_item_code,
+            'reporting_item_revision', v_existing.reporting_item_revision,
+            'revision', v_existing.revision, 'created', false);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.bank_statement_transaction transaction
+        JOIN public.managed_account account
+          ON account.managed_account_ref = transaction.managed_account_ref
+        WHERE transaction.transaction_ref = p_transaction_ref
+          AND account.entity_id = p_entity_ref AND account.owner_kind = 'COMPANY') THEN
+        RAISE EXCEPTION 'company transaction is outside authorized entity' USING ERRCODE = 'LB004';
+    END IF;
+    SELECT * INTO v_current FROM public.company_transaction_classification
+     WHERE transaction_ref = p_transaction_ref ORDER BY revision DESC LIMIT 1 FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'company transaction classification is not visible' USING ERRCODE = 'LB004';
+    END IF;
+    IF v_current.revision IS DISTINCT FROM p_expected_revision THEN
+        RAISE EXCEPTION 'company transaction classification revision is stale' USING ERRCODE = 'LB002';
+    END IF;
+    IF v_current.status IS DISTINCT FROM 'PENDING' THEN
+        RAISE EXCEPTION 'company transaction classification is already terminal' USING ERRCODE = 'LB003';
+    END IF;
+    SELECT * INTO v_item_code, v_item_revision
+      FROM internal_import.resolve_company_transaction_reporting_item(
+        p_transaction_ref, p_category_code, p_actor_ref, p_reason);
+    v_revision := v_current.revision + 1;
+    v_audit := public.append_audit_event(
+        p_actor_ref, 'company_transaction_classification.review', p_reason,
+        'ledgerbridge.company-transaction-classification.v1',
+        jsonb_build_object('transaction_ref', p_transaction_ref, 'revision', v_revision,
+            'status', 'CONFIRMED', 'category_code', p_category_code,
+            'reporting_item_code', v_item_code,
+            'reporting_item_revision', v_item_revision,
+            'source', 'HUMAN_REVIEW', 'rule_version', 'human-review.v1',
+            'operation_id', p_operation_id, 'assertion_jti', p_assertion_jti,
+            'workload_principal_ref', p_workload_principal_ref,
+            'expected_revision', p_expected_revision,
+            'command_sha256', encode(v_command, 'hex')));
+    INSERT INTO public.company_transaction_classification(
+        transaction_ref, revision, status, category_code, reporting_item_code,
+        reporting_item_revision, source, rule_version, operation_id, assertion_jti,
+        actor_ref, workload_principal_ref, expected_revision, command_sha256,
+        audit_event_id, classified_at)
+    VALUES (p_transaction_ref, v_revision, 'CONFIRMED', p_category_code,
+        v_item_code, v_item_revision, 'HUMAN_REVIEW', 'human-review.v1',
+        p_operation_id, p_assertion_jti, p_actor_ref, p_workload_principal_ref,
+        p_expected_revision, v_command, v_audit,
+        (SELECT occurred_at FROM public.audit_event WHERE id = v_audit));
+    RETURN jsonb_build_object('transaction_ref', p_transaction_ref,
+        'status', 'CONFIRMED', 'category_code', p_category_code,
+        'reporting_item_code', v_item_code,
+        'reporting_item_revision', v_item_revision,
+        'revision', v_revision, 'created', true);
+END
+$function$;
 
 CREATE OR REPLACE FUNCTION internal_read.cash_reconciliation_month_v2(
     p_month date,
@@ -215,7 +603,8 @@ BEGIN
         RAISE EXCEPTION 'cash reconciliation entity scope is invalid'
             USING ERRCODE = '22023';
     END IF;
-    IF p_business_unit_ids IS NULL OR cardinality(p_business_unit_ids) > 1000
+    IF p_business_unit_ids IS NULL OR cardinality(p_business_unit_ids) = 0
+       OR cardinality(p_business_unit_ids) > 1000
        OR array_position(p_business_unit_ids, NULL) IS NOT NULL
        OR cardinality(p_business_unit_ids) IS DISTINCT FROM (
             SELECT count(DISTINCT value) FROM unnest(p_business_unit_ids) AS items(value)
@@ -232,7 +621,6 @@ BEGIN
         RAISE EXCEPTION 'cash reconciliation business-unit scope is outside entity scope'
             USING ERRCODE = '22023';
     END IF;
-
     WITH bounds AS (
         SELECT p_month AS month_start, (p_month + interval '1 month')::date AS month_end
     ), latest_rules AS (
@@ -280,11 +668,6 @@ BEGIN
           JOIN public.candidate_source source ON source.source_system_id = rule.source_system_id
           JOIN public.candidate candidate ON candidate.id = source.candidate_id
          WHERE rule.source_kind = 'CANDIDATE'
-    ), complete_scope AS (
-        SELECT NOT EXISTS (
-            SELECT 1 FROM required_entities required
-             WHERE NOT (required.entity_id = ANY(p_entity_ids))
-        ) AS value
     ), confirmed_statements AS (
         SELECT statement.statement_ref
           FROM public.bank_statement statement
@@ -431,6 +814,7 @@ BEGIN
                classification.status AS classification_status,
                classification.category_code,
                classification.reporting_item_code,
+               classification.reporting_item_revision,
                CASE classification.category_code
                    WHEN 'PLATFORM_ROOM_REVENUE' THEN 'INCOME'
                    WHEN 'RENTAL_INCOME' THEN 'INCOME'
@@ -444,36 +828,7 @@ BEGIN
                    WHEN 'FINANCING' THEN 'CURRENT'
                    WHEN 'INTERNAL_TRANSFER' THEN 'CURRENT'
                END AS flow_kind,
-               CASE classification.category_code
-                   WHEN 'PLATFORM_ROOM_REVENUE' THEN CASE classification.reporting_item_code
-                       WHEN 'FLIGGY' THEN '飞猪'
-                       WHEN 'MEITUAN' THEN '美团'
-                       WHEN 'CTRIP' THEN '携程'
-                       WHEN 'BANK_RECEIPT' THEN '银行收款'
-                   END
-                   WHEN 'RENTAL_INCOME' THEN CASE classification.reporting_item_code
-                       WHEN 'WENJIE_RENT' THEN '文杰房租'
-                       WHEN 'XINHUA_DORM_RENT_UTILITIES' THEN '新华宿舍房租水电'
-                   END
-                   WHEN 'BANK_INTEREST' THEN '银行利息'
-                   WHEN 'PAYROLL' THEN '工资'
-                   WHEN 'BOTTLED_WATER' THEN '瓶装水'
-                   WHEN 'LINEN_LAUNDRY' THEN '布草'
-                   WHEN 'RENT' THEN '房租'
-                   WHEN 'OPERATING_FEE' THEN CASE classification.reporting_item_code
-                       WHEN 'MOONCAKE' THEN '月饼'
-                       WHEN 'HOTEL_SUPPLIES' THEN '酒店用品'
-                       WHEN 'FRESH_FOOD' THEN '生鲜'
-                       WHEN 'INSURANCE' THEN '保险费'
-                       WHEN 'OPERATING_FEE' THEN '运营费'
-                   END
-                   WHEN 'RELATED_PARTY_CURRENT' THEN
-                       CASE WHEN classification.reporting_item_code LIKE 'COUNTERPARTY:%'
-                           THEN substring(classification.reporting_item_code FROM 14)
-                       END
-                   WHEN 'FINANCING' THEN '融资'
-                   WHEN 'INTERNAL_TRANSFER' THEN '内部资金归集'
-               END AS item_label
+               registry.item_label
           FROM public.bank_statement_transaction transaction
           JOIN public.managed_account account
             ON account.managed_account_ref = transaction.managed_account_ref
@@ -493,12 +848,18 @@ BEGIN
                  LIMIT 1
           ) assignment ON assignment.business_unit_id = ANY(p_business_unit_ids)
           LEFT JOIN LATERAL (
-                SELECT item.status, item.category_code, item.reporting_item_code
+                SELECT item.status, item.category_code, item.reporting_item_code,
+                       item.reporting_item_revision
                   FROM public.company_transaction_classification item
                  WHERE item.transaction_ref = transaction.transaction_ref
                  ORDER BY item.revision DESC
                  LIMIT 1
           ) classification ON true
+          LEFT JOIN public.company_transaction_reporting_item registry
+            ON registry.category_code = classification.category_code
+           AND registry.item_code = classification.reporting_item_code
+           AND registry.revision = classification.reporting_item_revision
+           AND registry.status = 'ACTIVE'
          WHERE account.owner_kind = 'COMPANY'
            AND account.entity_id = ANY(p_entity_ids)
            AND EXISTS (
@@ -517,7 +878,11 @@ BEGIN
                'company_transaction_classification:' || category_code
                    || COALESCE(':' || reporting_item_code, '') AS source_ref,
                count(*)::integer AS transaction_count,
-               sum(abs(amount_minor))::bigint AS amount_minor,
+               greatest(CASE flow_kind
+                   WHEN 'INCOME' THEN sum(amount_minor)
+                   WHEN 'EXPENSE' THEN sum(-amount_minor)
+                   ELSE sum(abs(amount_minor))
+               END, 0)::bigint AS amount_minor,
                jsonb_agg(jsonb_build_object(
                     'fact_ref', fact_ref,
                     'occurred_on', occurred_on,
@@ -527,28 +892,15 @@ BEGIN
          WHERE classification_status = 'CONFIRMED'
            AND category_code IS NOT NULL
            AND reporting_item_code IS NOT NULL
+           AND reporting_item_revision IS NOT NULL
            AND flow_kind IS NOT NULL
            AND item_label IS NOT NULL
-         GROUP BY business_unit_id, business_unit_label, category_code,
-                  reporting_item_code, flow_kind, item_label
-    ), adjustment_rows AS (
-        SELECT 'adjustment:' || adjustment.adjustment_id::text AS rule_key,
-               adjustment.flow_kind, adjustment.business_unit_label, adjustment.item_label,
-               'ADJUSTMENT'::text AS source_kind, 'manual_adjustment'::text AS source_ref,
-               1::integer AS transaction_count, adjustment.amount_minor,
-               jsonb_build_array(jsonb_build_object(
-                    'fact_ref', adjustment.adjustment_id::text,
-                    'occurred_on', adjustment.accounting_month,
-                    'amount_minor', adjustment.amount_minor
-               )) AS facts
-          FROM public.cash_reconciliation_adjustment adjustment, bounds month, complete_scope scope
-         WHERE adjustment.accounting_month = month.month_start AND scope.value
+        GROUP BY business_unit_id, business_unit_label, category_code,
+                  reporting_item_code, reporting_item_revision, flow_kind, item_label
     ), all_rows AS (
         SELECT * FROM personal_aggregates
         UNION ALL
         SELECT * FROM company_aggregates
-        UNION ALL
-        SELECT * FROM adjustment_rows
     ), all_issues AS (
         SELECT counts.source_kind, counts.unique_fact_ref, counts.fact_ref,
                counts.occurred_on, counts.amount_minor, counts.match_count,

@@ -72,15 +72,35 @@ def test_company_cash_reconciliation_uses_confirmed_classifications_as_single_so
     assert "account.owner_kind = 'COMPANY'" in source
     assert "public.company_transaction_classification" in source
     assert "ADD COLUMN reporting_item_code" in source
+    assert "ADD COLUMN reporting_item_revision" in source
+    assert "CREATE TABLE public.company_transaction_reporting_item" in source
+    assert "CREATE TABLE public.company_transaction_reporting_item_match" in source
+    assert "company_transaction_classification_reporting_item_fk" in source
+    assert "ledgerbridge.company-transaction-reporting-item.v1" in source
+    assert "resolve_company_transaction_reporting_item" in source
+    assert (
+        "CREATE OR REPLACE FUNCTION internal_import.seed_company_transaction_classification"
+        in source
+    )
+    assert (
+        "CREATE OR REPLACE FUNCTION internal_command.review_company_transaction_classification"
+        in source
+    )
     assert "backfill_company_transaction_reporting_item" in source
     assert "'BACKFILL'" in source
     assert "classification_status = 'CONFIRMED'" in source
     assert "assignment.business_unit_id = ANY(p_business_unit_ids)" in source
     assert "company_transaction_classification:" in source
-    assert "WHEN 'FLIGGY' THEN '飞猪'" in source
-    assert "WHEN 'WENJIE_RENT' THEN '文杰房租'" in source
+    assert "registry.item_label" in source
+    assert "registry.revision = classification.reporting_item_revision" in source
+    assert "'reporting_item_revision', v_item_revision" in source
     assert "WHEN 'PLATFORM_ROOM_REVENUE' THEN 'INCOME'" in source
     assert "WHEN 'PAYROLL' THEN 'EXPENSE'" in source
     assert "WHEN 'INTERNAL_TRANSFER' THEN 'CURRENT'" in source
+    assert "WHEN 'INCOME' THEN sum(amount_minor)" in source
+    assert "WHEN 'EXPENSE' THEN sum(-amount_minor)" in source
+    assert "cardinality(p_business_unit_ids) = 0" in source
+    assert "adjustment_rows AS" not in source
+    assert "pg_advisory_xact_lock(hashtextextended(p_operation_id::text, 0))" in source
     assert "FROM company_universe company" in source
     assert "ARRAY[]::varchar[]" in source

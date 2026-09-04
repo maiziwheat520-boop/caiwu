@@ -2532,6 +2532,8 @@ COMPANY_TRANSACTION_CLASSIFICATION_REVISION = "20260903_0037"
 COMPANY_TRANSACTION_CLASSIFICATION_TABLE = "company_transaction_classification"
 COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES = {
     ("public", "r1_validate_company_transaction_classification"): "",
+    ("public", "r1_validate_company_transaction_reporting_item"): "",
+    ("public", "r1_validate_company_transaction_reporting_item_match"): "",
     ("internal_import", "seed_company_transaction_classification"): (
         "p_transaction_ref uuid, p_operation_id uuid, p_status text, p_category_code text, "
         "p_actor_ref text, p_reason text, p_rule_version text"
@@ -2554,19 +2556,27 @@ COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES = {
         "p_expected_category_code text, p_reporting_item_code text, "
         "p_operation_id uuid, p_actor_ref text, p_reason text"
     ),
+    ("internal_import", "resolve_company_transaction_reporting_item"): (
+        "p_transaction_ref uuid, p_category_code text, p_actor_ref text, p_reason text"
+    ),
 }
 COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_RESULTS = {
     ("public", "r1_validate_company_transaction_classification"): "trigger",
+    ("public", "r1_validate_company_transaction_reporting_item"): "trigger",
+    ("public", "r1_validate_company_transaction_reporting_item_match"): "trigger",
     ("internal_import", "seed_company_transaction_classification"): "jsonb",
     ("internal_command", "review_company_transaction_classification"): "jsonb",
     ("internal_read", "list_company_transaction_classifications_as_of"): "TABLE(item jsonb)",
     ("internal_read", "get_company_transaction_classification_summary_as_of"): "jsonb",
     ("internal_import", "backfill_company_transaction_reporting_item"): "jsonb",
+    ("internal_import", "resolve_company_transaction_reporting_item"): (
+        "TABLE(item_code text, item_revision integer)"
+    ),
 }
 COMPANY_TRANSACTION_CLASSIFICATION_SECURITY_DEFINER_FUNCTIONS = frozenset(
     key
     for key in COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES
-    if key != ("public", "r1_validate_company_transaction_classification")
+    if key[0] != "public"
 )
 COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS = {
     ("internal_import", "seed_company_transaction_classification"): "ledgerbridge_worker",
@@ -2593,6 +2603,7 @@ COMPANY_TRANSACTION_CLASSIFICATION_REQUIRED_COLUMNS = {
     "status": ("character varying", True),
     "category_code": ("character varying", False),
     "reporting_item_code": ("character varying", False),
+    "reporting_item_revision": ("integer", False),
     "source": ("character varying", True),
     "rule_version": ("character varying", True),
     "operation_id": ("uuid", True),
@@ -2640,6 +2651,20 @@ present_roles(role_name) AS (
  FROM pg_trigger t JOIN observed_table c ON c.oid=t.tgrelid
  JOIN pg_proc fn ON fn.oid=t.tgfoid JOIN pg_namespace fnn ON fnn.oid=fn.pronamespace
  WHERE NOT t.tgisinternal
+), observed_reporting_item_tables AS (
+ SELECT c.relname table_name,pg_get_userbyid(c.relowner) owner,c.relkind kind
+ FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='public' AND c.relname IN (
+  'company_transaction_reporting_item','company_transaction_reporting_item_match')
+), observed_reporting_item_triggers AS (
+ SELECT c.relname table_name,t.tgname trigger_name,t.tgenabled enabled,
+  fnn.nspname function_schema,fn.proname function_name
+ FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+ JOIN pg_namespace n ON n.oid=c.relnamespace
+ JOIN pg_proc fn ON fn.oid=t.tgfoid JOIN pg_namespace fnn ON fnn.oid=fn.pronamespace
+ WHERE n.nspname='public' AND NOT t.tgisinternal
+  AND c.relname IN (
+   'company_transaction_reporting_item','company_transaction_reporting_item_match')
 ), observed_columns AS (
  SELECT column_name,data_type,is_nullable='NO' not_null,ordinal_position
  FROM information_schema.columns
@@ -2677,6 +2702,13 @@ SELECT json_build_object(
   (SELECT count(*) FROM public.company_transaction_classification),
  'company_transaction_classification_table',COALESCE((SELECT json_build_object(
   'table',table_name,'owner',owner,'kind',kind) FROM observed_table),'null'::json),
+ 'company_transaction_reporting_item_tables',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'owner',owner,'kind',kind) ORDER BY table_name)
+  FROM observed_reporting_item_tables),'[]'::json),
+ 'company_transaction_reporting_item_triggers',COALESCE((SELECT json_agg(json_build_object(
+  'table',table_name,'name',trigger_name,'enabled',enabled,
+  'function_schema',function_schema,'function_name',function_name)
+  ORDER BY table_name,trigger_name) FROM observed_reporting_item_triggers),'[]'::json),
  'company_transaction_classification_functions',COALESCE((SELECT json_agg(json_build_object(
   'schema',schema_name,'name',function_name,'identity_arguments',identity_arguments,
   'result',result,'owner',owner,'security_definer',security_definer,'proconfig',proconfig)
@@ -3991,6 +4023,8 @@ def _database_metadata(
         required_company_classification_keys = {
             "company_transaction_classification_row_count",
             "company_transaction_classification_table",
+            "company_transaction_reporting_item_tables",
+            "company_transaction_reporting_item_triggers",
             "company_transaction_classification_functions",
             "company_transaction_classification_triggers",
             "company_transaction_classification_columns",
@@ -6713,6 +6747,65 @@ def _validate_company_transaction_classification_security(
         expected_function_signatures.pop(
             ("internal_import", "backfill_company_transaction_reporting_item")
         )
+        expected_function_signatures.pop(
+            ("internal_import", "resolve_company_transaction_reporting_item")
+        )
+        expected_function_signatures.pop(
+            ("public", "r1_validate_company_transaction_reporting_item")
+        )
+        expected_function_signatures.pop(
+            ("public", "r1_validate_company_transaction_reporting_item_match")
+        )
+    reporting_item_tables = _list("company_transaction_reporting_item_tables")
+    reporting_item_triggers = _list("company_transaction_reporting_item_triggers")
+    if revision >= CASH_RECONCILIATION_CLASSIFICATION_REVISION:
+        expected_tables = {
+            ("company_transaction_reporting_item", owner, "r"),
+            ("company_transaction_reporting_item_match", owner, "r"),
+        }
+        actual_tables = {
+            (item.get("table"), item.get("owner"), item.get("kind"))
+            for item in reporting_item_tables
+        }
+        expected_triggers = {
+            (
+                "company_transaction_reporting_item",
+                "company_transaction_reporting_item_append_only",
+                "r1_bank_statement_append_only",
+            ),
+            (
+                "company_transaction_reporting_item",
+                "validate_company_transaction_reporting_item",
+                "r1_validate_company_transaction_reporting_item",
+            ),
+            (
+                "company_transaction_reporting_item_match",
+                "company_transaction_reporting_item_match_append_only",
+                "r1_bank_statement_append_only",
+            ),
+            (
+                "company_transaction_reporting_item_match",
+                "validate_company_transaction_reporting_item_match",
+                "r1_validate_company_transaction_reporting_item_match",
+            ),
+        }
+        actual_reporting_item_triggers = {
+            (item.get("table"), item.get("name"), item.get("function_name"))
+            for item in reporting_item_triggers
+        }
+        if actual_tables != expected_tables or len(actual_tables) != len(reporting_item_tables):
+            raise BackupError("restored company transaction reporting item tables are invalid")
+        if (
+            actual_reporting_item_triggers != expected_triggers
+            or len(actual_reporting_item_triggers) != len(reporting_item_triggers)
+            or any(
+                item.get("enabled") != "O" or item.get("function_schema") != "public"
+                for item in reporting_item_triggers
+            )
+        ):
+            raise BackupError("restored company transaction reporting item triggers are invalid")
+    elif reporting_item_tables or reporting_item_triggers:
+        raise BackupError("restored pre-0042 reporting item inventory is invalid")
     expected_functions = {
         (schema, name, arguments)
         for (schema, name), arguments in expected_function_signatures.items()
@@ -6757,6 +6850,7 @@ def _validate_company_transaction_classification_security(
     expected_columns = dict(COMPANY_TRANSACTION_CLASSIFICATION_REQUIRED_COLUMNS)
     if revision < CASH_RECONCILIATION_CLASSIFICATION_REVISION:
         expected_columns.pop("reporting_item_code")
+        expected_columns.pop("reporting_item_revision")
     if (
         len(actual_columns) != len(columns)
         or actual_columns != expected_columns
