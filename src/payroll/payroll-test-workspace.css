@@ -398,6 +398,7 @@
 }
 
 .payroll-history-summary > header h2 { font-size: 22px; letter-spacing: -.02em; }
+.payroll-history-summary > header h2 small { color: #64748b; font-size: 13px; font-weight: 600; }
 
 .payroll-history-summary-controls {
   grid-column: 2;
@@ -436,8 +437,21 @@
 .payroll-history-control-heading,
 .payroll-history-authority { display: none; }
 .payroll-history-control-fields { display: flex; gap: 10px; }
-.payroll-history-summary-controls label { min-width: 180px; }
+.payroll-history-summary-controls label { min-width: 130px; }
 .payroll-summary-title-row { display: none; }
+.payroll-summary-export {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  color: #2166c1;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+}
 
 .payroll-summary-total-card {
   min-width: 230px;
@@ -447,7 +461,7 @@
 
 .payroll-summary-comparison-table { overflow-x: auto; }
 .payroll-summary-comparison-table .payroll-summary-store-row {
-  grid-template-columns: minmax(140px, 1.15fr) repeat(var(--payroll-period-count), minmax(126px, 1fr)) minmax(105px, .8fr) minmax(90px, .65fr);
+  grid-template-columns: minmax(155px, 1.2fr) minmax(76px, .55fr) repeat(var(--payroll-period-count), minmax(145px, 1fr)) minmax(130px, .9fr) minmax(90px, .65fr);
   min-width: max-content;
   padding: 0;
 }
