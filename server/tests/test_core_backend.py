@@ -955,6 +955,21 @@ def build_state(
 
 
 class CoreBackedAdapterTests(unittest.TestCase):
+    def test_candidate_detail_uses_the_scoped_candidate_collection(self) -> None:
+        client = FakeCoreClient()
+        state = build_state(
+            client,
+            candidate_business_unit_refs=("unit-demo-a", "unit-demo-b"),
+        )
+
+        detail = state.candidate_detail(CANDIDATE_ID)
+
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["id"], CANDIDATE_ID)  # type: ignore[index]
+        requested_paths = [path for method, path, *_ in client.calls if method == "GET"]
+        self.assertIn("/internal/v1/candidates?business_unit=unit-demo-a", requested_paths)
+        self.assertNotIn(f"/internal/v1/candidates/{CANDIDATE_ID}", requested_paths)
+
     def test_candidates_page_across_each_explicitly_allowed_business_unit(self) -> None:
         client = FakeCoreClient()
         state = build_state(
