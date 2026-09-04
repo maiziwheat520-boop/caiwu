@@ -470,12 +470,46 @@ class CoreBackedState:
 
     def candidate_detail(self, candidate_id: str) -> dict[str, object] | None:
         candidate_ref = str(uuid.UUID(candidate_id))
-        try:
-            payload = self.client.json("GET", f"/internal/v1/candidates/{candidate_ref}")
-        except CoreBackendError as error:
-            if error.status == 404:
-                return None
-            raise
+        payload: dict[str, object] | None = None
+        visited: set[str] = set()
+        page_count = 0
+        for business_unit in self.candidate_business_unit_refs:
+            cursor: str | None = None
+            while True:
+                query = {"business_unit": business_unit}
+                if cursor is not None:
+                    query["cursor"] = cursor
+                page = self.client.json(
+                    "GET", f"/internal/v1/candidates?{urlencode(query)}"
+                )
+                items = page.get("items")
+                if not isinstance(items, list):
+                    raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+                payload = next(
+                    (
+                        item
+                        for item in items
+                        if isinstance(item, dict)
+                        and item.get("candidate_ref") == candidate_ref
+                    ),
+                    None,
+                )
+                if payload is not None:
+                    break
+                next_cursor = page.get("next_cursor")
+                if next_cursor is None:
+                    break
+                if not isinstance(next_cursor, str) or next_cursor in visited:
+                    raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+                visited.add(next_cursor)
+                cursor = next_cursor
+                page_count += 1
+                if page_count > 100:
+                    raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+            if payload is not None:
+                break
+        if payload is None:
+            return None
         events = self.client.json(
             "GET",
             f"/internal/v1/candidate-events?{urlencode({'candidate_ref': candidate_ref})}",
