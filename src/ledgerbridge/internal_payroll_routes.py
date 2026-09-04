@@ -10,12 +10,14 @@ from collections.abc import Callable, Coroutine, Mapping
 from typing import Annotated, Any, Literal, Protocol, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Path, Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ledgerbridge.config import Settings, get_settings
+from ledgerbridge.db import get_session_factory
+from ledgerbridge.internal_candidate_command import CandidateCommandUnavailable
 from ledgerbridge.internal_payroll_assertion import (
     HmacPayrollProviderAssertionSigner,
     PayrollAction,
@@ -30,6 +32,9 @@ from ledgerbridge.internal_read_contract import (
     Capability,
     WorkloadPrincipal,
     require_capability,
+)
+from ledgerbridge.payroll_disbursement_read_model import (
+    DatabasePayrollDisbursementReadModel,
 )
 from ledgerbridge.payroll_integration import (
     LIVE_PROJECTION_PATH,
@@ -518,6 +523,14 @@ def get_payroll_test_workspace_source(
     )
 
 
+def get_payroll_disbursement_read_model(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> DatabasePayrollDisbursementReadModel:
+    return DatabasePayrollDisbursementReadModel(
+        get_session_factory(settings.resolved_reader_database_url())
+    )
+
+
 def get_payroll_provider_signer(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> HmacPayrollProviderAssertionSigner:
@@ -866,6 +879,65 @@ def get_payroll_verification(
         signer=signer,
         replay_store=replay_store,
         source_method="list_verification_results",
+    )
+
+
+@router.get(
+    "/payroll/disbursement-records/{pay_period}",
+    response_model=PayrollLiveReadResponse,
+)
+def get_payroll_disbursement_records(
+    pay_period: Annotated[str, Path(pattern=r"^20\d{2}-(0[1-9]|1[0-2])$")],
+    request: Request,
+    assertion: Annotated[str, Header(alias="X-LedgerBridge-User-Assertion")],
+    principal: Annotated[WorkloadPrincipal, Depends(require_payroll_live_read)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    replay_store: Annotated[
+        PayrollAssertionReplayStore,
+        Depends(get_payroll_assertion_replay_store),
+    ],
+    read_model: Annotated[
+        DatabasePayrollDisbursementReadModel,
+        Depends(get_payroll_disbursement_read_model),
+    ],
+) -> PayrollLiveReadResponse:
+    if request.url.query:
+        raise InternalPayrollProblem(status.HTTP_400_BAD_REQUEST, "INVALID_QUERY")
+    resource_ref = f"payroll-disbursement-records:{pay_period}"
+    claims = _verify_user_for_grant(
+        assertion,
+        settings=settings,
+        principal=principal,
+        method="GET",
+        path=request.url.path,
+        body=b"",
+        action="payroll.disbursement-records.read",
+        resource_ref=resource_ref,
+    )
+    if not replay_store.consume(claims):
+        raise PayrollUserAssertionError("payroll assertion replayed")
+    company_id = _company_for_entity(settings, claims.entity_ref)
+    source_entity_refs = settings.payroll_disbursement_source_entities.get(company_id)
+    if not source_entity_refs:
+        raise InternalPayrollProblem(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "PAYROLL_DISBURSEMENT_SOURCE_MAPPING_REQUIRED",
+        )
+    try:
+        page = read_model.list_for_period(
+            principal,
+            pay_period=pay_period,
+            source_entity_refs=source_entity_refs,
+        )
+    except CandidateCommandUnavailable as exc:
+        raise InternalPayrollProblem(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "PAYROLL_DISBURSEMENT_READ_UNAVAILABLE",
+        ) from exc
+    return PayrollLiveReadResponse(
+        entity_ref=claims.entity_ref,
+        company_id=company_id,
+        data=page.model_dump(mode="json"),
     )
 
 

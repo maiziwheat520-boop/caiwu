@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     payroll_base_url: str | None = Field(default=None, min_length=1, max_length=2048)
     payroll_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     payroll_company_mapping: dict[str, UUID] = Field(default_factory=dict)
+    payroll_disbursement_source_entities: dict[str, tuple[UUID, ...]] = Field(
+        default_factory=dict
+    )
     payroll_bff_user_assertion_key: SecretStr | None = Field(
         default=None,
         min_length=32,
@@ -318,6 +321,19 @@ class Settings(BaseSettings):
             if not self.payroll_company_mapping:
                 raise ValueError(
                     "payroll_company_mapping is required when payroll integration is enabled"
+                )
+            if not set(self.payroll_disbursement_source_entities).issubset(
+                self.payroll_company_mapping
+            ):
+                raise ValueError(
+                    "payroll disbursement source mapping requires a known payroll company"
+                )
+            if any(
+                not entity_refs or len(set(entity_refs)) != len(entity_refs)
+                for entity_refs in self.payroll_disbursement_source_entities.values()
+            ):
+                raise ValueError(
+                    "payroll disbursement source mapping requires unique source entities"
                 )
             if (
                 self.payroll_bff_user_assertion_key is None
