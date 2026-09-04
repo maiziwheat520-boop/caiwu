@@ -58,6 +58,42 @@ describe('OriginalReconciliationPage', () => {
     expect(screen.getByText('2 笔实收流水')).toBeInTheDocument()
   })
 
+  it('expands a monthly item into its exact source facts', async () => {
+    installSuccessfulReads()
+    render(<OriginalReconciliationPage onNavigate={vi.fn()} />)
+
+    const disclosure = await screen.findByRole('button', { name: '查看 2 笔流水明细' })
+    expect(screen.queryByRole('region', { name: '平台实收流水明细' })).not.toBeInTheDocument()
+
+    fireEvent.click(disclosure)
+
+    const details = screen.getByRole('region', { name: '平台实收流水明细' })
+    expect(within(details).getByText('2026-09-01')).toBeInTheDocument()
+    expect(within(details).getByText('2026-09-02')).toBeInTheDocument()
+    expect(within(details).getByText('¥50.00')).toBeInTheDocument()
+    expect(within(details).getByText('¥70.00')).toBeInTheDocument()
+    expect(within(details).getByText('fact-income-1')).toBeInTheDocument()
+    expect(within(details).getByText('fact-income-2')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('选择对账月份'), { target: { value: '2026-08' } })
+    expect(screen.queryByRole('region', { name: '平台实收流水明细' })).not.toBeInTheDocument()
+  })
+
+  it('does not present a month-granularity candidate as an exact payment date', async () => {
+    installSuccessfulReads()
+    render(<OriginalReconciliationPage onNavigate={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole('tab', { name: /往来款/ }))
+    fireEvent.click(screen.getByRole('button', { name: '查看 1 笔流水明细' }))
+
+    const details = screen.getByRole('region', { name: '往来款流水明细' })
+    expect(within(details).getByText('2026-09（月粒度）')).toBeInTheDocument()
+    expect(within(details).queryByText('2026-09-01')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: /收入/ }))
+    expect(screen.queryByRole('region', { name: '往来款流水明细' })).not.toBeInTheDocument()
+  })
+
   it('shows excluded unmatched facts and multi-rule conflicts', async () => {
     installSuccessfulReads()
     render(<OriginalReconciliationPage onNavigate={vi.fn()} />)
@@ -75,10 +111,10 @@ describe('OriginalReconciliationPage', () => {
     render(<OriginalReconciliationPage onNavigate={vi.fn()} />)
 
     const registry = await screen.findByRole('region', { name: '旧表项目取数来源' })
+    expect(await within(registry).findByText(/银行 · bank\.hotel-a · CREDIT/)).toBeInTheDocument()
     expect(within(registry).getByText((_content, element) => (
       element?.classList.contains('statement-source-registry-summary-meta') ?? false
     ))).toHaveTextContent(/收入 1 条 · 支出 1 条/)
-    expect(within(registry).getByText(/银行 · bank\.hotel-a · CREDIT/)).toBeInTheDocument()
     expect(within(registry).getByText(/匹配：synthetic-income/)).toBeInTheDocument()
     expect(within(registry).getByText(/微信 · wechat\.synthetic · ANY/)).toBeInTheDocument()
   })

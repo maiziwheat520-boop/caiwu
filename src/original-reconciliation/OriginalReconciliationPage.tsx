@@ -4,6 +4,8 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowsLeftRight,
+  CaretDown,
+  CaretUp,
   ClockCounterClockwise,
   Info,
   ListChecks,
@@ -13,6 +15,7 @@ import {
 import { api, minorToMajor } from '../api'
 import type { CashReconciliation, OriginalReconciliation, Page } from '../types'
 import { PageHeader } from '../shared/PagePrimitives'
+import './OriginalReconciliationPage.css'
 import {
   currentAccountCounterpartyNote,
   historicalClassificationCorrection,
@@ -63,6 +66,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
   const [cashError, setCashError] = useState<string | null>(null)
   const [projectionWarning, setProjectionWarning] = useState<string | null>(null)
   const [showAllIssues, setShowAllIssues] = useState(false)
+  const [expandedRuleKey, setExpandedRuleKey] = useState<string | null>(null)
   const requestRef = useRef(0)
   const scopeRef = useRef<OriginalReconciliation['scope'] | null>(null)
   const selectedMonth = selectedMonthOverride ?? currentMonth()
@@ -153,6 +157,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
                 setCashData(null)
                 setSelectedFlow('income')
                 setShowAllIssues(false)
+                setExpandedRuleKey(null)
                 setSelectedMonthOverride(event.target.value)
               }}
             />
@@ -223,7 +228,10 @@ export function OriginalReconciliationPage({ onNavigate }: {
                 className={`${active ? 'active' : ''} ${lane.kind}`}
                 role="tab"
                 type="button"
-                onClick={() => setSelectedFlow(lane.kind)}
+                onClick={() => {
+                  setSelectedFlow(lane.kind)
+                  setExpandedRuleKey(null)
+                }}
               >
                 <span className="statement-flow-icon">{lane.icon}</span>
                 <span className="statement-flow-copy"><strong>{lane.label}</strong><small>{lane.detail}</small></span>
@@ -247,14 +255,46 @@ export function OriginalReconciliationPage({ onNavigate }: {
           </div>
 
           <div className="statement-item-list">
-            {selectedCashRows.map((row) => (
-              <article key={row.rule_key} className={`statement-item ${selectedFlow}`}>
-                <div className="statement-item-status"><Badge color="green">自动生成</Badge><span>{selectedMonth}</span></div>
-                <div className="statement-item-main"><strong>{row.item_label}</strong><span>{row.transaction_count} 笔实收流水</span></div>
-                <div className="statement-item-context"><span>{row.business_unit_label}</span><small>{row.source_kind === 'BANK_TRANSACTION' ? '银行流水' : '微信流水'}</small></div>
-                <div className="statement-item-amount"><strong>{selectedFlow === 'expense' ? '-' : selectedFlow === 'income' ? '+' : ''}{currency.format(minorToMajor(row.amount_minor))}</strong><span>{row.rule_key}</span></div>
-              </article>
-            ))}
+            {selectedCashRows.map((row, rowIndex) => {
+              const detailsOpen = expandedRuleKey === row.rule_key
+              const detailsId = `statement-facts-${selectedFlow}-${rowIndex}`
+              return (
+                <article key={row.rule_key} className={`statement-item ${selectedFlow}`}>
+                  <div className="statement-item-status"><Badge color="green">自动生成</Badge><span>{selectedMonth}</span></div>
+                  <div className="statement-item-main"><strong>{row.item_label}</strong><span>{row.transaction_count} 笔实收流水</span></div>
+                  <div className="statement-item-context"><span>{row.business_unit_label}</span><small>{row.source_kind === 'BANK_TRANSACTION' ? '银行流水' : '微信流水'}</small></div>
+                  <div className="statement-item-amount"><strong>{selectedFlow === 'expense' ? '-' : selectedFlow === 'income' ? '+' : ''}{currency.format(minorToMajor(row.amount_minor))}</strong><span>{row.rule_key}</span></div>
+                  <button
+                    aria-controls={detailsId}
+                    aria-expanded={detailsOpen}
+                    className="statement-item-disclosure"
+                    type="button"
+                    onClick={() => setExpandedRuleKey(detailsOpen ? null : row.rule_key)}
+                  >
+                    {detailsOpen ? <CaretUp size={15} /> : <CaretDown size={15} />}
+                    {detailsOpen ? '收起流水明细' : `查看 ${row.transaction_count} 笔流水明细`}
+                  </button>
+                  {detailsOpen ? (
+                    <div
+                      id={detailsId}
+                      aria-label={`${row.item_label}流水明细`}
+                      className="statement-fact-list"
+                      role="region"
+                    >
+                      {row.facts.map((fact) => (
+                        <div key={fact.fact_ref} className="statement-fact-row">
+                          {row.source_kind === 'CANDIDATE'
+                            ? <span>{selectedMonth}（月粒度）</span>
+                            : <time dateTime={fact.occurred_on}>{fact.occurred_on}</time>}
+                          <strong>{currency.format(minorToMajor(fact.amount_minor))}</strong>
+                          <code>{fact.fact_ref}</code>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </article>
+              )
+            })}
             {selectedCashRows.length === 0 ? (
               <div className="empty-state compact-empty statement-empty">
                 <Receipt size={30} />
