@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { api } from '../api'
 import type { CompanyReportsResponse } from '../types'
 import { CompanyReportsPage } from './CompanyReportsPage'
+import { companyTabLabel } from './companyLabels'
 
 const reports: CompanyReportsResponse = {
   contract_version: 'ledgerbridge.company-reports-bff.v2',
@@ -70,6 +71,18 @@ const reports: CompanyReportsResponse = {
 }
 
 describe('CompanyReportsPage', () => {
+  it.each([
+    ['深圳市雅阁公寓管理有限公司', '雅阁'],
+    ['深圳市逸豪商务公寓管理有限公司', '逸豪'],
+    ['深圳市青居客酒店公寓有限公司', '青居客'],
+    ['深圳市薇旭商务公寓有限公司', '薇旭'],
+    ['深圳市星汇公寓管理有限公司', '星汇'],
+    ['深圳市创业景怡酒店有限公司', '景怡'],
+    ['深圳市创业雅朵酒店有限公司', '雅朵'],
+  ])('uses a compact company tab label for %s', (legalName, expectedLabel) => {
+    expect(companyTabLabel(legalName)).toBe(expectedLabel)
+  })
+
   afterEach(() => vi.restoreAllMocks())
 
   it('makes missing company attribution explicit instead of presenting a complete report', async () => {

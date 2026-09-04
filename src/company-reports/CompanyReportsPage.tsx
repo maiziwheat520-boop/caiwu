@@ -15,6 +15,7 @@ import type {
   CompanyTransactionCategorySummary,
 } from '../types'
 import { ErrorState, LoadingState, PageHeader } from '../shared/PagePrimitives'
+import { companyTabLabel } from './companyLabels'
 
 const ALL_COMPANIES = '__all_companies__'
 
@@ -112,7 +113,7 @@ export function CompanyReportsPage() {
       <div className="company-report-tabs" role="tablist" aria-label="选择公司">
         <button type="button" role="tab" aria-selected={showAllCompanies} className={showAllCompanies ? 'active' : ''} onClick={() => setSelectedCompanyRef(ALL_COMPANIES)}>全部公司</button>
         {companies.map(([companyRef, identity]) => (
-          <button key={companyRef} type="button" role="tab" aria-selected={activeCompanyRef === companyRef} className={activeCompanyRef === companyRef ? 'active' : ''} onClick={() => setSelectedCompanyRef(companyRef)}>{identity.name}</button>
+          <button key={companyRef} type="button" role="tab" title={identity.name} aria-selected={activeCompanyRef === companyRef} className={activeCompanyRef === companyRef ? 'active' : ''} onClick={() => setSelectedCompanyRef(companyRef)}>{companyTabLabel(identity.name)}</button>
         ))}
       </div>
       <div className="company-report-range">
