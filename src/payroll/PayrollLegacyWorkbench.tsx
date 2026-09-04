@@ -371,11 +371,14 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
 
   const currentTotal = activeBatch?.lines.reduce((sum, line) => sum + line.net_pay_cents, 0) ?? 0
   const completedSteps = [
-    workspace && workspace.rules.employees.length > 0,
     Boolean(confirmedMaterials),
     Boolean(activeBatch),
     Boolean(activeBatch?.verification),
   ].filter(Boolean).length
+  const goToMaterials = () => document.getElementById('payroll-test-actions-heading')?.scrollIntoView({
+    behavior: 'smooth',
+    block: 'start',
+  })
 
   return (
     <section className="payroll-legacy-workbench" aria-labelledby="payroll-legacy-heading">
@@ -396,7 +399,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
         <article><span>当前账期</span><strong>{generationPeriod}</strong><small>可切换已保存月份</small></article>
         <article><span>工资总额</span><strong>{currentTotal ? money(currentTotal) : '待生成'}</strong><small>以系统工资表为准</small></article>
         <article><span>员工参数</span><strong>{workspace?.rules.employees.length ?? 0} 人</strong><small>独立于全局工资规则</small></article>
-        <article><span>处理进度</span><strong>{completedSteps}/4</strong><small>规则、素材、工资、复核</small></article>
+        <article><span>处理进度</span><strong>{completedSteps}/3</strong><small>素材、工资、发放复核</small></article>
       </section>
 
       <nav className="payroll-legacy-taskbar" aria-label="工资工作流程">
@@ -427,10 +430,9 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
             <section className="payroll-flow-overview" aria-label="本月工资处理进度">
               <div className="payroll-flow-steps">
                 {[
-                  ['01', '员工与规则', Boolean(workspace && workspace.rules.employees.length > 0)],
-                  ['02', '三类素材', Boolean(confirmedMaterials)],
-                  ['03', '生成工资表', Boolean(activeBatch)],
-                  ['04', '发放复核', Boolean(activeBatch?.verification)],
+                  ['01', '物料确认', Boolean(confirmedMaterials)],
+                  ['02', '生成工资', Boolean(activeBatch)],
+                  ['03', '发放对账', Boolean(activeBatch?.verification)],
                 ].map(([number, label, done], index) => (
                   <div className={done ? 'done' : index === completedSteps ? 'current' : ''} key={String(number)}>
                     <span>{done ? <CheckCircle size={18} weight="fill" /> : number}</span>
@@ -440,18 +442,33 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
               </div>
               <div className="payroll-flow-focus">
                 <span>当前任务</span>
-                <strong>{confirmedMaterials ? '生成并复核当月工资' : '先确认本月三类工资素材'}</strong>
-                <p>{confirmedMaterials ? '所需素材已确认，可以按员工参数和全局规则生成。' : '考勤表、阿姨考勤表和好评统计必须各选定一个版本。'}</p>
+                <strong>{activeBatch ? '本月工资已生成' : confirmedMaterials ? '生成本月工资' : '先确认本月三类工资素材'}</strong>
+                <p>{activeBatch ? '工资已按选定期间生成，请继续进行发放复核。' : confirmedMaterials ? '所需素材已确认，可以按员工参数和全局规则生成。' : '考勤表、阿姨考勤表和好评统计必须各选定一个版本。'}</p>
+                <label className="payroll-flow-period">
+                  <span>工资月份</span>
+                  <select value={generationPeriod} onChange={(event) => setGenerationPeriod(event.target.value)}>
+                    <option value="2026-07">2026-07</option>
+                    <option value="2026-08">2026-08</option>
+                  </select>
+                </label>
+                {activeBatch ? (
+                  <button type="button" className="primary" onClick={() => setTask('verify')}>进入发放复核</button>
+                ) : confirmedMaterials?.period === generationPeriod ? (
+                  <button type="button" className="primary" disabled={!workspace || workspace.rules.employees.length === 0 || !pendingComplete || busy} onClick={generateMonthlyPayroll}>{busy ? '正在生成' : '确认并生成当月工资表'}</button>
+                ) : (
+                  <button type="button" className="primary" onClick={goToMaterials}>前往素材确认</button>
+                )}
               </div>
               <aside>
                 <strong>生成前检查</strong>
                 <span className={workspace?.rules.employees.length ? 'ready' : ''}>{workspace?.rules.employees.length ? '已完成' : '待完成'} · 员工参数</span>
                 <span className={reviewRules.length ? 'ready' : ''}>{reviewRules.length ? '已完成' : '待完成'} · 工资规则</span>
                 <span className={confirmedMaterials ? 'ready' : ''}>{confirmedMaterials ? '已完成' : '待完成'} · 三类素材</span>
+                <span className={activeBatch ? 'ready' : ''}>{activeBatch ? '已生成' : '待生成'} · 本月工资</span>
               </aside>
             </section>
           ) : null}
-          <div className="payroll-legacy-toolbar">
+          {task !== 'generate' ? <div className="payroll-legacy-toolbar">
             <div>
               <strong>{workspace ? `工资工作区版本 ${workspace.revision}` : '尚未建立工资规则'}</strong>
               <span>{workspace ? `${workspace.rules.employees.length} 名员工 · ${reviewRules.length} 条工资规则 · ${workspace.batches.length} 个已生成账期` : '先维护员工工资参数与全局规则，再确认素材生成工资'}</span>
@@ -467,23 +484,11 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
             <button type="button" className="secondary" onClick={() => void load()} disabled={busy}>
               <ArrowClockwise size={16} />刷新恢复
             </button>
-          </div>
+          </div> : null}
 
-          {task === 'generate' ? (
-            <div className="payroll-task-panel">
-              <div className="payroll-task-heading">
-                <div><span>01</span><h3>生成当月工资</h3></div>
-                <p>不再导入外部工资表；以员工工资参数、全局规则、下方唯一确认的三类素材和上月待办生成当月工资。</p>
-              </div>
-              <div className="payroll-source-form">
-                <label>
-                  <span>工资月份</span>
-                  <select value={generationPeriod} onChange={(event) => setGenerationPeriod(event.target.value)}>
-                    <option value="2026-07">2026-07</option>
-                    <option value="2026-08">2026-08</option>
-                  </select>
-                </label>
-              </div>
+          {task === 'generate' && (activeBatch?.period === generationPeriod || previousOpenItems.length > 0) ? (
+            <details className="payroll-task-panel payroll-generate-details">
+              <summary>调整与重新生成</summary>
               {confirmedMaterials?.period === generationPeriod ? (
                 <div className="payroll-confirmed-materials" aria-label="已确认工资素材">
                   <strong>{generationPeriod} 三类素材已唯一确认</strong>
@@ -510,7 +515,7 @@ export function PayrollLegacyWorkbench({ testWorkspace, csrfToken, confirmedMate
               <button type="button" className="primary" disabled={!workspace || workspace.rules.employees.length === 0 || confirmedMaterials?.period !== generationPeriod || !pendingComplete || busy} onClick={generateMonthlyPayroll}>
                 {busy ? '正在生成' : '确认并生成当月工资表'}
               </button>
-            </div>
+            </details>
           ) : null}
 
           {task === 'rules' && !loadFailed ? (

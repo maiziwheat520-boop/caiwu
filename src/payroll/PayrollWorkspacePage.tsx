@@ -11,7 +11,7 @@ import type {
   PayrollTestWorkspaceReadResponse,
   PayrollVerificationListData,
 } from '../types'
-import { ErrorState, LoadingState, PageHeader } from '../shared/PagePrimitives'
+import { ErrorState, LoadingState } from '../shared/PagePrimitives'
 import { PayrollLegacyWorkbench } from './PayrollLegacyWorkbench'
 import { PayrollHistorySummary } from './PayrollHistorySummary'
 import {
@@ -243,12 +243,7 @@ export function PayrollWorkspacePage() {
 
   return (
     <>
-      <PageHeader
-        eyebrow="工资模块"
-        title="工资与发放验证"
-        description="读取当前公司经过服务端隔离和脱敏的工资材料、批次与发放验证投影。"
-      />
-
+      <h1 className="payroll-page-title-sr">工资与发放验证</h1>
       {loading ? <LoadingState /> : error ? <ErrorState message={error} onRetry={loadPayroll} /> : null}
 
       {!loading && !error && testWorkspace ? (

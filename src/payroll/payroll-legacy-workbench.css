@@ -27,6 +27,8 @@
   background: #f8faff;
 }
 
+.payroll-legacy-header { display: none; }
+
 .payroll-legacy-header > div:first-child > span,
 .payroll-task-heading > div > span,
 .payroll-main-table-heading span {
@@ -585,8 +587,8 @@
 .payroll-overview article {
   display: grid;
   gap: 5px;
-  min-height: 92px;
-  padding: 16px 18px;
+  min-height: 76px;
+  padding: 13px 16px;
   border: 1px solid #d8e2ee;
   border-radius: 14px;
   background: #fff;
@@ -677,6 +679,21 @@
 .payroll-flow-focus span { color: #3970ae; font-size: 11px; font-weight: 800; }
 .payroll-flow-focus strong { color: #172f4e; font-size: 21px; letter-spacing: -.02em; }
 .payroll-flow-focus p { max-width: 520px; margin: 0; color: #6b7b8f; font-size: 12px; line-height: 1.65; }
+.payroll-flow-period { display: grid; grid-template-columns: auto 130px; align-items: center; gap: 10px; width: fit-content; color: #64748b; font-size: 11px; }
+.payroll-flow-period select { min-height: 35px; padding: 0 9px; border: 1px solid #cdd7e4; border-radius: 8px; color: #273c55; background: #fff; }
+.payroll-flow-focus button.primary {
+  justify-self: start;
+  min-height: 38px;
+  padding: 0 16px;
+  border: 1px solid #2163b6;
+  border-radius: 9px;
+  color: #fff;
+  background: #286dcc;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.payroll-flow-focus button.primary:disabled { cursor: not-allowed; opacity: .5; }
 
 .payroll-flow-overview aside {
   display: grid;
@@ -689,6 +706,7 @@
 .payroll-flow-overview aside strong { margin-bottom: 3px; color: #283f59; font-size: 12px; }
 .payroll-flow-overview aside span { color: #8a6a2d; font-size: 10px; }
 .payroll-flow-overview aside span.ready { color: #247052; }
+.payroll-generate-details > summary { color: #315f96; font-size: 12px; font-weight: 800; cursor: pointer; }
 
 @media (max-width: 1050px) {
   .payroll-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
