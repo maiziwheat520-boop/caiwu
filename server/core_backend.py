@@ -281,6 +281,7 @@ class CoreBackedState:
         client: CoreHttpClient,
         *,
         company_report_client: CoreHttpClient | None = None,
+        cash_reconciliation_client: CoreHttpClient | None = None,
         company_bank_review_client: CoreHttpClient | None = None,
         company_bank_statement_mappings: tuple[tuple[str, str, str], ...] = (),
         assertion_key: bytes,
@@ -310,6 +311,7 @@ class CoreBackedState:
             raise ValueError("Core policy and authentication generations must be positive")
         self.client = client
         self.company_report_client = company_report_client
+        self.cash_reconciliation_client = cash_reconciliation_client
         self.company_bank_review_client = company_bank_review_client
         self.assertion_key = assertion_key
         self.assertion_issuer = _bounded(assertion_issuer)
@@ -1226,7 +1228,12 @@ class CoreBackedState:
         )
 
     def cash_reconciliation(self, month: str) -> dict[str, object]:
-        payload = self.client.json(
+        if self.cash_reconciliation_client is None:
+            raise CoreBackendError(
+                503,
+                _problem(503, "CASH_RECONCILIATION_UNAVAILABLE"),
+            )
+        payload = self.cash_reconciliation_client.json(
             "GET",
             f"/internal/v1/cash-reconciliations/{month}",
         )

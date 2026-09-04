@@ -165,6 +165,38 @@ def _build_company_report_client(
         return None
 
 
+def _build_cash_reconciliation_client(
+    *,
+    default_ca_file: str,
+    timeout_seconds: float,
+) -> CoreHttpClient | None:
+    certificate_file = os.environ.get(
+        "CORE_CASH_RECONCILIATION_CERT_FILE", ""
+    ).strip()
+    private_key_file = os.environ.get(
+        "CORE_CASH_RECONCILIATION_KEY_FILE", ""
+    ).strip()
+    if not certificate_file or not private_key_file:
+        return None
+    try:
+        return CoreHttpClient(
+            base_url=os.environ.get(
+                "CORE_CASH_RECONCILIATION_BASE_URL",
+                "https://internal-ingress:8446",
+            ).strip()
+            or "https://internal-ingress:8446",
+            ca_file=os.environ.get(
+                "CORE_CASH_RECONCILIATION_CA_FILE", default_ca_file
+            ).strip()
+            or default_ca_file,
+            certificate_file=certificate_file,
+            private_key_file=private_key_file,
+            timeout_seconds=timeout_seconds,
+        )
+    except (OSError, ValueError):
+        return None
+
+
 def _build_company_bank_review_client(
     *,
     default_ca_file: str,
@@ -2383,6 +2415,10 @@ def run() -> None:
                 default_ca_file=required["CORE_CA_FILE"],
                 timeout_seconds=timeout_seconds,
             )
+            cash_reconciliation_client = _build_cash_reconciliation_client(
+                default_ca_file=required["CORE_CA_FILE"],
+                timeout_seconds=timeout_seconds,
+            )
             company_bank_review_client = _build_company_bank_review_client(
                 default_ca_file=required["CORE_CA_FILE"],
                 timeout_seconds=timeout_seconds,
@@ -2390,6 +2426,7 @@ def run() -> None:
             state = CoreBackedState(
                 client,
                 company_report_client=company_report_client,
+                cash_reconciliation_client=cash_reconciliation_client,
                 company_bank_review_client=company_bank_review_client,
                 company_bank_statement_mappings=_company_bank_statement_mappings(),
                 assertion_key=required["CORE_USER_ASSERTION_KEY"].encode("utf-8"),
