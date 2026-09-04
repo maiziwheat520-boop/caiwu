@@ -639,6 +639,27 @@ def test_legacy_feature_workspace_accepts_opaque_batch_id_with_period_digits():
     )
 
 
+@pytest.mark.parametrize(
+    "batch_id",
+    [
+        "batch_6222000000000138",
+        "batch_6222_0000_0000_0138",
+        "file://private/payroll-batch",
+    ],
+)
+def test_legacy_feature_workspace_rejects_sensitive_batch_id(batch_id):
+    payload = legacy_workspace_payload()
+    payload["batches"][0]["batch_id"] = batch_id
+    entity, adapter = source(payload)
+
+    with pytest.raises(PayrollIntegrationError):
+        adapter.read_legacy_features(
+            entity_ref=entity,
+            test_batch_id="batch_demo",
+            provider_headers={},
+        )
+
+
 def test_legacy_feature_workspace_accepts_independent_rules_before_a_monthly_batch():
     payload = legacy_workspace_payload()
     payload["batches"] = []

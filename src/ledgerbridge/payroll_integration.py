@@ -3892,11 +3892,6 @@ def _validate_legacy_feature_tree(
                     # Already validated as an opaque account identifier; scanning
                     # its digest as ordinary prose would create false positives.
                     continue
-                elif key == "batch_id":
-                    _require_stable_identifier(nested, key)
-                    # Batch identifiers may contain several period segments.
-                    # Their digits are opaque identity, not an account number.
-                    continue
                 elif key.endswith(("_minor", "_cents")):
                     _require_minor_integer(nested, key)
                 elif (
@@ -4134,12 +4129,18 @@ def _validate_publishable_string(value: str, *, parent_key: str) -> None:
     except UnicodeEncodeError:
         _invalid_response("payroll publication contains invalid Unicode text")
     normalized = re.sub(r"[^a-z0-9]", "", parent_key.lower())
+    value_for_account_scan = (
+        re.sub(r"(?<!\d)20\d{2}[_-](?:0[1-9]|1[0-2])(?!\d)", "", value)
+        if normalized == "batchid"
+        else value
+    )
     if (
         normalized not in _SENSITIVE_VALUE_SKIP_FIELDS
         and not normalized.endswith("hash")
         and not normalized.endswith("sha256")
         and (
-            _ACCOUNT_LIKE_NUMBER.search(value) is not None or _LOCAL_PATH.search(value) is not None
+            _ACCOUNT_LIKE_NUMBER.search(value_for_account_scan) is not None
+            or _LOCAL_PATH.search(value) is not None
         )
     ):
         raise PayrollIntegrationError(
