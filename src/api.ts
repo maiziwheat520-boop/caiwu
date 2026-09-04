@@ -27,6 +27,7 @@ import type {
   CompanyTransactionClassification,
   CompanyTransactionClassificationReviewReceipt,
   CompanyTransactionClassificationsResponse,
+  CompanyOperatingFeeReportingItem,
   PayrollBatchListData,
   PayrollCommandResult,
   PayrollDashboardData,
@@ -348,9 +349,16 @@ export const api = {
       '/api/v1/company-transaction-classifications',
     ),
 
-  reviewCompanyTransactionClassification: ({ transaction, categoryCode, reason, csrfToken }: {
+  reviewCompanyTransactionClassification: ({
+    transaction,
+    categoryCode,
+    reportingItemCode,
+    reason,
+    csrfToken,
+  }: {
     transaction: CompanyTransactionClassification
     categoryCode: CompanyTransactionCategory
+    reportingItemCode: CompanyOperatingFeeReportingItem | null
     reason: string
     csrfToken: string
   }) => requestJson<CompanyTransactionClassificationReviewReceipt>(
@@ -366,6 +374,7 @@ export const api = {
         entity_ref: transaction.entity_ref,
         expected_revision: transaction.revision,
         category_code: categoryCode,
+        reporting_item_code: reportingItemCode,
         reason,
       }),
     },

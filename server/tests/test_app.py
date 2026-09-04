@@ -259,6 +259,36 @@ class SyntheticBffTests(unittest.TestCase):
             ],
         )
 
+    def test_company_operating_fee_review_requires_a_known_detail(self) -> None:
+        path = (
+            "/api/v1/company-transaction-classifications/"
+            "90000000-0000-4000-8000-000000000009/reviews"
+        )
+        base: dict[str, object] = {
+            "entity_ref": "10000000-0000-4000-8000-000000000001",
+            "expected_revision": 1,
+            "category_code": "OPERATING_FEE",
+            "reason": "人工核对营运费",
+        }
+
+        for body in (
+            base,
+            {**base, "reporting_item_code": "UNKNOWN"},
+            {
+                **base,
+                "category_code": "RENT",
+                "reporting_item_code": "TAX",
+            },
+        ):
+            status, problem, _ = self.request(
+                path,
+                method="POST",
+                body=body,
+                headers=self.decision_headers(),
+            )
+            self.assertEqual(status, 422)
+            self.assertEqual(problem["code"], "INVALID_COMPANY_CLASSIFICATION_REVIEW")
+
         status, filtered, _ = self.request(
             "/api/v1/company-reports?from_month=2026-03&to_month=2026-08"
         )
