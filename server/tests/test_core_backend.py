@@ -669,10 +669,28 @@ class FakeCoreClient:
                 "contract_version": "ledgerbridge.cash-reconciliation.v2",
                 "accounting_month": "2026-08",
                 "rules": [],
-                "rows": [],
+                "rows": [
+                    {
+                        "rule_key": "stored-reporting-item",
+                        "flow_kind": "CURRENT",
+                        "business_unit_label": "authorized-scope",
+                        "item_label": "stored-classification",
+                        "source_kind": "BANK_TRANSACTION",
+                        "source_ref": "stored-reporting-item",
+                        "transaction_count": 1,
+                        "amount_minor": 3600,
+                        "facts": [
+                            {
+                                "fact_ref": "fact-1",
+                                "occurred_on": "2026-08-01",
+                                "amount_minor": 3600,
+                            }
+                        ],
+                    }
+                ],
                 "issues": [],
-                "eligible_fact_count": 0,
-                "matched_fact_count": 0,
+                "eligible_fact_count": 1,
+                "matched_fact_count": 1,
                 "unmatched_fact_count": 0,
                 "conflicted_fact_count": 0,
                 "issue_count": 0,
@@ -680,7 +698,7 @@ class FakeCoreClient:
                 "totals": {
                     "income_minor": 0,
                     "expense_minor": 0,
-                    "current_minor": 0,
+                    "current_minor": 3600,
                 },
             }
         raise AssertionError(f"unexpected Core path: {path}")
@@ -922,6 +940,7 @@ def build_state(
     client: FakeCoreClient,
     *,
     company_report_client: FakeCoreClient | None | object = ...,
+    cash_reconciliation_client: FakeCoreClient | None | object = ...,
     company_bank_review_client: FakeCoreClient | None = None,
     company_bank_statement_mappings: tuple[tuple[str, str, str], ...] = (),
     evidence_unlock_path: str | None = None,
@@ -933,6 +952,11 @@ def build_state(
         client,  # type: ignore[arg-type]
         company_report_client=(
             client if company_report_client is ... else company_report_client
+        ),  # type: ignore[arg-type]
+        cash_reconciliation_client=(
+            client
+            if cash_reconciliation_client is ...
+            else cash_reconciliation_client
         ),  # type: ignore[arg-type]
         company_bank_review_client=company_bank_review_client,  # type: ignore[arg-type]
         company_bank_statement_mappings=company_bank_statement_mappings,
@@ -2913,14 +2937,18 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 thread.join(timeout=2)
 
     def test_core_backed_bff_serves_scoped_cash_reconciliation_v2(self) -> None:
-        client = FakeCoreClient()
+        primary_client = FakeCoreClient()
+        reconciliation_client = FakeCoreClient()
         with tempfile.TemporaryDirectory() as temp_dir:
             Path(temp_dir, "index.html").write_text("<main>review</main>", encoding="utf-8")
             server = create_server(
                 "127.0.0.1",
                 0,
                 temp_dir,
-                state=build_state(client),
+                state=build_state(
+                    primary_client,
+                    cash_reconciliation_client=reconciliation_client,
+                ),
                 auth_manager=FakeAuthManager(),  # type: ignore[arg-type]
                 mode="core-backed",
                 trusted_proxy_cidrs="127.0.0.1/32",
@@ -2939,14 +2967,32 @@ class CoreBackedAdapterTests(unittest.TestCase):
                     projection["contract_version"],
                     "ledgerbridge.cash-reconciliation.v2",
                 )
+                self.assertEqual(projection["eligible_fact_count"], 1)
+                self.assertEqual(projection["matched_fact_count"], 1)
+                self.assertEqual(projection["totals"]["current_minor"], 3600)
+                self.assertEqual(projection["rows"][0]["item_label"], "stored-classification")
                 self.assertIn(
                     "/internal/v1/cash-reconciliations/2026-08",
-                    client.calls[-1][1],
+                    reconciliation_client.calls[-1][1],
                 )
+                self.assertEqual(primary_client.calls, [])
             finally:
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=2)
+
+    def test_cash_reconciliation_is_unavailable_without_dedicated_client(self) -> None:
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(
+                FakeCoreClient(),
+                cash_reconciliation_client=None,
+            ).cash_reconciliation("2026-09")
+
+        self.assertEqual(raised.exception.status, 503)
+        self.assertEqual(
+            raised.exception.payload["code"],
+            "CASH_RECONCILIATION_UNAVAILABLE",
+        )
 
     def test_core_backed_mode_rejects_sqlite_business_facts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
