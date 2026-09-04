@@ -121,4 +121,7 @@ def test_company_cash_reconciliation_uses_confirmed_classifications_as_single_so
     assert "('TRANSACTION_NAME','CONTAINS','房款结算','FLIGGY')" in source
     assert "pg_advisory_xact_lock(hashtextextended(p_operation_id::text, 0))" in source
     assert "FROM company_universe company" in source
+    assert "classification.reporting_item_code" in source
+    assert "company.reporting_item_code IS NULL" in source
+    assert "resolve_company_transaction_reporting_item" in source
     assert "ARRAY[]::varchar[]" in source
