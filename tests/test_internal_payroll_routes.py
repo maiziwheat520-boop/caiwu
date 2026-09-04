@@ -121,6 +121,7 @@ def test_payroll_router_exposes_only_frozen_reads_and_explicit_nonpayment_test_a
         ("/internal/v1/payroll/materials", {"GET"}),
         ("/internal/v1/payroll/batches", {"GET"}),
         ("/internal/v1/payroll/verification", {"GET"}),
+        ("/internal/v1/payroll/disbursement-records/{pay_period}", {"GET"}),
         ("/internal/v1/payroll/batches/{batch_id}/verify-receipts", {"POST"}),
         ("/internal/v1/payroll-publications/{publication_id}", {"GET"}),
         ("/internal/v1/payroll/test-workspaces/{test_batch_id}", {"GET"}),
