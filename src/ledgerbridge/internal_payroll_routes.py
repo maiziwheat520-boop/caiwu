@@ -178,7 +178,7 @@ class PayrollTestWorkspaceCreate(BaseModel):
     schema_version: Literal["payroll-test-workspace-create-request/v1"]
     test_batch_id: str = Field(min_length=3, max_length=128)
     expected_store_revision: int = Field(strict=True, ge=0)
-    cutoff_date: Literal["2026-08-31"]
+    cutoff_date: Literal["2026-08-31"]  # must equal PAYROLL_TEST_CUTOFF_DATE
     idempotency_key: UUID
 
 

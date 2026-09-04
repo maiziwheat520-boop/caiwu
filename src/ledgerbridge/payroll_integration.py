@@ -36,6 +36,11 @@ LIVE_PROJECTION_CONTRACT_VERSION = "1.0.0"
 LIVE_PROJECTION_PATH = "/api/v1/ledgerbridge-projections/current"
 TEST_WORKSPACES_PATH = "/api/v1/test-workspaces"
 TEST_WORKSPACE_SCHEMA = "payroll-ledgerbridge-test-projection/v1"
+# The payroll test window is defined by one cutoff, not by an enumeration of the
+# months that happened to exist when it opened.  Material periods on or before it
+# route to AUTO_TEST; later periods must be reviewed by a human.
+PAYROLL_TEST_CUTOFF_MONTH = "2026-08"
+PAYROLL_TEST_CUTOFF_DATE = "2026-08-31"
 LEGACY_FEATURE_WORKSPACE_SCHEMA = "payroll-legacy-feature-workspace/v1"
 LEGACY_REVIEW_RULE_TYPES = frozenset(
     {
@@ -2860,7 +2865,7 @@ def _validate_test_workspace_projection(
         or value.get("data_scope") != "TEST_ONLY"
         or value.get("company_id") != expected_company_id
         or value.get("test_batch_id") != expected_batch_id
-        or value.get("cutoff_date") != "2026-08-31"
+        or value.get("cutoff_date") != PAYROLL_TEST_CUTOFF_DATE
     ):
         _invalid_response("payroll test workspace scope is invalid")
     if _require_non_negative_integer(value.get("workspace_revision"), "workspace_revision") < 1:
@@ -2916,7 +2921,7 @@ def _validate_test_workspace_projection(
         if material_type == "PAYROLL_SUMMARY":
             if period is not None:
                 _require_period(period, "period")
-        elif period not in {"2026-07", "2026-08"}:
+        elif _require_period(period, "period") > PAYROLL_TEST_CUTOFF_MONTH:
             _invalid_response("payroll test workspace date routing is invalid")
         key = "auto_test"
         _require_disabled_flags(item, ("payable", "submission_supported"))
@@ -3222,7 +3227,6 @@ def _validate_test_payroll_input_preview(
         or value.get("test_batch_id") != expected_batch_id
         or value.get("company_id") != expected_company_id
         or value.get("material_id") != expected_material_id
-        or value.get("period") not in {"2026-07", "2026-08"}
         or value.get("material_type") not in projected_types
         or value.get("detected_material_type") not in detected_types
         or value.get("status") not in {"READY_FOR_REVIEW", "NEEDS_HUMAN_REVIEW"}
@@ -4015,8 +4019,8 @@ def _validate_test_workspace_organize_receipt(
         or material_period != expected_period
         or material.get("material_type") != expected_material_type
         or routing_status not in {"AUTO_TEST", "REVIEW_REQUIRED"}
-        or (routing_status == "AUTO_TEST" and material_period > "2026-08")
-        or (routing_status == "REVIEW_REQUIRED" and material_period < "2026-09")
+        or (routing_status == "AUTO_TEST" and material_period > PAYROLL_TEST_CUTOFF_MONTH)
+        or (routing_status == "REVIEW_REQUIRED" and material_period <= PAYROLL_TEST_CUTOFF_MONTH)
     ):
         _invalid_response("payroll test organized material is invalid")
     _require_stable_identifier(material.get("material_type"), "material.material_type")
