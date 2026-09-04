@@ -192,7 +192,7 @@ def _company_bank_statement_mappings() -> tuple[tuple[str, str, str], ...]:
         return ()
     try:
         parsed = json.loads(raw)
-        if not isinstance(parsed, list) or len(parsed) != 6:
+        if not isinstance(parsed, list) or not 1 <= len(parsed) <= 32:
             raise ValueError
         result: list[tuple[str, str, str]] = []
         for index, item in enumerate(parsed, start=1):

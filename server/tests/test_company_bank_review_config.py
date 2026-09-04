@@ -30,13 +30,13 @@ class CompanyBankReviewConfigTests(unittest.TestCase):
             timeout_seconds=8,
         )
 
-    def test_file_mapping_takes_precedence_and_never_requires_company_names(self) -> None:
+    def test_file_mapping_accepts_seven_statements_and_never_requires_company_names(self) -> None:
         mappings = [
             {
                 "statement_ref": f"10000000-0000-4000-8000-{index:012d}",
                 "entity_ref": f"20000000-0000-4000-8000-{index:012d}",
             }
-            for index in range(1, 7)
+            for index in range(1, 8)
         ]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "statements.json"
@@ -50,9 +50,28 @@ class CompanyBankReviewConfigTests(unittest.TestCase):
                 clear=True,
             ):
                 result = _company_bank_statement_mappings()
-        self.assertEqual(len(result), 6)
+        self.assertEqual(len(result), 7)
         self.assertEqual(result[0][2], "公司 1")
-        self.assertEqual(result[-1][2], "公司 6")
+        self.assertEqual(result[-1][2], "公司 7")
+
+    def test_file_mapping_rejects_more_than_thirty_two_statements(self) -> None:
+        mappings = [
+            {
+                "statement_ref": f"10000000-0000-4000-8000-{index:012d}",
+                "entity_ref": f"20000000-0000-4000-8000-{index:012d}",
+            }
+            for index in range(1, 34)
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "statements.json"
+            path.write_text(json.dumps(mappings), encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {"CORE_COMPANY_BANK_STATEMENTS_FILE": str(path)},
+                clear=True,
+            ):
+                with self.assertRaises(SystemExit):
+                    _company_bank_statement_mappings()
 
 
 if __name__ == "__main__":

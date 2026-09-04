@@ -345,8 +345,8 @@ class CoreBackedState:
             self.personal_finance_statement_refs
         ):
             raise ValueError("personal statement refs must be unique")
-        if company_bank_statement_mappings and len(company_bank_statement_mappings) != 6:
-            raise ValueError("exactly six company bank statements must be configured")
+        if len(company_bank_statement_mappings) > 32:
+            raise ValueError("at most 32 company bank statements may be configured")
         normalized_company_statements: list[tuple[str, str, str]] = []
         for statement_ref, company_ref, company_name in company_bank_statement_mappings:
             canonical_name = _bounded(company_name, maximum=200)
