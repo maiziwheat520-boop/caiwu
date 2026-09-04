@@ -259,8 +259,10 @@ def test_internal_ingress_binds_each_workload_to_a_distinct_port_and_san() -> No
 
     assert "8443 spiffe://ledgerbridge.local/web-review;" in configuration
     assert "8444 spiffe://ledgerbridge.local/web/company-reports;" in configuration
+    assert "8446 spiffe://ledgerbridge.local/web/cash-reconciliation;" in configuration
     assert "listen 8443 ssl;" in configuration
     assert "listen 8444 ssl;" in configuration
+    assert "listen 8446 ssl;" in configuration
     assert "proxy_set_header X-LedgerBridge-Client-SAN $ledgerbridge_client_san;" in configuration
 
 

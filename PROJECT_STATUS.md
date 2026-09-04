@@ -1,6 +1,17 @@
 # Project status
 
-Updated: 2026-09-02
+Updated: 2026-09-04
+
+## Dedicated cash-reconciliation principal checkpoint (2026-09-04)
+
+The September production projection contains 19 eligible, uniquely matched
+company facts, but the Web BFF currently requests it with the generic Web mTLS
+principal and therefore receives an empty company scope. This branch adds a
+dedicated reconciliation identity on ingress port 8446 with only
+`reconciliation:read` and `ledger:read`; its grants are derived from the one
+bound personal Web grant and exactly seven bound company-report grants. Web must
+use this client without fallback. No migration or financial-data write is added.
+See `docs/tasks/2026-09-04-cash-reconciliation-principal.md`.
 
 ## Dedicated multi-company report principal checkpoint (2026-09-02)
 
