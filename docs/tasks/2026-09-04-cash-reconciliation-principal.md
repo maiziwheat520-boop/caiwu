@@ -3,9 +3,9 @@
 - Status: implementation and independent review complete; production activation pending
 - Date: 2026-09-04
 - Core baseline: `f7c5544eb9cbf15e3ede264034dcc4177afe7e21`
-- Web baseline: `9e3d625190fa2cc299738fa641061533a072eb81`
+- Web baseline: `292cdb9b76a1d6122459b718219db8636110460e`
 - Schema: unchanged (`20260904_0045`)
-- Policy transition: generation 9 to 10
+- Policy transition: generation 10 to 11
 
 The feature branches passed focused Core checks, the complete Web backend suite,
 frontend lint/tests/build, and independent Standards/Spec review. Final release
