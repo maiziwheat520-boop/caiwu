@@ -4,6 +4,8 @@ import { Bank, CheckCircle, Warning } from '@phosphor-icons/react'
 import { api } from '../api'
 import type { CompanyBankStatement, CompanyBankStatementsResponse } from '../types'
 
+const COMPANY_BANK_READ_ERROR = '8 份公司账单中至少 1 份暂时无法读取，请重试；本次未修改任何账单。'
+
 function statusLabel(status: CompanyBankStatement['review_status']) {
   if (status === 'CONFIRMED') return { label: '已确认', color: 'green' as const }
   if (status === 'REJECTED') return { label: '已退回', color: 'red' as const }
@@ -26,9 +28,9 @@ export function CompanyBankStatementReviewPanel({ csrfToken }: { csrfToken: stri
         throw new Error('公司账单清单不完整')
       }
       setData(result)
-    } catch (loadError) {
+    } catch {
       setData(null)
-      setError(loadError instanceof Error ? loadError.message : '公司账单暂不可用')
+      setError(COMPANY_BANK_READ_ERROR)
     } finally {
       setLoading(false)
     }
