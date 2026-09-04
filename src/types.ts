@@ -867,7 +867,8 @@ export type PayrollInputMaterialPreview = {
   test_batch_id: string
   company_id: string
   material_id: string
-  period: '2026-07' | '2026-08'
+  /** Any YYYY-MM the provider returns; the test window is a cutoff, not a fixed pair. */
+  period: string
   material_type: 'ATTENDANCE_SHEET' | 'AUNT_ATTENDANCE_SHEET' | 'REVIEW_STATISTICS' | 'ADJUSTMENT_SOURCE'
   detected_material_type: 'ATTENDANCE_SHEET' | 'AUNT_ATTENDANCE_SHEET' | 'REVIEW_STATISTICS' | 'UNRECOGNIZED'
   canonical_name: string

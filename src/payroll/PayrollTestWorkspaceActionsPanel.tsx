@@ -21,7 +21,10 @@ const INPUT_MATERIAL_TYPES = new Set(MATERIAL_TYPES.map(({ value }) => value))
 
 const PAGE_SIZE = 25
 
-type Filter = '2026-07' | '2026-08'
+// The panel offers the months inside the current test window; Core and the BFF
+// gate on the cutoff itself, so widening the window only changes this list.
+const TEST_WINDOW_MONTHS = ['2026-07', '2026-08'] as const
+type Filter = (typeof TEST_WINDOW_MONTHS)[number]
 
 export type PayrollMaterialRole = 'attendance' | 'aunt_attendance' | 'review_statistics'
 
@@ -241,12 +244,17 @@ export function PayrollTestWorkspaceActionsPanel({
       </header>
 
       <div className="payroll-test-summary" aria-label="材料状态汇总">
-        <button type="button" data-active={filter === '2026-07'} onClick={() => changeFilter('2026-07')}>
-          2026 年 7 月 <strong>{inputMaterials.filter((item) => item.period === '2026-07').length}</strong>
-        </button>
-        <button type="button" data-active={filter === '2026-08'} onClick={() => changeFilter('2026-08')}>
-          2026 年 8 月 <strong>{inputMaterials.filter((item) => item.period === '2026-08').length}</strong>
-        </button>
+        {TEST_WINDOW_MONTHS.map((month) => (
+          <button
+            key={month}
+            type="button"
+            data-active={filter === month}
+            onClick={() => changeFilter(month)}
+          >
+            {`${month.slice(0, 4)} 年 ${Number(month.slice(5))} 月`}{' '}
+            <strong>{inputMaterials.filter((item) => item.period === month).length}</strong>
+          </button>
+        ))}
       </div>
 
       <div className="payroll-material-confirmation" aria-label="唯一素材确认">

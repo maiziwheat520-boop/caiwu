@@ -38,6 +38,14 @@ PAYROLL_USER_ASSERTION_VERSION = "ledgerbridge.payroll-bff-user-assertion.v1"
 PAYROLL_RESOURCE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PAYROLL_PROJECTION_REVISION = re.compile(r"^[0-9a-f]{64}$")
 PAYROLL_PERIOD = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+# Mirrors Core's PAYROLL_TEST_CUTOFF_*: the test window is one cutoff, not a list
+# of the months that existed when it opened.
+PAYROLL_TEST_CUTOFF_MONTH = "2026-08"
+PAYROLL_TEST_CUTOFF_DATE = "2026-08-31"
+
+
+def _is_payroll_period(value: object) -> bool:
+    return isinstance(value, str) and PAYROLL_PERIOD.fullmatch(value) is not None
 PAYROLL_CANONICAL_ACCOUNT_ID = re.compile(r"^account_[0-9a-f]{24}$")
 PAYROLL_LEGACY_REVIEW_RULE_TYPES = frozenset(
     {
@@ -1463,7 +1471,7 @@ class CoreBackedState:
             "schema_version": "payroll-test-workspace-create-request/v1",
             "test_batch_id": self.payroll_test_batch_id,
             "expected_store_revision": self.payroll_test_workspace_expected_store_revision,
-            "cutoff_date": "2026-08-31",
+            "cutoff_date": PAYROLL_TEST_CUTOFF_DATE,
             "idempotency_key": operation_id,
         }
         body = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -4191,7 +4199,7 @@ def _validate_payroll_test_workspace_payload(
         or data.get("data_scope") != "TEST_ONLY"
         or data.get("test_batch_id") != expected_batch_id
         or data.get("company_id") != company_id
-        or data.get("cutoff_date") != "2026-08-31"
+        or data.get("cutoff_date") != PAYROLL_TEST_CUTOFF_DATE
         or type(data.get("workspace_revision")) is not int
         or int(data["workspace_revision"]) < 1
         or int(data["workspace_revision"]) > 9_007_199_254_740_991
@@ -4248,7 +4256,11 @@ def _validate_payroll_test_workspace_payload(
         routing_status = material.get("routing_status")
         if (
             routing_status != "AUTO_TEST"
-            or material_type != "PAYROLL_SUMMARY" and period not in {"2026-07", "2026-08"}
+            or material_type != "PAYROLL_SUMMARY"
+            and (
+                not _is_payroll_period(period)
+                or str(period) > PAYROLL_TEST_CUTOFF_MONTH
+            )
         ):
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
         count_key = {
@@ -4453,7 +4465,7 @@ def _validate_payroll_input_preview_data(
         or data.get("test_batch_id") != expected_batch_id
         or data.get("company_id") != expected_company_id
         or data.get("material_id") != expected_material_id
-        or data.get("period") not in {"2026-07", "2026-08"}
+        or not _is_payroll_period(data.get("period"))
         or data.get("material_type") not in projected_types
         or data.get("detected_material_type") not in detected_types
         or data.get("status") not in {"READY_FOR_REVIEW", "NEEDS_HUMAN_REVIEW"}
@@ -5005,7 +5017,7 @@ def _validate_payroll_test_workspace_command_payload(
             or PAYROLL_PERIOD.fullmatch(period) is None
             or material.get("material_type") not in PAYROLL_TEST_MATERIAL_TYPES
             or routing_status != "AUTO_TEST"
-            or period not in {"2026-07", "2026-08"}
+            or period > PAYROLL_TEST_CUTOFF_MONTH
             or material.get("payable") is not False
             or material.get("submission_supported") is not False
         ):
