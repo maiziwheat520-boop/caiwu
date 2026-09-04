@@ -63,8 +63,7 @@
 .payroll-material-confirmation > div { display: grid; gap: 4px; }
 .payroll-material-confirmation strong { color: #1e4f91; }
 .payroll-material-confirmation span { color: #5d7190; font-size: 13px; }
-.payroll-material-radio { display: flex; align-items: center; gap: 7px; color: #1d4ed8; font-weight: 700; }
-.payroll-material-radio input { min-height: auto; width: 18px; height: 18px; }
+.payroll-material-current { color: #1d4ed8 !important; font-weight: 700; }
 
 .payroll-test-message { padding: 12px 14px; border-radius: 10px; }
 .payroll-test-message.success { background: #ecfdf5; color: #047857; }
