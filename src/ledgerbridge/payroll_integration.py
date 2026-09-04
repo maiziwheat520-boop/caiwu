@@ -3892,6 +3892,11 @@ def _validate_legacy_feature_tree(
                     # Already validated as an opaque account identifier; scanning
                     # its digest as ordinary prose would create false positives.
                     continue
+                elif key == "batch_id":
+                    _require_stable_identifier(nested, key)
+                    # Batch identifiers may contain several period segments.
+                    # Their digits are opaque identity, not an account number.
+                    continue
                 elif key.endswith(("_minor", "_cents")):
                     _require_minor_integer(nested, key)
                 elif (

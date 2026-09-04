@@ -623,6 +623,22 @@ def test_legacy_feature_workspace_read_and_command_preserve_safe_provider_state(
     assert command.payload_copy()["workspace"]["revision"] == 1
 
 
+def test_legacy_feature_workspace_accepts_opaque_batch_id_with_period_digits():
+    payload = legacy_workspace_payload()
+    payload["batches"][0]["batch_id"] = "payroll_history_through_2026_08_2026_07"
+    entity, adapter = source(payload)
+
+    read = adapter.read_legacy_features(
+        entity_ref=entity,
+        test_batch_id="batch_demo",
+        provider_headers={},
+    )
+
+    assert read.payload_copy()["batches"][0]["batch_id"] == (
+        "payroll_history_through_2026_08_2026_07"
+    )
+
+
 def test_legacy_feature_workspace_accepts_independent_rules_before_a_monthly_batch():
     payload = legacy_workspace_payload()
     payload["batches"] = []
@@ -639,9 +655,7 @@ def test_legacy_feature_workspace_accepts_independent_rules_before_a_monthly_bat
 
 def test_legacy_feature_workspace_accepts_opaque_account_digest():
     payload = legacy_workspace_payload()
-    payload["rules"]["employees"][0]["account_id"] = (
-        "account_9f99f99999f99999f9f99f99"
-    )
+    payload["batches"][0]["lines"][0]["account_id"] = "account_9989905356105395ee4273d3"
     entity, adapter = source(payload)
 
     read = adapter.read_legacy_features(
@@ -650,9 +664,7 @@ def test_legacy_feature_workspace_accepts_opaque_account_digest():
         provider_headers={},
     )
 
-    assert read.payload_copy()["rules"]["employees"][0]["account_id"].startswith(
-        "account_"
-    )
+    assert read.payload_copy()["batches"][0]["lines"][0]["account_id"].startswith("account_")
 
 
 def test_legacy_feature_workspace_accepts_generated_monthly_payroll_without_main_material():
