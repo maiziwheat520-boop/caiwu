@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import (
     HTTPRedirectHandler,
     HTTPSHandler,
@@ -435,7 +435,7 @@ class CoreBackedState:
             if isinstance(candidate_ref, str):
                 self._candidate_detail_cache[candidate_ref] = (now, deepcopy(item))
         if len(self._candidate_detail_cache) > CANDIDATE_DETAIL_CACHE_MAX_ITEMS:
-            self._candidate_detail_cache.clear()
+            self._evict_oldest_candidate_details()
         next_core_cursor = payload.get("next_cursor")
         if next_core_cursor is not None and not isinstance(next_core_cursor, str):
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
@@ -452,6 +452,16 @@ class CoreBackedState:
             "items": [_candidate_from_core(item) for item in items],
             "next_cursor": next_cursor,
         }
+
+    def _evict_oldest_candidate_details(self) -> None:
+        excess = len(self._candidate_detail_cache) - CANDIDATE_DETAIL_CACHE_MAX_ITEMS
+        if excess <= 0:
+            return
+        oldest = sorted(
+            self._candidate_detail_cache.items(), key=lambda entry: entry[1][0]
+        )[:excess]
+        for candidate_ref, _ in oldest:
+            self._candidate_detail_cache.pop(candidate_ref, None)
 
     def _candidate_cursor(self, cursor: str | None) -> tuple[int, str | None]:
         if cursor is None:
@@ -492,45 +502,23 @@ class CoreBackedState:
                 payload = deepcopy(cached_payload)
             else:
                 self._candidate_detail_cache.pop(candidate_ref, None)
-        visited: set[str] = set()
-        page_count = 0
-        for business_unit in (() if payload is not None else self.candidate_business_unit_refs):
-            cursor: str | None = None
-            while True:
-                query = {"business_unit": business_unit}
-                if cursor is not None:
-                    query["cursor"] = cursor
-                page = self.client.json(
-                    "GET", f"/internal/v1/candidates?{urlencode(query)}"
-                )
-                items = page.get("items")
-                if not isinstance(items, list):
-                    raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
-                payload = next(
-                    (
-                        item
-                        for item in items
-                        if isinstance(item, dict)
-                        and item.get("candidate_ref") == candidate_ref
-                    ),
-                    None,
-                )
-                if payload is not None:
-                    break
-                next_cursor = page.get("next_cursor")
-                if next_cursor is None:
-                    break
-                if not isinstance(next_cursor, str) or next_cursor in visited:
-                    raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
-                visited.add(next_cursor)
-                cursor = next_cursor
-                page_count += 1
-                if page_count > 100:
-                    raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
-            if payload is not None:
-                break
         if payload is None:
-            return None
+            # Core resolves one candidate under object scope; scanning the whole
+            # collection here was only ever a workaround for its multi-scope
+            # pagination failing closed.
+            try:
+                payload = self.client.json(
+                    "GET", f"/internal/v1/candidates/{quote(candidate_ref, safe='')}"
+                )
+            except CoreBackendError as error:
+                if error.status != 404:
+                    raise
+                return None
+            if not isinstance(payload, dict) or payload.get("candidate_ref") != candidate_ref:
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+            self._candidate_detail_cache[candidate_ref] = (time.monotonic(), deepcopy(payload))
+            if len(self._candidate_detail_cache) > CANDIDATE_DETAIL_CACHE_MAX_ITEMS:
+                self._evict_oldest_candidate_details()
         events = self.client.json(
             "GET",
             f"/internal/v1/candidate-events?{urlencode({'candidate_ref': candidate_ref})}",

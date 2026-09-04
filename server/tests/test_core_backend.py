@@ -960,7 +960,7 @@ def build_state(
 
 
 class CoreBackedAdapterTests(unittest.TestCase):
-    def test_candidate_detail_uses_the_scoped_candidate_collection(self) -> None:
+    def test_candidate_detail_reads_one_candidate_by_reference(self) -> None:
         client = FakeCoreClient()
         state = build_state(
             client,
@@ -972,8 +972,26 @@ class CoreBackedAdapterTests(unittest.TestCase):
         self.assertIsNotNone(detail)
         self.assertEqual(detail["id"], CANDIDATE_ID)  # type: ignore[index]
         requested_paths = [path for method, path, *_ in client.calls if method == "GET"]
-        self.assertIn("/internal/v1/candidates?business_unit=unit-demo-a", requested_paths)
-        self.assertNotIn(f"/internal/v1/candidates/{CANDIDATE_ID}", requested_paths)
+        self.assertIn(f"/internal/v1/candidates/{CANDIDATE_ID}", requested_paths)
+        # Reading one candidate must not page through the whole collection.
+        self.assertFalse(
+            [path for path in requested_paths if path.startswith("/internal/v1/candidates?")]
+        )
+
+    def test_candidate_detail_reports_a_candidate_core_will_not_show(self) -> None:
+        class NotFoundClient(FakeCoreClient):
+            def json(self, method: str, path: str, **kwargs: object) -> dict[str, object]:
+                if path.startswith(f"/internal/v1/candidates/{CANDIDATE_ID}"):
+                    self.calls.append((method, path, None, {}))
+                    raise CoreBackendError(404, {"code": "RESOURCE_NOT_FOUND"})
+                return super().json(method, path, **kwargs)  # type: ignore[arg-type]
+
+        state = build_state(
+            NotFoundClient(),
+            candidate_business_unit_refs=("unit-demo-a",),
+        )
+
+        self.assertIsNone(state.candidate_detail(CANDIDATE_ID))
 
     def test_candidate_detail_reuses_the_candidate_loaded_for_the_page(self) -> None:
         client = FakeCoreClient()

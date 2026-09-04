@@ -1771,7 +1771,7 @@ describe('LedgerBridge Web API client', () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/review-events?cursor=50')).toBe(true)
   })
 
-  it('loads later candidate pages for audit labels and search', async () => {
+  it('labels audit rows by fetching only the referenced candidates', async () => {
     const olderCandidate: ApiCandidate = {
       ...candidates[0],
       id: 'candidate-older',
@@ -1800,10 +1800,15 @@ describe('LedgerBridge Web API client', () => {
     expect(await screen.findByText('C-OLD1 · 海景店')).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('搜索操作记录'), { target: { value: '燃气费' } })
     expect(screen.getByText('核对较早候选')).toBeInTheDocument()
-    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/candidates?cursor=50')).toBe(true)
 
-    fireEvent.click(screen.getByRole('button', { name: '返回概览' }))
-    expect(within(reviewWorkspace()).getByText('仅用于审核上下文的较早候选')).toBeInTheDocument()
+    // Only the candidate this page actually renders is read...
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/candidates/candidate-older'),
+    ).toBe(true)
+    // ...and the whole candidate collection is never walked into the browser.
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).startsWith('/api/v1/candidates?cursor=')),
+    ).toBe(false)
   })
 
   it('isolates review-history failures from the core overview', async () => {

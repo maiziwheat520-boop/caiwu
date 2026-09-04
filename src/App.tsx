@@ -312,18 +312,32 @@ function accountingMonthLabel(month: string | null): string {
   return `${year} 年 ${Number(monthNumber)} 月`
 }
 
-async function listRemainingCandidatePages(initialCursor: string) {
-  const items: ApiCandidate[] = []
-  const visited = new Set<string>()
-  let cursor: string | null = initialCursor
-  while (cursor) {
-    if (visited.has(cursor)) throw new Error('候选分页游标重复，无法完整读取审核上下文')
-    visited.add(cursor)
-    const page = await api.listCandidates({ cursor })
-    items.push(...page.items)
-    cursor = page.next_cursor
-  }
-  return items
+const AUDIT_CANDIDATE_FETCH_CONCURRENCY = 6
+
+/**
+ * The audit log only labels the events it renders, so it needs those events'
+ * candidates -- not every candidate in the ledger.  Fetching the referenced
+ * ones keeps the cost proportional to one page of events instead of walking
+ * the whole candidate collection into the browser.
+ */
+async function fetchCandidatesByIds(ids: string[]): Promise<CandidateDetail[]> {
+  const found: CandidateDetail[] = []
+  const queue = [...ids]
+  const workers = Array.from(
+    { length: Math.min(AUDIT_CANDIDATE_FETCH_CONCURRENCY, queue.length) },
+    async () => {
+      for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+        try {
+          found.push(await api.getCandidate(id))
+        } catch {
+          // A single unreadable candidate must not blank the whole audit page;
+          // the row falls back to its "unknown candidate" labels.
+        }
+      }
+    },
+  )
+  await Promise.all(workers)
+  return found
 }
 
 function App() {
@@ -343,8 +357,9 @@ function App() {
   const [reviewEventCursor, setReviewEventCursor] = useState<string | null>(null)
   const [reviewEventsLoading, setReviewEventsLoading] = useState(false)
   const [reviewEventsError, setReviewEventsError] = useState<string | null>(null)
-  const candidateCursorRef = useRef<string | null>(null)
   const candidateDetailRequestRef = useRef(0)
+  const knownCandidateIdsRef = useRef<Set<string>>(new Set())
+  const auditCandidateIdsRef = useRef<Set<string>>(new Set())
   const businessDataLoadedRef = useRef(false)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -473,7 +488,6 @@ function App() {
         setNotice({ tone: 'info', message: CLASSIFICATION_GROUPS_UNAVAILABLE_NOTICE })
       }
       setAuditCandidates([])
-      candidateCursorRef.current = candidateData.next_cursor
       setReconciliation(reconciliationData.status === 'fulfilled' ? reconciliationData.value : null)
       setConnections(connectionData)
       setPersonalBankData(personalBankResult.status === 'fulfilled' ? personalBankResult.value : null)
@@ -491,24 +505,29 @@ function App() {
     setReviewEventsLoading(true)
     setReviewEventsError(null)
     try {
-      const remainingCandidateCursor = includeCandidatePages ? candidateCursorRef.current : null
-      const [result, additionalCandidates] = await Promise.all([
-        api.listReviewEvents(cursor),
-        remainingCandidateCursor ? listRemainingCandidatePages(remainingCandidateCursor) : Promise.resolve([]),
-      ])
+      const result = await api.listReviewEvents(cursor)
       setReviewEvents((current) => {
         const combined = cursor ? [...current, ...result.items] : result.items
         return [...new Map(combined.map((event) => [event.id, event])).values()]
       })
-      if (includeCandidatePages && remainingCandidateCursor) {
-        const mappedCandidates = additionalCandidates.map(toCandidate)
-        setAuditCandidates(mappedCandidates)
-        setCandidates((currentCandidates) => [
-          ...new Map(
-            [...currentCandidates, ...mappedCandidates].map((candidate) => [candidate.id, candidate]),
-          ).values(),
+      if (includeCandidatePages) {
+        const known = new Set([
+          ...knownCandidateIdsRef.current,
+          ...auditCandidateIdsRef.current,
         ])
-        candidateCursorRef.current = null
+        const missing = [...new Set(result.items.map((event) => event.candidate_id))].filter(
+          (id) => !known.has(id),
+        )
+        if (missing.length > 0) {
+          const fetched = (await fetchCandidatesByIds(missing)).map(toCandidate)
+          if (fetched.length > 0) {
+            setAuditCandidates((current) => [
+              ...new Map(
+                [...current, ...fetched].map((candidate) => [candidate.id, candidate]),
+              ).values(),
+            ])
+          }
+        }
       }
       setReviewEventCursor(result.next_cursor)
     } catch (error) {
@@ -517,6 +536,14 @@ function App() {
       setReviewEventsLoading(false)
     }
   }, [])
+
+  useEffect(() => {
+    knownCandidateIdsRef.current = new Set(candidates.map((candidate) => candidate.id))
+  }, [candidates])
+
+  useEffect(() => {
+    auditCandidateIdsRef.current = new Set(auditCandidates.map((candidate) => candidate.id))
+  }, [auditCandidates])
 
   useEffect(() => {
     if (!authStatus?.authenticated || authStatus.recovery_setup_required) return
@@ -781,7 +808,6 @@ function App() {
       setAuditCandidates([])
       setReviewEventCursor(null)
       setReviewEventsError(null)
-      candidateCursorRef.current = null
       setSelectedCandidate(null)
       setCandidateDetailLoadingId(null)
       setCandidateDetailReadyId(null)
