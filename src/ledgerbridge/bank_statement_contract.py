@@ -165,6 +165,7 @@ class BankStatement:
                 BankStatementParserProfile.ABC_PERSONAL_PDF_V1,
                 BankStatementParserProfile.MYBANK_COMPANY_DAILY_XLSX_V2,
                 BankStatementParserProfile.MYBANK_COMPANY_RANGE_XLSX_V3,
+                BankStatementParserProfile.ABC_COMPANY_XLS_V1,
             }
             and _DIGEST.fullmatch(self.parser_facts_sha256) is None
         ):
