@@ -111,6 +111,11 @@ def test_company_cash_reconciliation_uses_confirmed_classifications_as_single_so
     assert "adjustment_scope.entity_id = ANY(p_entity_ids)" in source
     assert "adjustment_scope.business_unit_id = ANY(p_business_unit_ids)" in source
     assert "single-source projection is not activated" in source
+    assert "activate_cash_reconciliation_single_source" in source
+    assert "activation requires complete reporting items" in source
+    assert "activation requires complete adjustment scope" in source
+    assert "('COUNTERPARTY_NAME','CONTAINS','支付宝支付','FLIGGY')" in source
+    assert "('TRANSACTION_NAME','CONTAINS','房款结算','FLIGGY')" in source
     assert "pg_advisory_xact_lock(hashtextextended(p_operation_id::text, 0))" in source
     assert "FROM company_universe company" in source
     assert "ARRAY[]::varchar[]" in source

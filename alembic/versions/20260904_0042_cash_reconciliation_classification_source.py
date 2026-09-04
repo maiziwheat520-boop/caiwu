@@ -74,12 +74,14 @@ FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerb
 
 CREATE TABLE public.company_transaction_reporting_item_match (
     category_code varchar(64) NOT NULL,
-    counterparty_name varchar(300) NOT NULL CHECK (btrim(counterparty_name) <> ''),
+    match_field text NOT NULL CHECK (match_field IN ('COUNTERPARTY_NAME','TRANSACTION_NAME')),
+    match_mode text NOT NULL CHECK (match_mode IN ('EXACT','CONTAINS')),
+    match_value varchar(300) NOT NULL CHECK (btrim(match_value) <> ''),
     item_code varchar(100) NOT NULL,
     item_revision integer NOT NULL,
     audit_event_id uuid NOT NULL REFERENCES public.audit_event(id),
     created_at timestamptz NOT NULL,
-    PRIMARY KEY (category_code, counterparty_name),
+    PRIMARY KEY (category_code, match_field, match_mode, match_value),
     FOREIGN KEY (category_code, item_code, item_revision)
         REFERENCES public.company_transaction_reporting_item(category_code, item_code, revision)
 );
@@ -94,7 +96,9 @@ BEGIN
     IF v_action IS DISTINCT FROM 'company_transaction_reporting_item_match.record'
        OR v_rule IS DISTINCT FROM 'ledgerbridge.company-transaction-reporting-item.v1'
        OR v_payload->>'category_code' IS DISTINCT FROM NEW.category_code
-       OR v_payload->>'counterparty_name' IS DISTINCT FROM NEW.counterparty_name
+       OR v_payload->>'match_field' IS DISTINCT FROM NEW.match_field
+       OR v_payload->>'match_mode' IS DISTINCT FROM NEW.match_mode
+       OR v_payload->>'match_value' IS DISTINCT FROM NEW.match_value
        OR v_payload->>'item_code' IS DISTINCT FROM NEW.item_code
        OR v_payload->>'item_revision' IS DISTINCT FROM NEW.item_revision::text
        OR v_time IS DISTINCT FROM NEW.created_at THEN
@@ -165,6 +169,33 @@ RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
 AS $function$
 DECLARE v_payload jsonb; v_action text; v_rule text; v_time timestamptz;
 BEGIN
+    IF NEW.status = 'ACTIVE' THEN
+        LOCK TABLE public.company_transaction_classification IN SHARE ROW EXCLUSIVE MODE;
+        LOCK TABLE public.cash_reconciliation_adjustment IN SHARE ROW EXCLUSIVE MODE;
+        LOCK TABLE public.cash_reconciliation_adjustment_scope IN SHARE ROW EXCLUSIVE MODE;
+        IF EXISTS (
+            SELECT 1 FROM (
+                SELECT DISTINCT ON (item.transaction_ref) item.*
+                  FROM public.company_transaction_classification item
+                 ORDER BY item.transaction_ref, item.revision DESC
+            ) current
+            WHERE current.status = 'CONFIRMED'
+              AND (current.reporting_item_code IS NULL
+                   OR current.reporting_item_revision IS NULL)
+        ) THEN
+            RAISE EXCEPTION 'cash reconciliation activation requires complete reporting items'
+                USING ERRCODE = '23514';
+        END IF;
+        IF EXISTS (
+            SELECT 1 FROM public.cash_reconciliation_adjustment adjustment
+            LEFT JOIN public.cash_reconciliation_adjustment_scope scope
+              ON scope.adjustment_id = adjustment.adjustment_id
+            WHERE scope.adjustment_id IS NULL
+        ) THEN
+            RAISE EXCEPTION 'cash reconciliation activation requires complete adjustment scope'
+                USING ERRCODE = '23514';
+        END IF;
+    END IF;
     SELECT payload, action, rule_version, occurred_at
       INTO v_payload, v_action, v_rule, v_time
       FROM public.audit_event WHERE id = NEW.audit_event_id;
@@ -187,6 +218,42 @@ BEFORE UPDATE OR DELETE ON public.cash_reconciliation_projection_activation
 FOR EACH ROW EXECUTE FUNCTION public.r1_bank_statement_append_only();
 REVOKE ALL ON public.cash_reconciliation_projection_activation
 FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
+
+CREATE FUNCTION internal_import.activate_cash_reconciliation_single_source(
+    p_actor_ref text, p_reason text
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
+AS $function$
+DECLARE v_audit uuid; v_revision integer; v_status text;
+BEGIN
+    IF p_actor_ref IS NULL OR btrim(p_actor_ref) = '' OR length(p_actor_ref) > 200
+       OR p_reason IS NULL OR btrim(p_reason) = '' OR length(p_reason) > 1000 THEN
+        RAISE EXCEPTION 'cash reconciliation activation command is invalid'
+            USING ERRCODE = '22023';
+    END IF;
+    PERFORM pg_advisory_xact_lock(hashtextextended(
+        'cash-reconciliation-single-source-activation', 0));
+    SELECT status INTO v_status FROM public.cash_reconciliation_projection_activation
+     ORDER BY revision DESC LIMIT 1;
+    IF v_status = 'ACTIVE' THEN
+        RETURN jsonb_build_object('status', 'ACTIVE', 'created', false);
+    END IF;
+    SELECT COALESCE(max(revision), 0) + 1 INTO v_revision
+      FROM public.cash_reconciliation_projection_activation;
+    v_audit := public.append_audit_event(
+        p_actor_ref, 'cash_reconciliation_projection_activation.record', p_reason,
+        'ledgerbridge.cash-reconciliation-projection-activation.v1',
+        jsonb_build_object('revision', v_revision, 'status', 'ACTIVE'));
+    INSERT INTO public.cash_reconciliation_projection_activation(
+        revision, status, audit_event_id, created_at)
+    VALUES (v_revision, 'ACTIVE', v_audit,
+        (SELECT occurred_at FROM public.audit_event WHERE id = v_audit));
+    RETURN jsonb_build_object('status', 'ACTIVE', 'created', true);
+END
+$function$;
+REVOKE ALL ON FUNCTION internal_import.activate_cash_reconciliation_single_source(text,text)
+FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_app;
+GRANT EXECUTE ON FUNCTION internal_import.activate_cash_reconciliation_single_source(text,text)
+TO ledgerbridge_worker;
 
 DO $seed$
 DECLARE v_item record; v_audit uuid;
@@ -228,6 +295,39 @@ BEGIN
     END LOOP;
 END
 $seed$;
+
+DO $aliases$
+DECLARE v_match record; v_audit uuid;
+BEGIN
+    FOR v_match IN SELECT * FROM (VALUES
+        ('COUNTERPARTY_NAME','CONTAINS','支付宝支付','FLIGGY'),
+        ('COUNTERPARTY_NAME','CONTAINS','飞猪','FLIGGY'),
+        ('TRANSACTION_NAME','CONTAINS','飞猪','FLIGGY'),
+        ('TRANSACTION_NAME','CONTAINS','房款结算','FLIGGY'),
+        ('COUNTERPARTY_NAME','CONTAINS','美团','MEITUAN'),
+        ('TRANSACTION_NAME','CONTAINS','美团','MEITUAN'),
+        ('COUNTERPARTY_NAME','CONTAINS','携程','CTRIP'),
+        ('TRANSACTION_NAME','CONTAINS','携程','CTRIP')
+    ) AS aliases(match_field, match_mode, match_value, item_code)
+    LOOP
+        v_audit := public.append_audit_event(
+            'migration:20260904_0042',
+            'company_transaction_reporting_item_match.record',
+            'seed approved platform reporting-item alias',
+            'ledgerbridge.company-transaction-reporting-item.v1',
+            jsonb_build_object('category_code', 'PLATFORM_ROOM_REVENUE',
+                'match_field', v_match.match_field, 'match_mode', v_match.match_mode,
+                'match_value', v_match.match_value,
+                'item_code', v_match.item_code, 'item_revision', 1));
+        INSERT INTO public.company_transaction_reporting_item_match(
+            category_code, match_field, match_mode, match_value,
+            item_code, item_revision, audit_event_id, created_at)
+        VALUES ('PLATFORM_ROOM_REVENUE', v_match.match_field, v_match.match_mode,
+            v_match.match_value, v_match.item_code, 1, v_audit,
+            (SELECT occurred_at FROM public.audit_event WHERE id = v_audit));
+    END LOOP;
+END
+$aliases$;
 
 DO $activation$
 DECLARE v_audit uuid;
@@ -340,16 +440,6 @@ BEGIN
         WHEN 'INTERNAL_TRANSFER' THEN 'INTERNAL_TRANSFER'
         WHEN 'RENT' THEN 'RENT' WHEN 'BANK_INTEREST' THEN 'BANK_INTEREST'
         WHEN 'LINEN_LAUNDRY' THEN 'LINEN_LAUNDRY' ELSE NULL END;
-    IF p_category_code = 'PLATFORM_ROOM_REVENUE' THEN
-        v_fixed_code := CASE
-            WHEN concat_ws(' ', v_transaction.counterparty_name,
-                v_transaction.transaction_name) ILIKE '%飞猪%' THEN 'FLIGGY'
-            WHEN concat_ws(' ', v_transaction.counterparty_name,
-                v_transaction.transaction_name) ILIKE '%美团%' THEN 'MEITUAN'
-            WHEN concat_ws(' ', v_transaction.counterparty_name,
-                v_transaction.transaction_name) ILIKE '%携程%' THEN 'CTRIP'
-            ELSE NULL END;
-    END IF;
     IF p_category_code = 'RELATED_PARTY_CURRENT'
        AND v_transaction.counterparty_name IS NOT NULL
        AND btrim(v_transaction.counterparty_name) <> ''
@@ -391,9 +481,18 @@ BEGIN
             registry.match_counterparty_name IS NOT DISTINCT FROM v_transaction.counterparty_name
             OR EXISTS (SELECT 1 FROM public.company_transaction_reporting_item_match match
                 WHERE match.category_code = p_category_code
-                  AND match.counterparty_name = v_transaction.counterparty_name
                   AND match.item_code = registry.item_code
-                  AND match.item_revision = registry.revision))))
+                  AND match.item_revision = registry.revision
+                  AND CASE match.match_field
+                    WHEN 'COUNTERPARTY_NAME' THEN CASE match.match_mode
+                      WHEN 'EXACT' THEN v_transaction.counterparty_name = match.match_value
+                      WHEN 'CONTAINS' THEN position(match.match_value in
+                        COALESCE(v_transaction.counterparty_name, '')) > 0 END
+                    WHEN 'TRANSACTION_NAME' THEN CASE match.match_mode
+                      WHEN 'EXACT' THEN v_transaction.transaction_name = match.match_value
+                      WHEN 'CONTAINS' THEN position(match.match_value in
+                        COALESCE(v_transaction.transaction_name, '')) > 0 END
+                  END))))
      ORDER BY registry.revision DESC LIMIT 1;
 END
 $function$;

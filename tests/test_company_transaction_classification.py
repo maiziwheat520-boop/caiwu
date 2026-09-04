@@ -20,6 +20,8 @@ from scripts.backfill_company_transaction_classifications import (
     migration_database_url,
 )
 from scripts.backup_restore import (
+    CASH_RECONCILIATION_CLASSIFICATION_STATE_COLUMNS,
+    CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES,
     COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS,
     COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_RESULTS,
     COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES,
@@ -145,6 +147,63 @@ def _restore_metadata() -> dict[str, object]:
                 ),
             )
         ],
+        "cash_reconciliation_classification_state_columns": [
+            {
+                "table": table,
+                "column": column,
+                "data_type": data_type,
+                "not_null": not_null,
+            }
+            for table, columns in CASH_RECONCILIATION_CLASSIFICATION_STATE_COLUMNS.items()
+            for column, (data_type, not_null) in columns.items()
+        ],
+        "cash_reconciliation_classification_state_constraints": [
+            {"table": table, "name": f"{table}_pkey", "type": "p", "validated": True}
+            for table in CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES
+        ]
+        + [
+            {"table": table, "name": f"{table}_fk", "type": "f", "validated": True}
+            for table in (
+                "company_transaction_reporting_item",
+                "company_transaction_reporting_item_match",
+                "cash_reconciliation_adjustment_scope",
+            )
+        ]
+        + [
+            {
+                "table": "cash_reconciliation_projection_activation",
+                "name": "activation_check",
+                "type": "c",
+                "validated": True,
+            }
+        ],
+        "cash_reconciliation_classification_state_table_acls": [
+            {
+                "table": table,
+                "grantee": owner,
+                "privilege": "SELECT",
+                "grantable": False,
+            }
+            for table in CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES
+        ],
+        "cash_reconciliation_classification_state_effective_privileges": [
+            {
+                "role": role,
+                "table": table,
+                "select": False,
+                "insert": False,
+                "update": False,
+                "delete": False,
+            }
+            for role in R1_ROLES
+            for table in CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES
+        ],
+        "company_transaction_reporting_item_row_count": 17,
+        "company_transaction_reporting_item_match_row_count": 8,
+        "cash_reconciliation_adjustment_row_count": 1,
+        "cash_reconciliation_adjustment_scope_row_count": 1,
+        "cash_reconciliation_projection_activation_latest_status": "ACTIVE",
+        "company_transaction_confirmed_unassigned_count": 0,
         "company_transaction_classification_functions": functions,
         "company_transaction_classification_triggers": [
             {

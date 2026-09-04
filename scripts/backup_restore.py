@@ -2561,6 +2561,9 @@ COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES = {
     ("internal_import", "resolve_company_transaction_reporting_item"): (
         "p_transaction_ref uuid, p_category_code text, p_actor_ref text, p_reason text"
     ),
+    ("internal_import", "activate_cash_reconciliation_single_source"): (
+        "p_actor_ref text, p_reason text"
+    ),
 }
 COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_RESULTS = {
     ("public", "r1_validate_company_transaction_classification"): "trigger",
@@ -2576,6 +2579,7 @@ COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_RESULTS = {
     ("internal_import", "resolve_company_transaction_reporting_item"): (
         "TABLE(item_code text, item_revision integer)"
     ),
+    ("internal_import", "activate_cash_reconciliation_single_source"): "jsonb",
 }
 COMPANY_TRANSACTION_CLASSIFICATION_SECURITY_DEFINER_FUNCTIONS = frozenset(
     key
@@ -2590,6 +2594,7 @@ COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS = {
         "ledgerbridge_reader"
     ),
     ("internal_import", "backfill_company_transaction_reporting_item"): "ledgerbridge_worker",
+    ("internal_import", "activate_cash_reconciliation_single_source"): "ledgerbridge_worker",
 }
 COMPANY_TRANSACTION_CLASSIFICATION_TRIGGER_CONTRACT = {
     "company_transaction_classification_append_only": (
@@ -2758,6 +2763,124 @@ BOC_COUNTERPARTY_CORRECTION_REVISION = "20260904_0039"
 COMPANY_AUTO_CLASSIFICATION_REVISION = "20260904_0040"
 BOC_PROJECTION_REPAIR_REVISION = "20260904_0041"
 CASH_RECONCILIATION_CLASSIFICATION_REVISION = "20260904_0042"
+CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES = (
+    "company_transaction_reporting_item",
+    "company_transaction_reporting_item_match",
+    "cash_reconciliation_adjustment_scope",
+    "cash_reconciliation_projection_activation",
+)
+CASH_RECONCILIATION_CLASSIFICATION_STATE_COLUMNS = {
+    "company_transaction_reporting_item": {
+        "item_code": ("character varying", True),
+        "revision": ("integer", True),
+        "status": ("text", True),
+        "category_code": ("character varying", True),
+        "item_label": ("character varying", True),
+        "match_counterparty_name": ("character varying", False),
+        "audit_event_id": ("uuid", True),
+        "created_at": ("timestamp with time zone", True),
+    },
+    "company_transaction_reporting_item_match": {
+        "category_code": ("character varying", True),
+        "match_field": ("text", True),
+        "match_mode": ("text", True),
+        "match_value": ("character varying", True),
+        "item_code": ("character varying", True),
+        "item_revision": ("integer", True),
+        "audit_event_id": ("uuid", True),
+        "created_at": ("timestamp with time zone", True),
+    },
+    "cash_reconciliation_adjustment_scope": {
+        "adjustment_id": ("uuid", True),
+        "entity_id": ("uuid", True),
+        "business_unit_id": ("uuid", True),
+        "audit_event_id": ("uuid", True),
+        "created_at": ("timestamp with time zone", True),
+    },
+    "cash_reconciliation_projection_activation": {
+        "revision": ("integer", True),
+        "status": ("text", True),
+        "audit_event_id": ("uuid", True),
+        "created_at": ("timestamp with time zone", True),
+    },
+}
+_CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES_SQL = ", ".join(
+    f"'{table}'" for table in CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES
+)
+CASH_RECONCILIATION_CLASSIFICATION_STATE_SQL = (
+    ""  # nosec B608 - replacement uses a fixed repository allowlist.
+    """
+WITH observed_columns AS (
+ SELECT table_name,column_name,data_type,is_nullable='NO' not_null,ordinal_position
+ FROM information_schema.columns
+ WHERE table_schema='public' AND table_name IN (__STATE_TABLES_SQL__)
+), observed_constraints AS (
+ SELECT c.relname table_name,con.conname constraint_name,con.contype constraint_type,
+  con.convalidated validated,pg_get_constraintdef(con.oid,false) definition
+ FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid
+ JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='public' AND c.relname IN (__STATE_TABLES_SQL__)
+), table_acls AS (
+ SELECT c.relname table_name,
+  CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
+  a.privilege_type privilege,a.is_grantable grantable
+ FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a
+ WHERE n.nspname='public' AND c.relname IN (__STATE_TABLES_SQL__)
+), expected_roles(role_name) AS (VALUES __CLASSIFICATION_ROLES_SQL__),
+present_roles(role_name) AS (
+ SELECT e.role_name FROM expected_roles e JOIN pg_roles r ON r.rolname=e.role_name
+), effective_privileges AS (
+ SELECT r.role_name role,t.table_name,
+  has_table_privilege(r.role_name,'public.'||t.table_name,'SELECT') can_select,
+  has_table_privilege(r.role_name,'public.'||t.table_name,'INSERT') can_insert,
+  has_table_privilege(r.role_name,'public.'||t.table_name,'UPDATE') can_update,
+  has_table_privilege(r.role_name,'public.'||t.table_name,'DELETE') can_delete
+ FROM present_roles r CROSS JOIN (VALUES
+  ('company_transaction_reporting_item'),('company_transaction_reporting_item_match'),
+  ('cash_reconciliation_adjustment_scope'),('cash_reconciliation_projection_activation')
+ ) t(table_name)
+)
+SELECT json_build_object(
+ 'cash_reconciliation_classification_state_columns',COALESCE((SELECT json_agg(
+  json_build_object('table',table_name,'column',column_name,'data_type',data_type,
+   'not_null',not_null) ORDER BY table_name,ordinal_position) FROM observed_columns),'[]'::json),
+ 'cash_reconciliation_classification_state_constraints',COALESCE((SELECT json_agg(
+  json_build_object('table',table_name,'name',constraint_name,'type',constraint_type,
+   'validated',validated,'definition',definition) ORDER BY table_name,constraint_name)
+  FROM observed_constraints),'[]'::json),
+ 'cash_reconciliation_classification_state_table_acls',COALESCE((SELECT json_agg(
+  json_build_object('table',table_name,'grantee',grantee,'privilege',privilege,
+   'grantable',grantable) ORDER BY table_name,grantee,privilege) FROM table_acls),'[]'::json),
+ 'cash_reconciliation_classification_state_effective_privileges',COALESCE((SELECT json_agg(
+  json_build_object('role',role,'table',table_name,'select',can_select,'insert',can_insert,
+   'update',can_update,'delete',can_delete) ORDER BY role,table_name)
+  FROM effective_privileges),'[]'::json),
+ 'company_transaction_reporting_item_row_count',
+  (SELECT count(*) FROM public.company_transaction_reporting_item),
+ 'company_transaction_reporting_item_match_row_count',
+  (SELECT count(*) FROM public.company_transaction_reporting_item_match),
+ 'cash_reconciliation_adjustment_row_count',
+  (SELECT count(*) FROM public.cash_reconciliation_adjustment),
+ 'cash_reconciliation_adjustment_scope_row_count',
+  (SELECT count(*) FROM public.cash_reconciliation_adjustment_scope),
+ 'cash_reconciliation_projection_activation_latest_status',
+  (SELECT status FROM public.cash_reconciliation_projection_activation
+    ORDER BY revision DESC LIMIT 1),
+ 'company_transaction_confirmed_unassigned_count',(SELECT count(*) FROM (
+   SELECT DISTINCT ON (transaction_ref) transaction_ref,status,
+    reporting_item_code,reporting_item_revision
+   FROM public.company_transaction_classification
+   ORDER BY transaction_ref,revision DESC
+  ) current WHERE status='CONFIRMED'
+   AND (reporting_item_code IS NULL OR reporting_item_revision IS NULL))
+)::text;
+""".replace(
+        "__STATE_TABLES_SQL__", _CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES_SQL
+    )
+    .replace("__CLASSIFICATION_ROLES_SQL__", _COMPANY_TRANSACTION_CLASSIFICATION_ROLES_SQL)
+    .strip()
+)
 MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
     {
         ACCOUNT_REGISTRY_SECURITY_REVISION,
@@ -4048,6 +4171,27 @@ def _database_metadata(
                 "company transaction classification security query returned an incomplete object"
             )
         metadata.update(cast(dict[str, Any], company_classification_security))
+        if revision >= CASH_RECONCILIATION_CLASSIFICATION_REVISION:
+            classification_state = query(CASH_RECONCILIATION_CLASSIFICATION_STATE_SQL)
+            required_state_keys = {
+                "cash_reconciliation_classification_state_columns",
+                "cash_reconciliation_classification_state_constraints",
+                "cash_reconciliation_classification_state_table_acls",
+                "cash_reconciliation_classification_state_effective_privileges",
+                "company_transaction_reporting_item_row_count",
+                "company_transaction_reporting_item_match_row_count",
+                "cash_reconciliation_adjustment_row_count",
+                "cash_reconciliation_adjustment_scope_row_count",
+                "cash_reconciliation_projection_activation_latest_status",
+                "company_transaction_confirmed_unassigned_count",
+            }
+            if not isinstance(classification_state, dict) or set(classification_state) != (
+                required_state_keys
+            ):
+                raise BackupError(
+                    "cash reconciliation classification state query returned an incomplete object"
+                )
+            metadata.update(cast(dict[str, Any], classification_state))
     if revision >= "20260821_0003":
         artifact_sql = (
             R1_ARTIFACT_MANIFEST_SQL if revision >= "20260824_0012" else ARTIFACT_MANIFEST_SQL
@@ -6757,6 +6901,9 @@ def _validate_company_transaction_classification_security(
             ("internal_import", "resolve_company_transaction_reporting_item")
         )
         expected_function_signatures.pop(
+            ("internal_import", "activate_cash_reconciliation_single_source")
+        )
+        expected_function_signatures.pop(
             ("public", "r1_validate_company_transaction_reporting_item")
         )
         expected_function_signatures.pop(
@@ -6838,6 +6985,84 @@ def _validate_company_transaction_classification_security(
             )
         ):
             raise BackupError("restored company transaction reporting item triggers are invalid")
+        state_columns = _list("cash_reconciliation_classification_state_columns")
+        actual_state_columns = {
+            (item.get("table"), item.get("column")): (
+                item.get("data_type"),
+                item.get("not_null"),
+            )
+            for item in state_columns
+        }
+        expected_state_columns = {
+            (table_name, column_name): contract
+            for table_name, columns in CASH_RECONCILIATION_CLASSIFICATION_STATE_COLUMNS.items()
+            for column_name, contract in columns.items()
+        }
+        if (
+            actual_state_columns != expected_state_columns
+            or len(actual_state_columns) != len(state_columns)
+        ):
+            raise BackupError("restored cash reconciliation state columns are invalid")
+        state_constraints = _list("cash_reconciliation_classification_state_constraints")
+        constraint_contract = {(item.get("table"), item.get("type")) for item in state_constraints}
+        if (
+            any(item.get("validated") is not True for item in state_constraints)
+            or any(
+                (table_name, "p") not in constraint_contract
+                for table_name in CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES
+            )
+            or not {
+                ("company_transaction_reporting_item", "f"),
+                ("company_transaction_reporting_item_match", "f"),
+                ("cash_reconciliation_adjustment_scope", "f"),
+                ("cash_reconciliation_projection_activation", "c"),
+            }.issubset(constraint_contract)
+        ):
+            raise BackupError("restored cash reconciliation state constraints are invalid")
+        state_acls = _list("cash_reconciliation_classification_state_table_acls")
+        if any(
+            item.get("table") not in CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES
+            or item.get("grantee") != owner
+            or item.get("grantable") not in {False, "NO"}
+            for item in state_acls
+        ):
+            raise BackupError("restored cash reconciliation state ACLs are invalid")
+        state_privileges = _list("cash_reconciliation_classification_state_effective_privileges")
+        expected_state_privilege_keys = {
+            (role, table_name)
+            for role in R1_CONTROLLED_ROLES
+            for table_name in CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES
+            if any(item.get("role") == role for item in metadata.get("r1_role_matrix", []))
+        }
+        actual_state_privilege_keys = {
+            (item.get("role"), item.get("table")) for item in state_privileges
+        }
+        if (
+            actual_state_privilege_keys != expected_state_privilege_keys
+            or len(actual_state_privilege_keys) != len(state_privileges)
+            or any(
+                item.get(privilege) is not False
+                for item in state_privileges
+                for privilege in ("select", "insert", "update", "delete")
+            )
+        ):
+            raise BackupError("restored cash reconciliation state privileges are invalid")
+        reporting_item_count = metadata.get("company_transaction_reporting_item_row_count")
+        match_count = metadata.get("company_transaction_reporting_item_match_row_count")
+        adjustment_count = metadata.get("cash_reconciliation_adjustment_row_count")
+        adjustment_scope_count = metadata.get("cash_reconciliation_adjustment_scope_row_count")
+        if (
+            not isinstance(reporting_item_count, int)
+            or reporting_item_count < 17
+            or not isinstance(match_count, int)
+            or match_count < 8
+            or not isinstance(adjustment_count, int)
+            or adjustment_count < 0
+            or adjustment_scope_count != adjustment_count
+            or metadata.get("cash_reconciliation_projection_activation_latest_status") != "ACTIVE"
+            or metadata.get("company_transaction_confirmed_unassigned_count") != 0
+        ):
+            raise BackupError("restored cash reconciliation activation state is invalid")
     elif reporting_item_tables or reporting_item_triggers:
         raise BackupError("restored pre-0042 reporting item inventory is invalid")
     expected_functions = {
