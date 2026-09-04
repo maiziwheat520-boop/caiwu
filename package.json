@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
-    "lint": "eslint .",
-    "test": "vitest run"
+    "lint": "eslint . && node scripts/check-typography.mjs",
+    "test": "vitest run",
+    "check:typography": "node scripts/check-typography.mjs"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
