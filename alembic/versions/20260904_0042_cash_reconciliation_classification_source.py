@@ -25,20 +25,29 @@ def downgrade() -> None:
 
 _UPGRADE_SQL = r"""
 CREATE TABLE public.company_transaction_reporting_item (
-    item_code varchar(100) NOT NULL CHECK (btrim(item_code) <> ''),
-    revision integer NOT NULL CHECK (revision > 0),
-    status text NOT NULL CHECK (status IN ('ACTIVE','RETIRED')),
-    category_code varchar(64) NOT NULL CHECK (category_code IN (
+    item_code varchar(100) NOT NULL,
+    revision integer NOT NULL,
+    status text NOT NULL,
+    category_code varchar(64) NOT NULL,
+    item_label varchar(100) NOT NULL,
+    match_counterparty_name varchar(300),
+    audit_event_id uuid NOT NULL,
+    created_at timestamptz NOT NULL,
+    CONSTRAINT reporting_item_code_nonblank CHECK (btrim(item_code) <> ''),
+    CONSTRAINT reporting_item_revision_positive CHECK (revision > 0),
+    CONSTRAINT reporting_item_status_valid CHECK (status IN ('ACTIVE','RETIRED')),
+    CONSTRAINT reporting_item_category_valid CHECK (category_code IN (
         'PLATFORM_ROOM_REVENUE','RELATED_PARTY_CURRENT','PAYROLL','FINANCING',
         'BOTTLED_WATER','INTERNAL_TRANSFER','RENT','RENTAL_INCOME','BANK_INTEREST',
         'LINEN_LAUNDRY','OPERATING_FEE')),
-    item_label varchar(100) NOT NULL CHECK (btrim(item_label) <> ''),
-    match_counterparty_name varchar(300),
-    audit_event_id uuid NOT NULL REFERENCES public.audit_event(id),
-    created_at timestamptz NOT NULL,
-    PRIMARY KEY (item_code, revision),
-    UNIQUE (category_code, item_code, revision),
-    CHECK (match_counterparty_name IS NULL OR btrim(match_counterparty_name) <> '')
+    CONSTRAINT reporting_item_label_nonblank CHECK (btrim(item_label) <> ''),
+    CONSTRAINT reporting_item_match_nonblank CHECK (
+        match_counterparty_name IS NULL OR btrim(match_counterparty_name) <> ''),
+    CONSTRAINT reporting_item_audit_fk FOREIGN KEY (audit_event_id)
+        REFERENCES public.audit_event(id) ON DELETE RESTRICT,
+    CONSTRAINT reporting_item_pk PRIMARY KEY (item_code, revision),
+    CONSTRAINT reporting_item_category_version_uq
+        UNIQUE (category_code, item_code, revision)
 );
 CREATE FUNCTION public.r1_validate_company_transaction_reporting_item()
 RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
@@ -63,6 +72,8 @@ BEGIN
     RETURN NEW;
 END
 $function$;
+REVOKE ALL ON FUNCTION public.r1_validate_company_transaction_reporting_item()
+FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
 CREATE TRIGGER validate_company_transaction_reporting_item
 BEFORE INSERT ON public.company_transaction_reporting_item
 FOR EACH ROW EXECUTE FUNCTION public.r1_validate_company_transaction_reporting_item();
@@ -74,16 +85,25 @@ FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerb
 
 CREATE TABLE public.company_transaction_reporting_item_match (
     category_code varchar(64) NOT NULL,
-    match_field text NOT NULL CHECK (match_field IN ('COUNTERPARTY_NAME','TRANSACTION_NAME')),
-    match_mode text NOT NULL CHECK (match_mode IN ('EXACT','CONTAINS')),
-    match_value varchar(300) NOT NULL CHECK (btrim(match_value) <> ''),
+    match_field text NOT NULL,
+    match_mode text NOT NULL,
+    match_value varchar(300) NOT NULL,
     item_code varchar(100) NOT NULL,
     item_revision integer NOT NULL,
-    audit_event_id uuid NOT NULL REFERENCES public.audit_event(id),
+    audit_event_id uuid NOT NULL,
     created_at timestamptz NOT NULL,
-    PRIMARY KEY (category_code, match_field, match_mode, match_value),
-    FOREIGN KEY (category_code, item_code, item_revision)
+    CONSTRAINT reporting_item_match_field_valid CHECK (
+        match_field IN ('COUNTERPARTY_NAME','TRANSACTION_NAME')),
+    CONSTRAINT reporting_item_match_mode_valid CHECK (match_mode IN ('EXACT','CONTAINS')),
+    CONSTRAINT reporting_item_match_value_nonblank CHECK (btrim(match_value) <> ''),
+    CONSTRAINT reporting_item_match_pk
+        PRIMARY KEY (category_code, match_field, match_mode, match_value),
+    CONSTRAINT reporting_item_match_item_fk
+        FOREIGN KEY (category_code, item_code, item_revision)
         REFERENCES public.company_transaction_reporting_item(category_code, item_code, revision)
+        ON DELETE RESTRICT,
+    CONSTRAINT reporting_item_match_audit_fk FOREIGN KEY (audit_event_id)
+        REFERENCES public.audit_event(id) ON DELETE RESTRICT
 );
 CREATE FUNCTION public.r1_validate_company_transaction_reporting_item_match()
 RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
@@ -108,6 +128,8 @@ BEGIN
     RETURN NEW;
 END
 $function$;
+REVOKE ALL ON FUNCTION public.r1_validate_company_transaction_reporting_item_match()
+FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
 CREATE TRIGGER validate_company_transaction_reporting_item_match
 BEFORE INSERT ON public.company_transaction_reporting_item_match
 FOR EACH ROW EXECUTE FUNCTION public.r1_validate_company_transaction_reporting_item_match();
@@ -118,11 +140,20 @@ REVOKE ALL ON public.company_transaction_reporting_item_match
 FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
 
 CREATE TABLE public.cash_reconciliation_adjustment_scope (
-    adjustment_id uuid PRIMARY KEY REFERENCES public.cash_reconciliation_adjustment(adjustment_id),
-    entity_id uuid NOT NULL REFERENCES public.entity(id),
-    business_unit_id uuid NOT NULL REFERENCES public.business_unit(id),
-    audit_event_id uuid NOT NULL REFERENCES public.audit_event(id),
-    created_at timestamptz NOT NULL
+    adjustment_id uuid NOT NULL,
+    entity_id uuid NOT NULL,
+    business_unit_id uuid NOT NULL,
+    audit_event_id uuid NOT NULL,
+    created_at timestamptz NOT NULL,
+    CONSTRAINT adjustment_scope_pk PRIMARY KEY (adjustment_id),
+    CONSTRAINT adjustment_scope_adjustment_fk FOREIGN KEY (adjustment_id)
+        REFERENCES public.cash_reconciliation_adjustment(adjustment_id) ON DELETE RESTRICT,
+    CONSTRAINT adjustment_scope_entity_fk FOREIGN KEY (entity_id)
+        REFERENCES public.entity(id) ON DELETE RESTRICT,
+    CONSTRAINT adjustment_scope_business_unit_fk FOREIGN KEY (business_unit_id)
+        REFERENCES public.business_unit(id) ON DELETE RESTRICT,
+    CONSTRAINT adjustment_scope_audit_fk FOREIGN KEY (audit_event_id)
+        REFERENCES public.audit_event(id) ON DELETE RESTRICT
 );
 CREATE FUNCTION public.r1_validate_cash_reconciliation_adjustment_scope()
 RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
@@ -149,6 +180,8 @@ BEGIN
     RETURN NEW;
 END
 $function$;
+REVOKE ALL ON FUNCTION public.r1_validate_cash_reconciliation_adjustment_scope()
+FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
 CREATE TRIGGER validate_cash_reconciliation_adjustment_scope
 BEFORE INSERT ON public.cash_reconciliation_adjustment_scope
 FOR EACH ROW EXECUTE FUNCTION public.r1_validate_cash_reconciliation_adjustment_scope();
@@ -159,10 +192,15 @@ REVOKE ALL ON public.cash_reconciliation_adjustment_scope
 FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
 
 CREATE TABLE public.cash_reconciliation_projection_activation (
-    revision integer PRIMARY KEY CHECK (revision > 0),
-    status text NOT NULL CHECK (status IN ('PENDING','ACTIVE')),
-    audit_event_id uuid NOT NULL REFERENCES public.audit_event(id),
-    created_at timestamptz NOT NULL
+    revision integer NOT NULL,
+    status text NOT NULL,
+    audit_event_id uuid NOT NULL,
+    created_at timestamptz NOT NULL,
+    CONSTRAINT projection_activation_pk PRIMARY KEY (revision),
+    CONSTRAINT projection_activation_revision_positive CHECK (revision > 0),
+    CONSTRAINT projection_activation_status_valid CHECK (status IN ('PENDING','ACTIVE')),
+    CONSTRAINT projection_activation_audit_fk FOREIGN KEY (audit_event_id)
+        REFERENCES public.audit_event(id) ON DELETE RESTRICT
 );
 CREATE FUNCTION public.r1_validate_cash_reconciliation_projection_activation()
 RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
@@ -210,6 +248,8 @@ BEGIN
     RETURN NEW;
 END
 $function$;
+REVOKE ALL ON FUNCTION public.r1_validate_cash_reconciliation_projection_activation()
+FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
 CREATE TRIGGER validate_cash_reconciliation_projection_activation
 BEFORE INSERT ON public.cash_reconciliation_projection_activation
 FOR EACH ROW EXECUTE FUNCTION public.r1_validate_cash_reconciliation_projection_activation();
@@ -353,7 +393,8 @@ ALTER TABLE public.company_transaction_classification
             AND reporting_item_revision > 0)),
     ADD CONSTRAINT company_transaction_classification_reporting_item_fk
         FOREIGN KEY (category_code, reporting_item_code, reporting_item_revision)
-        REFERENCES public.company_transaction_reporting_item(category_code, item_code, revision);
+        REFERENCES public.company_transaction_reporting_item(category_code, item_code, revision)
+        ON DELETE RESTRICT;
 ALTER TABLE public.company_transaction_classification
     DROP CONSTRAINT company_transaction_classification_source_check;
 ALTER TABLE public.company_transaction_classification
@@ -1220,6 +1261,29 @@ REVOKE ALL ON FUNCTION internal_read.cash_reconciliation_month_v2(date, uuid[], 
 FROM PUBLIC, ledgerbridge_api, ledgerbridge_worker;
 GRANT EXECUTE ON FUNCTION internal_read.cash_reconciliation_month_v2(date, uuid[], uuid[])
 TO ledgerbridge_reader;
+
+REVOKE ALL ON FUNCTION public.r1_validate_company_transaction_classification()
+FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
+REVOKE ALL ON FUNCTION internal_import.seed_company_transaction_classification(
+    uuid,uuid,text,text,text,text,text)
+FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_app;
+GRANT EXECUTE ON FUNCTION internal_import.seed_company_transaction_classification(
+    uuid,uuid,text,text,text,text,text) TO ledgerbridge_worker;
+REVOKE ALL ON FUNCTION internal_command.review_company_transaction_classification(
+    uuid,uuid,uuid,uuid,text,text,integer,text,text)
+FROM PUBLIC, ledgerbridge_reader, ledgerbridge_worker, ledgerbridge_app;
+GRANT EXECUTE ON FUNCTION internal_command.review_company_transaction_classification(
+    uuid,uuid,uuid,uuid,text,text,integer,text,text) TO ledgerbridge_api;
+REVOKE ALL ON FUNCTION internal_read.list_company_transaction_classifications_as_of(
+    uuid,text,bigint,bytea,integer)
+FROM PUBLIC, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
+GRANT EXECUTE ON FUNCTION internal_read.list_company_transaction_classifications_as_of(
+    uuid,text,bigint,bytea,integer) TO ledgerbridge_reader;
+REVOKE ALL ON FUNCTION internal_read.get_company_transaction_classification_summary_as_of(
+    uuid,date,date,bigint,bytea)
+FROM PUBLIC, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
+GRANT EXECUTE ON FUNCTION internal_read.get_company_transaction_classification_summary_as_of(
+    uuid,date,date,bigint,bytea) TO ledgerbridge_reader;
 """
 
 

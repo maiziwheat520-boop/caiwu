@@ -21,6 +21,7 @@ from scripts.backfill_company_transaction_classifications import (
 )
 from scripts.backup_restore import (
     CASH_RECONCILIATION_CLASSIFICATION_STATE_COLUMNS,
+    CASH_RECONCILIATION_CLASSIFICATION_STATE_CONSTRAINTS,
     CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES,
     COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS,
     COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_RESULTS,
@@ -158,24 +159,18 @@ def _restore_metadata() -> dict[str, object]:
             for column, (data_type, not_null) in columns.items()
         ],
         "cash_reconciliation_classification_state_constraints": [
-            {"table": table, "name": f"{table}_pkey", "type": "p", "validated": True}
-            for table in CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES
-        ]
-        + [
-            {"table": table, "name": f"{table}_fk", "type": "f", "validated": True}
-            for table in (
-                "company_transaction_reporting_item",
-                "company_transaction_reporting_item_match",
-                "cash_reconciliation_adjustment_scope",
-            )
-        ]
-        + [
             {
-                "table": "cash_reconciliation_projection_activation",
-                "name": "activation_check",
-                "type": "c",
+                "table": table,
+                "name": name,
+                "type": constraint_type,
                 "validated": True,
+                "deferrable": False,
+                "initially_deferred": False,
+                "definition": definition,
             }
+            for (table, name), (constraint_type, definition) in (
+                CASH_RECONCILIATION_CLASSIFICATION_STATE_CONSTRAINTS.items()
+            )
         ],
         "cash_reconciliation_classification_state_table_acls": [
             {
@@ -306,6 +301,36 @@ def test_restore_inventory_covers_classification_facts_and_privileges() -> None:
     }
     with pytest.raises(BackupError, match="table privilege matrix"):
         _validate_company_transaction_classification_security(drifted)
+
+
+@pytest.mark.parametrize("drift", ["remove", "definition", "deferrable"])
+def test_restore_inventory_rejects_reporting_item_constraint_drift(drift: str) -> None:
+    metadata = _restore_metadata()
+    constraints = metadata["cash_reconciliation_classification_state_constraints"]
+    assert isinstance(constraints, list)
+    target = next(
+        item
+        for item in constraints
+        if item["name"] == "reporting_item_match_item_fk"
+    )
+    if drift == "remove":
+        changed = [item for item in constraints if item is not target]
+    elif drift == "definition":
+        changed = [
+            {**item, "definition": "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id)"}
+            if item is target
+            else item
+            for item in constraints
+        ]
+    else:
+        changed = [
+            {**item, "deferrable": True} if item is target else item
+            for item in constraints
+        ]
+    metadata["cash_reconciliation_classification_state_constraints"] = changed
+
+    with pytest.raises(BackupError, match="state constraints"):
+        _validate_company_transaction_classification_security(metadata)
 
 
 def test_approved_rule_precedence_and_exact_related_party_match() -> None:
