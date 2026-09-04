@@ -22,7 +22,7 @@ export function CompanyBankStatementReviewPanel({ csrfToken }: { csrfToken: stri
     setError(null)
     try {
       const result = await api.getCompanyBankStatements()
-      if (result.statements.length !== 7 || new Set(result.statements.map((item) => item.statement_ref)).size !== 7) {
+      if (result.statements.length !== 8 || new Set(result.statements.map((item) => item.statement_ref)).size !== 8) {
         throw new Error('公司账单清单不完整')
       }
       setData(result)
@@ -62,7 +62,7 @@ export function CompanyBankStatementReviewPanel({ csrfToken }: { csrfToken: stri
   return (
     <section className="panel company-bank-review" aria-label="公司账单确认">
       <div className="panel-heading">
-        <div><h2>公司账单确认</h2><p>7 份正式账单逐项确认；公司归属由服务端固定，不接受页面传入。</p></div>
+        <div><h2>公司账单确认</h2><p>7 家公司、8 份正式账单逐项确认；公司归属由服务端固定，不接受页面传入。</p></div>
         <div className="company-bank-review-actions">
           <Badge color={pending > 0 ? 'amber' : 'green'}>{pending > 0 ? `待确认 ${pending}` : '全部已确认'}</Badge>
           {data && pending === 0 ? (
