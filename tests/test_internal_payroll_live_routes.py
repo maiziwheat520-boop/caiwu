@@ -20,12 +20,17 @@ from ledgerbridge.internal_payroll_assertion import (
 from ledgerbridge.internal_payroll_routes import (
     InMemoryPayrollAssertionReplayStore,
     get_payroll_assertion_replay_store,
+    get_payroll_disbursement_read_model,
     get_payroll_live_source,
     get_payroll_test_workspace_source,
     router,
 )
 from ledgerbridge.internal_read_auth import get_internal_read_principal
 from ledgerbridge.internal_read_contract import Capability, EntityGrant, WorkloadPrincipal
+from ledgerbridge.payroll_disbursement_read_model import (
+    PayrollDisbursementRecordPage,
+    PayrollDisbursementSourceRecord,
+)
 from ledgerbridge.payroll_integration import (
     PayrollIntegrationError,
     PayrollLiveRead,
@@ -33,6 +38,7 @@ from ledgerbridge.payroll_integration import (
 )
 
 ENTITY = UUID("10000000-0000-4000-8000-000000000001")
+SOURCE_ENTITY = UUID("10000000-0000-4000-8000-000000000002")
 COMPANY = "company_live_hotel"
 WORKLOAD = "workload:payroll-live-route-test"
 BFF_KEY = b"b" * 32
@@ -181,6 +187,51 @@ class _TestWorkspaceSource:
         return self._result("legacy_command", **kwargs)
 
 
+class _DisbursementReadModel:
+    def __init__(self) -> None:
+        self.calls: list[tuple[WorkloadPrincipal, str, tuple[UUID, ...]]] = []
+
+    def list_for_period(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        pay_period: str,
+        source_entity_refs: tuple[UUID, ...],
+    ) -> PayrollDisbursementRecordPage:
+        self.calls.append((principal, pay_period, source_entity_refs))
+        record = PayrollDisbursementSourceRecord(
+            record_ref=UUID("20000000-0000-4000-8000-000000000001"),
+            entity_ref=SOURCE_ENTITY,
+            company_name="示例公司",
+            pay_period=pay_period,
+            occurred_at=datetime(2026, 8, 20, tzinfo=UTC),
+            actual_amount_minor=5_000_00,
+            direction="OUTFLOW",
+            source_channel="MYBANK",
+            source_system="mybank_statement_v1",
+            source_artifact_ref=UUID("30000000-0000-4000-8000-000000000001"),
+            source_statement_ref=UUID("40000000-0000-4000-8000-000000000001"),
+            source_row_number=7,
+            ingested_at=datetime(2026, 8, 21, tzinfo=UTC),
+            managed_account_ref=UUID("50000000-0000-4000-8000-000000000001"),
+            disbursement_account_masked="****1234",
+            counterparty_name="批量代发",
+            counterparty_account_masked=None,
+            transaction_name="批量代发",
+            classification_revision=1,
+            classification_source="AUTO_RULE",
+            classification_rule_version="company-payroll-autoclassifier.2026-09.v1",
+            link_status="UNMATCHED",
+        )
+        return PayrollDisbursementRecordPage(
+            pay_period=pay_period,
+            source_artifact_count=1,
+            record_count=1,
+            unmatched_count=1,
+            records=(record,),
+        )
+
+
 def _settings(*, commands: bool = True) -> Settings:
     return Settings(
         env="test",
@@ -192,6 +243,7 @@ def _settings(*, commands: bool = True) -> Settings:
         enable_payroll_integration=True,
         payroll_base_url="http://127.0.0.1:4318",
         payroll_company_mapping={COMPANY: ENTITY},
+        payroll_disbursement_source_entities={COMPANY: (SOURCE_ENTITY,)},
         payroll_bff_user_assertion_key=SecretStr(BFF_KEY.decode()),
         payroll_bff_user_assertion_issuer="web-test",
         payroll_bff_user_assertion_audience="core-test",
@@ -317,6 +369,41 @@ def test_five_live_reads_require_request_bound_human_assertions() -> None:
         revisions.add((payload["data"]["projection_revision"], payload["data"]["etag"]))
     assert len(revisions) == 1
     assert len(source.calls) == 5
+
+
+def test_disbursement_records_read_configured_persisted_source_scope() -> None:
+    app = FastAPI()
+    app.include_router(router)
+    model = _DisbursementReadModel()
+    app.dependency_overrides[get_settings] = lambda: _settings()
+    app.dependency_overrides[get_internal_read_principal] = _principal
+    app.dependency_overrides[get_payroll_assertion_replay_store] = lambda: (
+        InMemoryPayrollAssertionReplayStore()
+    )
+    app.dependency_overrides[get_payroll_disbursement_read_model] = lambda: model
+    client = TestClient(app)
+    path = "/internal/v1/payroll/disbursement-records/2026-07"
+
+    response = client.get(
+        path,
+        headers={
+            "X-LedgerBridge-User-Assertion": _assertion(
+                path=path,
+                action="payroll.disbursement-records.read",
+                resource_ref="payroll-disbursement-records:2026-07",
+            )
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["data"]["schema_version"] == (
+        "ledgerbridge.payroll-disbursement-records.v1"
+    )
+    assert payload["data"]["record_count"] == 1
+    assert payload["data"]["records"][0]["parse_status"] == "PARSED"
+    assert payload["data"]["records"][0]["link_status"] == "UNMATCHED"
+    assert model.calls == [(_principal(), "2026-07", (SOURCE_ENTITY,))]
 
 
 def test_receipt_verification_translates_only_server_controlled_provider_fields() -> None:

@@ -29,6 +29,7 @@ PayrollAction = Literal[
     "payroll.material.read",
     "payroll.batches.list",
     "payroll.verification.list",
+    "payroll.disbursement-records.read",
     "payroll.material.review",
     "payroll.batch.submit-review",
     "payroll.batch.review",
