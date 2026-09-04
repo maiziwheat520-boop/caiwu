@@ -151,13 +151,27 @@ def test_parser_adapts_ccb_date_precision_and_source_fields_without_semantic_ove
     assert len(statement.parser_facts_sha256) == 64
 
 
+def test_parser_accepts_empty_days_at_the_declared_period_boundaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _rows()
+    rows[1][5] = "起始日期:20260428"
+    rows[1][7] = "结束日期:20260606"
+
+    _, statement = _parse(tmp_path, monkeypatch, rows)
+
+    assert statement.period_start == date(2026, 5, 1)
+    assert statement.period_end == date(2026, 6, 3)
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
         (lambda rows: rows[1].__setitem__(1, "卡号/账号:0000000000000009999"), "managed account"),
         (lambda rows: rows[3].__setitem__(1, "交易说明"), "header"),
         (lambda rows: rows[5].__setitem__(0, "3"), "sequence"),
-        (lambda rows: rows[5].__setitem__(4, "20260502"), "metadata period"),
+        (lambda rows: rows[4].__setitem__(4, "20260430"), "metadata period"),
         (lambda rows: rows[5].__setitem__(6, "not-money"), "balance"),
     ],
 )

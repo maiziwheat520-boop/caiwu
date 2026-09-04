@@ -164,8 +164,8 @@ def parse_ccb_personal_xls(
     dates = [item.occurred_at.date() for item in transactions]
     if dates != sorted(dates):
         raise CcbStatementError("statement transactions are not date ordered")
-    if metadata_start != dates[0] or metadata_end != dates[-1]:
-        raise CcbStatementError("statement metadata period does not match its transactions")
+    if dates[0] < metadata_start or dates[-1] > metadata_end:
+        raise CcbStatementError("statement transactions fall outside the metadata period")
 
     months = Counter(item.strftime("%Y-%m") for item in dates)
     summary_set_sha256 = _set_digest(
