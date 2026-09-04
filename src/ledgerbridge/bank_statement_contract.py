@@ -22,6 +22,7 @@ class BankStatementParserProfile(StrEnum):
     MYBANK_COMPANY_RANGE_XLSX_V3 = "mybank_company_range_xlsx_v3"
     CCB_PERSONAL_XLS_V1 = "ccb_personal_xls_v1"
     BOC_PERSONAL_PDF_V1 = "boc_personal_pdf_v1"
+    BOC_COMPANY_XLS_V1 = "boc_company_xls_v1"
     ABC_PERSONAL_PDF_V1 = "abc_personal_pdf_v1"
     ABC_COMPANY_XLS_V1 = "abc_company_xls_v1"
 
@@ -76,6 +77,14 @@ BOC_PERSONAL_PDF_V1: Final = BankStatementParserSpec(
     display_extension=".pdf",
     allowed_owner_kinds=frozenset({"PERSON"}),
 )
+BOC_COMPANY_XLS_V1: Final = BankStatementParserSpec(
+    profile=BankStatementParserProfile.BOC_COMPANY_XLS_V1,
+    institution_code="boc",
+    source_system="boc_company_xls_export",
+    declared_media_type="application/vnd.ms-excel",
+    display_extension=".xls",
+    allowed_owner_kinds=frozenset({"COMPANY"}),
+)
 ABC_PERSONAL_PDF_V1: Final = BankStatementParserSpec(
     profile=BankStatementParserProfile.ABC_PERSONAL_PDF_V1,
     institution_code="abc",
@@ -101,6 +110,7 @@ _SPECS: Final = {
         MYBANK_COMPANY_RANGE_XLSX_V3,
         CCB_PERSONAL_XLS_V1,
         BOC_PERSONAL_PDF_V1,
+        BOC_COMPANY_XLS_V1,
         ABC_PERSONAL_PDF_V1,
         ABC_COMPANY_XLS_V1,
     )
@@ -162,6 +172,7 @@ class BankStatement:
             in {
                 BankStatementParserProfile.CCB_PERSONAL_XLS_V1,
                 BankStatementParserProfile.BOC_PERSONAL_PDF_V1,
+                BankStatementParserProfile.BOC_COMPANY_XLS_V1,
                 BankStatementParserProfile.ABC_PERSONAL_PDF_V1,
                 BankStatementParserProfile.MYBANK_COMPANY_DAILY_XLSX_V2,
                 BankStatementParserProfile.MYBANK_COMPANY_RANGE_XLSX_V3,
