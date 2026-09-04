@@ -152,6 +152,64 @@ describe('PayrollLegacyWorkbench', () => {
     }))
   })
 
+  it('can generate a newly selected period when an older payroll batch already exists', async () => {
+    const previousPeriodWorkspace = structuredClone(legacyWorkspace)
+    previousPeriodWorkspace.active_period = '2026-07'
+    previousPeriodWorkspace.batches[0].period = '2026-07'
+    previousPeriodWorkspace.batches[0].batch_id = 'payroll_history_through_2026_08_2026_07'
+    previousPeriodWorkspace.batches[0].supporting_material_ids = {
+      attendance: 'material_attendance_2026_07',
+      aunt_attendance: 'material_aunt_2026_07',
+      review_statistics: 'material_review_2026_07',
+    }
+    mockRead(previousPeriodWorkspace)
+    vi.spyOn(api, 'runPayrollLegacyCommand').mockResolvedValue(commandResult(
+      'GENERATE_MONTHLY_PAYROLL',
+      previousPeriodWorkspace,
+    ))
+
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" confirmedMaterials={{
+      period: '2026-08', material_ids: {
+        attendance: 'material_attendance_2026_08', aunt_attendance: 'material_aunt_2026_08',
+        review_statistics: 'material_review_2026_08',
+      },
+    }} />)
+
+    const overview = await screen.findByRole('region', { name: '工资概览' })
+    expect(within(overview).getByText('待生成')).toBeInTheDocument()
+    expect(within(overview).getByText('1/3')).toBeInTheDocument()
+    await screen.findByRole('button', { name: '确认并生成当月工资表' })
+    fireEvent.click(screen.getByRole('button', { name: '确认并生成当月工资表' }))
+    await waitFor(() => expect(api.runPayrollLegacyCommand).toHaveBeenCalledWith({
+      action: 'GENERATE_MONTHLY_PAYROLL', expectedRevision: 1,
+      payload: { period: '2026-08', supporting_material_ids: {
+        attendance: 'material_attendance_2026_08', aunt_attendance: 'material_aunt_2026_08',
+        review_statistics: 'material_review_2026_08',
+      }, adjustments: [], pending_resolutions: [] }, csrfToken: 'csrf-test',
+    }))
+  })
+
+  it('restores the selected generated period instead of opening an older active batch', async () => {
+    const restoredWorkspace = structuredClone(legacyWorkspace)
+    const julyBatch = structuredClone(legacyWorkspace.batches[0])
+    julyBatch.period = '2026-07'
+    julyBatch.batch_id = 'payroll_history_through_2026_08_2026_07'
+    julyBatch.lines[0].employee_id = 'emp_july_001'
+    julyBatch.lines[0].employee_name = '七月示例员工'
+    julyBatch.lines[0].account_id = 'acct_july_001'
+    restoredWorkspace.active_period = '2026-07'
+    restoredWorkspace.batches = [julyBatch, restoredWorkspace.batches[0]]
+    mockRead(restoredWorkspace)
+
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
+
+    const flow = await screen.findByRole('region', { name: '本月工资处理进度' })
+    expect(within(flow).getByText('物料确认').closest('div')).toHaveClass('done')
+    fireEvent.click(within(flow).getByRole('button', { name: '进入发放复核' }))
+    expect(await screen.findByLabelText('emp_preview_001实际到账金额')).toBeInTheDocument()
+    expect(screen.queryByLabelText('emp_july_001实际到账金额')).not.toBeInTheDocument()
+  })
+
   it('shows five payroll-list previews and the wage-disbursement table', async () => {
     mockRead()
     render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
