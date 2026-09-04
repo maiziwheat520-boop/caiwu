@@ -53,7 +53,7 @@ def _report_identity() -> CompanyReportIdentityInput:
         certificate_serial="81B10A3D",
         principal_ref="workload:ledgerbridge-company-reports",
         san_uri="spiffe://ledgerbridge.local/web/company-reports",
-        grants=tuple(_grant(ordinal) for ordinal in range(1, 7)),
+        grants=tuple(_grant(ordinal) for ordinal in range(1, 8)),
     )
 
 
@@ -73,7 +73,7 @@ def test_builder_preserves_primary_authority_and_isolates_company_reports() -> N
     assert primary.principal.policy_generation == 6
     assert report.certificate_serial == "81B10A3D"
     assert report.principal.capabilities == frozenset({Capability.COMPANY_REPORT_READ})
-    assert len(report.principal.grants) == 6
+    assert len(report.principal.grants) == 7
     assert not report.principal.capabilities & {
         Capability.CANDIDATE_READ,
         Capability.CANDIDATE_DECIDE,
@@ -105,22 +105,22 @@ def test_builder_rejects_generation_drift_and_certificate_reuse() -> None:
         )
 
 
-def test_report_identity_requires_exactly_six_bound_company_grants() -> None:
-    with pytest.raises(ValueError, match="at least 6 items"):
+def test_report_identity_requires_exactly_seven_bound_company_grants() -> None:
+    with pytest.raises(ValueError, match="at least 7 items"):
         CompanyReportIdentityInput(
             certificate_serial="81B10A3D",
             principal_ref="workload:ledgerbridge-company-reports",
             san_uri="spiffe://ledgerbridge.local/web/company-reports",
-            grants=tuple(_grant(ordinal) for ordinal in range(1, 6)),
+            grants=tuple(_grant(ordinal) for ordinal in range(1, 7)),
         )
 
 
-    with pytest.raises(ValueError, match="at most 6 items"):
+    with pytest.raises(ValueError, match="at most 7 items"):
         CompanyReportIdentityInput(
             certificate_serial="81B10A3D",
             principal_ref="workload:ledgerbridge-company-reports",
             san_uri="spiffe://ledgerbridge.local/web/company-reports",
-            grants=tuple(_grant(ordinal) for ordinal in range(1, 8)),
+            grants=tuple(_grant(ordinal) for ordinal in range(1, 9)),
         )
     with pytest.raises(ValueError, match="immutable reporting-unit bindings"):
         CompanyReportIdentityInput(
@@ -133,7 +133,7 @@ def test_report_identity_requires_exactly_six_bound_company_grants() -> None:
                         entity_ref=UUID("10000000-0000-4000-8000-000000000001"),
                         allow_unassigned_candidates=True,
                     ),
-                    *[_grant(ordinal) for ordinal in range(2, 7)],
+                    *[_grant(ordinal) for ordinal in range(2, 8)],
                 ]
             ),
         )

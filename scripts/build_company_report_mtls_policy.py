@@ -26,7 +26,7 @@ from ledgerbridge.production_mtls import (
 )
 
 MAX_REPORT_IDENTITY_BYTES = 64 * 1024
-EXPECTED_REPORT_COMPANIES = 6
+EXPECTED_REPORT_COMPANIES = 7
 
 
 class CompanyReportPolicyError(RuntimeError):
