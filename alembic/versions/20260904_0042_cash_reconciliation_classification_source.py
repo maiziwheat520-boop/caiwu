@@ -40,9 +40,6 @@ CREATE TABLE public.company_transaction_reporting_item (
     UNIQUE (category_code, item_code, revision),
     CHECK (match_counterparty_name IS NULL OR btrim(match_counterparty_name) <> '')
 );
-CREATE UNIQUE INDEX company_transaction_reporting_item_active_match_uq
-    ON public.company_transaction_reporting_item(category_code, match_counterparty_name)
-    WHERE status = 'ACTIVE' AND match_counterparty_name IS NOT NULL;
 CREATE FUNCTION public.r1_validate_company_transaction_reporting_item()
 RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
 AS $function$
@@ -116,6 +113,81 @@ FOR EACH ROW EXECUTE FUNCTION public.r1_bank_statement_append_only();
 REVOKE ALL ON public.company_transaction_reporting_item_match
 FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
 
+CREATE TABLE public.cash_reconciliation_adjustment_scope (
+    adjustment_id uuid PRIMARY KEY REFERENCES public.cash_reconciliation_adjustment(adjustment_id),
+    entity_id uuid NOT NULL REFERENCES public.entity(id),
+    business_unit_id uuid NOT NULL REFERENCES public.business_unit(id),
+    audit_event_id uuid NOT NULL REFERENCES public.audit_event(id),
+    created_at timestamptz NOT NULL
+);
+CREATE FUNCTION public.r1_validate_cash_reconciliation_adjustment_scope()
+RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+AS $function$
+DECLARE v_payload jsonb; v_action text; v_rule text; v_time timestamptz;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.business_unit unit
+        WHERE unit.id = NEW.business_unit_id AND unit.entity_id = NEW.entity_id) THEN
+        RAISE EXCEPTION 'cash reconciliation adjustment scope crosses entity boundary'
+            USING ERRCODE = '23514';
+    END IF;
+    SELECT payload, action, rule_version, occurred_at
+      INTO v_payload, v_action, v_rule, v_time
+      FROM public.audit_event WHERE id = NEW.audit_event_id;
+    IF v_action IS DISTINCT FROM 'cash_reconciliation_adjustment_scope.record'
+       OR v_rule IS DISTINCT FROM 'ledgerbridge.cash-reconciliation-adjustment-scope.v1'
+       OR v_payload->>'adjustment_id' IS DISTINCT FROM NEW.adjustment_id::text
+       OR v_payload->>'entity_id' IS DISTINCT FROM NEW.entity_id::text
+       OR v_payload->>'business_unit_id' IS DISTINCT FROM NEW.business_unit_id::text
+       OR v_time IS DISTINCT FROM NEW.created_at THEN
+        RAISE EXCEPTION 'cash reconciliation adjustment scope audit binding is invalid'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END
+$function$;
+CREATE TRIGGER validate_cash_reconciliation_adjustment_scope
+BEFORE INSERT ON public.cash_reconciliation_adjustment_scope
+FOR EACH ROW EXECUTE FUNCTION public.r1_validate_cash_reconciliation_adjustment_scope();
+CREATE TRIGGER cash_reconciliation_adjustment_scope_append_only
+BEFORE UPDATE OR DELETE ON public.cash_reconciliation_adjustment_scope
+FOR EACH ROW EXECUTE FUNCTION public.r1_bank_statement_append_only();
+REVOKE ALL ON public.cash_reconciliation_adjustment_scope
+FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
+
+CREATE TABLE public.cash_reconciliation_projection_activation (
+    revision integer PRIMARY KEY CHECK (revision > 0),
+    status text NOT NULL CHECK (status IN ('PENDING','ACTIVE')),
+    audit_event_id uuid NOT NULL REFERENCES public.audit_event(id),
+    created_at timestamptz NOT NULL
+);
+CREATE FUNCTION public.r1_validate_cash_reconciliation_projection_activation()
+RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog
+AS $function$
+DECLARE v_payload jsonb; v_action text; v_rule text; v_time timestamptz;
+BEGIN
+    SELECT payload, action, rule_version, occurred_at
+      INTO v_payload, v_action, v_rule, v_time
+      FROM public.audit_event WHERE id = NEW.audit_event_id;
+    IF v_action IS DISTINCT FROM 'cash_reconciliation_projection_activation.record'
+       OR v_rule IS DISTINCT FROM 'ledgerbridge.cash-reconciliation-projection-activation.v1'
+       OR v_payload->>'revision' IS DISTINCT FROM NEW.revision::text
+       OR v_payload->>'status' IS DISTINCT FROM NEW.status
+       OR v_time IS DISTINCT FROM NEW.created_at THEN
+        RAISE EXCEPTION 'cash reconciliation projection activation audit binding is invalid'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END
+$function$;
+CREATE TRIGGER validate_cash_reconciliation_projection_activation
+BEFORE INSERT ON public.cash_reconciliation_projection_activation
+FOR EACH ROW EXECUTE FUNCTION public.r1_validate_cash_reconciliation_projection_activation();
+CREATE TRIGGER cash_reconciliation_projection_activation_append_only
+BEFORE UPDATE OR DELETE ON public.cash_reconciliation_projection_activation
+FOR EACH ROW EXECUTE FUNCTION public.r1_bank_statement_append_only();
+REVOKE ALL ON public.cash_reconciliation_projection_activation
+FROM PUBLIC, ledgerbridge_reader, ledgerbridge_api, ledgerbridge_worker, ledgerbridge_app;
+
 DO $seed$
 DECLARE v_item record; v_audit uuid;
 BEGIN
@@ -125,11 +197,18 @@ BEGIN
         ('CTRIP','PLATFORM_ROOM_REVENUE','携程'),
         ('PAYROLL','PAYROLL','工资'),
         ('FINANCING','FINANCING','融资'),
-        ('BOTTLED_WATER','BOTTLED_WATER','桶装水'),
-        ('INTERNAL_TRANSFER','INTERNAL_TRANSFER','内部转账'),
+        ('BOTTLED_WATER','BOTTLED_WATER','瓶装水'),
+        ('INTERNAL_TRANSFER','INTERNAL_TRANSFER','内部资金归集'),
         ('RENT','RENT','房租'),
         ('BANK_INTEREST','BANK_INTEREST','银行利息'),
         ('LINEN_LAUNDRY','LINEN_LAUNDRY','布草洗涤')
+        ,('WENJIE_RENT','RENTAL_INCOME','文杰房租')
+        ,('XINHUA_DORM_RENT_UTILITIES','RENTAL_INCOME','新华宿舍房租水电')
+        ,('MOONCAKE','OPERATING_FEE','月饼')
+        ,('HOTEL_SUPPLIES','OPERATING_FEE','酒店用品')
+        ,('FRESH_FOOD','OPERATING_FEE','生鲜')
+        ,('INSURANCE','OPERATING_FEE','保险费')
+        ,('OPERATING_FEE','OPERATING_FEE','运营费')
     ) AS seeded(item_code, category_code, item_label)
     LOOP
         v_audit := public.append_audit_event(
@@ -149,6 +228,21 @@ BEGIN
     END LOOP;
 END
 $seed$;
+
+DO $activation$
+DECLARE v_audit uuid;
+BEGIN
+    v_audit := public.append_audit_event(
+        'migration:20260904_0042', 'cash_reconciliation_projection_activation.record',
+        'Hold single-source projection until controlled backfill commits.',
+        'ledgerbridge.cash-reconciliation-projection-activation.v1',
+        jsonb_build_object('revision', 1, 'status', 'PENDING'));
+    INSERT INTO public.cash_reconciliation_projection_activation(
+        revision, status, audit_event_id, created_at)
+    VALUES (1, 'PENDING', v_audit,
+        (SELECT occurred_at FROM public.audit_event WHERE id = v_audit));
+END
+$activation$;
 
 ALTER TABLE public.company_transaction_classification
     ADD COLUMN reporting_item_code varchar(100),
@@ -263,9 +357,12 @@ BEGIN
         v_code := 'COUNTERPARTY:' || btrim(v_transaction.counterparty_name);
         PERFORM pg_advisory_xact_lock(hashtextextended(
             p_category_code || ':' || v_code, 0));
-        IF NOT EXISTS (SELECT 1 FROM public.company_transaction_reporting_item
-            WHERE category_code = p_category_code AND item_code = v_code
-              AND status = 'ACTIVE') THEN
+        IF NOT EXISTS (SELECT 1 FROM public.company_transaction_reporting_item item
+            WHERE item.category_code = p_category_code AND item.item_code = v_code
+              AND item.revision = (SELECT max(latest.revision)
+                  FROM public.company_transaction_reporting_item latest
+                 WHERE latest.item_code = item.item_code)
+              AND item.status = 'ACTIVE') THEN
             v_audit := public.append_audit_event(
                 p_actor_ref, 'company_transaction_reporting_item.record', p_reason,
                 'ledgerbridge.company-transaction-reporting-item.v1',
@@ -286,6 +383,9 @@ BEGIN
     SELECT registry.item_code::text, registry.revision
       FROM public.company_transaction_reporting_item registry
      WHERE registry.category_code = p_category_code
+       AND registry.revision = (SELECT max(latest.revision)
+            FROM public.company_transaction_reporting_item latest
+           WHERE latest.item_code = registry.item_code)
        AND registry.status = 'ACTIVE'
        AND (registry.item_code = v_fixed_code OR (v_fixed_code IS NULL AND (
             registry.match_counterparty_name IS NOT DISTINCT FROM v_transaction.counterparty_name
@@ -364,8 +464,14 @@ BEGIN
       FROM public.company_transaction_reporting_item registry
      WHERE registry.category_code = p_expected_category_code
        AND registry.item_code = p_reporting_item_code
-       AND registry.status = 'ACTIVE'
      ORDER BY registry.revision DESC LIMIT 1;
+    IF v_item_revision IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM public.company_transaction_reporting_item registry
+         WHERE registry.category_code = p_expected_category_code
+           AND registry.item_code = p_reporting_item_code
+           AND registry.revision = v_item_revision AND registry.status = 'ACTIVE') THEN
+        v_item_revision := NULL;
+    END IF;
     IF v_item_revision IS NULL THEN
         RAISE EXCEPTION 'company transaction reporting item is not active for category'
             USING ERRCODE = 'LB003';
@@ -621,6 +727,12 @@ BEGIN
         RAISE EXCEPTION 'cash reconciliation business-unit scope is outside entity scope'
             USING ERRCODE = '22023';
     END IF;
+    IF (SELECT activation.status
+          FROM public.cash_reconciliation_projection_activation activation
+         ORDER BY activation.revision DESC LIMIT 1) IS DISTINCT FROM 'ACTIVE' THEN
+        RAISE EXCEPTION 'cash reconciliation single-source projection is not activated'
+            USING ERRCODE = '55000';
+    END IF;
     WITH bounds AS (
         SELECT p_month AS month_start, (p_month + interval '1 month')::date AS month_end
     ), latest_rules AS (
@@ -859,7 +971,6 @@ BEGIN
             ON registry.category_code = classification.category_code
            AND registry.item_code = classification.reporting_item_code
            AND registry.revision = classification.reporting_item_revision
-           AND registry.status = 'ACTIVE'
          WHERE account.owner_kind = 'COMPANY'
            AND account.entity_id = ANY(p_entity_ids)
            AND EXISTS (
@@ -897,10 +1008,28 @@ BEGIN
            AND item_label IS NOT NULL
         GROUP BY business_unit_id, business_unit_label, category_code,
                   reporting_item_code, reporting_item_revision, flow_kind, item_label
+    ), adjustment_rows AS (
+        SELECT 'adjustment:' || adjustment.adjustment_id::text AS rule_key,
+               adjustment.flow_kind, adjustment.business_unit_label, adjustment.item_label,
+               'ADJUSTMENT'::text AS source_kind, 'manual_adjustment'::text AS source_ref,
+               1::integer AS transaction_count, adjustment.amount_minor,
+               jsonb_build_array(jsonb_build_object(
+                    'fact_ref', adjustment.adjustment_id::text,
+                    'occurred_on', adjustment.accounting_month,
+                    'amount_minor', adjustment.amount_minor
+               )) AS facts
+          FROM public.cash_reconciliation_adjustment adjustment
+          JOIN public.cash_reconciliation_adjustment_scope adjustment_scope
+            ON adjustment_scope.adjustment_id = adjustment.adjustment_id
+          JOIN bounds month ON adjustment.accounting_month = month.month_start
+         WHERE adjustment_scope.entity_id = ANY(p_entity_ids)
+           AND adjustment_scope.business_unit_id = ANY(p_business_unit_ids)
     ), all_rows AS (
         SELECT * FROM personal_aggregates
         UNION ALL
         SELECT * FROM company_aggregates
+        UNION ALL
+        SELECT * FROM adjustment_rows
     ), all_issues AS (
         SELECT counts.source_kind, counts.unique_fact_ref, counts.fact_ref,
                counts.occurred_on, counts.amount_minor, counts.match_count,

@@ -124,8 +124,16 @@ class CompanyTransactionClassificationReviewReceipt(_FrozenModel):
     transaction_ref: UUID
     status: Literal["CONFIRMED"]
     category_code: CompanyTransactionCategory
+    reporting_item_code: str | None = Field(default=None, min_length=1, max_length=100)
+    reporting_item_revision: int | None = Field(default=None, strict=True, ge=1)
     revision: int = Field(strict=True, ge=2)
     created: bool
+
+    @model_validator(mode="after")
+    def reporting_item_is_a_pair(self) -> CompanyTransactionClassificationReviewReceipt:
+        if (self.reporting_item_code is None) != (self.reporting_item_revision is None):
+            raise ValueError("reporting item code and revision must be supplied together")
+        return self
 
 
 class DatabaseCompanyTransactionClassificationService:

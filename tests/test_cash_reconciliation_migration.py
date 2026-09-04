@@ -75,6 +75,8 @@ def test_company_cash_reconciliation_uses_confirmed_classifications_as_single_so
     assert "ADD COLUMN reporting_item_revision" in source
     assert "CREATE TABLE public.company_transaction_reporting_item" in source
     assert "CREATE TABLE public.company_transaction_reporting_item_match" in source
+    assert "CREATE TABLE public.cash_reconciliation_adjustment_scope" in source
+    assert "CREATE TABLE public.cash_reconciliation_projection_activation" in source
     assert "company_transaction_classification_reporting_item_fk" in source
     assert "ledgerbridge.company-transaction-reporting-item.v1" in source
     assert "resolve_company_transaction_reporting_item" in source
@@ -93,14 +95,22 @@ def test_company_cash_reconciliation_uses_confirmed_classifications_as_single_so
     assert "company_transaction_classification:" in source
     assert "registry.item_label" in source
     assert "registry.revision = classification.reporting_item_revision" in source
+    assert "registry.status = 'ACTIVE'" not in source.split(
+        "LEFT JOIN public.company_transaction_reporting_item registry", 1
+    )[1].split("WHERE account.owner_kind", 1)[0]
     assert "'reporting_item_revision', v_item_revision" in source
+    assert "('BOTTLED_WATER','BOTTLED_WATER','瓶装水')" in source
+    assert "('INTERNAL_TRANSFER','INTERNAL_TRANSFER','内部资金归集')" in source
     assert "WHEN 'PLATFORM_ROOM_REVENUE' THEN 'INCOME'" in source
     assert "WHEN 'PAYROLL' THEN 'EXPENSE'" in source
     assert "WHEN 'INTERNAL_TRANSFER' THEN 'CURRENT'" in source
     assert "WHEN 'INCOME' THEN sum(amount_minor)" in source
     assert "WHEN 'EXPENSE' THEN sum(-amount_minor)" in source
     assert "cardinality(p_business_unit_ids) = 0" in source
-    assert "adjustment_rows AS" not in source
+    assert "adjustment_rows AS" in source
+    assert "adjustment_scope.entity_id = ANY(p_entity_ids)" in source
+    assert "adjustment_scope.business_unit_id = ANY(p_business_unit_ids)" in source
+    assert "single-source projection is not activated" in source
     assert "pg_advisory_xact_lock(hashtextextended(p_operation_id::text, 0))" in source
     assert "FROM company_universe company" in source
     assert "ARRAY[]::varchar[]" in source

@@ -2534,6 +2534,8 @@ COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES = {
     ("public", "r1_validate_company_transaction_classification"): "",
     ("public", "r1_validate_company_transaction_reporting_item"): "",
     ("public", "r1_validate_company_transaction_reporting_item_match"): "",
+    ("public", "r1_validate_cash_reconciliation_adjustment_scope"): "",
+    ("public", "r1_validate_cash_reconciliation_projection_activation"): "",
     ("internal_import", "seed_company_transaction_classification"): (
         "p_transaction_ref uuid, p_operation_id uuid, p_status text, p_category_code text, "
         "p_actor_ref text, p_reason text, p_rule_version text"
@@ -2564,6 +2566,8 @@ COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_RESULTS = {
     ("public", "r1_validate_company_transaction_classification"): "trigger",
     ("public", "r1_validate_company_transaction_reporting_item"): "trigger",
     ("public", "r1_validate_company_transaction_reporting_item_match"): "trigger",
+    ("public", "r1_validate_cash_reconciliation_adjustment_scope"): "trigger",
+    ("public", "r1_validate_cash_reconciliation_projection_activation"): "trigger",
     ("internal_import", "seed_company_transaction_classification"): "jsonb",
     ("internal_command", "review_company_transaction_classification"): "jsonb",
     ("internal_read", "list_company_transaction_classifications_as_of"): "TABLE(item jsonb)",
@@ -2655,7 +2659,8 @@ present_roles(role_name) AS (
  SELECT c.relname table_name,pg_get_userbyid(c.relowner) owner,c.relkind kind
  FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='public' AND c.relname IN (
-  'company_transaction_reporting_item','company_transaction_reporting_item_match')
+  'company_transaction_reporting_item','company_transaction_reporting_item_match',
+  'cash_reconciliation_adjustment_scope','cash_reconciliation_projection_activation')
 ), observed_reporting_item_triggers AS (
  SELECT c.relname table_name,t.tgname trigger_name,t.tgenabled enabled,
   fnn.nspname function_schema,fn.proname function_name
@@ -2664,7 +2669,8 @@ present_roles(role_name) AS (
  JOIN pg_proc fn ON fn.oid=t.tgfoid JOIN pg_namespace fnn ON fnn.oid=fn.pronamespace
  WHERE n.nspname='public' AND NOT t.tgisinternal
   AND c.relname IN (
-   'company_transaction_reporting_item','company_transaction_reporting_item_match')
+   'company_transaction_reporting_item','company_transaction_reporting_item_match',
+   'cash_reconciliation_adjustment_scope','cash_reconciliation_projection_activation')
 ), observed_columns AS (
  SELECT column_name,data_type,is_nullable='NO' not_null,ordinal_position
  FROM information_schema.columns
@@ -6756,12 +6762,20 @@ def _validate_company_transaction_classification_security(
         expected_function_signatures.pop(
             ("public", "r1_validate_company_transaction_reporting_item_match")
         )
+        expected_function_signatures.pop(
+            ("public", "r1_validate_cash_reconciliation_adjustment_scope")
+        )
+        expected_function_signatures.pop(
+            ("public", "r1_validate_cash_reconciliation_projection_activation")
+        )
     reporting_item_tables = _list("company_transaction_reporting_item_tables")
     reporting_item_triggers = _list("company_transaction_reporting_item_triggers")
     if revision >= CASH_RECONCILIATION_CLASSIFICATION_REVISION:
         expected_tables = {
             ("company_transaction_reporting_item", owner, "r"),
             ("company_transaction_reporting_item_match", owner, "r"),
+            ("cash_reconciliation_adjustment_scope", owner, "r"),
+            ("cash_reconciliation_projection_activation", owner, "r"),
         }
         actual_tables = {
             (item.get("table"), item.get("owner"), item.get("kind"))
@@ -6787,6 +6801,26 @@ def _validate_company_transaction_classification_security(
                 "company_transaction_reporting_item_match",
                 "validate_company_transaction_reporting_item_match",
                 "r1_validate_company_transaction_reporting_item_match",
+            ),
+            (
+                "cash_reconciliation_adjustment_scope",
+                "cash_reconciliation_adjustment_scope_append_only",
+                "r1_bank_statement_append_only",
+            ),
+            (
+                "cash_reconciliation_adjustment_scope",
+                "validate_cash_reconciliation_adjustment_scope",
+                "r1_validate_cash_reconciliation_adjustment_scope",
+            ),
+            (
+                "cash_reconciliation_projection_activation",
+                "cash_reconciliation_projection_activation_append_only",
+                "r1_bank_statement_append_only",
+            ),
+            (
+                "cash_reconciliation_projection_activation",
+                "validate_cash_reconciliation_projection_activation",
+                "r1_validate_cash_reconciliation_projection_activation",
             ),
         }
         actual_reporting_item_triggers = {

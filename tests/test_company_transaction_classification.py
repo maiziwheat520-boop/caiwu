@@ -7,8 +7,13 @@ import pytest
 from pydantic import ValidationError
 
 from ledgerbridge.company_transaction_classification import (
+    CompanyTransactionCategory,
     CompanyTransactionClassification,
+    CompanyTransactionClassificationReviewReceipt,
+    CompanyTransactionClassificationReviewRequest,
+    DatabaseCompanyTransactionClassificationService,
 )
+from ledgerbridge.internal_read_contract import Capability, EntityGrant, WorkloadPrincipal
 from scripts.backfill_company_transaction_classifications import (
     Transaction,
     classify,
@@ -80,6 +85,66 @@ def _restore_metadata() -> dict[str, object]:
             "owner": owner,
             "kind": "r",
         },
+        "company_transaction_reporting_item_tables": [
+            {"table": table, "owner": owner, "kind": "r"}
+            for table in (
+                "company_transaction_reporting_item",
+                "company_transaction_reporting_item_match",
+                "cash_reconciliation_adjustment_scope",
+                "cash_reconciliation_projection_activation",
+            )
+        ],
+        "company_transaction_reporting_item_triggers": [
+            {
+                "table": table,
+                "name": name,
+                "enabled": "O",
+                "function_schema": "public",
+                "function_name": function_name,
+            }
+            for table, name, function_name in (
+                (
+                    "company_transaction_reporting_item",
+                    "company_transaction_reporting_item_append_only",
+                    "r1_bank_statement_append_only",
+                ),
+                (
+                    "company_transaction_reporting_item",
+                    "validate_company_transaction_reporting_item",
+                    "r1_validate_company_transaction_reporting_item",
+                ),
+                (
+                    "company_transaction_reporting_item_match",
+                    "company_transaction_reporting_item_match_append_only",
+                    "r1_bank_statement_append_only",
+                ),
+                (
+                    "company_transaction_reporting_item_match",
+                    "validate_company_transaction_reporting_item_match",
+                    "r1_validate_company_transaction_reporting_item_match",
+                ),
+                (
+                    "cash_reconciliation_adjustment_scope",
+                    "cash_reconciliation_adjustment_scope_append_only",
+                    "r1_bank_statement_append_only",
+                ),
+                (
+                    "cash_reconciliation_adjustment_scope",
+                    "validate_cash_reconciliation_adjustment_scope",
+                    "r1_validate_cash_reconciliation_adjustment_scope",
+                ),
+                (
+                    "cash_reconciliation_projection_activation",
+                    "cash_reconciliation_projection_activation_append_only",
+                    "r1_bank_statement_append_only",
+                ),
+                (
+                    "cash_reconciliation_projection_activation",
+                    "validate_cash_reconciliation_projection_activation",
+                    "r1_validate_cash_reconciliation_projection_activation",
+                ),
+            )
+        ],
         "company_transaction_classification_functions": functions,
         "company_transaction_classification_triggers": [
             {
@@ -310,3 +375,95 @@ def test_confirmed_wire_item_accepts_reporting_item_backfill_source() -> None:
     )
 
     assert item.source == "BACKFILL"
+
+
+def test_review_receipt_accepts_a_versioned_reporting_item() -> None:
+    receipt = CompanyTransactionClassificationReviewReceipt.model_validate(
+        {
+            "transaction_ref": UUID(int=1),
+            "status": "CONFIRMED",
+            "category_code": "BOTTLED_WATER",
+            "reporting_item_code": "BOTTLED_WATER",
+            "reporting_item_revision": 1,
+            "revision": 2,
+            "created": True,
+        }
+    )
+
+    assert receipt.reporting_item_code == "BOTTLED_WATER"
+    assert receipt.reporting_item_revision == 1
+
+
+def test_review_receipt_rejects_an_incomplete_reporting_item_pair() -> None:
+    with pytest.raises(ValidationError, match="supplied together"):
+        CompanyTransactionClassificationReviewReceipt.model_validate(
+            {
+                "transaction_ref": UUID(int=1),
+                "status": "CONFIRMED",
+                "category_code": "BOTTLED_WATER",
+                "reporting_item_code": "BOTTLED_WATER",
+                "revision": 2,
+                "created": True,
+            }
+        )
+
+
+def test_review_service_commits_a_receipt_with_reporting_item_fields() -> None:
+    entity_ref = UUID(int=2)
+
+    class Result:
+        @staticmethod
+        def scalar_one() -> dict[str, object]:
+            return {
+                "transaction_ref": UUID(int=1),
+                "status": "CONFIRMED",
+                "category_code": "BOTTLED_WATER",
+                "reporting_item_code": "BOTTLED_WATER",
+                "reporting_item_revision": 1,
+                "revision": 2,
+                "created": True,
+            }
+
+    class Session:
+        committed = False
+
+        def __enter__(self) -> Session:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def execute(self, *_args: object, **_kwargs: object) -> Result:
+            return Result()
+
+        def commit(self) -> None:
+            self.committed = True
+
+    session = Session()
+    service = DatabaseCompanyTransactionClassificationService(
+        reader_factory=lambda: session, api_factory=lambda: session  # type: ignore[arg-type]
+    )
+    principal = WorkloadPrincipal(
+        principal_ref="test-reviewer",
+        san_uri="spiffe://ledgerbridge.test/reviewer",
+        policy_generation=1,
+        capabilities=frozenset({Capability.BANK_STATEMENT_REVIEW_DECIDE}),
+        grants=(EntityGrant(entity_ref=entity_ref, allow_account_registry=True),),
+    )
+
+    receipt = service.review(
+        principal,
+        transaction_ref=UUID(int=1),
+        operation_id=UUID(int=3),
+        assertion_jti=UUID(int=4),
+        actor_ref="test-reviewer",
+        command=CompanyTransactionClassificationReviewRequest(
+            entity_ref=entity_ref,
+            expected_revision=1,
+            category_code=CompanyTransactionCategory.BOTTLED_WATER,
+            reason="verified",
+        ),
+    )
+
+    assert receipt.reporting_item_code == "BOTTLED_WATER"
+    assert session.committed is True
