@@ -83,6 +83,8 @@ class CompanyTransactionClassificationPage(_FrozenModel):
 
 class CompanyTransactionCategorySummary(_FrozenModel):
     category_code: CompanyTransactionCategory
+    reporting_item_code: str | None = Field(default=None, min_length=1, max_length=100)
+    reporting_item_label: str | None = Field(default=None, min_length=1, max_length=300)
     cashflow_role: CashflowRole
     transaction_count: int = Field(strict=True, ge=0)
     inflow_minor: int = Field(strict=True, ge=0)
@@ -91,6 +93,16 @@ class CompanyTransactionCategorySummary(_FrozenModel):
     gross_minor: int = Field(strict=True, ge=0)
     transaction_share_ppm: int = Field(strict=True, ge=0, le=1_000_000)
     gross_share_ppm: int = Field(strict=True, ge=0, le=1_000_000)
+
+    @model_validator(mode="after")
+    def operating_fee_has_a_reporting_item(self) -> CompanyTransactionCategorySummary:
+        has_code = self.reporting_item_code is not None
+        has_label = self.reporting_item_label is not None
+        if has_code != has_label:
+            raise ValueError("reporting item code and label must be supplied together")
+        if (self.category_code is CompanyTransactionCategory.OPERATING_FEE) != has_code:
+            raise ValueError("only operating fee summaries use reporting item detail")
+        return self
 
 
 class CompanyTransactionClassificationSummary(_FrozenModel):
@@ -104,8 +116,8 @@ class CompanyTransactionClassificationSummary(_FrozenModel):
 
 
 class CompanyTransactionClassificationSummaryPage(_FrozenModel):
-    contract_version: Literal["ledgerbridge.company-transaction-classification-summary.v1"] = (
-        "ledgerbridge.company-transaction-classification-summary.v1"
+    contract_version: Literal["ledgerbridge.company-transaction-classification-summary.v2"] = (
+        "ledgerbridge.company-transaction-classification-summary.v2"
     )
     items: tuple[CompanyTransactionClassificationSummary, ...]
 
@@ -114,7 +126,22 @@ class CompanyTransactionClassificationReviewRequest(_FrozenModel):
     entity_ref: UUID
     expected_revision: int = Field(strict=True, ge=1)
     category_code: CompanyTransactionCategory
+    reporting_item_code: str | None = Field(default=None, min_length=1, max_length=100)
     reason: str = Field(min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def operating_fee_requires_a_reporting_item(
+        self,
+    ) -> CompanyTransactionClassificationReviewRequest:
+        if self.category_code is CompanyTransactionCategory.OPERATING_FEE:
+            if (
+                self.reporting_item_code is None
+                or self.reporting_item_code != self.reporting_item_code.strip()
+            ):
+                raise ValueError("operating fee requires a canonical reporting item")
+        elif self.reporting_item_code is not None:
+            raise ValueError("reporting item is only accepted for operating fee")
+        return self
 
 
 class CompanyTransactionClassificationReviewReceipt(_FrozenModel):
@@ -225,7 +252,7 @@ class DatabaseCompanyTransactionClassificationService:
                         session.execute(
                             text(
                                 "SELECT "
-                                "internal_read.get_company_transaction_classification_summary_as_of("
+                                "internal_read.get_company_transaction_classification_summary_v2_as_of("
                                 ":entity_ref, :from_date, :to_date, :sequence, :horizon_hash)"
                             ),
                             {
@@ -262,9 +289,10 @@ class DatabaseCompanyTransactionClassificationService:
             with self._api_factory() as session:
                 raw = session.execute(
                     text(
-                        "SELECT internal_command.review_company_transaction_classification("
+                        "SELECT internal_command.review_company_transaction_classification_v2("
                         ":transaction_ref, :entity_ref, :operation_id, :assertion_jti, "
-                        ":actor_ref, :principal_ref, :expected_revision, :category_code, :reason)"
+                        ":actor_ref, :principal_ref, :expected_revision, :category_code, "
+                        ":reporting_item_code, :reason)"
                     ),
                     {
                         "transaction_ref": transaction_ref,
@@ -275,6 +303,7 @@ class DatabaseCompanyTransactionClassificationService:
                         "principal_ref": principal.principal_ref,
                         "expected_revision": command.expected_revision,
                         "category_code": command.category_code.value,
+                        "reporting_item_code": command.reporting_item_code,
                         "reason": command.reason,
                     },
                 ).scalar_one()
