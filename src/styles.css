@@ -16,9 +16,9 @@
   --warning-soft: #fff8e8;
   --success: #157347;
   --shadow: 0 8px 28px rgb(29 48 79 / 6%);
-  --font-caption: 12px;
-  --font-small: 13px;
-  --font-body: 14px;
+  --font-caption: 13px;
+  --font-small: 14px;
+  --font-body: 15px;
 }
 
 * { box-sizing: border-box; }
