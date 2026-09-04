@@ -80,7 +80,7 @@ const validation: PayrollTestBatchValidationResult = {
 afterEach(() => vi.restoreAllMocks())
 
 describe('PayrollTestWorkspaceActionsPanel', () => {
-  it('single-selects and explicitly confirms exactly one material for each monthly role', () => {
+  it('confirms the prepared current material set without per-file selection', () => {
     const onConfirmedMaterials = vi.fn()
     const selectionWorkspace: PayrollTestWorkspaceReadResponse = {
       ...workspace,
@@ -102,11 +102,8 @@ describe('PayrollTestWorkspaceActionsPanel', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '2026 年 8 月 4' }))
-    fireEvent.click(screen.getByLabelText('选择2026.8_考勤表'))
-    fireEvent.click(screen.getByLabelText('选择2026.8_阿姨考勤表'))
-    fireEvent.click(screen.getByLabelText('选择2026.8_好评统计（版本 2）'))
-    fireEvent.click(screen.getByRole('button', { name: '确认这三份素材' }))
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '确认当前素材' }))
 
     expect(onConfirmedMaterials).toHaveBeenCalledWith({
       period: '2026-08',
@@ -118,29 +115,37 @@ describe('PayrollTestWorkspaceActionsPanel', () => {
     })
   })
 
-  it('shows only July/August wage inputs with the original standard names', () => {
+  it('keeps only the current material for each monthly role', () => {
+    const replacementWorkspace: PayrollTestWorkspaceReadResponse = {
+      ...workspace,
+      data: {
+        ...workspace.data,
+        materials: [
+          ...workspace.data.materials,
+          material('material_review_2026_08_replacement', '2026-08', 'REVIEW_STATISTICS'),
+        ],
+      },
+    }
     render(
       <PayrollTestWorkspaceActionsPanel
-        workspace={workspace}
+        workspace={replacementWorkspace}
         csrfToken="csrf-test-token"
         onWorkspaceChange={vi.fn()}
       />,
     )
 
     expect(screen.getByRole('heading', { name: '七、八月工资表素材' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '全部 4' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '2026 年 7 月 2' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '2026 年 8 月 2' })).toBeInTheDocument()
-    expect(screen.getByText('2026.7_考勤表')).toBeInTheDocument()
-    expect(screen.getByText('2026.7_阿姨考勤表')).toBeInTheDocument()
-    expect(screen.getByText('2026.8_好评统计（版本 1）')).toBeInTheDocument()
-    expect(screen.getByText('2026.8_好评统计（版本 2）')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '2026 年 8 月 1' })).toBeInTheDocument()
+    expect(screen.getByText('2026.8_好评统计')).toBeInTheDocument()
+    expect(screen.getByText(/LACEMENT/)).toBeInTheDocument()
+    expect(screen.queryByText(/Z8LEGACY/)).not.toBeInTheDocument()
     expect(screen.queryByText(/material_main|material_release|发放名单/)).not.toBeInTheDocument()
     expect(screen.queryByText(/8 月及以前|9 月后待审核|日期待确认/)).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '2026 年 7 月 2' }))
     expect(screen.getByText('2026.7_考勤表')).toBeInTheDocument()
-    expect(screen.queryByText(/2026\.8_好评统计/)).not.toBeInTheDocument()
+    expect(screen.getByText('2026.7_阿姨考勤表')).toBeInTheDocument()
   })
 
   it('renames a legacy wage input within the July/August boundary', async () => {
@@ -171,9 +176,16 @@ describe('PayrollTestWorkspaceActionsPanel', () => {
     })
     vi.spyOn(api, 'getPayrollTestWorkspace').mockResolvedValue(workspace)
 
+    const legacyOnlyWorkspace: PayrollTestWorkspaceReadResponse = {
+      ...workspace,
+      data: {
+        ...workspace.data,
+        materials: workspace.data.materials.filter((item) => item.material_id !== 'material_review_2026_08'),
+      },
+    }
     render(
       <PayrollTestWorkspaceActionsPanel
-        workspace={workspace}
+        workspace={legacyOnlyWorkspace}
         csrfToken="csrf-test-token"
         onWorkspaceChange={vi.fn()}
       />,
@@ -233,6 +245,7 @@ describe('PayrollTestWorkspaceActionsPanel', () => {
       />,
     )
 
+    fireEvent.click(screen.getByRole('button', { name: '2026 年 7 月 2' }))
     const card = screen.getByText('2026.7_考勤表').closest('article')!
     fireEvent.click(within(card).getByRole('button', { name: '查看内容' }))
 
