@@ -53,6 +53,13 @@ docker compose down
 
 ## Passkey + 持久化预览
 
+在 `core-backed` 正式数据模式中，月度现金对账必须使用独立的只读 mTLS
+客户端：默认连接 `https://internal-ingress:8446`，证书和私钥分别从
+`/config/cash-reconciliation-core/client.crt` 与 `client.key` 只读加载。该
+身份只允许 `reconciliation:read`、`ledger:read` 和服务端固定的个人及
+公司范围。专用凭据缺失或不可读时，月度对账单独返回不可用，禁止回退到
+通用 Web 客户端；证书、私钥和私有授权文件不得进入仓库或环境日志。
+
 WebAuthn 不能在普通局域网 IP 的 HTTP 页面工作。Passkey 模式必须通过固定域名的 HTTPS 反向代理访问，并把 RP ID 和 exact origin 固定为部署配置，不能从请求头动态推导。
 
 认证容器默认只监听主机回环 `127.0.0.1:8781`，与仍可保留的无认证合成预览 `8780` 分离。
