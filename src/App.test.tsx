@@ -2796,7 +2796,7 @@ describe('LedgerBridge Web API client', () => {
     expect(await screen.findByRole('heading', { name: '工资与发放验证' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: '工资与发放验证' })).toHaveLength(2)
     expect(await screen.findByText('七、八月工资测试账本已就绪')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '全部 1' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '全部 1' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '2026 年 7 月 0' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '2026 年 8 月 1' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '检查七八月素材' })).toBeInTheDocument()
