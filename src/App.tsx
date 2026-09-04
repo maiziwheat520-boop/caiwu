@@ -459,10 +459,7 @@ function App() {
         classificationGroupRequest,
         personalBankRequest,
       ])
-      const remainingCandidates = candidateData.next_cursor
-        ? await listRemainingCandidatePages(candidateData.next_cursor)
-        : []
-      setCandidates([...candidateData.items, ...remainingCandidates].map(toCandidate))
+      setCandidates(candidateData.items.map(toCandidate))
       if (classificationGroupResult.status === 'fulfilled') {
         setClassificationGroups(classificationGroupResult.value.items)
         setClassificationGroupsAvailable(true)
@@ -475,7 +472,7 @@ function App() {
         setNotice({ tone: 'info', message: CLASSIFICATION_GROUPS_UNAVAILABLE_NOTICE })
       }
       setAuditCandidates([])
-      candidateCursorRef.current = null
+      candidateCursorRef.current = candidateData.next_cursor
       setReconciliation(reconciliationData.status === 'fulfilled' ? reconciliationData.value : null)
       setConnections(connectionData)
       setPersonalBankData(personalBankResult.status === 'fulfilled' ? personalBankResult.value : null)
@@ -502,7 +499,16 @@ function App() {
         const combined = cursor ? [...current, ...result.items] : result.items
         return [...new Map(combined.map((event) => [event.id, event])).values()]
       })
-      if (includeCandidatePages && remainingCandidateCursor) setAuditCandidates(additionalCandidates.map(toCandidate))
+      if (includeCandidatePages && remainingCandidateCursor) {
+        const mappedCandidates = additionalCandidates.map(toCandidate)
+        setAuditCandidates(mappedCandidates)
+        setCandidates((currentCandidates) => [
+          ...new Map(
+            [...currentCandidates, ...mappedCandidates].map((candidate) => [candidate.id, candidate]),
+          ).values(),
+        ])
+        candidateCursorRef.current = null
+      }
       setReviewEventCursor(result.next_cursor)
     } catch (error) {
       setReviewEventsError(error instanceof Error ? error.message : '无法读取审核操作记录')

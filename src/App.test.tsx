@@ -527,6 +527,7 @@ function installFetch(options: {
   originalReconciliation?: OriginalReconciliation
   originalReconciliationGate?: Promise<void>
   candidateListGate?: Promise<void>
+  laterCandidatePageGate?: Promise<void>
 } = {}) {
   const {
     items = candidates,
@@ -598,6 +599,7 @@ function installFetch(options: {
     originalReconciliation = originalReconciliationFixture,
     originalReconciliationGate,
     candidateListGate,
+    laterCandidatePageGate,
   } = options
   let shouldFailSession = failSessionOnce
   let shouldFailClassificationGroups = failClassificationGroupsOnce
@@ -676,6 +678,7 @@ function installFetch(options: {
         return response({ title: '候选刷新暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
       }
       const cursor = new URL(url, 'http://ledgerbridge.local').searchParams.get('cursor')
+      if (cursor && laterCandidatePageGate) await laterCandidatePageGate
       const page = candidatePages[cursor ? 1 : 0] ?? { items: [], next_cursor: null }
       return response(unlockedSources.size > 0 ? {
         ...page,
@@ -2462,6 +2465,22 @@ describe('LedgerBridge Web API client', () => {
     renderApp()
 
     expect(await screen.findByRole('heading', { name: '月度对账' })).toBeInTheDocument()
+    expect(screen.queryByText('正在读取财务数据')).not.toBeInTheDocument()
+  })
+
+  it('renders the overview without waiting for later candidate pages', async () => {
+    const laterCandidatePageGate = new Promise<void>(() => undefined)
+    installFetch({
+      candidatePages: [
+        { items: candidates, next_cursor: '50' },
+        { items: [], next_cursor: null },
+      ],
+      laterCandidatePageGate,
+    })
+
+    renderApp()
+
+    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
     expect(screen.queryByText('正在读取财务数据')).not.toBeInTheDocument()
   })
 
