@@ -644,6 +644,8 @@ def test_legacy_feature_workspace_accepts_opaque_batch_id_with_period_digits():
     [
         "batch_6222000000000138",
         "batch_6222_0000_0000_0138",
+        "batch_6222_2026_08_000000",
+        "batch_62220_2026_08_00138",
         "file://private/payroll-batch",
     ],
 )
