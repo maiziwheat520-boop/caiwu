@@ -783,7 +783,8 @@ function DisbursementReview({
     ? batch.verification
     : null
   const groups = disbursementReviewGroups(batch, employeeRules)
-  const persistedRecords = sourceRecords?.records ?? []
+  const periodSourceRecords = sourceRecords?.pay_period === batch.period ? sourceRecords : null
+  const persistedRecords = periodSourceRecords?.records ?? []
 
   return (
     <section className="payroll-disbursement-review" aria-label="发放复核分类">
@@ -828,7 +829,7 @@ function DisbursementReview({
         <section className="payroll-ingested-disbursements" aria-label="已入库工资流水">
           <header>
             <div><strong>已入库工资流水</strong><span>源文件只在入库时解析一次</span></div>
-            <span>{sourceRecords?.source_artifact_count ?? 0} 份来源 · {persistedRecords.length} 笔</span>
+            <span>{periodSourceRecords?.source_artifact_count ?? 0} 份来源 · {persistedRecords.length} 笔</span>
           </header>
           <div>
             {persistedRecords.map((record) => (

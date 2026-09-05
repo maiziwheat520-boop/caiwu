@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { api } from '../api'
@@ -271,6 +271,43 @@ describe('PayrollLegacyWorkbench', () => {
     expect(within(review).getAllByText('实际到账')).toHaveLength(2)
     expect(screen.queryByLabelText('emp_preview_001实际到账金额')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('网商银行发放流水1')).not.toBeInTheDocument()
+  })
+
+  it('hides the previous period sources while the selected period read is pending', async () => {
+    const workspace = structuredClone(legacyWorkspace)
+    const julyBatch = structuredClone(workspace.batches[0])
+    julyBatch.period = '2026-07'
+    julyBatch.batch_id = 'payroll_history_through_2026_08_2026_07'
+    workspace.active_period = '2026-07'
+    workspace.batches.unshift(julyBatch)
+    const julyRecords = structuredClone(disbursementRecords)
+    julyRecords.pay_period = '2026-07'
+    julyRecords.records[0].pay_period = '2026-07'
+    julyRecords.records[0].transaction_name = '七月独有代发流水'
+    julyRecords.records[0].actual_amount_minor = 712345
+    mockRead(workspace)
+    let resolveAugust!: (value: Awaited<ReturnType<typeof api.getPayrollDisbursementRecords>>) => void
+    const pendingAugust = new Promise<Awaited<ReturnType<typeof api.getPayrollDisbursementRecords>>>((resolve) => {
+      resolveAugust = resolve
+    })
+    vi.mocked(api.getPayrollDisbursementRecords).mockImplementation((period) => period === '2026-07'
+      ? Promise.resolve({ contract_version: 'ledgerbridge.payroll-read.v1',
+        entity_ref: testWorkspace.entity_ref, company_id: testWorkspace.company_id, data: julyRecords })
+      : pendingAugust)
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
+    await screen.findByRole('region', { name: '工资概览' })
+    fireEvent.click(screen.getByRole('button', { name: '复核本月已发并更新汇总' }))
+    const review = screen.getByRole('region', { name: '发放复核分类' })
+    expect(await within(review).findByText(/七月独有代发流水/)).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('查看已保存月份'), { target: { value: '2026-08' } })
+    await waitFor(() => expect(api.getPayrollDisbursementRecords).toHaveBeenCalledWith('2026-08'))
+    expect(within(review).queryByText(/七月独有代发流水/)).not.toBeInTheDocument()
+    expect(within(review).queryByText('¥7,123.45')).not.toBeInTheDocument()
+    expect(within(review).queryByRole('region', { name: '已入库工资流水' })).not.toBeInTheDocument()
+    await act(async () => resolveAugust({ contract_version: 'ledgerbridge.payroll-read.v1',
+      entity_ref: testWorkspace.entity_ref, company_id: testWorkspace.company_id, data: disbursementRecords }))
+    expect(await within(review).findByRole('region', { name: '已入库工资流水' })).toBeInTheDocument()
+    expect(within(review).getByText('批量代发', { exact: true })).toBeInTheDocument()
   })
 
   it('keeps payroll unavailable and actual payments unknown when source mapping cannot be read', async () => {
