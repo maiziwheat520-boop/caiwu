@@ -2589,9 +2589,7 @@ COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_RESULTS = {
     ("internal_import", "activate_cash_reconciliation_single_source"): "jsonb",
 }
 COMPANY_TRANSACTION_CLASSIFICATION_SECURITY_DEFINER_FUNCTIONS = frozenset(
-    key
-    for key in COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES
-    if key[0] != "public"
+    key for key in COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES if key[0] != "public"
 )
 COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS = {
     ("internal_import", "seed_company_transaction_classification"): "ledgerbridge_worker",
@@ -2817,87 +2815,109 @@ CASH_RECONCILIATION_CLASSIFICATION_STATE_COLUMNS = {
 }
 CASH_RECONCILIATION_CLASSIFICATION_STATE_CONSTRAINTS = {
     ("cash_reconciliation_adjustment_scope", "adjustment_scope_adjustment_fk"): (
-        "f", "FOREIGN KEY (adjustment_id) REFERENCES "
-        "cash_reconciliation_adjustment(adjustment_id) ON DELETE RESTRICT"
+        "f",
+        "FOREIGN KEY (adjustment_id) REFERENCES "
+        "cash_reconciliation_adjustment(adjustment_id) ON DELETE RESTRICT",
     ),
     ("cash_reconciliation_adjustment_scope", "adjustment_scope_audit_fk"): (
-        "f", "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT"
+        "f",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
     ),
     ("cash_reconciliation_adjustment_scope", "adjustment_scope_business_unit_fk"): (
-        "f", "FOREIGN KEY (business_unit_id) REFERENCES business_unit(id) ON DELETE RESTRICT"
+        "f",
+        "FOREIGN KEY (business_unit_id) REFERENCES business_unit(id) ON DELETE RESTRICT",
     ),
     ("cash_reconciliation_adjustment_scope", "adjustment_scope_entity_fk"): (
-        "f", "FOREIGN KEY (entity_id) REFERENCES entity(id) ON DELETE RESTRICT"
+        "f",
+        "FOREIGN KEY (entity_id) REFERENCES entity(id) ON DELETE RESTRICT",
     ),
     ("cash_reconciliation_adjustment_scope", "adjustment_scope_pk"): (
-        "p", "PRIMARY KEY (adjustment_id)"
+        "p",
+        "PRIMARY KEY (adjustment_id)",
     ),
     ("cash_reconciliation_projection_activation", "projection_activation_audit_fk"): (
-        "f", "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT"
+        "f",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
     ),
     ("cash_reconciliation_projection_activation", "projection_activation_pk"): (
-        "p", "PRIMARY KEY (revision)"
+        "p",
+        "PRIMARY KEY (revision)",
     ),
     (
         "cash_reconciliation_projection_activation",
         "projection_activation_revision_positive",
     ): ("c", "CHECK ((revision > 0))"),
     ("cash_reconciliation_projection_activation", "projection_activation_status_valid"): (
-        "c", "CHECK ((status = ANY (ARRAY['PENDING'::text, 'ACTIVE'::text])))"
+        "c",
+        "CHECK ((status = ANY (ARRAY['PENDING'::text, 'ACTIVE'::text])))",
     ),
     ("company_transaction_reporting_item", "reporting_item_audit_fk"): (
-        "f", "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT"
+        "f",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
     ),
     ("company_transaction_reporting_item", "reporting_item_category_valid"): (
-        "c", "CHECK (((category_code)::text = ANY ((ARRAY["
+        "c",
+        "CHECK (((category_code)::text = ANY ((ARRAY["
         "'PLATFORM_ROOM_REVENUE'::character varying, "
         "'RELATED_PARTY_CURRENT'::character varying, 'PAYROLL'::character varying, "
         "'FINANCING'::character varying, 'BOTTLED_WATER'::character varying, "
         "'INTERNAL_TRANSFER'::character varying, 'RENT'::character varying, "
         "'RENTAL_INCOME'::character varying, 'BANK_INTEREST'::character varying, "
-        "'LINEN_LAUNDRY'::character varying, 'OPERATING_FEE'::character varying])::text[])))"
+        "'LINEN_LAUNDRY'::character varying, 'OPERATING_FEE'::character varying])::text[])))",
     ),
     ("company_transaction_reporting_item", "reporting_item_category_version_uq"): (
-        "u", "UNIQUE (category_code, item_code, revision)"
+        "u",
+        "UNIQUE (category_code, item_code, revision)",
     ),
     ("company_transaction_reporting_item", "reporting_item_code_nonblank"): (
-        "c", "CHECK ((btrim((item_code)::text) <> ''::text))"
+        "c",
+        "CHECK ((btrim((item_code)::text) <> ''::text))",
     ),
     ("company_transaction_reporting_item", "reporting_item_label_nonblank"): (
-        "c", "CHECK ((btrim((item_label)::text) <> ''::text))"
+        "c",
+        "CHECK ((btrim((item_label)::text) <> ''::text))",
     ),
     ("company_transaction_reporting_item", "reporting_item_match_nonblank"): (
-        "c", "CHECK (((match_counterparty_name IS NULL) OR "
-        "(btrim((match_counterparty_name)::text) <> ''::text)))"
+        "c",
+        "CHECK (((match_counterparty_name IS NULL) OR "
+        "(btrim((match_counterparty_name)::text) <> ''::text)))",
     ),
     ("company_transaction_reporting_item", "reporting_item_pk"): (
-        "p", "PRIMARY KEY (item_code, revision)"
+        "p",
+        "PRIMARY KEY (item_code, revision)",
     ),
     ("company_transaction_reporting_item", "reporting_item_revision_positive"): (
-        "c", "CHECK ((revision > 0))"
+        "c",
+        "CHECK ((revision > 0))",
     ),
     ("company_transaction_reporting_item", "reporting_item_status_valid"): (
-        "c", "CHECK ((status = ANY (ARRAY['ACTIVE'::text, 'RETIRED'::text])))"
+        "c",
+        "CHECK ((status = ANY (ARRAY['ACTIVE'::text, 'RETIRED'::text])))",
     ),
     ("company_transaction_reporting_item_match", "reporting_item_match_audit_fk"): (
-        "f", "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT"
+        "f",
+        "FOREIGN KEY (audit_event_id) REFERENCES audit_event(id) ON DELETE RESTRICT",
     ),
     ("company_transaction_reporting_item_match", "reporting_item_match_field_valid"): (
-        "c", "CHECK ((match_field = ANY "
-        "(ARRAY['COUNTERPARTY_NAME'::text, 'TRANSACTION_NAME'::text])))"
+        "c",
+        "CHECK ((match_field = ANY (ARRAY['COUNTERPARTY_NAME'::text, 'TRANSACTION_NAME'::text])))",
     ),
     ("company_transaction_reporting_item_match", "reporting_item_match_item_fk"): (
-        "f", "FOREIGN KEY (category_code, item_code, item_revision) REFERENCES "
-        "company_transaction_reporting_item(category_code, item_code, revision) ON DELETE RESTRICT"
+        "f",
+        "FOREIGN KEY (category_code, item_code, item_revision) REFERENCES "
+        "company_transaction_reporting_item(category_code, item_code, revision) ON DELETE RESTRICT",
     ),
     ("company_transaction_reporting_item_match", "reporting_item_match_mode_valid"): (
-        "c", "CHECK ((match_mode = ANY (ARRAY['EXACT'::text, 'CONTAINS'::text])))"
+        "c",
+        "CHECK ((match_mode = ANY (ARRAY['EXACT'::text, 'CONTAINS'::text])))",
     ),
     ("company_transaction_reporting_item_match", "reporting_item_match_pk"): (
-        "p", "PRIMARY KEY (category_code, match_field, match_mode, match_value)"
+        "p",
+        "PRIMARY KEY (category_code, match_field, match_mode, match_value)",
     ),
     ("company_transaction_reporting_item_match", "reporting_item_match_value_nonblank"): (
-        "c", "CHECK ((btrim((match_value)::text) <> ''::text))"
+        "c",
+        "CHECK ((btrim((match_value)::text) <> ''::text))",
     ),
 }
 _CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES_SQL = ", ".join(
@@ -2974,9 +2994,7 @@ SELECT json_build_object(
   ) current WHERE status='CONFIRMED'
    AND (reporting_item_code IS NULL OR reporting_item_revision IS NULL))
 )::text;
-""".replace(
-        "__STATE_TABLES_SQL__", _CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES_SQL
-    )
+""".replace("__STATE_TABLES_SQL__", _CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES_SQL)
     .replace("__CLASSIFICATION_ROLES_SQL__", _COMPANY_TRANSACTION_CLASSIFICATION_ROLES_SQL)
     .strip()
 )
@@ -7101,12 +7119,12 @@ def _validate_company_transaction_classification_security(
             for table_name, columns in CASH_RECONCILIATION_CLASSIFICATION_STATE_COLUMNS.items()
             for column_name, contract in columns.items()
         }
-        if (
-            actual_state_columns != expected_state_columns
-            or len(actual_state_columns) != len(state_columns)
+        if actual_state_columns != expected_state_columns or len(actual_state_columns) != len(
+            state_columns
         ):
             raise BackupError("restored cash reconciliation state columns are invalid")
         state_constraints = _list("cash_reconciliation_classification_state_constraints")
+
         def _normalize_state_definition(constraint_type: Any, definition: Any) -> str:
             normalized = str(definition or "")
             if constraint_type == "c":
@@ -7135,10 +7153,9 @@ def _validate_company_transaction_classification_security(
                 CASH_RECONCILIATION_CLASSIFICATION_STATE_CONSTRAINTS.items()
             )
         }
-        if (
-            actual_state_constraints != expected_state_constraints
-            or len(actual_state_constraints) != len(state_constraints)
-        ):
+        if actual_state_constraints != expected_state_constraints or len(
+            actual_state_constraints
+        ) != len(state_constraints):
             raise BackupError("restored cash reconciliation state constraints are invalid")
         state_acls = _list("cash_reconciliation_classification_state_table_acls")
         if any(
@@ -7231,10 +7248,7 @@ def _validate_company_transaction_classification_security(
     if revision < CASH_RECONCILIATION_CLASSIFICATION_REVISION:
         expected_columns.pop("reporting_item_code")
         expected_columns.pop("reporting_item_revision")
-    if (
-        len(actual_columns) != len(columns)
-        or actual_columns != expected_columns
-    ):
+    if len(actual_columns) != len(columns) or actual_columns != expected_columns:
         raise BackupError("restored company transaction classification columns are invalid")
 
     constraints = _list("company_transaction_classification_constraints")

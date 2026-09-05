@@ -114,7 +114,6 @@ def test_report_identity_requires_exactly_seven_bound_company_grants() -> None:
             grants=tuple(_grant(ordinal) for ordinal in range(1, 7)),
         )
 
-
     with pytest.raises(ValueError, match="at most 7 items"):
         CompanyReportIdentityInput(
             certificate_serial="81B10A3D",

@@ -308,11 +308,7 @@ def test_restore_inventory_rejects_reporting_item_constraint_drift(drift: str) -
     metadata = _restore_metadata()
     constraints = metadata["cash_reconciliation_classification_state_constraints"]
     assert isinstance(constraints, list)
-    target = next(
-        item
-        for item in constraints
-        if item["name"] == "reporting_item_match_item_fk"
-    )
+    target = next(item for item in constraints if item["name"] == "reporting_item_match_item_fk")
     if drift == "remove":
         changed = [item for item in constraints if item is not target]
     elif drift == "definition":
@@ -323,10 +319,7 @@ def test_restore_inventory_rejects_reporting_item_constraint_drift(drift: str) -
             for item in constraints
         ]
     else:
-        changed = [
-            {**item, "deferrable": True} if item is target else item
-            for item in constraints
-        ]
+        changed = [{**item, "deferrable": True} if item is target else item for item in constraints]
     metadata["cash_reconciliation_classification_state_constraints"] = changed
 
     with pytest.raises(BackupError, match="state constraints"):
@@ -525,7 +518,8 @@ def test_review_service_commits_a_receipt_with_reporting_item_fields() -> None:
 
     session = Session()
     service = DatabaseCompanyTransactionClassificationService(
-        reader_factory=lambda: session, api_factory=lambda: session  # type: ignore[arg-type]
+        reader_factory=lambda: session,
+        api_factory=lambda: session,  # type: ignore[arg-type]
     )
     principal = WorkloadPrincipal(
         principal_ref="test-reviewer",

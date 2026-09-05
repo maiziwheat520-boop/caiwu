@@ -95,9 +95,12 @@ def test_company_cash_reconciliation_uses_confirmed_classifications_as_single_so
     assert "company_transaction_classification:" in source
     assert "registry.item_label" in source
     assert "registry.revision = classification.reporting_item_revision" in source
-    assert "registry.status = 'ACTIVE'" not in source.split(
-        "LEFT JOIN public.company_transaction_reporting_item registry", 1
-    )[1].split("WHERE account.owner_kind", 1)[0]
+    assert (
+        "registry.status = 'ACTIVE'"
+        not in source.split("LEFT JOIN public.company_transaction_reporting_item registry", 1)[
+            1
+        ].split("WHERE account.owner_kind", 1)[0]
+    )
     assert "'reporting_item_revision', v_item_revision" in source
     assert "('BOTTLED_WATER','BOTTLED_WATER','瓶装水')" in source
     assert "('INTERNAL_TRANSFER','INTERNAL_TRANSFER','内部资金归集')" in source

@@ -80,9 +80,7 @@ def bootstrap_file_key(path: Path, *, generation: str) -> None:
         {
             "schema": FILE_KEY_SCHEMA,
             "active_generation": generation,
-            "generations": {
-                generation: base64.b64encode(os.urandom(_KEY_BYTES)).decode("ascii")
-            },
+            "generations": {generation: base64.b64encode(os.urandom(_KEY_BYTES)).decode("ascii")},
         },
         ensure_ascii=True,
         separators=(",", ":"),
@@ -138,8 +136,7 @@ def _read_private_file(path: Path) -> bytes:
     try:
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode) or (
-            os.name != "nt"
-            and (opened.st_dev != before.st_dev or opened.st_ino != before.st_ino)
+            os.name != "nt" and (opened.st_dev != before.st_dev or opened.st_ino != before.st_ino)
         ):
             raise FileKeyProviderError("deployment key file identity changed")
         _require_private_metadata(opened, "deployment key file")

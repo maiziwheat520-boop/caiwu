@@ -13,10 +13,7 @@ down_revision: str | None = "20260902_0034"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_SIGNATURE = (
-    "internal_command.review_bank_statement("
-    "uuid,uuid,uuid,text,text,integer,text,text)"
-)
+_SIGNATURE = "internal_command.review_bank_statement(uuid,uuid,uuid,text,text,integer,text,text)"
 
 
 def upgrade() -> None:

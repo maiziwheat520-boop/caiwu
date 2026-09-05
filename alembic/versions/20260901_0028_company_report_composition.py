@@ -24,8 +24,7 @@ def upgrade() -> None:
     backup_role_exists = connection.execute(
         sa.text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ledgerbridge_backup')")
     ).scalar_one()
-    upgrade_sql = (
-        """
+    upgrade_sql = """
 CREATE FUNCTION company_reporting_read.get_company_report_composition_v1_as_of(
     p_entity_ref uuid,
     p_business_unit_ids uuid[],
@@ -361,7 +360,6 @@ GRANT EXECUTE ON FUNCTION company_reporting_read.get_company_report_composition_
     uuid, uuid[], boolean, character varying, date, date, bigint, bytea
 ) TO ledgerbridge_reader;
 """
-    )
     if not backup_role_exists:
         optional_fragment = (
             "REVOKE ALL ON FUNCTION "

@@ -18,9 +18,7 @@ from ledgerbridge.bank_statement_cutover_plan_builder import (
     load_private_bank_statement_plan,
 )
 
-BANK_STATEMENT_PREFLIGHT_RECEIPT_SCHEMA = (
-    "ledgerbridge.bank-statement-cutover-preflight.v1"
-)
+BANK_STATEMENT_PREFLIGHT_RECEIPT_SCHEMA = "ledgerbridge.bank-statement-cutover-preflight.v1"
 _MAX_RECEIPT_BYTES = 1024 * 1024
 
 
@@ -44,29 +42,19 @@ def run_bank_statement_cutover_command(
     values = os.environ if environ is None else environ
     try:
         plan_path = _environment_path(values, "LEDGERBRIDGE_BANK_STATEMENT_PRIVATE_PLAN")
-        receipt_path = _environment_path(
-            values, "LEDGERBRIDGE_BANK_STATEMENT_PREFLIGHT_RECEIPT"
-        )
-        database_url = _environment_text(
-            values, "LEDGERBRIDGE_BANK_STATEMENT_DATABASE_URL"
-        )
-        database_target = _environment_text(
-            values, "LEDGERBRIDGE_BANK_STATEMENT_DATABASE_TARGET"
-        )
+        receipt_path = _environment_path(values, "LEDGERBRIDGE_BANK_STATEMENT_PREFLIGHT_RECEIPT")
+        database_url = _environment_text(values, "LEDGERBRIDGE_BANK_STATEMENT_DATABASE_URL")
+        database_target = _environment_text(values, "LEDGERBRIDGE_BANK_STATEMENT_DATABASE_TARGET")
         deployed_revision = _environment_text(values, "LEDGERBRIDGE_DEPLOYED_REVISION")
         loaded = load_private_bank_statement_plan(plan_path)
         if deployed_revision != loaded.target_revision:
-            raise BankStatementCutoverCommandError(
-                "deployed revision gate is not satisfied"
-            )
+            raise BankStatementCutoverCommandError("deployed revision gate is not satisfied")
         if executor is None:
             raise BankStatementCutoverCommandError("cutover executor is unavailable")
 
         if args.preflight_only:
             if values.get("LEDGERBRIDGE_ENV") == "production" or database_target != "isolated":
-                raise BankStatementCutoverCommandError(
-                    "isolated preflight gate is not satisfied"
-                )
+                raise BankStatementCutoverCommandError("isolated preflight gate is not satisfied")
             result = executor(loaded, database_url, commit=False)
             _validate_receipt(result, loaded)
             _write_private_json(
@@ -94,9 +82,7 @@ def run_bank_statement_cutover_command(
             or values.get("LEDGERBRIDGE_BANK_STATEMENT_PRODUCTION_EXECUTION")
             != "execute-reviewed-cutover-v1"
         ):
-            raise BankStatementCutoverCommandError(
-                "production execution gate is not satisfied"
-            )
+            raise BankStatementCutoverCommandError("production execution gate is not satisfied")
         _validate_preflight_receipt(receipt_path, loaded)
         result = executor(loaded, database_url, commit=True)
         _validate_receipt(result, loaded)
@@ -156,9 +142,7 @@ def _validate_preflight_receipt(
         ):
             raise ValueError
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
-        raise BankStatementCutoverCommandError(
-            "production preflight receipt is invalid"
-        ) from None
+        raise BankStatementCutoverCommandError("production preflight receipt is invalid") from None
 
 
 def _read_private_json(path: Path) -> dict[str, object]:
@@ -177,13 +161,9 @@ def _read_private_json(path: Path) -> dict[str, object]:
 
 def _write_private_json(path: Path, payload: dict[str, object]) -> None:
     if not path.is_absolute() or path.exists() or path.is_symlink():
-        raise BankStatementCutoverCommandError(
-            "private preflight receipt is unavailable"
-        )
+        raise BankStatementCutoverCommandError("private preflight receipt is unavailable")
     if not path.parent.is_dir() or path.parent.is_symlink():
-        raise BankStatementCutoverCommandError(
-            "private preflight receipt is unavailable"
-        )
+        raise BankStatementCutoverCommandError("private preflight receipt is unavailable")
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=".bank-statement-preflight-", dir=path.parent
     )

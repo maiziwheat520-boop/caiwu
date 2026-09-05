@@ -89,9 +89,7 @@ def build_hotel_payout_cutover_manifest(
         email_sheets = [sheet for sheet in workbook.worksheets if "邮箱待复核" in sheet.title]
         if len(email_sheets) != 1:
             raise HotelPayoutBuildError("combined workbook must contain one email review sheet")
-        legacy_candidates = _photo_candidates(
-            workbook["26.5"], evidence_refs=(UUID(int=1),)
-        )
+        legacy_candidates = _photo_candidates(workbook["26.5"], evidence_refs=(UUID(int=1),))
         bank_candidates = _boc_candidates(email_sheets[0], evidence_refs=(UUID(int=1),))
         bank_rows = _bank_rows(email_sheets[0], bank_candidates)
     finally:
@@ -143,9 +141,7 @@ def _load_ocr_observations(path: Path) -> dict[str, Any]:
 
 def _ocr_details(payload: dict[str, Any], source: SourceManifest) -> tuple[dict[str, Any], ...]:
     source_refs = {
-        item.candidate_ref
-        for item in source.candidates
-        if item.source_system == "hotel_bill_ocr"
+        item.candidate_ref for item in source.candidates if item.source_system == "hotel_bill_ocr"
     }
     details: list[dict[str, Any]] = []
     results = payload.get("results")

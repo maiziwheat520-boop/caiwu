@@ -58,21 +58,15 @@ def upgrade() -> None:
             "jsonb_typeof(match_basis) = 'object'",
             name="candidate_evidence_link_basis_object",
         ),
-        sa.ForeignKeyConstraint(
-            ["subject_candidate_id"], ["candidate.id"], ondelete="RESTRICT"
-        ),
-        sa.ForeignKeyConstraint(
-            ["evidence_candidate_id"], ["candidate.id"], ondelete="RESTRICT"
-        ),
+        sa.ForeignKeyConstraint(["subject_candidate_id"], ["candidate.id"], ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(["evidence_candidate_id"], ["candidate.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["entity_id"], ["entity.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(
             ["business_unit_id", "entity_id"],
             ["business_unit.id", "business_unit.entity_id"],
             ondelete="RESTRICT",
         ),
-        sa.ForeignKeyConstraint(
-            ["audit_event_id"], ["audit_event.id"], ondelete="RESTRICT"
-        ),
+        sa.ForeignKeyConstraint(["audit_event_id"], ["audit_event.id"], ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("link_ref", name="pk_candidate_evidence_link"),
         sa.UniqueConstraint(
             "subject_candidate_id", "risk_code", name="uq_candidate_evidence_link_subject_risk"
@@ -310,8 +304,6 @@ def downgrade() -> None:
     # PostgreSQL otherwise rejects this downgrade even when both tables are empty.
     op.drop_table("hotel_payout_cutover_receipt", schema="internal_import")
     op.drop_table("candidate_evidence_link")
-    op.execute(
-        "DROP FUNCTION IF EXISTS internal_import.hotel_payout_cutover_receipt_append_only()"
-    )
+    op.execute("DROP FUNCTION IF EXISTS internal_import.hotel_payout_cutover_receipt_append_only()")
     op.execute("DROP FUNCTION IF EXISTS public.r1_validate_candidate_evidence_link()")
     op.execute("DROP FUNCTION IF EXISTS public.r1_candidate_evidence_link_append_only()")

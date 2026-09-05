@@ -181,16 +181,20 @@ def import_hotel_payout_cutover(
     manifest_sha = hashlib.sha256(cutover_raw).digest()
     source_sha = bytes.fromhex(source_digest)
     with engine.begin() as connection:
-        receipt = connection.execute(
-            text(
-                "SELECT manifest_sha256, source_manifest_sha256, prepared_manifest_sha256, "
-                "ignored_candidate_count, "
-                "imported_candidate_count, link_count, audit_horizon_sequence, "
-                "audit_horizon_hash FROM internal_import.hotel_payout_cutover_receipt "
-                "WHERE cutover_ref = :cutover"
-            ),
-            {"cutover": cutover.cutover_ref},
-        ).mappings().first()
+        receipt = (
+            connection.execute(
+                text(
+                    "SELECT manifest_sha256, source_manifest_sha256, prepared_manifest_sha256, "
+                    "ignored_candidate_count, "
+                    "imported_candidate_count, link_count, audit_horizon_sequence, "
+                    "audit_horizon_hash FROM internal_import.hotel_payout_cutover_receipt "
+                    "WHERE cutover_ref = :cutover"
+                ),
+                {"cutover": cutover.cutover_ref},
+            )
+            .mappings()
+            .first()
+        )
         if receipt is not None:
             expected = (
                 bytes(receipt["manifest_sha256"]) == manifest_sha
@@ -204,9 +208,7 @@ def import_hotel_payout_cutover(
                 raise HotelPayoutCutoverError("hotel payout cutover receipt conflicts")
             return _result_from_receipt(cutover.cutover_ref, receipt, replayed=True)
 
-        missing_evidence = _preflight_cutover(
-            connection, source, prepared, ocr_candidates, cutover
-        )
+        missing_evidence = _preflight_cutover(connection, source, prepared, ocr_candidates, cutover)
         _insert_dimensions(connection, prepared)
         prepared_evidence = {item.evidence_ref: item for item in prepared.evidence}
         for evidence_ref in sorted(missing_evidence, key=str):
@@ -224,9 +226,13 @@ def import_hotel_payout_cutover(
         for link in cutover.evidence_links:
             _insert_evidence_link(connection, cutover, link)
 
-        horizon = connection.execute(
-            text("SELECT sequence, hash FROM public.audit_event ORDER BY sequence DESC LIMIT 1")
-        ).mappings().one()
+        horizon = (
+            connection.execute(
+                text("SELECT sequence, hash FROM public.audit_event ORDER BY sequence DESC LIMIT 1")
+            )
+            .mappings()
+            .one()
+        )
         connection.execute(
             text(
                 "INSERT INTO internal_import.hotel_payout_cutover_receipt "
@@ -385,27 +391,29 @@ def _current_candidate_row(
     connection: Connection, candidate_ref: UUID, *, lock: bool
 ) -> dict[str, object]:
     suffix = " FOR UPDATE OF c" if lock else ""
-    row = connection.execute(
-        text(
-            "SELECT c.id, c.entity_id, cs.source_system_id, r.revision, r.status, "
-            "r.business_unit_id, r.business_unit_ref_snapshot, "
-            "r.business_unit_label_snapshot, r.category_id, r.category_code_snapshot, "
-            "r.category_label_snapshot, r.amount_minor, r.accounting_month "
-            "FROM public.candidate c JOIN public.candidate_source cs ON cs.candidate_id = c.id "
-            "JOIN LATERAL (SELECT * FROM public.candidate_revision cr "
-            "WHERE cr.candidate_id = c.id ORDER BY cr.revision DESC LIMIT 1) r ON true "
-            "WHERE c.id = :candidate" + suffix
-        ),
-        {"candidate": candidate_ref},
-    ).mappings().one_or_none()
+    row = (
+        connection.execute(
+            text(
+                "SELECT c.id, c.entity_id, cs.source_system_id, r.revision, r.status, "
+                "r.business_unit_id, r.business_unit_ref_snapshot, "
+                "r.business_unit_label_snapshot, r.category_id, r.category_code_snapshot, "
+                "r.category_label_snapshot, r.amount_minor, r.accounting_month "
+                "FROM public.candidate c JOIN public.candidate_source cs ON cs.candidate_id = c.id "
+                "JOIN LATERAL (SELECT * FROM public.candidate_revision cr "
+                "WHERE cr.candidate_id = c.id ORDER BY cr.revision DESC LIMIT 1) r ON true "
+                "WHERE c.id = :candidate" + suffix
+            ),
+            {"candidate": candidate_ref},
+        )
+        .mappings()
+        .one_or_none()
+    )
     if row is None:
         raise HotelPayoutCutoverError("referenced candidate does not exist")
     return dict(row)
 
 
-def _ignore_replaced_candidate(
-    connection: Connection, replacement: HotelReplacement
-) -> None:
+def _ignore_replaced_candidate(connection: Connection, replacement: HotelReplacement) -> None:
     row = _current_candidate_row(connection, replacement.legacy_candidate_ref, lock=True)
     reason = "weekly photo summary replaced by a field-complete OCR payout candidate"
     connection.execute(
@@ -526,9 +534,7 @@ def _read_bounded_regular_file(path: Path, *, max_bytes: int) -> bytes:
         raise HotelPayoutCutoverError("cutover file cannot be read") from exc
 
 
-def write_private_cutover_manifest(
-    path: Path, manifest: HotelPayoutCutoverManifest
-) -> None:
+def write_private_cutover_manifest(path: Path, manifest: HotelPayoutCutoverManifest) -> None:
     encoded = json.dumps(
         manifest.model_dump(mode="json"),
         ensure_ascii=True,

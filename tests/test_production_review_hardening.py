@@ -4,9 +4,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_production_review_migration_closes_deployment_gaps() -> None:
-    migration = (
-        ROOT / "alembic/versions/20260829_0018_production_review_hardening.py"
-    ).read_text(encoding="utf-8")
+    migration = (ROOT / "alembic/versions/20260829_0018_production_review_hardening.py").read_text(
+        encoding="utf-8"
+    )
 
     assert 'down_revision: str | None = "20260828_0017"' in migration
     assert "ledgerbridge(\\.test|\\.local)?" in migration
