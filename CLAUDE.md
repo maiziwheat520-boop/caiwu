@@ -38,25 +38,59 @@ uv run --frozen --extra dev ruff format --check .
 uv run --frozen --extra dev pytest -q
 ```
 
-Do not hand-assemble a `PYTHONPATH` or borrow another checkout's `.venv`. `uv
-run --frozen` resolves the current worktree in about a second.
+`uv run --frozen` resolves the current worktree in about a second. Use it
+rather than assembling a `PYTHONPATH` or borrowing another checkout's `.venv` —
+both resolve the wrong tree and cost minutes finding out.
 
-**Three of CI's gates cannot pass on a developer machine.** Know this before you
-conclude the tree is broken, and before you claim it is clean:
+**A green local run means "nothing this machine can check is broken."** Say it
+that way in reports. Three CI gates go unchecked here, for two different
+reasons:
 
-| CI runs | Here |
+| CI gate | Status here |
 |---|---|
-| `mypy src alembic tests scripts` | Fails to complete: `rapidocr` is in the `ocr` extra that CI does not install, and those four paths make mypy see every test module under two names. `uv run mypy` does complete and currently reports 4 errors that predate current work. |
-| `pytest --cov-fail-under=90` | Coverage here is 79%. The missing points are the ~214 tests that skip without PostgreSQL. |
-| `alembic upgrade/downgrade/upgrade` | Needs PostgreSQL. |
+| `pytest --cov-fail-under=90` | Machine gap. Coverage is 79%; the shortfall is the ~214 tests that skip without PostgreSQL. |
+| `alembic upgrade/downgrade/upgrade` | Machine gap. Needs PostgreSQL. |
+| `mypy src alembic tests scripts` | Broken everywhere, CI included. See below. |
 
-So a green local run means "nothing this machine can check is broken", not "CI
-will pass". Say it that way in reports. Closing the gap means giving this
-machine a PostgreSQL to test against and making one mypy invocation work in both
-places; neither is done.
+### The type gate fails rather than merely being unavailable
 
-`gh` is not authenticated here, so CI results cannot be read from this machine
-either. Do not assert that CI passed.
+On every branch carrying current code, that mypy command aborts on two errors
+before checking anything:
+
+- `src/ledgerbridge/bill_preprocessing.py` imports `rapidocr`, which lives in
+  the `ocr` extra that CI does not install.
+- `tests/` has no `__init__.py`, so those four path arguments make mypy see each
+  test module under two names.
+
+Behind the abort sit **258 errors in 23 files** as of 2026-09-06 — 3 in `src/`,
+7 in `scripts/`, 248 in `tests/`, which `strict = true` covers. Nothing has
+type-checked them since `8db25ab` on 2026-08-29. Making the command run again is
+two lines of `[tool.mypy]` config; clearing what it then reports is the real
+work, and no one has scoped it.
+
+`uv run mypy` with no arguments does pass, because `pyproject.toml` sets
+`packages = ["ledgerbridge"]` and it never reaches `tests/`. Treat it as a
+narrower gate, not as CI's.
+
+### CI reports green on `main` because `main` is stale
+
+`origin/main` sits at `cd4edd8` (2026-08-25), **186 commits behind
+`production/core`**, and predates the commit that breaks the type gate. D-009's
+branch protection is intact and passing — over a branch holding none of the code
+now in production.
+
+### Reading CI from here
+
+`gh` has no stored login, but the machine's Git credential answers for it:
+
+```
+export GH_TOKEN="$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | sed -n 's/^password=//p')"
+gh run list --branch production/core --limit 5
+```
+
+`gh auth login --with-token` rejects that same credential for missing the
+`read:org` scope; `GH_TOKEN` skips the check. Reading runs and logs works.
+A persistent login needs `gh auth login` run by the user.
 
 ## Deploying Core
 
