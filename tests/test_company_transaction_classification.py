@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.orm import Session as SqlSession
 
 from ledgerbridge.company_transaction_classification import (
     CompanyTransactionCategory,
@@ -34,6 +36,7 @@ from scripts.backup_restore import (
     COMPANY_TRANSACTION_CLASSIFICATION_TRIGGER_CONTRACT,
     MYBANK_CUTOVER_SCHEMA_REVISIONS,
     OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION,
+    PAYROLL_DISBURSEMENT_READ_MODEL_REVISION,
     R1_ROLES,
     BackupError,
     _validate_company_transaction_classification_security,
@@ -41,7 +44,7 @@ from scripts.backup_restore import (
 
 MIGRATION = Path("alembic/versions/20260903_0037_company_transaction_classification.py")
 OPERATING_FEE_REVIEW_MIGRATION = Path(
-    "alembic/versions/20260904_0046_operating_fee_reporting_item_review.py"
+    "alembic/versions/20260905_0047_operating_fee_reporting_item_review.py"
 )
 
 
@@ -70,7 +73,7 @@ def test_operating_fee_review_migration_requires_an_active_shared_detail() -> No
     source = OPERATING_FEE_REVIEW_MIGRATION.read_text(encoding="utf-8")
 
     assert f'revision: str = "{OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION}"' in source
-    assert 'down_revision: str | None = "20260904_0045"' in source
+    assert 'down_revision: str | None = "20260905_0046"' in source
     assert "p_reporting_item_code text" in source
     assert "p_category_code = 'OPERATING_FEE'" in source
     assert "registry.status = 'ACTIVE'" in source
@@ -84,9 +87,7 @@ def test_operating_fee_review_migration_requires_an_active_shared_detail() -> No
 def _restore_metadata() -> dict[str, object]:
     owner = "ledgerbridge_owner"
     function_executors = dict(COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_EXECUTORS)
-    function_executors.pop(
-        ("internal_command", "review_company_transaction_classification")
-    )
+    function_executors.pop(("internal_command", "review_company_transaction_classification"))
     function_executors.pop(
         ("internal_read", "get_company_transaction_classification_summary_as_of")
     )
@@ -301,8 +302,7 @@ def _restore_metadata() -> dict[str, object]:
                 "schema": schema,
                 "name": name,
                 "identity_arguments": arguments,
-                "execute": role
-                == function_executors.get((schema, name)),
+                "execute": role == function_executors.get((schema, name)),
             }
             for role in R1_ROLES
             for (schema, name), arguments in (
@@ -316,7 +316,7 @@ def test_restore_inventory_covers_classification_facts_and_privileges() -> None:
     metadata = _restore_metadata()
 
     _validate_company_transaction_classification_security(
-        metadata, revision=OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION
+        metadata, revision=PAYROLL_DISBURSEMENT_READ_MODEL_REVISION
     )
 
     privileges = metadata["company_transaction_classification_effective_table_privileges"]
@@ -330,7 +330,7 @@ def test_restore_inventory_covers_classification_facts_and_privileges() -> None:
     }
     with pytest.raises(BackupError, match="table privilege matrix"):
         _validate_company_transaction_classification_security(
-            drifted, revision=OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION
+            drifted, revision=PAYROLL_DISBURSEMENT_READ_MODEL_REVISION
         )
 
 
@@ -355,7 +355,7 @@ def test_restore_inventory_rejects_reporting_item_constraint_drift(drift: str) -
 
     with pytest.raises(BackupError, match="state constraints"):
         _validate_company_transaction_classification_security(
-            metadata, revision=OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION
+            metadata, revision=PAYROLL_DISBURSEMENT_READ_MODEL_REVISION
         )
 
 
@@ -379,7 +379,7 @@ def test_approved_rule_precedence_and_exact_related_party_match() -> None:
 
 
 def test_user_approved_company_transaction_rules() -> None:
-    companies = frozenset()
+    companies: frozenset[str] = frozenset()
 
     assert (
         classify(Transaction(UUID(int=6), 100, "陈明毅", "转账"), companies)
@@ -612,8 +612,8 @@ def test_review_service_commits_a_receipt_with_reporting_item_fields() -> None:
 
     session = Session()
     service = DatabaseCompanyTransactionClassificationService(
-        reader_factory=lambda: session,
-        api_factory=lambda: session,  # type: ignore[arg-type]
+        reader_factory=lambda: cast(SqlSession, session),
+        api_factory=lambda: cast(SqlSession, session),
     )
     principal = WorkloadPrincipal(
         principal_ref="test-reviewer",
@@ -677,7 +677,8 @@ def test_review_service_forwards_the_operating_fee_detail() -> None:
 
     session = Session()
     service = DatabaseCompanyTransactionClassificationService(
-        reader_factory=lambda: session, api_factory=lambda: session  # type: ignore[arg-type]
+        reader_factory=lambda: cast(SqlSession, session),
+        api_factory=lambda: cast(SqlSession, session),
     )
     principal = WorkloadPrincipal(
         principal_ref="test-reviewer",

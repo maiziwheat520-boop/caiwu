@@ -1,7 +1,7 @@
 """Expose classified payroll disbursements as a source-backed read model.
 
-Revision ID: 20260905_0046
-Revises: 20260904_0045
+Revision ID: 20260905_0048
+Revises: 20260905_0047
 """
 
 from collections.abc import Sequence
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "20260905_0046"
-down_revision: str | None = "20260904_0045"
+revision: str = "20260905_0048"
+down_revision: str | None = "20260905_0047"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -32,7 +32,7 @@ BEGIN
        OR p_pay_period IS NULL OR p_pay_period !~ '^20[0-9]{2}-(0[1-9]|1[0-2])$'
        OR p_audit_horizon_sequence IS NULL OR p_audit_horizon_hash IS NULL
        OR octet_length(p_audit_horizon_hash) <> 32
-       OR p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 500
+       OR p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 501
        OR NOT EXISTS (SELECT 1 FROM public.audit_event
             WHERE sequence = p_audit_horizon_sequence AND hash = p_audit_horizon_hash) THEN
         RAISE EXCEPTION 'payroll disbursement query is invalid'
@@ -131,11 +131,11 @@ BEGIN
              LIMIT 1
       ) AS source ON true
       LEFT JOIN public.bank_statement_transaction_correction AS correction
-        USING(transaction_ref)
+        ON correction.transaction_ref = transaction.transaction_ref
       LEFT JOIN public.audit_event AS correction_audit
         ON correction_audit.id = correction.audit_event_id
       LEFT JOIN public.bank_statement_transaction_projection_correction AS projection
-        USING(transaction_ref)
+        ON projection.transaction_ref = transaction.transaction_ref
       LEFT JOIN public.audit_event AS projection_audit
         ON projection_audit.id = projection.audit_event_id
       CROSS JOIN LATERAL (

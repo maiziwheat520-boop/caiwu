@@ -527,6 +527,8 @@ def test_cutover_creates_whole_statement_facts_without_candidates(tmp_path: Path
         "20260904_0044",
         "20260904_0045",
         "20260905_0046",
+        "20260905_0047",
+        "20260905_0048",
     ),
 )
 def test_cutover_accepts_reviewed_schema_revision(

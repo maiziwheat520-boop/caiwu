@@ -1,15 +1,15 @@
 """Require an explicit operating-fee reporting item during human review.
 
-Revision ID: 20260904_0046
-Revises: 20260904_0045
+Revision ID: 20260905_0047
+Revises: 20260905_0046
 """
 
 from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "20260904_0046"
-down_revision: str | None = "20260904_0045"
+revision: str = "20260905_0047"
+down_revision: str | None = "20260905_0046"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -48,7 +48,7 @@ BEGIN
             END IF;
         ELSE
             v_audit := public.append_audit_event(
-                'migration:20260904_0046',
+                'migration:20260905_0047',
                 'company_transaction_reporting_item.record',
                 'seed shared operating fee reporting item',
                 'ledgerbridge.company-transaction-reporting-item.v1',

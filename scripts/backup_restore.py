@@ -2536,7 +2536,7 @@ STATEMENT_REPORT_FACT_INDEPENDENCE_REVISION = "20260902_0033"
 BANK_STATEMENT_REVIEW_API_GRANT_REVISION = "20260902_0035"
 CASH_RECONCILIATION_REVISION = "20260903_0036"
 COMPANY_TRANSACTION_CLASSIFICATION_REVISION = "20260903_0037"
-PAYROLL_DISBURSEMENT_READ_MODEL_REVISION = "20260905_0046"
+PAYROLL_DISBURSEMENT_READ_MODEL_REVISION = "20260905_0048"
 COMPANY_TRANSACTION_CLASSIFICATION_TABLE = "company_transaction_classification"
 COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES = {
     ("public", "r1_validate_company_transaction_classification"): "",
@@ -2795,7 +2795,7 @@ ABC_COMPANY_XLS_REVISION = "20260904_0043"
 BOC_COMPANY_XLS_REVISION = "20260904_0044"
 BLANK_COUNTERPARTY_OVERLAP_REVISION = "20260904_0045"
 CANDIDATE_BY_REF_READER_REVISION = "20260905_0046"
-OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION = "20260904_0046"
+OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION = "20260905_0047"
 CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES = (
     "company_transaction_reporting_item",
     "company_transaction_reporting_item_match",
@@ -7063,6 +7063,9 @@ def _validate_company_transaction_classification_security(
         )
     if revision < PAYROLL_DISBURSEMENT_READ_MODEL_REVISION:
         expected_function_signatures.pop(
+            ("internal_read", "list_payroll_disbursement_records_as_of")
+        )
+        expected_function_executors.pop(
             ("internal_read", "list_payroll_disbursement_records_as_of")
         )
     if revision < CASH_RECONCILIATION_CLASSIFICATION_REVISION:

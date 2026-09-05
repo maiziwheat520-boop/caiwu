@@ -75,9 +75,7 @@ class Settings(BaseSettings):
     payroll_base_url: str | None = Field(default=None, min_length=1, max_length=2048)
     payroll_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     payroll_company_mapping: dict[str, UUID] = Field(default_factory=dict)
-    payroll_disbursement_source_entities: dict[str, tuple[UUID, ...]] = Field(
-        default_factory=dict
-    )
+    payroll_disbursement_source_entities: dict[str, tuple[UUID, ...]] = Field(default_factory=dict)
     payroll_bff_user_assertion_key: SecretStr | None = Field(
         default=None,
         min_length=32,

@@ -47,9 +47,9 @@ class PayrollDisbursementSourceRecord(_FrozenModel):
     classification_source: Literal["AUTO_RULE", "HUMAN_REVIEW", "BACKFILL"]
     classification_rule_version: str = Field(min_length=1, max_length=100)
     period_assignment_source: Literal["NEXT_MONTH_RULE"] = "NEXT_MONTH_RULE"
-    period_assignment_rule_version: Literal[
+    period_assignment_rule_version: Literal["payroll-next-month-disbursement.2026-09.v1"] = (
         "payroll-next-month-disbursement.2026-09.v1"
-    ] = "payroll-next-month-disbursement.2026-09.v1"
+    )
     parse_status: Literal["PARSED"] = "PARSED"
     link_status: Literal["UNMATCHED", "UNSUPPORTED_DIRECTION"]
     payable: Literal[False] = False
@@ -113,18 +113,18 @@ class DatabasePayrollDisbursementReadModel:
                         text(
                             "SELECT item FROM "
                             "internal_read.list_payroll_disbursement_records_as_of("
-                            ":entity_ref, :pay_period, :sequence, :horizon_hash, 500)"
+                            ":entity_ref, :pay_period, :sequence, :horizon_hash, :limit)"
                         ),
                         {
                             "entity_ref": entity_ref,
                             "pay_period": pay_period,
                             "sequence": sequence,
                             "horizon_hash": horizon_hash,
+                            "limit": 501,
                         },
                     ).mappings()
                     parsed.extend(
-                        PayrollDisbursementSourceRecord.model_validate(row["item"])
-                        for row in rows
+                        PayrollDisbursementSourceRecord.model_validate(row["item"]) for row in rows
                     )
         except (SQLAlchemyError, TypeError, ValueError, KeyError) as exc:
             raise CandidateCommandUnavailable(

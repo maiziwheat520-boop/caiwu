@@ -190,6 +190,8 @@ def test_mybank_restore_inventory_accepts_current_integrated_schema_revision() -
         "20260904_0044",
         "20260904_0045",
         "20260905_0046",
+        "20260905_0047",
+        "20260905_0048",
     ),
 )
 def test_bank_statement_restore_inventory_accepts_reviewed_profile_revision(

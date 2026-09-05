@@ -397,9 +397,7 @@ def test_disbursement_records_read_configured_persisted_source_scope() -> None:
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["data"]["schema_version"] == (
-        "ledgerbridge.payroll-disbursement-records.v1"
-    )
+    assert payload["data"]["schema_version"] == ("ledgerbridge.payroll-disbursement-records.v1")
     assert payload["data"]["record_count"] == 1
     assert payload["data"]["records"][0]["parse_status"] == "PARSED"
     assert payload["data"]["records"][0]["link_status"] == "UNMATCHED"
