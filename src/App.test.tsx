@@ -2616,7 +2616,7 @@ describe('LedgerBridge Web API client', () => {
     fetchMock.mockImplementation(async (input, init) => {
       if (String(input) === '/api/v1/connections' && ++reads === 1) {
         await oldRead
-        return response({ items: [{ id: 'HERMES', state: 'CONNECTED', checked_at: '2026-09-05T06:00:00Z', detail: '过时连接不应出现' }] })
+        return response({ items: [{ id: 'ledgerbridge_core', state: 'CONNECTED', checked_at: '2026-09-05T06:00:00Z', detail: '过时连接不应出现' }] })
       }
       return originalFetch(input, init)
     })
