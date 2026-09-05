@@ -2161,7 +2161,7 @@ def _classification_groups_from_core(
             or any(block not in rule_blocks for block in blocks)
             or len(blocks) != len(set(blocks))
             or (raw_group.get("rule_learning_eligible") is True) != (not blocks)
-            or active_rule is not None
+            or not _learned_rule_is_valid(active_rule, group_ref=group_ref)
         ):
             raise invalid
         groups.append(deepcopy(raw_group))
@@ -2319,6 +2319,54 @@ def _classification_batch_receipt_from_core(
         "acknowledged_risk_codes": list(payload["acknowledged_risk_codes"]),
         "results": mapped_results,
     }
+
+
+def _learned_rule_is_valid(value: object, *, group_ref: str) -> bool:
+    """A learned rule is optional; when present it must be the documented shape.
+
+    Core has never emitted one, but the field is part of the contract, so
+    checking it is what keeps a future Core release from arriving as an
+    unexplained outage rather than as a rule the workbench can show.
+    """
+    if value is None:
+        return True
+    if not isinstance(value, dict):
+        return False
+    required = {
+        "rule_ref",
+        "revision",
+        "status",
+        "group_ref",
+        "conditions",
+        "business_unit_ref",
+        "category_code",
+        "source_candidate_ref",
+        "source_decision_operation_id",
+        "effective_from",
+        "created_at",
+    }
+    if not required.issubset(value):
+        return False
+    if value.get("group_ref") != group_ref:
+        return False
+    if value.get("status") not in {"ACTIVE", "DISABLED"}:
+        return False
+    if type(value.get("revision")) is not int or value["revision"] < 1:
+        return False
+    for field in ("business_unit_ref", "category_code"):
+        text = value.get(field)
+        if not isinstance(text, str) or not 1 <= len(text) <= 100:
+            return False
+    for field in ("rule_ref", "source_candidate_ref", "source_decision_operation_id"):
+        if not isinstance(value.get(field), str) or not value[field]:
+            return False
+    for field in ("effective_from", "created_at"):
+        if not isinstance(value.get(field), str) or not value[field]:
+            return False
+    for field in ("effective_to", "disabled_at"):
+        if field in value and value[field] is not None and not isinstance(value[field], str):
+            return False
+    return isinstance(value.get("conditions"), dict)
 
 
 def _ordered_unique_codes(value: object, *, maximum: int = 6) -> bool:
