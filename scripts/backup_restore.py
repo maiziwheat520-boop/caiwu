@@ -2331,6 +2331,10 @@ EVIDENCE_UNLOCK_FUNCTION_SIGNATURES = {
     "render_candidate_revision_base": "p_candidate_id uuid, p_revision integer",
     "list_candidates_as_of": R1_INTERNAL_READ_FUNCTION_SIGNATURES["list_candidates_as_of"],
     "render_candidate_revision": "p_candidate_id uuid, p_revision integer",
+    "get_candidate_as_of": (
+        "p_entity_id uuid, p_business_unit_id uuid, p_candidate_ref uuid, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea"
+    ),
 }
 EVIDENCE_UNLOCK_FUNCTION_SCHEMAS = {
     "register_evidence_unlock_source": "internal_import",
@@ -2345,6 +2349,7 @@ EVIDENCE_UNLOCK_FUNCTION_SCHEMAS = {
     "render_candidate_revision_base": "internal_read",
     "list_candidates_as_of": "internal_read",
     "render_candidate_revision": "internal_read",
+    "get_candidate_as_of": "internal_read",
 }
 EVIDENCE_UNLOCK_FUNCTION_EXECUTORS = {
     "register_evidence_unlock_source": "ledgerbridge_worker",
@@ -2352,6 +2357,7 @@ EVIDENCE_UNLOCK_FUNCTION_EXECUTORS = {
     "complete_evidence_unlock": "ledgerbridge_api",
     "reject_evidence_unlock": "ledgerbridge_api",
     "list_candidates_as_of": "ledgerbridge_reader",
+    "get_candidate_as_of": "ledgerbridge_reader",
 }
 _EVIDENCE_UNLOCK_LIST_CANDIDATES_RESULT = (
     "TABLE(contract_version character varying, candidate_ref uuid, "
@@ -2385,6 +2391,7 @@ EVIDENCE_UNLOCK_FUNCTION_RESULTS = {
     "render_candidate_revision_base": "jsonb",
     "list_candidates_as_of": _EVIDENCE_UNLOCK_LIST_CANDIDATES_RESULT,
     "render_candidate_revision": "jsonb",
+    "get_candidate_as_of": _EVIDENCE_UNLOCK_LIST_CANDIDATES_RESULT,
 }
 EVIDENCE_UNLOCK_SECURITY_DEFINER_FUNCTIONS = frozenset(
     set(EVIDENCE_UNLOCK_FUNCTION_SIGNATURES) - {"normalize_evidence_unlock_scope_bindings"}
@@ -2766,6 +2773,7 @@ CASH_RECONCILIATION_CLASSIFICATION_REVISION = "20260904_0042"
 ABC_COMPANY_XLS_REVISION = "20260904_0043"
 BOC_COMPANY_XLS_REVISION = "20260904_0044"
 BLANK_COUNTERPARTY_OVERLAP_REVISION = "20260904_0045"
+CANDIDATE_BY_REF_READER_REVISION = "20260905_0046"
 CASH_RECONCILIATION_CLASSIFICATION_STATE_TABLES = (
     "company_transaction_reporting_item",
     "company_transaction_reporting_item_match",
@@ -2997,6 +3005,7 @@ MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
         ABC_COMPANY_XLS_REVISION,
         BOC_COMPANY_XLS_REVISION,
         BLANK_COUNTERPARTY_OVERLAP_REVISION,
+        CANDIDATE_BY_REF_READER_REVISION,
     }
 )
 COMPANY_REPORTING_SCHEMA = "company_reporting_read"
