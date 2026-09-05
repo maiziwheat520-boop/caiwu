@@ -12,7 +12,6 @@ import json
 import threading
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
 from functools import lru_cache
@@ -38,6 +37,7 @@ from ledgerbridge.candidate_contract import (
     apply_candidate_command,
     create_candidate_aggregate,
 )
+from ledgerbridge.horizon_cache import HorizonCache, horizon_cache_key
 from ledgerbridge.internal_read_contract import (
     CANDIDATE_ACTION_CAPABILITIES,
     AccountingDimensions,
@@ -50,7 +50,7 @@ from ledgerbridge.internal_read_contract import (
     require_candidate_visible_scope,
     require_capability,
 )
-from ledgerbridge.internal_read_cursor import ReadCursorSigner, grant_digest
+from ledgerbridge.internal_read_cursor import ReadCursorSigner
 from ledgerbridge.internal_read_service import (
     DatabaseInternalReadService,
     SyntheticInternalReadService,
@@ -626,10 +626,10 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
         self,
         principal: WorkloadPrincipal,
     ) -> ClassificationGroupPage:
-        key = _classification_group_cache_key(principal)
+        key = horizon_cache_key(principal)
         with self._session_factory() as session:
             sequence, horizon_hash = self._audit_horizon(session)
-        cached = _cached_classification_groups(key, sequence, horizon_hash)
+        cached = _CLASSIFICATION_GROUP_CACHE.get(key, sequence, horizon_hash)
         if cached is not None:
             return ClassificationGroupPage(items=cached)
 
@@ -641,7 +641,7 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
         with self._session_factory() as session:
             after_sequence, after_hash = self._audit_horizon(session)
         if after_sequence == sequence and after_hash == horizon_hash:
-            _store_classification_groups(key, sequence, horizon_hash, tuple(groups))
+            _CLASSIFICATION_GROUP_CACHE.store(key, sequence, horizon_hash, tuple(groups))
         return ClassificationGroupPage(items=groups)
 
     def apply_classification_batch(
@@ -961,68 +961,12 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
         raise CandidateCommandUnavailable("candidate command backend is unavailable") from exc
 
 
-@dataclass(frozen=True, slots=True)
-class _ClassificationGroupCacheEntry:
-    horizon_sequence: int
-    horizon_hash: bytes
-    groups: tuple[ClassificationGroup, ...]
-
-
-# Process-level: the command service is constructed per request, so instance
-# state would never survive to be reused. One entry per principal identity,
-# holding only the newest horizon.
-_CLASSIFICATION_GROUP_CACHE: dict[str, _ClassificationGroupCacheEntry] = {}
-_CLASSIFICATION_GROUP_CACHE_LOCK = threading.Lock()
-_CLASSIFICATION_GROUP_CACHE_MAX_PRINCIPALS = 16
-
-
-def _classification_group_cache_key(principal: WorkloadPrincipal) -> str:
-    # Grants decide which candidates are visible; the generation and principal
-    # ref keep two different identities from ever sharing an entry.
-    return "|".join(
-        (
-            principal.principal_ref,
-            str(principal.policy_generation),
-            grant_digest(principal),
-        )
-    )
-
-
-def _cached_classification_groups(
-    key: str, horizon_sequence: int, horizon_hash: bytes
-) -> tuple[ClassificationGroup, ...] | None:
-    with _CLASSIFICATION_GROUP_CACHE_LOCK:
-        entry = _CLASSIFICATION_GROUP_CACHE.get(key)
-    if entry is None:
-        return None
-    if entry.horizon_sequence != horizon_sequence or entry.horizon_hash != horizon_hash:
-        return None
-    return entry.groups
-
-
-def _store_classification_groups(
-    key: str,
-    horizon_sequence: int,
-    horizon_hash: bytes,
-    groups: tuple[ClassificationGroup, ...],
-) -> None:
-    with _CLASSIFICATION_GROUP_CACHE_LOCK:
-        if (
-            key not in _CLASSIFICATION_GROUP_CACHE
-            and len(_CLASSIFICATION_GROUP_CACHE) >= _CLASSIFICATION_GROUP_CACHE_MAX_PRINCIPALS
-        ):
-            _CLASSIFICATION_GROUP_CACHE.clear()
-        _CLASSIFICATION_GROUP_CACHE[key] = _ClassificationGroupCacheEntry(
-            horizon_sequence=horizon_sequence,
-            horizon_hash=horizon_hash,
-            groups=groups,
-        )
+_CLASSIFICATION_GROUP_CACHE: HorizonCache[tuple[ClassificationGroup, ...]] = HorizonCache()
 
 
 def reset_classification_group_cache() -> None:
     """Drop every cached grouping. Used by tests; never on a read path."""
-    with _CLASSIFICATION_GROUP_CACHE_LOCK:
-        _CLASSIFICATION_GROUP_CACHE.clear()
+    _CLASSIFICATION_GROUP_CACHE.clear()
 
 
 def _all_candidates(

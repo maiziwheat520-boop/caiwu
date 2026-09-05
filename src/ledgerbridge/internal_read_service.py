@@ -41,6 +41,7 @@ from ledgerbridge.encrypted_artifacts import (
     EncryptedEnvelopeMetadata,
     EncryptedPublishedArtifact,
 )
+from ledgerbridge.horizon_cache import HorizonCache, horizon_cache_key
 from ledgerbridge.internal_read_audit import (
     EvidenceReadReceipt,
     InternalReadReceiptSink,
@@ -232,6 +233,14 @@ class _SyntheticFixture(_FrozenModel):
         ):
             raise ValueError("candidate page indexes must be unique and in range")
         return self
+
+
+_PERSONAL_FINANCE_SUMMARY_CACHE: HorizonCache[PersonalFinanceSummary] = HorizonCache()
+
+
+def reset_personal_finance_summary_cache() -> None:
+    """Drop every cached summary. Used by tests; never on a read path."""
+    _PERSONAL_FINANCE_SUMMARY_CACHE.clear()
 
 
 class SyntheticInternalReadService:
@@ -872,6 +881,13 @@ class DatabaseInternalReadService:
         the workbench instead of one per page.
         """
         authorize_collection_read(principal, Capability.CANDIDATE_READ)
+        key = horizon_cache_key(principal)
+        with self._session_factory() as session:
+            sequence, horizon_hash = self._audit_horizon(session)
+        cached = _PERSONAL_FINANCE_SUMMARY_CACHE.get(key, sequence, horizon_hash)
+        if cached is not None:
+            return cached
+
         candidates: list[CandidateProjection] = []
         cursor: str | None = None
         seen: set[str] = set()
@@ -886,7 +902,15 @@ class DatabaseInternalReadService:
                 raise InternalReadBackendUnavailable("personal finance cursor repeated")
             seen.add(page.next_cursor)
             cursor = page.next_cursor
-        return build_personal_finance_summary(tuple(candidates))
+        summary = build_personal_finance_summary(tuple(candidates))
+
+        # The walk is not atomic with the horizon read above; a summary that
+        # straddled a write is returned but never stored.
+        with self._session_factory() as session:
+            after_sequence, after_hash = self._audit_horizon(session)
+        if after_sequence == sequence and after_hash == horizon_hash:
+            _PERSONAL_FINANCE_SUMMARY_CACHE.store(key, sequence, horizon_hash, summary)
+        return summary
 
     def get_candidate(
         self,
