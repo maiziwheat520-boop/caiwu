@@ -2630,6 +2630,34 @@ describe('LedgerBridge Web API client', () => {
     expect(within(overviewSummary()).queryByText('1 / 1')).not.toBeInTheDocument()
   })
 
+  it.each(['success', 'failure'])('preserves the post-review reconciliation when an old read ends with %s', async (oldResult) => {
+    const fetchMock = installFetch()
+    const originalFetch = fetchMock.getMockImplementation()!
+    let releaseOldRead: () => void = () => undefined
+    const oldRead = new Promise<void>((resolve) => { releaseOldRead = resolve })
+    let reads = 0
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input).startsWith('/api/v1/reconciliations/')) {
+        if (++reads === 1) {
+          await oldRead
+          if (oldResult === 'failure') return response({ title: '旧请求失败' }, 503)
+          return response({ ...reconciliation, blockers: [{ code: 'OLD', message: '过时的对账状态' }] })
+        }
+        return response({ ...reconciliation, revision: 2, blockers: [{ code: 'NEW', message: '审核后的最新对账' }] })
+      }
+      return originalFetch(input, init)
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(within(reviewWorkspace()).getAllByRole('button', { name: '确认' })[0])
+    await screen.findByText(/C-8F21 已确认/)
+    expect(screen.getByText('审核后的最新对账')).toBeInTheDocument()
+    await act(async () => { releaseOldRead() })
+    expect(screen.getByText('审核后的最新对账')).toBeInTheDocument()
+    expect(screen.queryByText('过时的对账状态')).not.toBeInTheDocument()
+    expect(screen.queryByText(/对账状态暂未读取成功/)).not.toBeInTheDocument()
+  })
+
   it('keeps processing-stage and business-unit diagnostics out of the company report page', async () => {
     window.history.replaceState({}, '', '/company-reports')
     installFetch({ runtimeMode: 'core-backed', companyReportResponse: companyReports(true, true) })

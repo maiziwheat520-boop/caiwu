@@ -180,6 +180,7 @@ function App() {
   const auditCandidateIdsRef = useRef<Set<string>>(new Set())
   const businessDataLoadedRef = useRef(false)
   const businessDataRequestRef = useRef(0)
+  const reconciliationRequestRef = useRef(0)
   const [supplementaryLoads, setSupplementaryLoads] = useState<string[]>([])
   const [supplementaryFailures, setSupplementaryFailures] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
@@ -264,6 +265,7 @@ function App() {
 
   const loadData = useCallback(async () => {
     const requestId = ++businessDataRequestRef.current
+    const reconciliationRequestId = ++reconciliationRequestRef.current
     let cancelled = false
     const isCurrent = () => businessDataRequestRef.current === requestId && !cancelled
     setLoading(true)
@@ -280,11 +282,11 @@ function App() {
       const sessionData = await api.getSession()
       if (!isCurrent()) return false
       setSession(sessionData)
-      function loadSupplement<T>(label: string, request: Promise<T>, apply: (value: T) => void) {
+      function loadSupplement<T>(label: string, request: Promise<T>, apply: (value: T) => void, isRelevant = () => true) {
         void request.then((value) => {
-          if (isCurrent()) apply(value)
+          if (isCurrent() && isRelevant()) apply(value)
         }).catch(() => {
-          if (!isCurrent()) return
+          if (!isCurrent() || !isRelevant()) return
           setSupplementaryFailures((current) => [...current, label])
           if (label === '分类分组') {
             setNotice({ tone: 'info', message: CLASSIFICATION_GROUPS_UNAVAILABLE_NOTICE })
@@ -300,7 +302,8 @@ function App() {
         setNotice((current) => current?.message === CLASSIFICATION_GROUPS_UNAVAILABLE_NOTICE ? null : current)
       })
       loadSupplement('银行流水', api.getPersonalBankTransactions(), setPersonalBankData)
-      loadSupplement('对账状态', api.getReconciliation(selectedMonth), setReconciliation)
+      loadSupplement('对账状态', api.getReconciliation(selectedMonth), setReconciliation,
+        () => reconciliationRequestRef.current === reconciliationRequestId)
       loadSupplement('连接状态', api.listConnections(), setConnections)
       const candidateData = await api.listCandidates()
       if (!isCurrent()) return false
@@ -320,7 +323,10 @@ function App() {
     }
   }, [selectedMonth])
 
-  useEffect(() => () => { businessDataRequestRef.current += 1 }, [])
+  useEffect(() => () => {
+    businessDataRequestRef.current += 1
+    reconciliationRequestRef.current += 1
+  }, [])
 
   const loadReviewEvents = useCallback(async (cursor?: string, includeCandidatePages = false) => {
     setReviewEventsLoading(true)
@@ -423,6 +429,7 @@ function App() {
         conflictResolution: conflictResolution?.trim(),
         csrfToken: session.csrf_token,
       })
+      const reconciliationRequestId = ++reconciliationRequestRef.current
       let rereadVerified = false
       let persistedCandidate = result.candidate
       try {
@@ -453,7 +460,11 @@ function App() {
       setSelectedCandidate(null)
       try {
         const refreshedReconciliation = await api.getReconciliation(selectedMonth)
-        setReconciliation(refreshedReconciliation)
+        if (reconciliationRequestRef.current === reconciliationRequestId) {
+          setReconciliation(refreshedReconciliation)
+          setSupplementaryFailures((current) => current.filter((label) => label !== '对账状态'))
+          setSupplementaryLoads((current) => current.filter((label) => label !== '对账状态'))
+        }
         setNotice({
           tone: rereadVerified ? 'success' : 'info',
           message: !rereadVerified
@@ -525,6 +536,7 @@ function App() {
         reason: reviewNote?.trim() || 'Web 审核：明确预览并确认相似交易组分类',
         csrfToken: session.csrf_token,
       })
+      const reconciliationRequestId = ++reconciliationRequestRef.current
       const updated = new Map(
         receipt.results.map((result) => [result.candidate_ref, toCandidate(result.candidate)]),
       )
@@ -546,8 +558,10 @@ function App() {
         setClassificationGroups([])
         setClassificationGroupsAvailable(false)
       }
-      if (reconciliationResult.status === 'fulfilled') {
+      if (reconciliationResult.status === 'fulfilled' && reconciliationRequestRef.current === reconciliationRequestId) {
         setReconciliation(reconciliationResult.value)
+        setSupplementaryFailures((current) => current.filter((label) => label !== '对账状态'))
+        setSupplementaryLoads((current) => current.filter((label) => label !== '对账状态'))
       }
       setNotice({
         tone: groupResult.status === 'fulfilled' && reconciliationResult.status === 'fulfilled'
@@ -622,6 +636,7 @@ function App() {
     try {
       await api.logout(session.csrf_token)
       businessDataRequestRef.current += 1
+      reconciliationRequestRef.current += 1
       businessDataLoadedRef.current = false
       setSupplementaryLoads([])
       setSupplementaryFailures([])
