@@ -159,6 +159,7 @@ def _source_and_registry(
         ),
         encoding="utf-8",
     )
+    registry.chmod(0o600)
     monkeypatch.setenv("LEDGERBRIDGE_BANK_STATEMENT_PASSWORD_REGISTRY", str(registry))
     monkeypatch.setattr(
         "ledgerbridge.boc_statement.PdfReader",
@@ -315,6 +316,7 @@ def test_parser_requires_unique_digest_bound_verified_password_without_echo(
         ),
         encoding="utf-8",
     )
+    registry.chmod(0o600)
 
     with pytest.raises(BocStatementError) as captured:
         parse_boc_personal_pdf(
@@ -398,6 +400,7 @@ def test_private_plan_builder_derives_boc_facts_without_secret_fields(
         },
     }
     draft.write_text(json.dumps(payload), encoding="utf-8")
+    draft.chmod(0o600)
 
     finalize_private_bank_statement_plan(draft, output)
     loaded = load_private_bank_statement_plan(output)

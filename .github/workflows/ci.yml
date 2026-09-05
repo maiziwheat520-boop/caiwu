@@ -87,7 +87,10 @@ jobs:
       # meaningful floor while its database-backed implementation tests land;
       # production enablement remains separately rejected by configuration.
       - run: uv run --frozen --extra dev pytest --cov=ledgerbridge --cov=scripts.deployment_manifest --cov-report=term-missing --cov-fail-under=90
-      - run: uv run --frozen --extra dev alembic upgrade head
+      # 20260902_0030 and every bank-statement import revision after it refuse to
+      # downgrade on purpose.  Reversibility is proven over the prefix that still
+      # has a downgrade path; the full chain is then applied from base.
+      - run: uv run --frozen --extra dev alembic upgrade 20260901_0028
         env:
           LEDGERBRIDGE_DATABASE_URL: ${{ env.LEDGERBRIDGE_MIGRATION_DATABASE_URL }}
       - run: uv run --frozen --extra dev alembic downgrade base

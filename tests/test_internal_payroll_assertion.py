@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
@@ -18,6 +19,9 @@ from ledgerbridge.internal_payroll_assertion import (
 )
 from ledgerbridge.internal_read_contract import EntityGrant, WorkloadPrincipal
 
+# The filesystem root is absolute on every platform; a literal `C:/...` is
+# absolute only on Windows, which made these synthetic settings fail on CI.
+_SYNTHETIC_ROOT = Path(Path.cwd().anchor)
 ENTITY = UUID("30000000-0000-4000-8000-000000000001")
 OPERATION = UUID("30000000-0000-4000-8000-000000000002")
 JTI = UUID("30000000-0000-4000-8000-000000000003")
@@ -144,7 +148,7 @@ def test_production_live_payroll_requires_private_origin_and_two_deployment_secr
         "env": "production",
         "runtime_role": "api",
         "api_database_url": "postgresql+psycopg://ledgerbridge_api@db/app",
-        "artifact_root": "C:/synthetic/artifacts",
+        "artifact_root": str(_SYNTHETIC_ROOT / "synthetic" / "artifacts"),
         "enable_internal_read_api": True,
         "internal_read_backend": "database",
         "reader_database_url": "postgresql+psycopg://reader.invalid/ledgerbridge",
@@ -152,10 +156,10 @@ def test_production_live_payroll_requires_private_origin_and_two_deployment_secr
         "internal_read_policy_generation": 1,
         "internal_read_operational_gate": "r1-production-v1",
         "internal_read_transport": "unix-mtls-proxy",
-        "internal_read_mtls_policy_path": "C:/synthetic/mtls-policy.json",
+        "internal_read_mtls_policy_path": str(_SYNTHETIC_ROOT / "synthetic" / "mtls-policy.json"),
         "enable_internal_read_persistent_audit": True,
         "enable_internal_read_persistent_receipt": True,
-        "internal_read_evidence_key_file": "C:/synthetic/evidence.key",
+        "internal_read_evidence_key_file": str(_SYNTHETIC_ROOT / "synthetic" / "evidence.key"),
         "enable_payroll_integration": True,
         "payroll_company_mapping": {"company_hotel_001": ENTITY},
         "payroll_bff_user_assertion_key": "b" * 32,

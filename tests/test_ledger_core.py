@@ -30,6 +30,12 @@ from ledgerbridge.models import (
     Posting,
 )
 
+# ``20260902_0030`` and every bank-statement import revision after it refuse to
+# downgrade on purpose, so a chain that includes them cannot be walked back.
+# Reversibility is therefore proven against the last revision that still has a
+# downgrade path.
+LAST_REVERSIBLE_REVISION = "20260901_0028"
+
 
 def _run_alembic(database_url: str, revision: str, *, downgrade: bool = False) -> None:
     config = Config("alembic.ini")
@@ -1573,7 +1579,7 @@ def test_phase1_migration_real_round_trip(migration_database_url: str) -> None:
                 text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
             )
 
-        _run_alembic(temporary_url.render_as_string(hide_password=False), "head")
+        _run_alembic(temporary_url.render_as_string(hide_password=False), LAST_REVERSIBLE_REVISION)
         temporary_engine = create_engine(temporary_url)
         with temporary_engine.connect() as connection:
             inspector = inspect(connection)
@@ -1952,7 +1958,7 @@ def test_security_function_forward_migration_repairs_historical_definitions(
 
         temporary_admin_engine.dispose()
         temporary_admin_engine = None
-        _run_alembic(rendered, "head")
+        _run_alembic(rendered, LAST_REVERSIBLE_REVISION)
 
         temporary_admin_engine = create_engine(temporary_owner_url)
         temporary_runtime_engine = create_engine(temporary_runtime_url)

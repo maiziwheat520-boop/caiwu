@@ -497,6 +497,7 @@ def test_generic_plan_builder_materializes_company_profile(
         ),
         encoding="utf-8",
     )
+    draft.chmod(0o600)
 
     finalize_private_bank_statement_plan(draft, output)
     loaded = load_private_bank_statement_plan(output)
@@ -580,6 +581,7 @@ def test_range_plan_binds_expected_new_transaction_count(tmp_path: Path) -> None
         ),
         encoding="utf-8",
     )
+    draft.chmod(0o600)
 
     finalize_private_bank_statement_plan(draft, output)
     loaded = load_private_bank_statement_plan(output)

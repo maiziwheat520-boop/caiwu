@@ -79,10 +79,15 @@ RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $function$
 DECLARE
     v_entry uuid;
+    v_new jsonb;
 BEGIN
+    -- The trigger is shared by two tables with different row types, and
+    -- PostgreSQL resolves every direct NEW.<column> reference against the row
+    -- type currently invoking the function -- including the branch not taken.
+    v_new := to_jsonb(NEW);
     v_entry := CASE
-        WHEN TG_TABLE_NAME = 'journal_entry' THEN NEW.id
-        ELSE NEW.entry_id
+        WHEN TG_TABLE_NAME = 'journal_entry' THEN (v_new->>'id')::uuid
+        ELSE (v_new->>'entry_id')::uuid
     END;
     IF EXISTS (
         SELECT 1

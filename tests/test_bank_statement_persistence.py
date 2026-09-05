@@ -843,7 +843,9 @@ def test_0021_postgresql_replay_overlap_conflict_scope_acl_and_downgrade(
                     ),
                     {"table_name": f"public.{table_name}"},
                 ).scalar_one()
-            assert not connection.execute(
+            # 20260902_0035 granted the API role this one review entry point;
+            # every other statement object stays closed to it.
+            assert connection.execute(
                 text(
                     "SELECT has_function_privilege("
                     "'ledgerbridge_api', "
@@ -1114,7 +1116,13 @@ def test_0021_postgresql_rejects_malformed_json_before_casting(
         malformed: tuple[tuple[str, object, str], ...] = (
             ("non-object request", "scalar", "bank statement request is invalid"),
             ("missing transactions", missing_transactions, "bank statement request is invalid"),
-            ("missing institution", missing_institution, "bank statement request is invalid"),
+            # 0030 validates the parser profile, which the institution code is
+            # part of, before the rest of the request shape.
+            (
+                "missing institution",
+                missing_institution,
+                "bank statement parser profile is invalid",
+            ),
             (
                 "invalid statement uuid",
                 request_with(statement_ref="not-a-uuid"),

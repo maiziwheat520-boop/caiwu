@@ -62,7 +62,11 @@ from ledgerbridge.mybank_statement_cutover import (
     verify_mybank_cutover_safety_proof,
 )
 from tests.test_mybank_statement import _write_synthetic_mybank_xlsx
-from tests.test_r1_database_migration import _legacy_r1_database, _upgrade_config
+from tests.test_r1_database_migration import (
+    _head_revision,
+    _legacy_r1_database,
+    _upgrade_config,
+)
 
 STATEMENT_REF = UUID("83000000-0000-4000-8000-000000000001")
 EVIDENCE_REF = UUID("83000000-0000-4000-8000-000000000002")
@@ -1397,13 +1401,13 @@ def test_database_cutover_persists_encrypted_evidence_and_replays_atomically(
             audit_events=0,
         )
         gates = replace(
-            _gates(before, schema_revision="20260902_0031"),
+            _gates(before, schema_revision=_head_revision()),
             verify_fact_conflict=True,
         )
         safety_proof = _safety_proof(
             tmp_path,
             before,
-            schema_revision="20260902_0031",
+            schema_revision=_head_revision(),
         )
         cutover_plan = _plan(source, digest, len(raw))
         registered = cutover_plan.registry_plan.accounts[0]
@@ -1651,13 +1655,13 @@ def test_database_existing_account_import_preserves_registry_candidates_and_post
         artifact_root = (tmp_path / "existing-account-artifacts").resolve()
         artifact_root.mkdir(mode=0o700)
         gates = replace(
-            _gates(before, schema_revision="20260902_0031"),
+            _gates(before, schema_revision=_head_revision()),
             verify_fact_conflict=True,
         )
         safety_proof = _safety_proof(
             tmp_path,
             before,
-            schema_revision="20260902_0031",
+            schema_revision=_head_revision(),
         )
 
         preflight = run_transactional_database_mybank_existing_account_import(

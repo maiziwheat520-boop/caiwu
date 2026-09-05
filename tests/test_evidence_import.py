@@ -51,6 +51,12 @@ from ledgerbridge.models import (
 )
 from ledgerbridge.runner_client import RunnerClientError, RunnerConnector
 
+# ``20260902_0030`` and every bank-statement import revision after it refuse to
+# downgrade on purpose, so a chain that includes them cannot be walked back.
+# Reversibility is therefore proven against the last revision that still has a
+# downgrade path.
+LAST_REVERSIBLE_REVISION = "20260901_0028"
+
 
 def _run_alembic(database_url: str, revision: str, *, downgrade: bool = False) -> None:
     config = Config("alembic.ini")
@@ -1998,7 +2004,7 @@ def test_phase2_migration_round_trip_and_objects(
                 text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
             )
         rendered = temporary_url.render_as_string(hide_password=False)
-        _run_alembic(rendered, "head")
+        _run_alembic(rendered, LAST_REVERSIBLE_REVISION)
         temporary_engine = create_engine(temporary_url)
         with temporary_engine.connect() as connection:
             inspector = inspect(connection)
@@ -2096,7 +2102,7 @@ def test_phase2_downgrade_refuses_to_delete_evidence(
                 text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
             )
         rendered = temporary_url.render_as_string(hide_password=False)
-        _run_alembic(rendered, "head")
+        _run_alembic(rendered, LAST_REVERSIBLE_REVISION)
         temporary_engine = create_engine(temporary_url)
         content = b"downgrade evidence"
         digest = hashlib.sha256(content).digest()
@@ -2178,7 +2184,7 @@ def test_phase3_registry_migration_round_trip_preserves_security_controls(
                 text(f'CREATE DATABASE "{database_name}" OWNER {_quote_identifier(owner_name)}')
             )
         rendered = temporary_url.render_as_string(hide_password=False)
-        _run_alembic(rendered, "head")
+        _run_alembic(rendered, LAST_REVERSIBLE_REVISION)
         temporary_engine = create_engine(temporary_url)
         with temporary_engine.connect() as connection:
             assert connection.execute(text("SELECT count(*) FROM ingest_channel")).scalar_one() == 2

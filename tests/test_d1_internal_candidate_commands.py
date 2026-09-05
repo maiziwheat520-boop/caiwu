@@ -41,6 +41,9 @@ from ledgerbridge.internal_read_routes import (
 )
 from ledgerbridge.internal_read_routes import router as read_router
 
+# The filesystem root is absolute on every platform; a literal `C:/...` is
+# absolute only on Windows, which made these synthetic settings fail on CI.
+_SYNTHETIC_ROOT = Path(Path.cwd().anchor)
 KEY = b"synthetic-d1-user-assertion-key-0001"
 ISSUER = "ledgerbridge-web-test"
 AUDIENCE = "ledgerbridge-core-test"
@@ -77,7 +80,7 @@ def _settings() -> Settings:
     return Settings(
         env="test",
         database_url="postgresql+psycopg://ledgerbridge_owner:test@localhost/test",
-        artifact_root=Path("C:/ledgerbridge-test-artifacts"),
+        artifact_root=_SYNTHETIC_ROOT / "ledgerbridge-test-artifacts",
         enable_internal_read_api=True,
         enable_internal_candidate_command_api=True,
         internal_read_policy_generation=POLICY_GENERATION,

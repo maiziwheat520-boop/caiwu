@@ -288,6 +288,7 @@ def test_private_plan_builder_derives_abc_facts_without_credential_fields(
         },
     }
     draft.write_text(json.dumps(payload), encoding="utf-8")
+    draft.chmod(0o600)
 
     finalize_private_bank_statement_plan(draft, output)
     loaded = load_private_bank_statement_plan(output)

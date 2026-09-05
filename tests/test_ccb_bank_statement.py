@@ -288,6 +288,7 @@ def test_plan_builder_derives_all_statement_facts_and_rejects_legacy_evidence_po
         },
     }
     draft.write_text(json.dumps(payload), encoding="utf-8")
+    draft.chmod(0o600)
 
     finalize_private_bank_statement_plan(draft, output)
     loaded = load_private_bank_statement_plan(output)
@@ -301,5 +302,6 @@ def test_plan_builder_derives_all_statement_facts_and_rejects_legacy_evidence_po
     rejected = (tmp_path / "rejected.json").resolve()
     payload["scope"]["evidence_mode"] = "REUSE_EXACT_OR_CREATE"
     rejected.write_text(json.dumps(payload), encoding="utf-8")
+    rejected.chmod(0o600)
     with pytest.raises(BankStatementPlanBuildError):
         finalize_private_bank_statement_plan(rejected, (tmp_path / "rejected-plan.json").resolve())

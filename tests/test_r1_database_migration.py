@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.exc import SQLAlchemyError
@@ -24,6 +25,12 @@ MIGRATION = Path("alembic/versions/20260824_0012_r1_candidate_evidence.py")
 MIGRATION_B = Path("alembic/versions/20260824_0013_r1_ledger_reconciliation.py")
 MIGRATION_HARDENING = Path("alembic/versions/20260824_0014_r1_fact_hardening.py")
 MIGRATION_C = Path("alembic/versions/20260824_0015_r1_internal_read_surface.py")
+
+# ``20260902_0030`` and every bank-statement import revision after it refuse
+# to downgrade on purpose, so a chain that includes them cannot be walked
+# back.  Reversibility is proven against the last revision that still has a
+# downgrade path.
+LAST_REVERSIBLE_REVISION = "20260901_0028"
 
 INTERNAL_READ_VIEWS = (
     "candidate_current_v",
@@ -69,6 +76,92 @@ INTERNAL_READ_FUNCTION_IDENTITIES = {
         "p_business_unit_id uuid, p_blob_ref uuid, p_byte_size bigint, p_plaintext_sha256 bytea"
     ),
 }
+# Every function ``internal_read`` has gained since 0015.  The closed-surface
+# assertion compares identities rather than names because
+# ``list_candidates_base_as_of`` is deliberately overloaded, and the per-role
+# EXECUTE matrix below still runs over the original INTERNAL_READ_FUNCTIONS.
+INTERNAL_READ_LATER_FUNCTION_SIGNATURES = (
+    ("cash_reconciliation_month_v1", "p_month date"),
+    (
+        "cash_reconciliation_month_v2",
+        "p_month date, p_entity_ids uuid[], p_business_unit_ids uuid[]",
+    ),
+    ("cash_reconciliation_rules_v1", ""),
+    (
+        "get_account_registry_projection",
+        "p_owner_entity_ref uuid, p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea",
+    ),
+    (
+        "get_bank_statement_summary",
+        "p_statement_ref uuid, p_entity_ref uuid, p_audit_horizon_sequence bigint, "
+        "p_audit_horizon_hash bytea",
+    ),
+    (
+        "get_candidate_as_of",
+        "p_entity_id uuid, p_business_unit_id uuid, p_candidate_ref uuid, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea",
+    ),
+    (
+        "get_company_transaction_classification_summary_as_of",
+        "p_entity_ref uuid, p_from_date date, p_to_date_exclusive date, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea",
+    ),
+    (
+        "get_company_transaction_classification_summary_v2_as_of",
+        "p_entity_ref uuid, p_from_date date, p_to_date_exclusive date, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea",
+    ),
+    (
+        "list_bank_statement_transactions",
+        "p_statement_ref uuid, p_entity_ref uuid, p_audit_horizon_sequence bigint, "
+        "p_audit_horizon_hash bytea, p_after_row integer, p_limit integer",
+    ),
+    (
+        "list_candidate_counterparty_facts",
+        "p_entity_id uuid, p_business_unit_id uuid, p_candidate_ids uuid[], "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea",
+    ),
+    (
+        "list_candidate_events_as_of",
+        "p_entity_id uuid, p_business_unit_id uuid, p_candidate_id uuid, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea, p_limit integer",
+    ),
+    (
+        "list_candidate_evidence_satisfactions",
+        "p_entity_id uuid, p_business_unit_id uuid, p_candidate_ids uuid[], "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea",
+    ),
+    (
+        "list_candidates_base_as_of",
+        "p_entity_id uuid, p_business_unit_id uuid, p_status character varying, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea, "
+        "p_last_created_at timestamp with time zone, p_last_candidate_id uuid, p_limit integer",
+    ),
+    (
+        "list_candidates_base_as_of",
+        "p_entity_id uuid, p_business_unit_id uuid, p_status character varying, "
+        "p_audit_horizon_sequence bigint, p_audit_horizon_hash bytea, "
+        "p_last_created_at timestamp with time zone, p_last_candidate_id uuid, p_limit integer, "
+        "p_candidate_ref uuid",
+    ),
+    (
+        "list_company_transaction_classifications_as_of",
+        "p_entity_ref uuid, p_status text, p_audit_horizon_sequence bigint, "
+        "p_audit_horizon_hash bytea, p_limit integer",
+    ),
+    (
+        "list_payroll_disbursement_records_as_of",
+        "p_entity_ref uuid, p_pay_period text, p_audit_horizon_sequence bigint, "
+        "p_audit_horizon_hash bytea, p_limit integer",
+    ),
+    ("project_evidence_unlocks", "p_evidence jsonb, p_audit_horizon_sequence bigint"),
+    ("render_candidate_event", "p_operation_id uuid"),
+    ("render_candidate_revision", "p_candidate_id uuid, p_revision integer"),
+    ("render_candidate_revision_base", "p_candidate_id uuid, p_revision integer"),
+)
+INTERNAL_READ_FUNCTION_SIGNATURES = frozenset(
+    (*INTERNAL_READ_FUNCTION_IDENTITIES.items(), *INTERNAL_READ_LATER_FUNCTION_SIGNATURES)
+)
 RECEIPT_FUNCTION = "append_internal_evidence_read_audit"
 RECEIPT_CALL_SQL = """
 SELECT internal_read.append_internal_evidence_read_audit(
@@ -669,12 +762,29 @@ def _hardened_r1_database() -> Iterator[str]:
         yield database_url
 
 
+def _head_revision() -> str:
+    """The revision an ``alembic upgrade head`` actually leaves a database on."""
+
+    head = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+    assert head is not None
+    return head
+
+
 @contextmanager
 def _fresh_head_r1_database() -> Iterator[str]:
     """Create a clean reader-surface database for tests requiring no prior facts."""
 
     with _legacy_r1_database(reader=True) as database_url:
         command.upgrade(_upgrade_config(database_url), "head")
+        yield database_url
+
+
+@contextmanager
+def _fresh_reversible_r1_database() -> Iterator[str]:
+    """Create a clean database stopped below the forward-only import revisions."""
+
+    with _legacy_r1_database(reader=True) as database_url:
+        command.upgrade(_upgrade_config(database_url), LAST_REVERSIBLE_REVISION)
         yield database_url
 
 
@@ -874,6 +984,14 @@ def isolated_r1_database() -> Iterator[str]:
         maintenance_engine.dispose()
 
 
+@pytest.fixture(scope="function")
+def reversible_r1_database() -> Iterator[str]:
+    """``isolated_r1_database`` stopped where the chain can still be downgraded."""
+
+    with _fresh_reversible_r1_database() as database_url:
+        yield database_url
+
+
 def _has_db_privilege(connection: Connection, role: str, privilege: str) -> bool:
     return bool(
         connection.execute(
@@ -909,6 +1027,7 @@ def _seed_classification_candidate(
     category_code: str,
     summary: str,
     amount_minor: int,
+    evidence_ref: UUID,
 ) -> UUID:
     candidate_id = uuid4()
     operation_id = uuid4()
@@ -993,6 +1112,17 @@ def _seed_classification_candidate(
             "now": now,
             "audit": audit_event,
         },
+    )
+    # 0014 refuses to create a candidate without at least one evidence link.
+    connection.execute(
+        text(
+            "INSERT INTO public.candidate_evidence "
+            "(candidate_id, ordinal, evidence_ref, kind, media_type_snapshot, "
+            "display_name_snapshot, download_available) VALUES "
+            "(:candidate, 0, :evidence, 'ATTACHMENT', 'application/pdf', "
+            "'classification.pdf', true)"
+        ),
+        {"candidate": candidate_id, "evidence": evidence_ref},
     )
     return candidate_id
 
@@ -1367,9 +1497,9 @@ def _seed_read_facts(
 
 
 def test_0022_replays_pending_correction_and_active_dimension_catalog_in_postgres(
-    isolated_r1_database: str,
+    reversible_r1_database: str,
 ) -> None:
-    engine = create_engine(isolated_r1_database)
+    engine = create_engine(reversible_r1_database)
     active_unit = uuid4()
     retired_unit = uuid4()
     active_category = uuid4()
@@ -1432,7 +1562,7 @@ def test_0022_replays_pending_correction_and_active_dimension_catalog_in_postgre
         )
 
     with (
-        _temporarily_runtime_membership(isolated_r1_database, "ledgerbridge_reader"),
+        _temporarily_runtime_membership(reversible_r1_database, "ledgerbridge_reader"),
         engine.begin() as connection,
     ):
         connection.execute(text("SET LOCAL ROLE ledgerbridge_reader"))
@@ -1716,7 +1846,7 @@ def test_0022_replays_pending_correction_and_active_dimension_catalog_in_postgre
     )
 
     with pytest.raises(SQLAlchemyError) as raised:
-        command.downgrade(_upgrade_config(isolated_r1_database), "20260830_0021")
+        command.downgrade(_upgrade_config(reversible_r1_database), "20260830_0021")
     assert "nonempty R1 fact database prevents destructive company-reporting downgrade" in str(
         getattr(raised.value, "orig", raised.value)
     )
@@ -1724,11 +1854,11 @@ def test_0022_replays_pending_correction_and_active_dimension_catalog_in_postgre
 
 
 def test_0022_nonempty_r1_database_without_pending_correction_rejects_downgrade(
-    isolated_r1_database: str,
+    reversible_r1_database: str,
 ) -> None:
-    config = _upgrade_config(isolated_r1_database)
+    config = _upgrade_config(reversible_r1_database)
     command.downgrade(config, "20260830_0022")
-    engine = create_engine(isolated_r1_database)
+    engine = create_engine(reversible_r1_database)
     with engine.begin() as connection:
         _seed_read_facts(connection)
 
@@ -3288,9 +3418,7 @@ def test_r1_internal_read_objects_are_fixed_owner_security_definer_and_fail_clos
                 "WHERE n.nspname = 'internal_read' ORDER BY p.proname"
             )
         ).all()
-        assert {(row[0], row[1]) for row in functions} == set(
-            INTERNAL_READ_FUNCTION_IDENTITIES.items()
-        )
+        assert {(row[0], row[1]) for row in functions} == INTERNAL_READ_FUNCTION_SIGNATURES
         for _name, _identity, owner, security_definer, config in functions:
             assert owner not in RUNTIME_ROLES
             assert security_definer is True
@@ -3474,7 +3602,7 @@ def test_r1_receipt_function_is_only_callable_by_trusted_api_writer(
 
 
 def test_r1_internal_read_empty_database_downgrade_round_trips() -> None:
-    with _fresh_head_r1_database() as isolated_r1_database:
+    with _fresh_reversible_r1_database() as isolated_r1_database:
         config = Config("alembic.ini")
         config.attributes["database_url"] = isolated_r1_database
         command.downgrade(config, "20260824_0014")
@@ -3512,6 +3640,7 @@ def test_0026_batch_recomputes_risk_key_atomically_and_replays_closed_receipt(
             category_code="ALIPAY_TRANSACTION_REVIEW",
             summary=summary,
             amount_minor=101,
+            evidence_ref=cast(UUID, facts["evidence"]),
         )
         matching = _seed_classification_candidate(
             connection,
@@ -3521,6 +3650,7 @@ def test_0026_batch_recomputes_risk_key_atomically_and_replays_closed_receipt(
             category_code="ALIPAY_TRANSACTION_REVIEW",
             summary=summary.replace("2026-08-01", "2026-08-02"),
             amount_minor=202,
+            evidence_ref=cast(UUID, facts["evidence"]),
         )
         risk_drift = _seed_classification_candidate(
             connection,
@@ -3530,6 +3660,7 @@ def test_0026_batch_recomputes_risk_key_atomically_and_replays_closed_receipt(
             category_code="category-a",
             summary=summary.replace("2026-08-01", "2026-08-03"),
             amount_minor=303,
+            evidence_ref=cast(UUID, facts["evidence"]),
         )
         group_key = connection.execute(
             text("SELECT internal_command.candidate_classification_group_key(:candidate, 1)"),
@@ -3703,12 +3834,12 @@ def test_0026_batch_recomputes_risk_key_atomically_and_replays_closed_receipt(
 
 
 def test_r1_internal_read_nonempty_downgrade_is_rejected(
-    isolated_r1_database: str,
+    reversible_r1_database: str,
 ) -> None:
     config = Config("alembic.ini")
-    config.attributes["database_url"] = isolated_r1_database
+    config.attributes["database_url"] = reversible_r1_database
     command.downgrade(config, "20260824_0015")
-    engine = create_engine(isolated_r1_database)
+    engine = create_engine(reversible_r1_database)
     with engine.begin() as connection:
         _seed_nonempty_downgrade_marker(connection)
     with pytest.raises(RuntimeError, match="R1 internal-read data"):
@@ -3716,13 +3847,13 @@ def test_r1_internal_read_nonempty_downgrade_is_rejected(
 
 
 def test_company_reporting_nonempty_downgrade_preserves_immutable_snapshots(
-    isolated_r1_database: str,
+    reversible_r1_database: str,
 ) -> None:
-    engine = create_engine(isolated_r1_database)
+    engine = create_engine(reversible_r1_database)
     with engine.begin() as connection:
         _seed_nonempty_downgrade_marker(connection)
 
-    config = _upgrade_config(isolated_r1_database)
+    config = _upgrade_config(reversible_r1_database)
     with pytest.raises(SQLAlchemyError) as raised:
         command.downgrade(config, "20260830_0023")
     assert "nonempty R1 fact database prevents destructive company-reporting downgrade" in str(
