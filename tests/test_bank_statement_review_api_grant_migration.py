@@ -4,7 +4,6 @@ from pathlib import Path
 
 from scripts.backup_restore import MYBANK_CUTOVER_SCHEMA_REVISIONS
 
-
 MIGRATION = Path("alembic/versions/20260902_0035_bank_statement_review_api_grant.py")
 
 

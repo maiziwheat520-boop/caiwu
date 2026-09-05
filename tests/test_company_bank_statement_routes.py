@@ -10,7 +10,6 @@ from ledgerbridge.company_bank_statement_routes import get_service, router
 from ledgerbridge.config import Settings, get_settings
 from ledgerbridge.internal_read_auth import get_internal_read_principal
 from ledgerbridge.internal_read_contract import Capability, EntityGrant, WorkloadPrincipal
-from ledgerbridge.personal_finance_service import DatabasePersonalFinanceService
 from tests.test_personal_finance_routes import ACCOUNT, ENTITY, STATEMENT, _page
 
 

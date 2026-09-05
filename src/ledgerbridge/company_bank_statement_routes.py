@@ -11,16 +11,25 @@ from ledgerbridge.config import Settings, get_settings
 from ledgerbridge.db import get_session_factory
 from ledgerbridge.internal_read_auth import get_internal_read_principal
 from ledgerbridge.internal_read_contract import Capability, WorkloadPrincipal, require_capability
-from ledgerbridge.internal_read_routes import InternalReadRoute, _closed_query, _parse_uuid, require_internal_read_api
+from ledgerbridge.internal_read_routes import (
+    InternalReadRoute,
+    _closed_query,
+    _parse_uuid,
+    require_internal_read_api,
+)
 from ledgerbridge.internal_read_service import InternalReadBackendUnavailable
 from ledgerbridge.personal_finance_contract import PersonalFinancePage
 from ledgerbridge.personal_finance_service import DatabasePersonalFinanceService
 
 
-def get_service(settings: Annotated[Settings, Depends(get_settings)]) -> DatabasePersonalFinanceService:
+def get_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> DatabasePersonalFinanceService:
     if settings.internal_read_backend != "database":
         raise InternalReadBackendUnavailable("company statement review requires database reads")
-    return DatabasePersonalFinanceService(get_session_factory(settings.resolved_reader_database_url()))
+    return DatabasePersonalFinanceService(
+        get_session_factory(settings.resolved_reader_database_url())
+    )
 
 
 def require_company_statement_review(
