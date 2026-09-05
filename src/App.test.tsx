@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Theme } from '@radix-ui/themes'
 import App from './App'
-import type { AccountingDimensions, ApiCandidate, AuthStatus, CashReconciliation, ClassificationGroup, EvidencePreview, OriginalReconciliation, ReviewEvent } from './types'
+import type { AccountingDimensions, ApiCandidate, AuthStatus, CashReconciliation, ClassificationGroup, EvidencePreview, OriginalReconciliation, PersonalFinanceSummary, ReviewEvent } from './types'
 import { originalReconciliationFixture } from './test-fixtures/original-reconciliation'
 
 const session = {
@@ -489,6 +489,28 @@ const emptyPersonalBankTransactions = {
   items: [],
 }
 
+function personalFinanceSummary(overrides: Partial<PersonalFinanceSummary> = {}): PersonalFinanceSummary {
+  return {
+    contract_version: 'ledgerbridge.personal-finance-summary.v1',
+    candidate_total: 1,
+    pending_total: 0,
+    pending_preview: [],
+    entry_total: 1,
+    income_minor: 8800,
+    expense_minor: 0,
+    net_minor: 8800,
+    income_entry_count: 1,
+    expense_entry_count: 0,
+    evidence_count: 1,
+    excluded_count: 0,
+    deduplicated_count: 0,
+    unassigned_entries: [],
+    category_shares: [{ category: '测试收入', amount_minor: 8800, basis_points: 10_000 }],
+    monthly_totals: [{ month: '2026-08', income_minor: 8800, expense_minor: 0, net_minor: 8800 }],
+    ...overrides,
+  }
+}
+
 function installFetch(options: {
   items?: ApiCandidate[]
   failSessionOnce?: boolean
@@ -499,6 +521,8 @@ function installFetch(options: {
   recoverySetupRequired?: boolean
   candidatePages?: Array<{ items: ApiCandidate[]; next_cursor: string | null }>
   reviewEventPages?: Array<{ items: ReviewEvent[]; next_cursor: string | null }>
+  personalSummary?: PersonalFinanceSummary
+  failPersonalSummary?: boolean
   decisionEvents?: ReviewEvent[]
   failReviewEvents?: boolean
   runtimeMode?: 'synthetic-preview' | 'authenticated-preview' | 'core-backed'
@@ -540,6 +564,8 @@ function installFetch(options: {
     recoverySetupRequired = false,
     candidatePages = [{ items, next_cursor: null }],
     reviewEventPages = [{ items: reviewEvents, next_cursor: null }],
+    personalSummary = personalFinanceSummary(),
+    failPersonalSummary = false,
     decisionEvents,
     failReviewEvents = false,
     runtimeMode = 'authenticated-preview',
@@ -662,6 +688,12 @@ function installFetch(options: {
         return response({ title: '公司报表暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
       }
       return response(companyReportResponse)
+    }
+    if (url === '/api/v1/personal-finance/summary') {
+      if (failPersonalSummary) {
+        return response({ title: '个人财务汇总暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
+      }
+      return response(personalSummary)
     }
     if (url === '/api/v1/personal-finance/bank-transactions') {
       if (failPersonalBank) {
@@ -2206,91 +2238,6 @@ describe('LedgerBridge Web API client', () => {
     expect(within(screen.getByRole('region', { name: '待补账单清单' })).getByText('1 项')).toBeInTheDocument()
   })
 
-  it('shows the personal overview before collapsed formal bank details', async () => {
-    const testCandidate: ApiCandidate = {
-      ...candidates[3],
-      id: 'candidate-test-personal',
-      short_id: 'C-TEST',
-      business_unit: '个人',
-      business_unit_ref: 'personal-main',
-      amount_minor: 8800,
-      accounting_month: '2026-08',
-      category: '测试收入',
-      category_code: 'TEST_INCOME',
-      summary: '支付宝 | 2026-08-01 | 收入 | 测试收入 | 测试对象 | 余额 | 交易成功',
-    }
-    installFetch({
-      items: [testCandidate],
-      personalBankResponse: personalBankTransactions(),
-    })
-    renderApp()
-    await screen.findByRole('heading', { name: '财务概览', hidden: true })
-    fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
-
-    const formal = await screen.findByRole('region', { name: '个人正式银行流水' })
-    const testSummary = screen.getByRole('region', { name: '个人财务收支概览' })
-    expect(await within(formal).findByText('2 笔')).toBeInTheDocument()
-    expect(within(formal).getByText('网商银行 · 尾号 7968')).toBeInTheDocument()
-    expect(within(formal).getByText('账单审核：已确认')).toBeInTheDocument()
-    expect(within(formal).queryByText('正式对方甲')).not.toBeInTheDocument()
-    expect(within(formal).queryByText('正式对方乙')).not.toBeInTheDocument()
-    expect(within(formal).getByText('账户现金流，不是营业收入')).toBeInTheDocument()
-    expect(within(testSummary).getByText('测试收入')).toBeInTheDocument()
-    expect(testSummary.compareDocumentPosition(formal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-
-    fireEvent.click(within(formal).getByRole('button', { name: '查看流水明细（2 笔）' }))
-    expect(within(formal).getByText('正式对方甲')).toBeInTheDocument()
-    expect(within(formal).getByText('正式对方乙')).toBeInTheDocument()
-  })
-
-  it('loads every authorized candidate page before presenting complete personal totals', async () => {
-    const firstPageCandidate: ApiCandidate = {
-      ...candidates[3],
-      id: 'candidate-first-page-company',
-      short_id: 'C-COMP',
-      business_unit: '景怡公司',
-      business_unit_ref: 'company-jingyi',
-      amount_minor: 990000,
-      accounting_month: '2026-08',
-      category: '公司收入',
-      category_code: 'COMPANY_INCOME',
-      summary: '支付宝 | 2026-08-01 | 收入 | 公司收入 | 平台 | 余额 | 交易成功',
-    }
-    const laterPersonalCandidate: ApiCandidate = {
-      ...candidates[3],
-      id: 'candidate-later-page-personal',
-      short_id: 'C-PAGE',
-      business_unit: '个人',
-      business_unit_ref: 'personal-main',
-      amount_minor: 8800,
-      accounting_month: '2026-08',
-      category: '测试收入',
-      category_code: 'TEST_INCOME',
-      summary: '支付宝 | 2026-08-02 | 收入 | 测试收入 | 测试对象 | 余额 | 交易成功',
-    }
-    let releaseLaterPage!: () => void
-    const laterCandidatePageGate = new Promise<void>((resolve) => {
-      releaseLaterPage = resolve
-    })
-    installFetch({
-      candidatePages: [
-        { items: [firstPageCandidate], next_cursor: 'candidate-page-2' },
-        { items: [laterPersonalCandidate], next_cursor: null },
-      ],
-      laterCandidatePageGate,
-    })
-    renderApp()
-    await screen.findByRole('heading', { name: '财务概览', hidden: true })
-    fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
-
-    expect(await screen.findByRole('heading', { name: '正在核对完整个人财务范围' })).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: '个人财务收支概览' })).not.toBeInTheDocument()
-    releaseLaterPage()
-    const summary = await screen.findByRole('region', { name: '个人财务收支概览' })
-    expect(await within(summary).findAllByText('¥88.00')).toHaveLength(2)
-    expect(within(summary).getByText('1 条已确认收入，含归属待校准')).toBeInTheDocument()
-  })
-
   it('shows multiple formal bank statements in one reconciled list', async () => {
     const formalFacts = structuredClone(personalBankTransactions())
     const secondStatementRef = '70000000-0000-4000-8000-000000000009'
@@ -2361,149 +2308,80 @@ describe('LedgerBridge Web API client', () => {
     expect(formal).not.toHaveTextContent('|')
   })
 
-  it('keeps Candidate test data visible when formal bank facts are unavailable', async () => {
-    const testCandidate: ApiCandidate = {
-      ...candidates[3],
-      id: 'candidate-test-fallback',
-      short_id: 'C-FALL',
-      business_unit: '个人',
-      business_unit_ref: 'personal-main',
-      amount_minor: 9900,
-      accounting_month: '2026-08',
-      category: '测试收入',
-      category_code: 'TEST_INCOME',
-      summary: '支付宝 | 2026-08-01 | 收入 | 测试收入 | 测试对象 | 余额 | 交易成功',
-    }
-    installFetch({ items: [testCandidate], failPersonalBank: true })
+  it('renders the personal overview above the collapsed formal bank details', async () => {
+    installFetch({ personalBankResponse: personalBankTransactions() })
     renderApp()
     await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('正式银行流水暂不可用')
-    expect(screen.getByRole('region', { name: '个人财务收支概览' })).toHaveTextContent('¥99.00')
+    const formal = await screen.findByRole('region', { name: '个人正式银行流水' })
+    const testSummary = screen.getByRole('region', { name: '个人财务收支概览' })
+    expect(await within(formal).findByText('2 笔')).toBeInTheDocument()
+    expect(within(formal).getByText('网商银行 · 尾号 7968')).toBeInTheDocument()
+    expect(within(formal).getByText('账单审核：已确认')).toBeInTheDocument()
+    expect(within(formal).queryByText('正式对方甲')).not.toBeInTheDocument()
+    expect(within(formal).getByText('账户现金流，不是营业收入')).toBeInTheDocument()
+    expect(testSummary.compareDocumentPosition(formal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    fireEvent.click(within(formal).getByRole('button', { name: '查看流水明细（2 笔）' }))
+    expect(within(formal).getByText('正式对方甲')).toBeInTheDocument()
   })
 
-  it('puts pending review first and summarizes only confirmed personal facts with source-priority deduplication', async () => {
-    const personalCandidates: ApiCandidate[] = [
-      { ...candidates[3], id: 'candidate-income-aug', short_id: 'C-PF01', business_unit: '个人', business_unit_ref: 'personal-main', amount_minor: 10000, accounting_month: '2026-08', category: '工资', category_code: 'SALARY', summary: '支付宝 | 2026-08-01 | 收入 | 工资 | 公司 | 余额 | 交易成功' },
-      { ...candidates[3], id: 'candidate-expense-aug', short_id: 'C-PF02', business_unit: '个人', business_unit_ref: 'personal-main', amount_minor: 2500, accounting_month: '2026-08', category: '餐饮', category_code: 'DINING', summary: '微信 | 2026-08-02 | 支出 | 商户消费 | 餐厅 | 零钱 | 支付成功' },
-      { ...candidates[3], id: 'candidate-expense-bank-copy', short_id: 'C-PF03', source_channel: 'controlled_upload', business_unit: '个人', business_unit_ref: 'personal-main', amount_minor: -2500, accounting_month: '2026-08', category: '餐饮', category_code: 'DINING', summary: '建设银行 | 2026-08-02 | 支出 | 消费 | 餐厅 | 储蓄卡 | 交易成功' },
-      { ...candidates[3], id: 'candidate-transfer-platform', short_id: 'C-PF04', business_unit: '个人', business_unit_ref: 'personal-main', amount_minor: -20000, accounting_month: '2026-08', category: '转账', category_code: 'TRANSFER', summary: '支付宝 | 2026-08-03 | 支出 | 转账 | 张三 | 建设银行 | 交易成功' },
-      { ...candidates[3], id: 'candidate-transfer-bank', short_id: 'C-PF05', source_channel: 'controlled_upload', business_unit: '个人', business_unit_ref: 'personal-main', amount_minor: -20000, accounting_month: '2026-08', category: '转账', category_code: 'TRANSFER', summary: '建设银行 | 2026-08-03 | 支出 | 转账 | 张三 | 储蓄卡 | 交易成功' },
-      { ...candidates[0], id: 'candidate-pending-expense', short_id: 'C-PEND', business_unit: '个人', business_unit_ref: 'personal-main', amount_minor: 999999, accounting_month: '2026-08', category: '待审核', category_code: 'PENDING', summary: '微信 | 2026-08-04 | 支出 | 商户消费 | 商户 | 零钱 | 支付成功' },
-      { ...candidates[3], id: 'candidate-company-income', short_id: 'C-COMP', business_unit: '景怡公司', business_unit_ref: 'company-jingyi', amount_minor: 880000, accounting_month: '2026-08', category: '公司收入', category_code: 'COMPANY_INCOME', summary: '支付宝 | 2026-08-05 | 收入 | 酒店收款 | 平台 | 余额 | 交易成功' },
-      { ...candidates[3], id: 'candidate-unscoped-bank', short_id: 'C-UNSC', source_channel: 'controlled_upload', business_unit: '待归属', business_unit_ref: '', amount_minor: 500000, accounting_month: '2026-08', category: '转账', category_code: 'TRANSFER', summary: '中国银行 | 2026-08-06 | 收入 | 转账 | 某人 | 借记卡 | 交易成功' },
-    ]
-    installFetch({ items: personalCandidates })
+  it('reads one summary instead of paging the whole candidate collection', async () => {
+    // The totals used to require every authorized candidate page in the
+    // browser; Core computes them now, so the page must not walk the
+    // collection at all.
+    const fetchMock = installFetch({
+      personalSummary: personalFinanceSummary({
+        candidate_total: 1825,
+        entry_total: 151,
+        income_minor: 990000,
+        net_minor: 990000,
+        income_entry_count: 151,
+        excluded_count: 1674,
+        deduplicated_count: 9,
+      }),
+    })
     renderApp()
     await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
 
-    const review = await screen.findByRole('region', { name: '个人财务待审核' })
-    const summary = await screen.findByRole('region', { name: '个人财务收支概览' })
-    const postingStatus = screen.getByRole('region', { name: '个人财务入账状态' })
-    expect(review.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(within(postingStatus).getByText('正式过账未启用')).toBeInTheDocument()
-    expect(within(postingStatus).getByText('4 条已确认、尚未过账')).toBeInTheDocument()
-    expect(within(screen.getByRole('region', { name: '个人财务归属待校准' })).getByText('C-UNSC')).toBeInTheDocument()
-    expect(screen.getByText('1 条归属待校准')).toBeInTheDocument()
-    expect(within(review).getByText('C-PEND')).toBeInTheDocument()
-    expect(within(summary).getByText('¥5,100.00')).toBeInTheDocument()
-    expect(within(summary).getByText('¥225.00')).toBeInTheDocument()
-    expect(within(summary).getByText('¥4,875.00')).toBeInTheDocument()
-    expect(within(summary).getByText('2 条已确认收入，含归属待校准')).toBeInTheDocument()
-    expect(within(summary).getByText('2 条已确认支出，含归属待校准')).toBeInTheDocument()
-    expect(screen.getByText('2 条不属于个人范围或状态未确认，未计入汇总')).toBeInTheDocument()
-    expect(screen.getByText('2 条跨来源重复记录已合并')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '测试分类占比' })).toBeInTheDocument()
-    expect(screen.getByText('工资')).toBeInTheDocument()
-    expect(screen.getByText('97.7%')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '测试月度趋势' })).toBeInTheDocument()
-    expect(screen.getByText('2026 年 8 月')).toBeInTheDocument()
-    expect(screen.queryByText('公司收入')).not.toBeInTheDocument()
-    const categoryPanel = screen.getByRole('heading', { name: '测试分类占比' }).closest('section')
-    expect(categoryPanel).not.toBeNull()
-    expect(within(categoryPanel!).queryByText('待审核')).not.toBeInTheDocument()
+    expect(await screen.findByText('151 条已确认、尚未过账')).toBeInTheDocument()
+    expect(screen.getByText('1674 条不属于个人范围或状态未确认，未计入汇总')).toBeInTheDocument()
+    expect(screen.getByText('9 条跨来源重复记录已合并')).toBeInTheDocument()
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).startsWith('/api/v1/candidates?cursor=')),
+    ).toBe(false)
   })
 
-  it('keeps same-source repeats and removes only one lower-priority cross-source copy per match', async () => {
-    const personalCandidates: ApiCandidate[] = [
-      ...['candidate-platform-spend-1', 'candidate-platform-spend-2'].map((id, index): ApiCandidate => ({
-        ...candidates[3],
-        id,
-        short_id: `C-PS0${index + 1}`,
-        business_unit: '个人',
-        business_unit_ref: 'personal-main',
-        amount_minor: 2500,
-        accounting_month: '2026-08',
-        category: '餐饮',
-        category_code: 'DINING',
-        summary: '微信 | 2026-08-02 | 支出 | 商户消费 | 餐厅 | 零钱 | 支付成功',
-      })),
-      {
-        ...candidates[3],
-        id: 'candidate-bank-spend-copy',
-        short_id: 'C-BS01',
-        source_channel: 'controlled_upload',
-        business_unit: '个人',
-        business_unit_ref: 'personal-main',
-        amount_minor: -2500,
-        accounting_month: '2026-08',
-        category: '餐饮',
-        category_code: 'DINING',
-        summary: '建设银行 | 2026-08-02 | 支出 | 消费 | 餐厅 | 储蓄卡 | 交易成功',
-      },
-      ...['candidate-bank-transfer-1', 'candidate-bank-transfer-2'].map((id, index): ApiCandidate => ({
-        ...candidates[3],
-        id,
-        short_id: `C-BT0${index + 1}`,
-        source_channel: 'controlled_upload',
-        business_unit: '个人',
-        business_unit_ref: 'personal-main',
-        amount_minor: -20000,
-        accounting_month: '2026-08',
-        category: '转账',
-        category_code: 'TRANSFER',
-        summary: '建设银行 | 2026-08-03 | 支出 | 转账 | 张三 | 储蓄卡 | 交易成功',
-      })),
-      {
-        ...candidates[3],
-        id: 'candidate-platform-transfer-copy',
-        short_id: 'C-PT01',
-        business_unit: '个人',
-        business_unit_ref: 'personal-main',
-        amount_minor: -20000,
-        accounting_month: '2026-08',
-        category: '转账',
-        category_code: 'TRANSFER',
-        summary: '支付宝 | 2026-08-03 | 支出 | 转账 | 张三 | 建设银行 | 交易成功',
-      },
-    ]
-    installFetch({ items: personalCandidates })
+  it('holds back the totals when the summary cannot be read', async () => {
+    installFetch({ failPersonalSummary: true, personalBankResponse: personalBankTransactions() })
     renderApp()
     await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
 
-    const summary = await screen.findByRole('region', { name: '个人财务收支概览' })
-    expect(within(summary).getByText('¥450.00')).toBeInTheDocument()
-    expect(within(summary).getByText('4 条已确认支出，含归属待校准')).toBeInTheDocument()
-    expect(screen.getByText('2 条跨来源重复记录已合并')).toBeInTheDocument()
+    expect(await screen.findByText(/未显示不完整的收支合计/)).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '个人财务收支概览' })).not.toBeInTheDocument()
+    // The formally imported statements are a separate read and still show.
+    expect(await screen.findByRole('region', { name: '个人正式银行流水' })).toBeInTheDocument()
   })
 
-  it('shows every confirmed unassigned record in the test view', async () => {
-    const unassignedCandidates = Array.from({ length: 7 }, (_, index): ApiCandidate => ({
-      ...candidates[3],
-      id: `candidate-unassigned-${index + 1}`,
+  it('lists every attribution-pending record the summary reports', async () => {
+    const entries = Array.from({ length: 7 }, (_, index) => ({
+      candidate_ref: `00000000-0000-4000-8000-00000000000${index + 1}`,
       short_id: `C-UA0${index + 1}`,
-      business_unit: '待归属',
-      business_unit_ref: '',
-      amount_minor: (index + 1) * 100,
+      business_unit_label: '待归属',
+      category_label: '转账',
       accounting_month: '2026-08',
-      category: '转账',
-      category_code: 'TRANSFER',
-      summary: `中国银行 | 2026-08-${String(index + 1).padStart(2, '0')} | 收入 | 转账 | 对方${index + 1} | 借记卡 | 交易成功`,
+      summary: `中国银行 | 2026-08-0${index + 1} | 收入 | 转账 | 对方${index + 1} | 借记卡 | 交易成功`,
+      cashflow_minor: (index + 1) * 100,
+      date: `2026-08-0${index + 1}`,
+      transaction_type: '转账',
+      counterparty: `对方${index + 1}`,
+      source_kind: 'BANK' as const,
+      scope_status: 'UNASSIGNED' as const,
     }))
-    installFetch({ items: unassignedCandidates })
+    installFetch({ personalSummary: personalFinanceSummary({ unassigned_entries: entries }) })
     renderApp()
     await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
@@ -2512,6 +2390,37 @@ describe('LedgerBridge Web API client', () => {
     expect(within(unassigned).getByText('C-UA01')).toBeInTheDocument()
     expect(within(unassigned).getByText('C-UA07')).toBeInTheDocument()
     expect(screen.getByText('7 条归属待校准')).toBeInTheDocument()
+  })
+
+  it('opens an attribution-pending record by reference', async () => {
+    const entry = {
+      candidate_ref: 'candidate-1',
+      short_id: 'C-8F21',
+      business_unit_label: '待归属',
+      category_label: '转账',
+      accounting_month: '2026-08',
+      summary: '中国银行 | 2026-08-01 | 收入 | 转账 | 对方 | 借记卡 | 交易成功',
+      cashflow_minor: 100,
+      date: '2026-08-01',
+      transaction_type: '转账',
+      counterparty: '对方',
+      source_kind: 'BANK' as const,
+      scope_status: 'UNASSIGNED' as const,
+    }
+    const fetchMock = installFetch({
+      personalSummary: personalFinanceSummary({ unassigned_entries: [entry] }),
+    })
+    renderApp()
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
+    fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
+
+    const unassigned = await screen.findByRole('region', { name: '个人财务归属待校准' })
+    fireEvent.click(within(unassigned).getByText('C-8F21'))
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/candidates/candidate-1'),
+    ).toBe(true)
   })
 
   it('groups ordinary transfers by counterparty and filters to the selected object', async () => {

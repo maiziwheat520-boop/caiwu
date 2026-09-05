@@ -10,68 +10,33 @@ import {
 } from '@phosphor-icons/react'
 
 import { minorToMajor } from '../api'
-import type { Candidate, Page } from '../types'
+import type { Page } from '../types'
 import { ErrorState, LoadingState, Metric, PageHeader } from '../shared/PagePrimitives'
 import { currency } from '../shared/format'
-import { toCandidate } from '../candidates/candidateMapping'
 import { accountingMonthLabel } from '../candidates/candidateLabels'
 import { PersonalBankTransactionsPanel } from './PersonalBankTransactionsPanel'
-import {
-  candidateCashflowMinor,
-  selectPersonalFinanceEntries,
-} from './personalFinanceRules'
-import { useCompleteCandidatePages } from './useCompleteCandidatePages'
+import { usePersonalFinanceSummary } from './usePersonalFinanceSummary'
 
-export function PersonalFinanceOverview({ onNavigate, onOpenCandidate, csrfToken }: {
+const percentage = (basisPoints: number) => (basisPoints / 100).toFixed(1)
+
+/**
+ * Personal reconciliation, rendered from the summary Core builds.
+ *
+ * The rules that decide which confirmed candidates are personal cash movement,
+ * collapse the same movement seen through both a bank and a platform, and total
+ * what is left used to run here, so the page paged the entire candidate
+ * collection into the browser before it could show a single number. They live
+ * beside the facts now; this reads one summary and renders it.
+ */
+export function PersonalFinanceOverview({ onNavigate, onOpenCandidateRef, csrfToken }: {
   onNavigate: (page: Page) => void
-  onOpenCandidate: (candidate: Candidate) => void
+  onOpenCandidateRef: (candidateRef: string) => void
   csrfToken: string
 }) {
-  const completeCandidatePages = useCompleteCandidatePages()
-  const candidates = completeCandidatePages.candidates?.map(toCandidate) ?? []
-  const completeCandidatesAvailable = completeCandidatePages.candidates !== null
+  const { summary, loading, error, reload } = usePersonalFinanceSummary()
+  const leadingCategory = summary?.category_shares[0]
+  const latestTrend = summary?.monthly_totals[0]
 
-  const pending = candidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
-  const personalSelection = selectPersonalFinanceEntries(candidates)
-  const financialEntries = personalSelection.entries
-  const unassignedEntries = personalSelection.unassignedEntries
-  const testEntries = [...financialEntries, ...unassignedEntries]
-  const confirmedPendingPostingCount = testEntries.length
-  const financialCandidates = testEntries.map((entry) => entry.candidate)
-  const incomeMinor = testEntries.reduce((total, entry) => total + Math.max(entry.cashflowMinor, 0), 0)
-  const expenseMinor = testEntries.reduce((total, entry) => total + Math.abs(Math.min(entry.cashflowMinor, 0)), 0)
-  const netMinor = incomeMinor - expenseMinor
-  const evidenceCount = new Set(financialCandidates.flatMap((candidate) => candidate.evidence.map((evidence) => evidence.id))).size
-
-  const categoryTotals = testEntries.reduce((totals, entry) => {
-    const amountMinor = Math.abs(entry.cashflowMinor)
-    if (amountMinor === 0) return totals
-    const category = entry.candidate.category.trim() || '待分类'
-    totals.set(category, (totals.get(category) ?? 0) + amountMinor)
-    return totals
-  }, new Map<string, number>())
-  const categorizedTotalMinor = [...categoryTotals.values()].reduce((total, amountMinor) => total + amountMinor, 0)
-  const categoryShares = [...categoryTotals.entries()]
-    .map(([category, amountMinor]) => ({
-      category,
-      amountMinor,
-      percentage: categorizedTotalMinor > 0 ? (amountMinor / categorizedTotalMinor) * 100 : 0,
-    }))
-    .sort((left, right) => right.amountMinor - left.amountMinor || left.category.localeCompare(right.category, 'zh-CN'))
-
-  const monthlyTotals = testEntries.reduce((totals, entry) => {
-    if (!entry.candidate.accountingMonth) return totals
-    const current = totals.get(entry.candidate.accountingMonth) ?? { incomeMinor: 0, expenseMinor: 0 }
-    if (entry.cashflowMinor >= 0) current.incomeMinor += entry.cashflowMinor
-    else current.expenseMinor += Math.abs(entry.cashflowMinor)
-    totals.set(entry.candidate.accountingMonth, current)
-    return totals
-  }, new Map<string, { incomeMinor: number; expenseMinor: number }>())
-  const monthlyTrend = [...monthlyTotals.entries()]
-    .map(([month, totals]) => ({ ...totals, month, netMinor: totals.incomeMinor - totals.expenseMinor }))
-    .sort((left, right) => right.month.localeCompare(left.month))
-  const latestTrend = monthlyTrend[0]
-  const leadingCategory = categoryShares[0]
   return (
     <>
       <PageHeader
@@ -81,35 +46,32 @@ export function PersonalFinanceOverview({ onNavigate, onOpenCandidate, csrfToken
         action={<Button onClick={() => onNavigate('review')}><ListChecks size={17} />处理待审核</Button>}
       />
 
-      {!completeCandidatesAvailable ? (
-        completeCandidatePages.error ? (
-          <ErrorState
-            message={`${completeCandidatePages.error}；未显示不完整的收支合计。`}
-            onRetry={() => { void completeCandidatePages.reload() }}
-          />
+      {summary === null ? (
+        error ? (
+          <ErrorState message={`${error}；未显示不完整的收支合计。`} onRetry={() => { void reload() }} />
         ) : (
           <LoadingState
-            title="正在核对完整个人财务范围"
-            description="正在逐页读取已授权候选；全部读取完成前不会显示收支合计。"
+            title="正在读取个人财务汇总"
+            description="正在向账本读取已授权范围的收支合计。"
           />
         )
       ) : <>
-        {completeCandidatePages.error ? (
+        {error ? (
           <div className="personal-finance-boundary" role="alert">
-            <span>完整汇总刷新失败，已保留上一次成功读取的结果：{completeCandidatePages.error}</span>
-            <Button size="1" variant="soft" disabled={completeCandidatePages.loading} onClick={() => { void completeCandidatePages.reload() }}>
-              <ArrowsClockwise className={completeCandidatePages.loading ? 'state-spinner' : undefined} size={14} />
+            <span>汇总刷新失败，已保留上一次成功读取的结果：{error}</span>
+            <Button size="1" variant="soft" disabled={loading} onClick={() => { void reload() }}>
+              <ArrowsClockwise className={loading ? 'state-spinner' : undefined} size={14} />
               重新读取
             </Button>
           </div>
-        ) : completeCandidatePages.loading ? (
-          <div className="personal-finance-boundary" role="status">正在刷新完整候选分页，当前仍显示上一次完整结果。</div>
+        ) : loading ? (
+          <div className="personal-finance-boundary" role="status">正在刷新汇总，当前仍显示上一次结果。</div>
         ) : null}
 
       <section className="panel personal-posting-status" aria-label="个人财务入账状态">
         <div>
           <span>入账链路</span>
-          <h2>{confirmedPendingPostingCount} 条已确认、尚未过账</h2>
+          <h2>{summary.entry_total} 条已确认、尚未过账</h2>
           <p>“确认”只代表审核完成并进入对账草稿，不等于已生成会计分录。系统会在主体和账户映射校准后生成平衡草稿，再由你明确确认过账。</p>
         </div>
         <Badge color="amber">正式过账未启用</Badge>
@@ -118,15 +80,14 @@ export function PersonalFinanceOverview({ onNavigate, onOpenCandidate, csrfToken
       <section className="panel personal-review-priority" aria-label="个人财务待审核">
         <div className="panel-heading">
           <div><h2>待审核</h2><p>先处理仍可能改变收支归类的事项</p></div>
-          <div className="personal-review-actions"><Badge color={pending.length > 0 ? 'amber' : 'green'}>{pending.length} 条</Badge><Button size="1" variant="soft" onClick={() => onNavigate('review')}>查看全部<CaretRight size={14} /></Button></div>
+          <div className="personal-review-actions"><Badge color={summary.pending_total > 0 ? 'amber' : 'green'}>{summary.pending_total} 条</Badge><Button size="1" variant="soft" onClick={() => onNavigate('review')}>查看全部<CaretRight size={14} /></Button></div>
         </div>
-        {pending.length > 0 ? (
+        {summary.pending_preview.length > 0 ? (
           <div className="personal-review-list">
-            {pending.slice(0, 4).map((candidate) => (
-              <button key={candidate.id} onClick={() => onOpenCandidate(candidate)} type="button">
-                <span><strong>{candidate.shortId}</strong><small>{candidate.businessUnit} · {candidate.category} · {accountingMonthLabel(candidate.accountingMonth)}</small></span>
+            {summary.pending_preview.map((candidate) => (
+              <button key={candidate.candidate_ref} onClick={() => onOpenCandidateRef(candidate.candidate_ref)} type="button">
+                <span><strong>{candidate.short_id}</strong><small>{candidate.business_unit_label} · {candidate.category_label} · {accountingMonthLabel(candidate.accounting_month)}</small></span>
                 <span>{candidate.summary}</span>
-                <strong>{currency.format(minorToMajor(candidateCashflowMinor(candidate)))}</strong>
                 <CaretRight size={16} />
               </button>
             ))}
@@ -135,30 +96,30 @@ export function PersonalFinanceOverview({ onNavigate, onOpenCandidate, csrfToken
       </section>
 
       <section className="metric-grid personal-finance-metrics" aria-label="个人财务收支概览">
-        <Metric primary label="测试收入" value={currency.format(minorToMajor(incomeMinor))} detail={`${testEntries.filter((entry) => entry.cashflowMinor >= 0).length} 条已确认收入，含归属待校准`} icon={<CloudArrowUp size={20} />} />
-        <Metric label="测试支出" value={currency.format(minorToMajor(expenseMinor))} detail={`${testEntries.filter((entry) => entry.cashflowMinor < 0).length} 条已确认支出，含归属待校准`} icon={<Bank size={20} />} />
-        <Metric label="测试净额" value={currency.format(minorToMajor(netMinor))} detail="全量测试试算，尚未过账" icon={<ArrowsClockwise size={20} />} />
-        <Metric label="原始材料" value={`${evidenceCount} 份`} detail="只计入本次汇总所依据的材料" icon={<FolderOpen size={20} />} />
+        <Metric primary label="测试收入" value={currency.format(minorToMajor(summary.income_minor))} detail={`${summary.income_entry_count} 条已确认收入，含归属待校准`} icon={<CloudArrowUp size={20} />} />
+        <Metric label="测试支出" value={currency.format(minorToMajor(summary.expense_minor))} detail={`${summary.expense_entry_count} 条已确认支出，含归属待校准`} icon={<Bank size={20} />} />
+        <Metric label="测试净额" value={currency.format(minorToMajor(summary.net_minor))} detail="全量测试试算，尚未过账" icon={<ArrowsClockwise size={20} />} />
+        <Metric label="原始材料" value={`${summary.evidence_count} 份`} detail="只计入本次汇总所依据的材料" icon={<FolderOpen size={20} />} />
       </section>
 
       <div className="personal-finance-boundary" role="status">
-        <span>{personalSelection.excludedCount} 条不属于个人范围或状态未确认，未计入汇总</span>
-        <span>{unassignedEntries.length} 条已确认记录归属待校准，单独列示</span>
-        <span>{personalSelection.deduplicatedCount} 条跨来源重复记录已合并</span>
+        <span>{summary.excluded_count} 条不属于个人范围或状态未确认，未计入汇总</span>
+        <span>{summary.unassigned_entries.length} 条已确认记录归属待校准，单独列示</span>
+        <span>{summary.deduplicated_count} 条跨来源重复记录已合并</span>
       </div>
 
-      {unassignedEntries.length > 0 ? (
+      {summary.unassigned_entries.length > 0 ? (
         <section className="panel personal-unassigned-panel" aria-label="个人财务归属待校准">
           <div className="panel-heading">
             <div><h2>归属待校准</h2><p>以下记录全部展开并进入上方测试试算，但归属确认前不会进入个人正式账簿。</p></div>
-            <Badge color="amber">{unassignedEntries.length} 条归属待校准</Badge>
+            <Badge color="amber">{summary.unassigned_entries.length} 条归属待校准</Badge>
           </div>
           <div className="personal-review-list">
-            {unassignedEntries.map((entry) => (
-              <button key={entry.candidate.id} onClick={() => onOpenCandidate(entry.candidate)} type="button">
-                <span><strong>{entry.candidate.shortId}</strong><small>{entry.candidate.businessUnit || '主体待校准'} · {entry.candidate.category} · {accountingMonthLabel(entry.candidate.accountingMonth)}</small></span>
-                <span>{entry.candidate.summary}</span>
-                <strong>{currency.format(minorToMajor(entry.cashflowMinor))}</strong>
+            {summary.unassigned_entries.map((entry) => (
+              <button key={entry.candidate_ref} onClick={() => onOpenCandidateRef(entry.candidate_ref)} type="button">
+                <span><strong>{entry.short_id}</strong><small>{entry.business_unit_label || '主体待校准'} · {entry.category_label} · {accountingMonthLabel(entry.accounting_month)}</small></span>
+                <span>{entry.summary}</span>
+                <strong>{currency.format(minorToMajor(entry.cashflow_minor))}</strong>
                 <CaretRight size={16} />
               </button>
             ))}
@@ -169,12 +130,12 @@ export function PersonalFinanceOverview({ onNavigate, onOpenCandidate, csrfToken
       <div className="personal-insight-grid">
         <section className="panel personal-category-panel">
           <div className="panel-heading"><div><h2>测试分类占比</h2><p>按全部试算收入与支出的绝对金额计算</p></div></div>
-          {categoryShares.length > 0 ? (
+          {summary.category_shares.length > 0 ? (
             <div className="personal-category-list">
-              {categoryShares.map((item) => (
+              {summary.category_shares.map((item) => (
                 <article key={item.category}>
-                  <div><strong>{item.category}</strong><span>{currency.format(minorToMajor(item.amountMinor))}</span><b>{item.percentage.toFixed(1)}%</b></div>
-                  <div aria-label={`${item.category}占比 ${item.percentage.toFixed(1)}%`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={Number(item.percentage.toFixed(1))} className="personal-category-bar" role="progressbar"><span style={{ width: `${item.percentage}%` }} /></div>
+                  <div><strong>{item.category}</strong><span>{currency.format(minorToMajor(item.amount_minor))}</span><b>{percentage(item.basis_points)}%</b></div>
+                  <div aria-label={`${item.category}占比 ${percentage(item.basis_points)}%`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={Number(percentage(item.basis_points))} className="personal-category-bar" role="progressbar"><span style={{ width: `${item.basis_points / 100}%` }} /></div>
                 </article>
               ))}
             </div>
@@ -185,16 +146,16 @@ export function PersonalFinanceOverview({ onNavigate, onOpenCandidate, csrfToken
           <div className="panel-heading"><div><h2>测试月度趋势</h2><p>按全部已确认试算记录的归属月份汇总</p></div></div>
           {latestTrend ? (
             <p className="personal-trend-summary">
-              {accountingMonthLabel(latestTrend.month)}净额 {currency.format(minorToMajor(latestTrend.netMinor))}
-              {leadingCategory ? `；当前金额占比最高的分类是${leadingCategory.category} ${leadingCategory.percentage.toFixed(1)}%` : ''}。
+              {accountingMonthLabel(latestTrend.month)}净额 {currency.format(minorToMajor(latestTrend.net_minor))}
+              {leadingCategory ? `；当前金额占比最高的分类是${leadingCategory.category} ${percentage(leadingCategory.basis_points)}%` : ''}。
             </p>
           ) : null}
-          {monthlyTrend.length > 0 ? (
+          {summary.monthly_totals.length > 0 ? (
             <div className="personal-trend-list">
-              {monthlyTrend.map((item) => (
+              {summary.monthly_totals.map((item) => (
                 <article key={item.month}>
                   <strong>{accountingMonthLabel(item.month)}</strong>
-                  <dl><div><dt>收入</dt><dd>{currency.format(minorToMajor(item.incomeMinor))}</dd></div><div><dt>支出</dt><dd>{currency.format(minorToMajor(item.expenseMinor))}</dd></div><div><dt>净额</dt><dd>{currency.format(minorToMajor(item.netMinor))}</dd></div></dl>
+                  <dl><div><dt>收入</dt><dd>{currency.format(minorToMajor(item.income_minor))}</dd></div><div><dt>支出</dt><dd>{currency.format(minorToMajor(item.expense_minor))}</dd></div><div><dt>净额</dt><dd>{currency.format(minorToMajor(item.net_minor))}</dd></div></dl>
                 </article>
               ))}
             </div>

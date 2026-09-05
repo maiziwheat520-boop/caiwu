@@ -1430,3 +1430,48 @@ export type PayrollCommandResult = {
     }
   }
 }
+
+export type PersonalFinanceEntry = {
+  candidate_ref: string
+  short_id: string
+  business_unit_label: string
+  category_label: string
+  accounting_month: string | null
+  summary: string
+  cashflow_minor: number
+  date: string
+  transaction_type: string
+  counterparty: string
+  source_kind: 'PLATFORM' | 'BANK'
+  scope_status: 'PERSONAL' | 'UNASSIGNED'
+}
+
+export type PersonalFinancePendingCandidate = {
+  candidate_ref: string
+  short_id: string
+  business_unit_label: string
+  category_label: string
+  accounting_month: string | null
+  summary: string
+  status: CandidateStatus
+}
+
+/** Built by Core from the candidates it holds; the browser no longer derives it. */
+export type PersonalFinanceSummary = {
+  contract_version: 'ledgerbridge.personal-finance-summary.v1'
+  candidate_total: number
+  pending_total: number
+  pending_preview: PersonalFinancePendingCandidate[]
+  entry_total: number
+  income_minor: number
+  expense_minor: number
+  net_minor: number
+  income_entry_count: number
+  expense_entry_count: number
+  evidence_count: number
+  excluded_count: number
+  deduplicated_count: number
+  unassigned_entries: PersonalFinanceEntry[]
+  category_shares: Array<{ category: string; amount_minor: number; basis_points: number }>
+  monthly_totals: Array<{ month: string; income_minor: number; expense_minor: number; net_minor: number }>
+}

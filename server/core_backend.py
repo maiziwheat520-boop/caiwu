@@ -110,6 +110,7 @@ COMPANY_TRANSACTION_CLASSIFICATION_SUMMARY_CORE_PATH = (
     "/internal/v1/company-transaction-classification-summary"
 )
 PERSONAL_FINANCE_CORE_PATH = "/internal/v1/personal-finance"
+PERSONAL_FINANCE_SUMMARY_CORE_PATH = "/internal/v1/personal-finance-summary"
 COMPANY_BANK_REVIEW_WORKLOAD_PRINCIPAL = "workload:ledgerbridge-company-bank-review"
 CLASSIFICATION_GROUP_REF = re.compile(r"^cg_[0-9a-f]{32}$")
 CLASSIFICATION_RISK_CODES = frozenset(
@@ -809,6 +810,49 @@ class CoreBackedState:
             "compositions": compositions,
             "transaction_classifications": classification_summary,
         }
+
+    def personal_finance_summary(self) -> dict[str, object]:
+        """The personal finance totals, computed beside the facts they read.
+
+        The page used to page the whole candidate collection into the browser
+        to work these out. Core answers in one read, and this boundary still
+        checks the shape rather than trusting it.
+        """
+        payload = self.client.json("GET", PERSONAL_FINANCE_SUMMARY_CORE_PATH)
+        if not isinstance(payload, dict):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        if payload.get("contract_version") != "ledgerbridge.personal-finance-summary.v1":
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        for field in (
+            "candidate_total",
+            "pending_total",
+            "entry_total",
+            "income_minor",
+            "expense_minor",
+            "net_minor",
+            "income_entry_count",
+            "expense_entry_count",
+            "evidence_count",
+            "excluded_count",
+            "deduplicated_count",
+        ):
+            value = payload.get(field)
+            if type(value) is not int or abs(value) > JSON_SAFE_INTEGER:
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        for field, maximum in (
+            ("pending_preview", 4),
+            ("unassigned_entries", 1000),
+            ("category_shares", 200),
+            ("monthly_totals", 200),
+        ):
+            rows = payload.get(field)
+            if not isinstance(rows, list) or len(rows) > maximum:
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+            if any(not isinstance(row, dict) for row in rows):
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        if payload["income_minor"] - payload["expense_minor"] != payload["net_minor"]:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        return deepcopy(payload)
 
     def personal_bank_transactions(self) -> dict[str, object]:
         if (

@@ -583,6 +583,20 @@ function App() {
     }
   }
 
+  // The personal finance page now knows only a candidate's reference, because
+  // Core summarises the collection instead of shipping it. Resolving one by
+  // reference is a single indexed read.
+  const openCandidateRef = async (candidateRef: string) => {
+    try {
+      await openCandidate(toCandidate(await api.getCandidate(candidateRef)))
+    } catch (error) {
+      setNotice({
+        tone: 'error',
+        message: error instanceof Error ? `候选读取失败：${error.message}` : '候选读取失败',
+      })
+    }
+  }
+
   const openCandidate = async (candidate: Candidate) => {
     const requestId = ++candidateDetailRequestRef.current
     const readOnly = ['CONFIRMED', 'IGNORED', 'SUPERSEDED'].includes(candidate.status)
@@ -741,7 +755,7 @@ function App() {
       )
     }
     if (page === 'personal-finance') {
-      return <PersonalFinanceOverview onNavigate={navigate} onOpenCandidate={openCandidate} csrfToken={session?.csrf_token ?? ''} />
+      return <PersonalFinanceOverview onNavigate={navigate} onOpenCandidateRef={openCandidateRef} csrfToken={session?.csrf_token ?? ''} />
     }
     if (page === 'reconciliation') {
       return (

@@ -53,6 +53,7 @@ import type {
   ReviewEventListResponse,
   Session,
   RegistrationOptionsJson,
+  PersonalFinanceSummary,
 } from './types'
 
 export class ApiError extends Error {
@@ -321,6 +322,9 @@ export const api = {
 
   getPersonalBankTransactions: () =>
     requestJson<PersonalBankTransactionsResponse>('/api/v1/personal-finance/bank-transactions'),
+
+  getPersonalFinanceSummary: () =>
+    requestJson<PersonalFinanceSummary>('/api/v1/personal-finance/summary'),
 
   reviewPersonalBankStatement: ({ statement, decision, reason, csrfToken }: {
     statement: PersonalBankStatement

@@ -386,6 +386,20 @@ class SyntheticState:
     def connections(self) -> list[dict[str, str]]:
         return deepcopy(SYNTHETIC_CONNECTIONS)
 
+    def personal_finance_summary(self) -> dict[str, object]:
+        # The rules that build this summary live in Core, next to the facts
+        # they read. Recomputing them here would be a second implementation
+        # free to drift from the authoritative one, which is exactly what
+        # moving them out of the browser was meant to end.
+        raise CoreBackendError(
+            503,
+            _problem(
+                503,
+                "PERSONAL_FINANCE_SUMMARY_UNAVAILABLE",
+                "合成预览不计算个人财务汇总",
+            ),
+        )
+
     def company_bank_statements(self) -> dict[str, object]:
         # Synthetic preview has no company bank review backend, and inventing
         # company statements here would put invented financial rows in front of
@@ -1315,6 +1329,19 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 )
                 return
             self._send_json(200, state.candidate_classification_groups())
+            return
+        if path == "/api/v1/personal-finance/summary":
+            if query:
+                self._send_json(
+                    400,
+                    _problem(
+                        400,
+                        "INVALID_PERSONAL_SUMMARY_QUERY",
+                        "个人财务汇总范围由服务端授权决定",
+                    ),
+                )
+                return
+            self._send_json(200, state.personal_finance_summary())
             return
         if path == "/api/v1/personal-finance/bank-transactions":
             if query:
