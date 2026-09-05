@@ -142,6 +142,7 @@ describe('OriginalReconciliationPage', () => {
     installSuccessfulReads()
     render(<OriginalReconciliationPage onNavigate={vi.fn()} />)
     const month = await screen.findByLabelText('选择对账月份')
+    expect(screen.getByText('对账月份')).toBeVisible()
     fireEvent.change(month, { target: { value: '2026-08' } })
 
     await vi.waitFor(() => expect(api.getCashReconciliation).toHaveBeenLastCalledWith('2026-08'))

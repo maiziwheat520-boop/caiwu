@@ -4,6 +4,7 @@ import { Badge, Button } from '@radix-ui/themes'
 import { ArrowsClockwise, Bank, CaretDown, CaretUp, CloudArrowDown, CloudArrowUp, Database, MagnifyingGlass, Warning } from '@phosphor-icons/react'
 import { api, minorToMajor } from '../api'
 import type { PersonalBankStatement, PersonalBankTransaction, PersonalBankTransactionsResponse } from '../types'
+import { DateInput } from '../shared/TemporalControls'
 import { presentPersonalBankTransaction } from './personalBankPresentation'
 
 const currency = new Intl.NumberFormat('zh-CN', {
@@ -202,20 +203,28 @@ function PersonalBankFacts({ data, csrfToken, reviewBusy, setReviewBusy, reload 
                 <option value="expense">仅流出</option>
               </select>
             </label>
-            <label>
-              <span>开始日期</span>
-              <input aria-label="流水开始日期" max={dateTo || periodEnd} min={periodStart} type="date" value={dateFrom} onChange={(event) => {
+            <DateInput
+              label="开始日期"
+              aria-label="流水开始日期"
+              max={dateTo || periodEnd}
+              min={periodStart}
+              value={dateFrom}
+              onChange={(event) => {
                 setDateFrom(event.target.value)
                 setVisibleCount(transactionPageSize)
-              }} />
-            </label>
-            <label>
-              <span>结束日期</span>
-              <input aria-label="流水结束日期" max={periodEnd} min={dateFrom || periodStart} type="date" value={dateTo} onChange={(event) => {
+              }}
+            />
+            <DateInput
+              label="结束日期"
+              aria-label="流水结束日期"
+              max={periodEnd}
+              min={dateFrom || periodStart}
+              value={dateTo}
+              onChange={(event) => {
                 setDateTo(event.target.value)
                 setVisibleCount(transactionPageSize)
-              }} />
-            </label>
+              }}
+            />
             <label className="personal-bank-query-field">
               <span>交易对象或关键词</span>
               <div><MagnifyingGlass size={15} /><input aria-label="搜索银行流水" placeholder="搜索对手方、银行或交易类型" value={query} onChange={(event) => {

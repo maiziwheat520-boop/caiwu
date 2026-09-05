@@ -149,6 +149,7 @@
   color: #273c55;
   background: #fff;
 }
+.payroll-legacy-toolbar .temporal-control { min-height: 40px; }
 
 .payroll-task-panel { display: grid; gap: 15px; }
 .payroll-task-heading { display: flex; justify-content: space-between; gap: 24px; }
@@ -593,6 +594,8 @@
 }
 
 @media (max-width: 680px) {
+  .payroll-legacy-toolbar .temporal-control,
+  .payroll-flow-period .temporal-control { min-height: 44px; }
   .payroll-legacy-workbench { grid-template-columns: 1fr; }
   .payroll-legacy-header,
   .payroll-legacy-toolbar,
@@ -740,8 +743,9 @@
 .payroll-flow-focus span { color: #3970ae; font-size: var(--font-small); font-weight: 800; }
 .payroll-flow-focus strong { color: #172f4e; font-size: 21px; letter-spacing: -.02em; }
 .payroll-flow-focus p { max-width: 520px; margin: 0; color: #6b7b8f; font-size: var(--font-body); line-height: 1.65; }
-.payroll-flow-period { display: grid; grid-template-columns: auto 130px; align-items: center; gap: 10px; width: fit-content; color: #64748b; font-size: var(--font-small); }
-.payroll-flow-period select { min-height: 35px; padding: 0 9px; border: 1px solid #cdd7e4; border-radius: 8px; color: #273c55; background: #fff; }
+.payroll-flow-period { display: grid; grid-template-columns: auto 160px; align-items: center; gap: 10px; width: fit-content; color: #64748b; font-size: var(--font-small); }
+.payroll-flow-period .temporal-field-label { white-space: nowrap; }
+.payroll-flow-period .temporal-control { min-height: 40px; }
 .payroll-flow-focus button.primary {
   justify-self: start;
   min-height: 38px;

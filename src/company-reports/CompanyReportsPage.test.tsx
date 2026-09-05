@@ -376,9 +376,12 @@ describe('CompanyReportsPage', () => {
     expect(within(allCompaniesDashboard).getByText('¥240.00')).toBeInTheDocument()
     expect(screen.queryByText('查看数据处理阶段与逐月明细')).not.toBeInTheDocument()
 
+    const applyPeriod = screen.getByRole('button', { name: '应用期间' })
+    expect(applyPeriod).toBeDisabled()
     fireEvent.change(screen.getByLabelText('开始月份'), { target: { value: '2026-03' } })
     fireEvent.change(screen.getByLabelText('结束月份'), { target: { value: '2026-05' } })
-    fireEvent.click(screen.getByRole('button', { name: '应用期间' }))
+    expect(applyPeriod).toBeEnabled()
+    fireEvent.click(applyPeriod)
     await waitFor(() => expect(getReports).toHaveBeenLastCalledWith({
       fromMonth: '2026-03',
       toMonth: '2026-05',

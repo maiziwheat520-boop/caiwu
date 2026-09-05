@@ -16,6 +16,7 @@ import type {
   ClassificationTarget,
 } from '../types'
 import { currency } from '../shared/format'
+import { MonthInput } from '../shared/TemporalControls'
 import { auditChangeLabel, decisionColors, decisionLabels } from '../audit/reviewDecisions'
 import { EvidencePreviewPanel } from '../evidence/EvidencePreviewPanel'
 import {
@@ -232,10 +233,7 @@ export function CandidateDialog({ candidate, classificationGroup, onClose, onUpd
                 )}
               </label>
               <label htmlFor="candidate-amount"><span>金额</span><TextField.Root id="candidate-amount" inputMode="decimal" maxLength={18} readOnly={readOnly} value={amount} onChange={(event) => setAmount(event.target.value)} /></label>
-              <label htmlFor="candidate-accounting-month">
-                <span>归属月份</span>
-                <TextField.Root id="candidate-accounting-month" type="month" pattern="[0-9]{4}-(0[1-9]|1[0-2])" readOnly={readOnly} value={accountingMonth} onChange={(event) => setAccountingMonth(event.target.value)} />
-              </label>
+              <MonthInput label="归属月份" id="candidate-accounting-month" pattern="[0-9]{4}-(0[1-9]|1[0-2])" readOnly={readOnly} value={accountingMonth} onChange={(event) => setAccountingMonth(event.target.value)} />
             </div>
             {!readOnly && accountingDimensionsError ? <div className="blocking-note amber" id="accounting-dimensions-error" role="alert"><Info size={18} weight="fill" /><span><strong>{accountingDimensionsError}</strong></span></div> : null}
             {!readOnly && !detailLoading && accountingDimensions && !dimensionsContainSelection ? <div className="blocking-note amber" id="accounting-dimensions-selection-error" role="status"><Info size={18} weight="fill" /><span><strong>当前会计维度不在授权目录中</strong>请先治理基础资料或选择有效维度后再处理。</span></div> : null}

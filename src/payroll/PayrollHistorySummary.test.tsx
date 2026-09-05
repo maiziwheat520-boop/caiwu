@@ -122,6 +122,7 @@ describe('PayrollHistorySummary', () => {
     expect(screen.getByLabelText('汇总维度')).toHaveValue('门店')
     expect(screen.getByRole('button', { name: '导出明细' })).toBeInTheDocument()
     expect(screen.getByLabelText('对账月份')).toHaveValue('2026-07')
+    expect(screen.getByLabelText('对账月份')).toHaveDisplayValue('2026 年 7 月')
     expect(screen.getAllByText('¥172,611.98')).toHaveLength(2)
     const rows = screen.getByRole('table', { name: '各店当月工资汇总' })
     expect(within(rows).getByText('青居客')).toBeInTheDocument()
