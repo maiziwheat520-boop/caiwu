@@ -16,7 +16,9 @@ from scripts import backup_restore as backup
 PRODUCTION = "20260905_0046"
 FEE = "20260905_0047"
 PAYROLL = "20260905_0048"
-STAGES = (PRODUCTION, FEE, PAYROLL)
+CORRECTION = "20260905_0049"
+CORRECTION_FUNCTION = ("internal_import", "correct_company_transaction_reporting_item")
+STAGES = (PRODUCTION, FEE, PAYROLL, CORRECTION)
 OWNER = "ledgerbridge_owner"
 V1_COMMAND = ("internal_command", "review_company_transaction_classification")
 V1_SUMMARY = ("internal_read", "get_company_transaction_classification_summary_as_of")
@@ -26,6 +28,14 @@ PAYROLL_READER = ("internal_read", "list_payroll_disbursement_records_as_of")
 # Independent catalog observations: deriving these from the backup allowlist
 # would let an accidentally omitted registration disappear from both sides.
 ADDITIONS = {
+    CORRECTION_FUNCTION: (
+        CORRECTION,
+        "p_transaction_ref uuid, p_expected_revision integer, "
+        "p_expected_category_code text, p_expected_reporting_item_code text, "
+        "p_reporting_item_code text, p_operation_id uuid, p_actor_ref text, p_reason text",
+        "jsonb",
+        None,
+    ),
     V2_COMMAND: (
         FEE,
         "p_transaction_ref uuid, p_entity_ref uuid, p_operation_id uuid, "
@@ -90,7 +100,8 @@ def _stage_metadata(revision: str) -> dict[str, object]:
                 "proconfig": ["search_path=pg_catalog"],
             }
         )
-        executors[(schema, name)] = executor
+        if executor is not None:
+            executors[(schema, name)] = executor
     metadata["company_transaction_classification_functions"] = functions
     metadata["company_transaction_classification_function_acls"] = [
         {
@@ -126,9 +137,9 @@ def test_finance_release_has_one_unambiguous_migration_path() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
         revisions = list(scripts.walk_revisions())
-        assert scripts.get_heads() == [PAYROLL]
+        assert scripts.get_heads() == [CORRECTION]
     assert len({item.revision for item in revisions}) == len(revisions)
-    release_path = list(scripts.iterate_revisions(PAYROLL, "20260904_0045"))
+    release_path = list(scripts.iterate_revisions(CORRECTION, "20260904_0045"))
     assert [item.revision for item in release_path] == list(reversed(STAGES))
     assert all(item.dependencies is None for item in release_path)
 
@@ -141,7 +152,7 @@ def test_restore_accepts_each_released_stage(revision: str) -> None:
     )
 
 
-@pytest.mark.parametrize("function", [V2_COMMAND, V2_SUMMARY, PAYROLL_READER])
+@pytest.mark.parametrize("function", [V2_COMMAND, V2_SUMMARY, PAYROLL_READER, CORRECTION_FUNCTION])
 def test_restore_rejects_missing_new_function(function: tuple[str, str]) -> None:
     revision = ADDITIONS[function][0]
     metadata = _stage_metadata(revision)
@@ -154,7 +165,7 @@ def test_restore_rejects_missing_new_function(function: tuple[str, str]) -> None
         backup._validate_company_transaction_classification_security(metadata, revision=revision)
 
 
-@pytest.mark.parametrize("before,after", [(PRODUCTION, FEE), (FEE, PAYROLL)])
+@pytest.mark.parametrize("before,after", [(PRODUCTION, FEE), (FEE, PAYROLL), (PAYROLL, CORRECTION)])
 def test_restore_rejects_future_functions_in_an_older_backup(before: str, after: str) -> None:
     with pytest.raises(backup.BackupError):
         backup._validate_company_transaction_classification_security(
@@ -179,3 +190,17 @@ def test_restore_rejects_retired_or_cross_role_execute(
     observed["execute"] = True
     with pytest.raises(backup.BackupError):
         backup._validate_company_transaction_classification_security(metadata, revision=revision)
+
+
+@pytest.mark.parametrize(
+    "role", ["ledgerbridge_worker", "ledgerbridge_api", "ledgerbridge_reader", "ledgerbridge_app"]
+)
+def test_correction_function_remains_owner_only(role: str) -> None:
+    metadata = _stage_metadata(CORRECTION)
+    privileges = _rows(metadata, "company_transaction_classification_effective_function_privileges")
+    observed = next(
+        row for row in privileges if _key(row) == CORRECTION_FUNCTION and row["role"] == role
+    )
+    observed["execute"] = True
+    with pytest.raises(backup.BackupError):
+        backup._validate_company_transaction_classification_security(metadata, revision=CORRECTION)

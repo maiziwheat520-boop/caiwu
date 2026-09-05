@@ -15,7 +15,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Removing the maintenance entry point preserves every versioned correction.
     op.execute(
-        "DROP FUNCTION internal_import.correct_company_transaction_reporting_item(uuid,integer,text,text,text,uuid,text,text)"
+        "DROP FUNCTION internal_import.correct_company_transaction_reporting_item"
+        "(uuid,integer,text,text,text,uuid,text,text)"
     )
 
 
@@ -53,7 +54,8 @@ BEGIN
     END IF;
     v_command := public.digest(convert_to(jsonb_build_array(
         p_transaction_ref, p_expected_revision, p_expected_category_code,
-        p_expected_reporting_item_code, p_reporting_item_code, p_actor_ref, p_reason)::text, 'UTF8'), 'sha256');
+        p_expected_reporting_item_code, p_reporting_item_code,
+        p_actor_ref, p_reason)::text, 'UTF8'), 'sha256');
     PERFORM pg_advisory_xact_lock(hashtextextended(p_operation_id::text, 0));
     SELECT * INTO v_existing
       FROM public.company_transaction_classification
@@ -76,7 +78,7 @@ BEGIN
     IF NOT FOUND OR v_current.revision IS DISTINCT FROM p_expected_revision
        OR v_current.status IS DISTINCT FROM 'CONFIRMED'
        OR v_current.category_code IS DISTINCT FROM p_expected_category_code THEN
-        RAISE EXCEPTION 'company transaction reporting item requires current confirmed classification'
+        RAISE EXCEPTION 'reporting item correction requires current confirmed classification'
             USING ERRCODE = 'LB004';
     END IF;
     IF v_current.reporting_item_code IS DISTINCT FROM p_expected_reporting_item_code THEN

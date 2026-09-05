@@ -7024,7 +7024,7 @@ def _validate_classification_batch_security(metadata: dict[str, Any]) -> None:
 
 def _validate_company_transaction_classification_security(
     metadata: dict[str, Any],
-    revision: str = PAYROLL_DISBURSEMENT_READ_MODEL_REVISION,
+    revision: str = REPORTING_ITEM_CORRECTION_REVISION,
 ) -> None:
     def _list(name: str) -> list[dict[str, Any]]:
         value = metadata.get(name)
