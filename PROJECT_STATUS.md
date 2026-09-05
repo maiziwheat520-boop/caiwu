@@ -1,3 +1,19 @@
+## 2026-09-05 integrated finance release candidate
+
+Ownership: Codex, ai/chatgpt/finance-integration-optimized-20260905. The candidate
+integrates operating-fee reporting details and source-backed payroll reads on
+production c0469c6. It retains the deployed 0046 migration and advances through
+0047 (fee detail) and 0048 (payroll). SQL join ambiguity, silent 500-row truncation,
+and staged restore permissions have been corrected and tested.
+
+Local full suite: 1441 passed / 214 environment-platform skips. The real isolated
+PostgreSQL upgrade, downgrade and replay plus restore security checks passed.
+Independent integrated review has no unresolved BLOCKER or HIGH. Matching Web
+96349fff preserves complete decision events and prevents stale payroll-period
+amounts. See docs/tasks/2026-09-05-finance-integration-optimized.md for validation
+limits, including existing full-mypy debt. Deployment is pending the atomic
+Core/Web release gate. Payroll source mapping and employee linkage remain explicit,
+fail-closed requirements; no payment capability is enabled.
 # Project status
 
 Updated: 2026-09-02
