@@ -4137,6 +4137,13 @@ def _validate_publishable_string(value: str, *, parent_key: str) -> None:
         r"payroll_history_through_20\d{2}_(?:0[1-9]|1[0-2])_20\d{2}_(?:0[1-9]|1[0-2])",
         value,
     )
+    # _require_stable_identifier already treats this exact shape as an opaque
+    # digest rather than a raw account number. Scanning it again here made the
+    # two validators disagree about the same documented format, so an account_id
+    # the provider was required to send could not be published.
+    is_opaque_account_digest = (
+        normalized == "accountid" and _OPAQUE_ACCOUNT_ID.fullmatch(value) is not None
+    )
     if (
         normalized not in _SENSITIVE_VALUE_SKIP_FIELDS
         and not normalized.endswith("hash")
@@ -4145,6 +4152,7 @@ def _validate_publishable_string(value: str, *, parent_key: str) -> None:
             (
                 _ACCOUNT_LIKE_NUMBER.search(value) is not None
                 and not is_controlled_payroll_history_batch_id
+                and not is_opaque_account_digest
             )
             or _LOCAL_PATH.search(value) is not None
         )

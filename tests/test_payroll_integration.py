@@ -394,11 +394,30 @@ def test_source_never_guesses_or_reencodes_employee_and_account_ids(
     _assert_error("PAYROLL_IDENTITY_INVALID", lambda: _pull(source, publication))
 
 
+def _set_account_id(publication: dict[str, object], account_id: str) -> None:
+    """An account id is locked across the batch line and its verification result.
+
+    Rewriting only one side trips identity locking, which says nothing about
+    whether the opaque digest format itself is accepted.
+    """
+    batch = cast(dict[str, object], publication["payroll_batch"])
+    cast(list[dict[str, object]], batch["lines"])[0]["account_id"] = account_id
+    for entry in cast(list[dict[str, object]], publication["verification_results"]):
+        for result in cast(list[dict[str, object]], entry["results"]):
+            if result.get("employee_id") == "employee_demo_001":
+                result["account_id"] = account_id
+    # The approval binds a hash of the locked batch, so rewriting a line means
+    # re-binding the approval and re-chaining the audit events.
+    events = cast(list[dict[str, object]], publication["audit_events"])
+    approval_data = cast(dict[str, object], events[2]["data"])
+    approval_data["locked_batch_sha256"] = hashlib.sha256(_stable_json(batch).encode()).hexdigest()
+    publication["audit_events"] = _rehash_audit_events(events)
+    _refresh_publication_integrity(publication)
+
+
 def test_source_accepts_opaque_account_digest_with_scattered_digits() -> None:
     publication = _publication()
-    batch = cast(dict[str, object], publication["payroll_batch"])
-    line = cast(list[dict[str, object]], batch["lines"])[0]
-    line["account_id"] = "account_9f99f99999f99999f9f99f99"
+    _set_account_id(publication, "account_9f99f99999f99999f9f99f99")
     source, _ = _source(publication)
 
     result = _pull(source, publication)
@@ -410,9 +429,7 @@ def test_source_accepts_opaque_account_digest_with_scattered_digits() -> None:
 
 def test_source_accepts_opaque_account_digest_with_contiguous_digits() -> None:
     publication = _publication()
-    batch = cast(dict[str, object], publication["payroll_batch"])
-    line = cast(list[dict[str, object]], batch["lines"])[0]
-    line["account_id"] = "account_123456789012abcdefabcdef"
+    _set_account_id(publication, "account_123456789012abcdefabcdef")
     source, _ = _source(publication)
 
     result = _pull(source, publication)
@@ -420,6 +437,27 @@ def test_source_accepts_opaque_account_digest_with_contiguous_digits() -> None:
     result_batch = cast(dict[str, object], result.payload["payroll_batch"])
     result_line = cast(list[dict[str, object]], result_batch["lines"])[0]
     assert result_line["account_id"] == "account_123456789012abcdefabcdef"
+
+
+def test_source_rejects_raw_account_number_in_account_id() -> None:
+    publication = _publication()
+    _set_account_id(publication, "account_6222021234567890123")
+    source, _ = _source(publication)
+
+    _assert_error("PAYROLL_IDENTITY_INVALID", lambda: _pull(source, publication))
+
+
+def test_source_rejects_account_like_digits_outside_account_id() -> None:
+    # The exemption is scoped to account_id; a digit run anywhere else is still
+    # an account-like number.
+    publication = _publication()
+    batch = cast(dict[str, object], publication["payroll_batch"])
+    cast(list[dict[str, object]], batch["lines"])[0]["memo"] = "account_123456789012abcdefabcdef"
+
+    _assert_error(
+        "PAYROLL_SENSITIVE_FIELD_NOT_ALLOWED",
+        lambda: _pull(*_source(publication)[:1], publication),
+    )
 
 
 def test_source_rejects_payload_tampering_and_publication_id_mismatch() -> None:
