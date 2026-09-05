@@ -12,6 +12,8 @@ import type {
   PayrollVerificationListData,
 } from '../types'
 import { ErrorState, LoadingState, PageHeader } from '../shared/PagePrimitives'
+import { PeriodSelect } from '../shared/TemporalControls'
+import { formatMonthLabel } from '../shared/temporal-format'
 import { PayrollLegacyWorkbench } from './PayrollLegacyWorkbench'
 import { PayrollHistorySummary } from './PayrollHistorySummary'
 import {
@@ -391,13 +393,10 @@ export function PayrollWorkspacePage() {
               ) : canVerifyReceipts ? (
                 <div className="payroll-evidence-command">
                   {eligibleBatches.length > 1 ? (
-                    <label>
-                      <span>选择工资批次</span>
-                      <select value={selectedBatchId} onChange={(event) => { setSelectedBatchId(event.target.value); setSelectedEvidence([]) }}>
+                    <PeriodSelect label="选择工资批次" value={selectedBatchId} onChange={(event) => { setSelectedBatchId(event.target.value); setSelectedEvidence([]) }}>
                         <option value="">请选择</option>
-                        {eligibleBatches.map((batch) => <option key={batch.batch_id} value={batch.batch_id}>{batch.pay_period}</option>)}
-                      </select>
-                    </label>
+                        {eligibleBatches.map((batch) => <option key={batch.batch_id} value={batch.batch_id}>{formatMonthLabel(batch.pay_period)}</option>)}
+                    </PeriodSelect>
                   ) : null}
                   <div className="payroll-evidence-options">
                     <div className="payroll-evidence-completeness">

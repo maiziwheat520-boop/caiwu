@@ -15,6 +15,7 @@ import {
 import { api, minorToMajor } from '../api'
 import type { CashReconciliation, OriginalReconciliation, Page } from '../types'
 import { PageHeader } from '../shared/PagePrimitives'
+import { MonthInput } from '../shared/TemporalControls'
 import './OriginalReconciliationPage.css'
 import {
   currentAccountCounterpartyNote,
@@ -144,12 +145,11 @@ export function OriginalReconciliationPage({ onNavigate }: {
         description="按正式银行和微信流水生成当月收入、支出与往来款。"
         action={(
           <div className="original-reconciliation-filters">
-            <input
+            <MonthInput
+              label="对账月份"
               aria-label="选择对账月份"
-              className="original-month-input"
               max="9999-12"
               min="2000-01"
-              type="month"
               value={selectedMonth}
               onChange={(event) => {
                 if (!event.target.value) return

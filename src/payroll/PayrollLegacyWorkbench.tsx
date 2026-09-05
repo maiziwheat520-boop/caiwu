@@ -12,6 +12,8 @@ import {
 } from '@phosphor-icons/react'
 
 import { api, ApiError } from '../api'
+import { PeriodSelect } from '../shared/TemporalControls'
+import { formatMonthLabel } from '../shared/temporal-format'
 import type {
   PayrollLegacyAction,
   PayrollLegacyAdjustment,
@@ -558,13 +560,10 @@ export function PayrollLegacyWorkbench({
                 <span>当前任务</span>
                 <strong>{generationBatch ? '本月工资已生成' : materialsConfirmedForGeneration ? '生成本月工资' : '先确认本月三类工资素材'}</strong>
                 <p>{generationBatch ? '工资已按选定期间生成，请继续进行发放复核。' : materialsConfirmedForGeneration ? '所需素材已确认，可以按员工参数和全局规则生成。' : '考勤表、阿姨考勤表和好评统计必须各选定一个版本。'}</p>
-                <label className="payroll-flow-period">
-                  <span>工资月份</span>
-                  <select value={generationPeriod} onChange={(event) => changeGenerationPeriod(event.target.value)}>
-                    <option value="2026-07">2026-07</option>
-                    <option value="2026-08">2026-08</option>
-                  </select>
-                </label>
+                <PeriodSelect label="工资月份" fieldClassName="payroll-flow-period" value={generationPeriod} onChange={(event) => changeGenerationPeriod(event.target.value)}>
+                  <option value="2026-07">{formatMonthLabel('2026-07')}</option>
+                  <option value="2026-08">{formatMonthLabel('2026-08')}</option>
+                </PeriodSelect>
                 {generationBatch ? (
                   <button type="button" className="primary" onClick={openGenerationVerification}>进入发放复核</button>
                 ) : materialsConfirmedForGeneration ? (
@@ -588,12 +587,9 @@ export function PayrollLegacyWorkbench({
               <span>{workspace ? `${workspace.rules.employees.length} 名员工 · ${reviewRules.length} 条工资规则 · ${workspace.batches.length} 个已生成账期` : '先维护员工工资参数与全局规则，再确认素材生成工资'}</span>
             </div>
             {workspace && workspace.batches.length > 0 ? (
-              <label>
-                <span>查看已保存月份</span>
-                <select value={period} onChange={(event) => applyWorkspace(workspace, event.target.value)}>
-                  {workspace.batches.map((batch) => <option key={batch.period}>{batch.period}</option>)}
-                </select>
-              </label>
+              <PeriodSelect label="查看已保存月份" value={period} onChange={(event) => applyWorkspace(workspace, event.target.value)}>
+                {workspace.batches.map((batch) => <option key={batch.period} value={batch.period}>{formatMonthLabel(batch.period)}</option>)}
+              </PeriodSelect>
             ) : null}
             <button type="button" className="secondary" onClick={() => void load()} disabled={busy}>
               <ArrowClockwise size={16} />刷新恢复

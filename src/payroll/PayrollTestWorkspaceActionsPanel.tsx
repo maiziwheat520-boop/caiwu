@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 
 import { api, ApiError } from '../api'
+import { MonthInput } from '../shared/TemporalControls'
 import type {
   PayrollTestBatchValidationResult,
   PayrollInputMaterialPreview,
@@ -286,16 +287,13 @@ export function PayrollTestWorkspaceActionsPanel({
               </div>
               {editing ? (
                 <div className="payroll-test-editor">
-                  <label>
-                    归属月份
-                    <input
-                      type="month"
-                      min="2026-07"
-                      max="2026-08"
-                      value={draft.period}
-                      onChange={(event) => setDraft({ ...draft, period: event.target.value })}
-                    />
-                  </label>
+                  <MonthInput
+                    label="归属月份"
+                    min="2026-07"
+                    max="2026-08"
+                    value={draft.period}
+                    onChange={(event) => setDraft({ ...draft, period: event.target.value })}
+                  />
                   <label>
                     材料类型
                     <select

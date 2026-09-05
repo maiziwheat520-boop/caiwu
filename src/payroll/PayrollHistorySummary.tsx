@@ -3,6 +3,8 @@ import type { CSSProperties } from 'react'
 import { DownloadSimple } from '@phosphor-icons/react'
 
 import { api } from '../api'
+import { PeriodSelect } from '../shared/TemporalControls'
+import { formatMonthLabel } from '../shared/temporal-format'
 import type {
   PayrollSummaryAuthoritativePreviewResponse,
   PayrollTestWorkspaceReadResponse,
@@ -118,18 +120,11 @@ export function PayrollHistorySummary({ workspace }: Props) {
         <aside className="payroll-history-summary-controls" aria-label="账期与版本">
           <div className="payroll-history-control-fields">
             <label>汇总维度<select aria-label="汇总维度" value="门店" disabled><option>门店</option></select></label>
-            <label>
-              对账月份
-              <select
-                aria-label="对账月份"
-                value={selectedMonth?.period ?? ''}
-                onChange={(event) => setSelectedPeriod(event.target.value)}
-              >
+            <PeriodSelect label="对账月份" value={selectedMonth?.period ?? ''} onChange={(event) => setSelectedPeriod(event.target.value)}>
                 {selectedSummary.data.periods.map((item) => (
-                  <option key={item.period} value={item.period}>{item.period}</option>
+                  <option key={item.period} value={item.period}>{formatMonthLabel(item.period)}</option>
                 ))}
-              </select>
-            </label>
+            </PeriodSelect>
           </div>
           <button type="button" className="payroll-summary-export" onClick={exportSummary}><DownloadSimple size={16} />导出明细</button>
         </aside>

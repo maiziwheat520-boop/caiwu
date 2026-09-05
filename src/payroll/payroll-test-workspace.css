@@ -347,6 +347,8 @@
 .payroll-history-summary-error { color: #b91c1c; }
 
 @media (max-width: 900px) {
+  .payroll-test-actions .temporal-control,
+  .payroll-history-summary-controls .temporal-control { min-height: 44px; }
   .payroll-test-actions > header,
   .payroll-test-materials article,
   .payroll-test-editor { align-items: stretch; flex-direction: column; }

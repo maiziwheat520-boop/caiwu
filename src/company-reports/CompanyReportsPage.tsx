@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Badge } from '@radix-ui/themes'
-import { Bank, CalendarBlank, CheckCircle, Database, Warning } from '@phosphor-icons/react'
+import { Bank, CheckCircle, Database, Warning } from '@phosphor-icons/react'
 import { api, minorToMajor } from '../api'
 import type {
   CompanyReportAggregate,
@@ -15,6 +15,7 @@ import type {
   CompanyTransactionCategorySummary,
 } from '../types'
 import { ErrorState, LoadingState, PageHeader } from '../shared/PagePrimitives'
+import { MonthInput } from '../shared/TemporalControls'
 import { companyTabLabel } from './companyLabels'
 
 const ALL_COMPANIES = '__all_companies__'
@@ -107,6 +108,8 @@ export function CompanyReportsPage() {
     || !isReportMonth(toMonth)
     || fromMonth > toMonth
     || monthDistance(fromMonth, toMonth) >= 24
+  const activeRange = appliedRange ?? { fromMonth: reports.from_month, toMonth: reports.to_month }
+  const rangeDirty = fromMonth !== activeRange.fromMonth || toMonth !== activeRange.toMonth
 
   const toolbar = (
     <section className="company-report-toolbar" aria-label="报表筛选">
@@ -117,11 +120,10 @@ export function CompanyReportsPage() {
         ))}
       </div>
       <div className="company-report-range">
-        <CalendarBlank size={17} />
-        <label><span>开始月份</span><input aria-label="开始月份" type="month" value={fromMonth} onChange={(event) => setFromMonth(event.target.value)} /></label>
+        <MonthInput label="开始月份" value={fromMonth} onChange={(event) => setFromMonth(event.target.value)} />
         <span className="company-range-separator">至</span>
-        <label><span>结束月份</span><input aria-label="结束月份" type="month" value={toMonth} onChange={(event) => setToMonth(event.target.value)} /></label>
-        <button type="button" className="primary-button company-report-apply" disabled={rangeInvalid} onClick={() => setAppliedRange({ fromMonth, toMonth })}>应用期间</button>
+        <MonthInput label="结束月份" value={toMonth} onChange={(event) => setToMonth(event.target.value)} />
+        <button type="button" className="primary-button company-report-apply" disabled={rangeInvalid || !rangeDirty} onClick={() => setAppliedRange({ fromMonth, toMonth })}>应用期间</button>
         <button type="button" className="secondary-button" onClick={() => void loadReports()}>刷新</button>
       </div>
       {rangeInvalid ? <p role="alert">请选择不超过 24 个月的有效月份范围。</p> : null}
