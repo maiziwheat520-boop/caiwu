@@ -137,7 +137,7 @@ describe('PayrollLegacyWorkbench', () => {
     }
     expect(within(navigation).queryByRole('button', { name: '生成补发代发表' })).not.toBeInTheDocument()
     expect(within(navigation).queryByRole('button', { name: '检查规则与历史' })).not.toBeInTheDocument()
-    expect(screen.getByText('月度工资账本')).toBeInTheDocument()
+    expect(await screen.findByText('月度工资账本')).toBeInTheDocument()
     expect(screen.getByText('2026-08 工资表 · 版本 1')).toBeInTheDocument()
     expect(screen.getByText('实际发放（统计口径）')).toBeInTheDocument()
     const overview = screen.getByRole('region', { name: '工资概览' })

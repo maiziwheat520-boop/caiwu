@@ -10,10 +10,10 @@ import { expect, test, type Page } from '@playwright/test'
  */
 
 const SURFACES = [
-  { name: 'overview', path: '/overview', ready: '早上好，今天有几项需要确认' },
+  { name: 'overview', path: '/overview', ready: '财务概览' },
   { name: 'monthly-reconciliation', path: '/reconciliation', ready: '月度对账' },
-  { name: 'personal-finance', path: '/personal-finance', ready: '完整个人财务对账' },
-  { name: 'company-reports', path: '/company-reports', ready: '各公司报表' },
+  { name: 'personal-finance', path: '/personal-finance', ready: '个人对账' },
+  { name: 'company-reports', path: '/company-reports', ready: '公司报表' },
   { name: 'audit-log', path: '/audit', ready: '审核操作记录' },
 ] as const
 
@@ -36,7 +36,7 @@ async function settle(page: Page) {
 for (const surface of SURFACES) {
   test(`${surface.name} matches its baseline`, async ({ page }) => {
     await page.goto(surface.path)
-    await expect(page.getByText(surface.ready).first()).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByRole('heading', { name: surface.ready, exact: true })).toBeVisible({ timeout: 20_000 })
     await settle(page)
     await expect(page).toHaveScreenshot(`${surface.name}.png`, { fullPage: true })
   })

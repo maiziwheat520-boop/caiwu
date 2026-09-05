@@ -62,7 +62,7 @@ export function CompanyReportsPage() {
   const header = (
     <PageHeader
       eyebrow="经营驾驶舱"
-      title="各公司报表"
+      title="公司报表"
       description="按公司查看经营现金流、收支构成和月度趋势。"
     />
   )
@@ -136,7 +136,7 @@ export function CompanyReportsPage() {
         <section className="empty-state company-report-empty">
           <Database size={34} weight="light" />
           <h2>当前期间没有可展示的公司报表</h2>
-          <p>未按名称、摘要或银行信息猜测公司归属；待 Core 提供权威公司事实后自动显示。</p>
+          <p>切换月份，或检查公司账单是否已导入并完成归属。</p>
         </section>
       </>
     )

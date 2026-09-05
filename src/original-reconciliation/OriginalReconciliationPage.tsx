@@ -175,8 +175,8 @@ export function OriginalReconciliationPage({ onNavigate }: {
       <section className="statement-source-notice" aria-label="账单数据入口状态">
         <Receipt size={20} />
         <div>
-          <strong>流水是对账表的直接取数来源</strong>
-          <span>按实际到账的自然月归类；不再上传平台账单、不重建七天账期，也不与平台金额比较。</span>
+          <strong>按实际收支月份核对流水</strong>
+          <span>以已导入的银行和微信流水为依据，汇总收入、支出与往来款。</span>
         </div>
       </section>
 
@@ -185,7 +185,9 @@ export function OriginalReconciliationPage({ onNavigate }: {
           <span>本月结果</span>
           <strong>
             {cashData
-              ? cashData.conflicted_fact_count > 0
+              ? cashData.eligible_fact_count === 0
+                ? '本月暂无可对账流水'
+                : cashData.conflicted_fact_count > 0
                 ? '存在规则冲突'
                 : cashData.unmatched_fact_count > 0
                   ? '有流水待归类'
@@ -194,13 +196,13 @@ export function OriginalReconciliationPage({ onNavigate }: {
                 ? '正在核对'
                 : '等待数据'}
           </strong>
-          <small>{cashData ? `${cashData.matched_fact_count} / ${cashData.eligible_fact_count} 笔已进入对账项目` : '读取正式流水与规则结果'}</small>
+          <small>{cashData ? cashData.eligible_fact_count === 0 ? '当前月份尚无可核对记录' : `${cashData.matched_fact_count} / ${cashData.eligible_fact_count} 笔已进入对账项目` : '读取成功后显示核对结果'}</small>
         </div>
         <dl className="reconciliation-overview-metrics">
-          <div><dt>已归入</dt><dd>{cashData?.matched_fact_count ?? 0}</dd><small>笔流水</small></div>
-          <div><dt>未识别</dt><dd>{cashData?.unmatched_fact_count ?? 0}</dd><small>不计入合计</small></div>
-          <div className={cashData?.conflicted_fact_count ? 'is-critical' : ''}><dt>规则冲突</dt><dd>{cashData?.conflicted_fact_count ?? 0}</dd><small>需优先处理</small></div>
-          <div><dt>生效规则</dt><dd>{cashData?.rules.length ?? 0}</dd><small>当前授权范围</small></div>
+          <div><dt>已归入</dt><dd>{cashData?.matched_fact_count ?? '—'}</dd><small>笔流水</small></div>
+          <div><dt>未识别</dt><dd>{cashData?.unmatched_fact_count ?? '—'}</dd><small>不计入合计</small></div>
+          <div className={cashData?.conflicted_fact_count ? 'is-critical' : ''}><dt>规则冲突</dt><dd>{cashData?.conflicted_fact_count ?? '—'}</dd><small>需优先处理</small></div>
+          <div><dt>生效规则</dt><dd>{cashData?.rules.length ?? '—'}</dd><small>当前授权范围</small></div>
         </dl>
       </section>
 
@@ -208,7 +210,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
         <div className="panel-heading statement-workbench-heading">
           <div>
             <h2>{selectedMonthLabel}</h2>
-            <p>{cashData?.matched_fact_count ?? 0} 笔流水唯一命中旧表项目规则</p>
+            <p>{cashData ? `${cashData.matched_fact_count} 笔流水已归入对账项目` : '正在等待本月流水核对结果'}</p>
           </div>
           <Button variant="soft" onClick={() => onNavigate('review')}><ListChecks size={16} />处理待审核</Button>
         </div>
@@ -235,7 +237,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
               >
                 <span className="statement-flow-icon">{lane.icon}</span>
                 <span className="statement-flow-copy"><strong>{lane.label}</strong><small>{lane.detail}</small></span>
-                <span className="statement-flow-value"><strong>{currency.format(minorToMajor(amountMinor))}</strong><small>{itemCount} 笔</small></span>
+                <span className="statement-flow-value"><strong>{cashData ? currency.format(minorToMajor(amountMinor)) : '—'}</strong><small>{cashData ? `${itemCount} 笔` : '待读取'}</small></span>
               </button>
             )
           })}
@@ -251,7 +253,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
         >
           <div className="statement-flow-panel-heading">
             <div><h3>{flowLabels[selectedFlow]}</h3><p>{selectedFlow === 'current' ? '核对往来双方、资金性质和对应账单' : `核对${flowLabels[selectedFlow]}来源、归属和金额`}</p></div>
-            <Badge color={selectedFlow === 'income' ? 'green' : selectedFlow === 'expense' ? 'red' : 'blue'}>{selectedCashRows.reduce((total, row) => total + row.transaction_count, 0)} 笔</Badge>
+            <Badge color={!cashData ? 'gray' : selectedFlow === 'income' ? 'green' : selectedFlow === 'expense' ? 'red' : 'blue'}>{cashData ? `${selectedCashRows.reduce((total, row) => total + row.transaction_count, 0)} 笔` : '待读取'}</Badge>
           </div>
 
           <div className="statement-item-list">
@@ -298,8 +300,8 @@ export function OriginalReconciliationPage({ onNavigate }: {
             {selectedCashRows.length === 0 ? (
               <div className="empty-state compact-empty statement-empty">
                 <Receipt size={30} />
-                <h3>{cashData ? `本月没有${flowLabels[selectedFlow]}事项` : '规则生成结果暂不可用'}</h3>
-                <p>{cashData ? '切换上方业务性质查看本月其他事项。' : '系统不会使用旧候选分类代替正式流水规则结果。'}</p>
+                <h3>{cashData ? `本月没有${flowLabels[selectedFlow]}事项` : loading ? '正在读取本月流水' : '规则生成结果暂不可用'}</h3>
+                <p>{cashData ? cashData.eligible_fact_count === 0 ? '切换月份，或检查本月账单是否已导入。' : '切换上方业务性质查看本月其他事项。' : loading ? '读取完成后显示本月收支与往来款。' : '数据尚未读取成功，请稍后重试。'}</p>
               </div>
             ) : null}
           </div>
@@ -364,7 +366,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
         <summary className="panel-heading statement-source-registry-summary">
           <div><h2>自动取数规则</h2><p>查看本月使用的账户、匹配词和生效日期</p></div>
           <span className="statement-source-registry-summary-meta">
-            收入 {incomeSourceRuleCount} 条 <span aria-hidden="true">·</span> 支出 {expenseSourceRuleCount} 条
+            {cashData ? <>收入 {incomeSourceRuleCount} 条 <span aria-hidden="true">·</span> 支出 {expenseSourceRuleCount} 条</> : '规则待读取'}
           </span>
         </summary>
         <div className="statement-source-registry-body">

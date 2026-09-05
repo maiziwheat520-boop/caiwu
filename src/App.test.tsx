@@ -932,6 +932,23 @@ function mockCredentials(method: 'get' | 'create', implementation: (options?: Cr
 const buffer = (...bytes: number[]) => Uint8Array.from(bytes).buffer
 
 describe('LedgerBridge Web API client', () => {
+  it.each([
+    ['/overview', '财务概览'],
+    ['/payroll', '工资核对'],
+    ['/personal-finance', '个人对账'],
+    ['/reconciliation', '月度对账'],
+    ['/company-reports', '公司报表'],
+  ])('matches navigation and the main heading for %s', async (path, title) => {
+    window.history.replaceState({}, '', path)
+    installFetch({ payrollResponses: notReadyPayrollResponses })
+    renderApp()
+    expect(await screen.findByRole('heading', { level: 1, name: title })).toBeInTheDocument()
+    for (const name of ['桌面主导航', '移动端主导航']) {
+      const navigation = screen.getByRole('navigation', { name })
+      expect(within(navigation).getByRole('button', { name: title })).toHaveAttribute('aria-current', 'page')
+    }
+  })
+
   beforeEach(() => {
     vi.restoreAllMocks()
     window.history.replaceState({}, '', '/overview')
@@ -961,7 +978,7 @@ describe('LedgerBridge Web API client', () => {
     const fetchMock = installFetch({ authStatus: { authenticated: false, setup_required: false, passkey_registered: true, recovery_setup_required: false, recovery_pending: false } })
     renderApp()
     fireEvent.click(await screen.findByRole('button', { name: '使用通行密钥' }))
-    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '财务概览', hidden: true })).toBeInTheDocument()
 
     const publicKey = (getCredential.mock.calls[0][0] as CredentialRequestOptions).publicKey!
     expect(publicKey.challenge).toBeInstanceOf(ArrayBuffer)
@@ -990,7 +1007,7 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.getByText('RECOVERY-ONE')).toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/session')).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: '我已安全保存' }))
-    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '财务概览', hidden: true })).toBeInTheDocument()
     expect(screen.queryByText('RECOVERY-ONE')).not.toBeInTheDocument()
   })
 
@@ -1034,7 +1051,7 @@ describe('LedgerBridge Web API client', () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/session')).toBe(false)
 
     fireEvent.click(screen.getByRole('button', { name: '我已安全保存' }))
-    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '财务概览', hidden: true })).toBeInTheDocument()
   })
 
   it('restores restricted recovery CSRF after a page refresh', async () => {
@@ -1085,7 +1102,7 @@ describe('LedgerBridge Web API client', () => {
     })
     const fetchMock = installFetch()
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     const accountButton = screen.getByRole('button', { name: /财务管理员/ })
     fireEvent.pointerDown(accountButton, { button: 0, ctrlKey: false })
     fireEvent.click(await screen.findByRole('menuitem', { name: /添加这台设备/ }))
@@ -1129,7 +1146,7 @@ describe('LedgerBridge Web API client', () => {
     installFetch({ items: [historicalConfirmed] })
     renderApp()
 
-    expect(await screen.findByRole('heading', { name: '当前没有待审核事项' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '财务概览', hidden: true })).toBeInTheDocument()
     expect(screen.getByText('2026 年 8 月对账')).toBeInTheDocument()
     const overview = screen.getByRole('region', { name: '本月概览' })
     expect(within(overview).getByText('¥0.00')).toBeInTheDocument()
@@ -1149,7 +1166,7 @@ describe('LedgerBridge Web API client', () => {
     expect(await screen.findByText('数据读取失败')).toBeInTheDocument()
     expect(screen.getByText('服务暂不可用')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /重试/ }))
-    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '财务概览', hidden: true })).toBeInTheDocument()
     expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/session')).toHaveLength(2)
   })
 
@@ -1161,7 +1178,7 @@ describe('LedgerBridge Web API client', () => {
     renderApp()
 
     expect(await screen.findByText('正式环境 · Core 实时业务数据')).toBeInTheDocument()
-    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '财务概览', hidden: true })).toBeInTheDocument()
     expect(screen.getByText('同类批量归类暂不可用，可继续逐笔审核')).toBeInTheDocument()
     expect(screen.queryByText('数据读取失败')).not.toBeInTheDocument()
     expect(screen.queryByText('演示环境 · 登录已启用 · 合成业务数据')).not.toBeInTheDocument()
@@ -1180,7 +1197,7 @@ describe('LedgerBridge Web API client', () => {
       failCandidatesAfterFirstOnce: true,
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     const refreshButton = screen.getByRole('button', { name: '刷新' })
     fireEvent.click(within(reviewWorkspace()).getByText(source.summary))
 
@@ -1199,7 +1216,7 @@ describe('LedgerBridge Web API client', () => {
   it('posts a confirmed decision with CSRF, idempotency and revision', async () => {
     const fetchMock = installFetch()
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByText('待审核')[0])
     fireEvent.click(screen.getAllByRole('button', { name: '确认' })[0])
 
@@ -1221,7 +1238,7 @@ describe('LedgerBridge Web API client', () => {
       runtimeMode: 'core-backed',
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByText(source.summary))
 
     const dialog = await screen.findByRole('dialog')
@@ -1291,7 +1308,7 @@ describe('LedgerBridge Web API client', () => {
       batchFailureStatus: 409,
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByText(source.summary))
 
     const dialog = await screen.findByRole('dialog')
@@ -1316,7 +1333,7 @@ describe('LedgerBridge Web API client', () => {
     group.batch_member_count = 101
     installFetch({ items: [source], classificationGroups: [group], runtimeMode: 'core-backed' })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByText(source.summary))
 
     const dialog = await screen.findByRole('dialog')
@@ -1333,7 +1350,7 @@ describe('LedgerBridge Web API client', () => {
     } as ApiCandidate
     const fetchMock = installFetch({ items: [stableCandidate] })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByText(stableCandidate.summary))
 
     const dialog = await screen.findByRole('dialog')
@@ -1365,7 +1382,7 @@ describe('LedgerBridge Web API client', () => {
     } as ApiCandidate
     installFetch({ items: [stableCandidate] })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByText(stableCandidate.summary))
 
     const dialog = await screen.findByRole('dialog')
@@ -1382,7 +1399,7 @@ describe('LedgerBridge Web API client', () => {
     } as ApiCandidate
     const fetchMock = installFetch({ items: [boundaryCandidate] })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByText(boundaryCandidate.summary))
 
     const dialog = await screen.findByRole('dialog')
@@ -1411,7 +1428,7 @@ describe('LedgerBridge Web API client', () => {
     } as ApiCandidate
     const fetchMock = installFetch({ items: [stableCandidate, alternativeDimensions], runtimeMode: 'core-backed' })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByText(stableCandidate.summary))
 
     const dialog = await screen.findByRole('dialog')
@@ -1434,7 +1451,7 @@ describe('LedgerBridge Web API client', () => {
   it('allows confirmation with unchanged stable dimensions when the catalog is temporarily unavailable', async () => {
     const fetchMock = installFetch({ failAccountingDimensions: true, runtimeMode: 'core-backed' })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByText(candidates[0].summary))
 
     const dialog = await screen.findByRole('dialog')
@@ -1461,7 +1478,7 @@ describe('LedgerBridge Web API client', () => {
       runtimeMode: 'core-backed',
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByText(source.summary))
 
     let dialog = await screen.findByRole('dialog')
@@ -1493,7 +1510,7 @@ describe('LedgerBridge Web API client', () => {
     } as ApiCandidate
     installFetch({ items: [stableCandidate], failCandidateDetail: true, runtimeMode: 'core-backed' })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByText(stableCandidate.summary))
 
     const dialog = await screen.findByRole('dialog')
@@ -1519,7 +1536,7 @@ describe('LedgerBridge Web API client', () => {
       runtimeMode: 'core-backed',
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByText(stableCandidate.summary))
 
     const dialog = await screen.findByRole('dialog')
@@ -1552,7 +1569,7 @@ describe('LedgerBridge Web API client', () => {
       runtimeMode: 'core-backed',
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByText(summaryCandidate.summary))
 
     await screen.findByRole('dialog')
@@ -1570,7 +1587,7 @@ describe('LedgerBridge Web API client', () => {
     } as ApiCandidate
     const fetchMock = installFetch({ items: [stableCandidate], runtimeMode: 'core-backed' })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByText(stableCandidate.summary))
 
     const dialog = await screen.findByRole('dialog')
@@ -1598,7 +1615,7 @@ describe('LedgerBridge Web API client', () => {
     }
     installFetch({ reviewEventPages: [{ items: [identityEvent], next_cursor: null }] })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByText(candidates[0].summary))
 
     const dialog = await screen.findByRole('dialog')
@@ -1617,7 +1634,7 @@ describe('LedgerBridge Web API client', () => {
     try {
       const fetchMock = installFetch()
       renderApp()
-      await screen.findByText('早上好，今天有几项需要确认')
+      await screen.findByRole('heading', { name: '财务概览', hidden: true })
       fireEvent.click(screen.getAllByText('待审核')[0])
       fireEvent.click(screen.getAllByRole('button', { name: '确认' })[0])
 
@@ -1635,7 +1652,7 @@ describe('LedgerBridge Web API client', () => {
   it('renders summary, review, and files as one continuous overview while keeping anchor links', async () => {
     installFetch()
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
 
     const summary = screen.getByRole('region', { name: '概览摘要' })
     const review = screen.getByRole('region', { name: '待审核' })
@@ -1651,7 +1668,7 @@ describe('LedgerBridge Web API client', () => {
     expect(within(review).getByText('机场店水费，原消息未说明归属月份')).toBeInTheDocument()
     expect(within(review).queryByText('城南店 8 月布草清洗费用，供应商月结单')).not.toBeInTheDocument()
 
-    fireEvent.click(within(screen.getByLabelText('主导航')).getByRole('button', { name: '概览' }))
+    fireEvent.click(within(screen.getByLabelText('主导航')).getByRole('button', { name: '财务概览' }))
     expect(`${window.location.pathname}${window.location.hash}`).toBe('/overview')
   })
 
@@ -1666,7 +1683,7 @@ describe('LedgerBridge Web API client', () => {
   it('opens the append-only review history from the overview', async () => {
     installFetch()
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getByRole('button', { name: '查看操作记录' }))
 
     expect(window.location.pathname).toBe('/audit')
@@ -1734,7 +1751,7 @@ describe('LedgerBridge Web API client', () => {
       },
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(await within(reviewWorkspace()).findByText('中行邮箱账单待复核：TX-0139'))
 
     const dialog = await screen.findByRole('dialog')
@@ -1765,7 +1782,7 @@ describe('LedgerBridge Web API client', () => {
       ],
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getByRole('button', { name: '查看操作记录' }))
     await screen.findByText('已核对电子缴款书')
     fireEvent.click(screen.getByRole('button', { name: '加载更多记录' }))
@@ -1797,7 +1814,7 @@ describe('LedgerBridge Web API client', () => {
       reviewEventPages: [{ items: [olderEvent], next_cursor: null }],
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getByRole('button', { name: '查看操作记录' }))
 
     expect(await screen.findByText('C-OLD1 · 海景店')).toBeInTheDocument()
@@ -1817,19 +1834,19 @@ describe('LedgerBridge Web API client', () => {
   it('isolates review-history failures from the core overview', async () => {
     const fetchMock = installFetch({ failReviewEvents: true })
     renderApp()
-    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '财务概览', hidden: true })).toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith('/api/v1/review-events'))).toBe(false)
 
     fireEvent.click(screen.getByRole('button', { name: '查看操作记录' }))
     expect(await screen.findByText('审核记录读取失败')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '返回概览' }))
-    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '财务概览', hidden: true })).toBeInTheDocument()
   })
 
   it('resolves a conflicted candidate with an auditable resolution note', async () => {
     const fetchMock = installFetch()
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByText('城南店银行收款，与另一条候选冲突'))
 
     const resolutionInput = await screen.findByLabelText('冲突处理依据')
@@ -1865,7 +1882,7 @@ describe('LedgerBridge Web API client', () => {
       decisionEvents: [resolution, confirmation],
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getByRole('button', { name: '查看操作记录' }))
     const existing = await screen.findByText('冲突处理后确认')
     fireEvent.click(within(existing.closest('article')!).getByRole('button', { name: '查看候选与证据' }))
@@ -1885,7 +1902,7 @@ describe('LedgerBridge Web API client', () => {
   it('routes blocked candidates to the required resolution flow', async () => {
     installFetch()
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByText('待审核')[0])
     expect(screen.getByRole('button', { name: '处理冲突' })).not.toBeDisabled()
     expect(screen.getByRole('button', { name: '补全月份' })).not.toBeDisabled()
@@ -1931,7 +1948,7 @@ describe('LedgerBridge Web API client', () => {
     })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByText('待审核')[0])
 
     expect(screen.getByText('2 条需补关联单据')).toBeInTheDocument()
@@ -1949,7 +1966,7 @@ describe('LedgerBridge Web API client', () => {
   it('filters the queue by blocker status and keeps the counts visible', async () => {
     installFetch()
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     expect(screen.getByRole('button', { name: '冲突 1' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '风险审核 1' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '可一键审批 1' })).toBeInTheDocument()
@@ -1961,7 +1978,7 @@ describe('LedgerBridge Web API client', () => {
   it('does not report a saved decision as failed when reconciliation refresh fails', async () => {
     installFetch({ failReconciliationAfterDecision: true })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByText('待审核')[0])
     fireEvent.click(screen.getAllByRole('button', { name: '确认' })[0])
     expect(await screen.findByText('C-8F21 已保存并重读确认，对账状态需刷新')).toBeInTheDocument()
@@ -1971,7 +1988,7 @@ describe('LedgerBridge Web API client', () => {
   it('renders a real empty state when the API returns no candidates', async () => {
     installFetch({ items: [] })
     renderApp()
-    await screen.findByRole('heading', { name: '当前没有待审核事项' })
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByText('待审核')[0])
     expect(screen.getByText('当前筛选下没有待审核项')).toBeInTheDocument()
   })
@@ -1990,7 +2007,7 @@ describe('LedgerBridge Web API client', () => {
     ]
     installFetch({ items: importedCandidates })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     expect(screen.getAllByText('may-bank-statement.xlsx')).toHaveLength(1)
     expect(within(filesWorkspace()).getByText('2026 年 5 月')).toBeInTheDocument()
     expect(within(filesWorkspace()).getByText('关联 2 条候选')).toBeInTheDocument()
@@ -2037,7 +2054,7 @@ describe('LedgerBridge Web API client', () => {
       unlockGate,
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByText('文件与连接')[0])
 
     expect(document.querySelectorAll('.evidence-unlock-button')).toHaveLength(2)
@@ -2086,7 +2103,7 @@ describe('LedgerBridge Web API client', () => {
       items: [{ ...candidates[0], id: 'candidate-dismissed-unlock', short_id: 'C-LK05', evidence: [lockedEvidence] }],
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByText('文件与连接')[0])
 
     expect(await screen.findByLabelText('解压密码')).toBeInTheDocument()
@@ -2113,7 +2130,7 @@ describe('LedgerBridge Web API client', () => {
       unlockFailure: true,
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByText('文件与连接')[0])
     const passwordInput = await screen.findByLabelText('解压密码')
     fireEvent.change(passwordInput, { target: { value: 'must-not-leak' } })
@@ -2140,7 +2157,7 @@ describe('LedgerBridge Web API client', () => {
       failCandidateRefreshAfterUnlock: true,
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByText('文件与连接')[0])
     fireEvent.change(await screen.findByLabelText('解压密码'), { target: { value: 'accepted-password' } })
     fireEvent.click(screen.getByRole('button', { name: '解锁账单' }))
@@ -2161,7 +2178,7 @@ describe('LedgerBridge Web API client', () => {
     ]
     installFetch({ items: materialCandidates })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByText('文件与连接')[0])
     expect(screen.getByText('中国建设银行储蓄卡(7564)明细')).toBeInTheDocument()
     expect(screen.getByText('网商银行同期流水')).toBeInTheDocument()
@@ -2180,7 +2197,7 @@ describe('LedgerBridge Web API client', () => {
     ]
     installFetch({ items: materialCandidates })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByText('文件与连接')[0])
 
     expect(screen.getByText('中国建设银行储蓄卡(7564)明细')).toBeInTheDocument()
@@ -2207,8 +2224,8 @@ describe('LedgerBridge Web API client', () => {
       personalBankResponse: personalBankTransactions(),
     })
     renderApp()
-    await screen.findByRole('heading', { name: '当前没有待审核事项' })
-    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
+    fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
 
     const formal = await screen.findByRole('region', { name: '个人正式银行流水' })
     const testSummary = screen.getByRole('region', { name: '个人财务收支概览' })
@@ -2263,8 +2280,8 @@ describe('LedgerBridge Web API client', () => {
       laterCandidatePageGate,
     })
     renderApp()
-    await screen.findByText('当前没有待审核事项')
-    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
+    fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
 
     expect(await screen.findByRole('heading', { name: '正在核对完整个人财务范围' })).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: '个人财务收支概览' })).not.toBeInTheDocument()
@@ -2303,8 +2320,8 @@ describe('LedgerBridge Web API client', () => {
     })
     installFetch({ personalBankResponse: formalFacts })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
-    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
+    fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
 
     const formal = await screen.findByRole('region', { name: '个人正式银行流水' })
     expect(await within(formal).findByText('3 笔')).toBeInTheDocument()
@@ -2332,8 +2349,8 @@ describe('LedgerBridge Web API client', () => {
     })
     installFetch({ personalBankResponse: formalFacts })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
-    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
+    fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
 
     const formal = await screen.findByRole('region', { name: '个人正式银行流水' })
     fireEvent.click(await within(formal).findByRole('button', { name: '查看流水明细（2 笔）' }))
@@ -2359,8 +2376,8 @@ describe('LedgerBridge Web API client', () => {
     }
     installFetch({ items: [testCandidate], failPersonalBank: true })
     renderApp()
-    await screen.findByRole('heading', { name: '当前没有待审核事项' })
-    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
+    fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
 
     expect(await screen.findByRole('alert')).toHaveTextContent('正式银行流水暂不可用')
     expect(screen.getByRole('region', { name: '个人财务收支概览' })).toHaveTextContent('¥99.00')
@@ -2379,8 +2396,8 @@ describe('LedgerBridge Web API client', () => {
     ]
     installFetch({ items: personalCandidates })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
-    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
+    fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
 
     const review = await screen.findByRole('region', { name: '个人财务待审核' })
     const summary = await screen.findByRole('region', { name: '个人财务收支概览' })
@@ -2464,8 +2481,8 @@ describe('LedgerBridge Web API client', () => {
     ]
     installFetch({ items: personalCandidates })
     renderApp()
-    await screen.findByRole('heading', { name: '当前没有待审核事项' })
-    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
+    fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
 
     const summary = await screen.findByRole('region', { name: '个人财务收支概览' })
     expect(within(summary).getByText('¥450.00')).toBeInTheDocument()
@@ -2488,8 +2505,8 @@ describe('LedgerBridge Web API client', () => {
     }))
     installFetch({ items: unassignedCandidates })
     renderApp()
-    await screen.findByRole('heading', { name: '当前没有待审核事项' })
-    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
+    fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
 
     const unassigned = await screen.findByRole('region', { name: '个人财务归属待校准' })
     expect(within(unassigned).getByText('C-UA01')).toBeInTheDocument()
@@ -2506,7 +2523,7 @@ describe('LedgerBridge Web API client', () => {
     ]
     installFetch({ items: transferCandidates })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(screen.getAllByText('待审核')[0])
     const wangshangGroup = screen.getByRole('button', { name: '查看网商银行 2 笔' })
     expect(wangshangGroup).toBeInTheDocument()
@@ -2530,9 +2547,9 @@ describe('LedgerBridge Web API client', () => {
   it('opens the single cash reconciliation workspace from the monthly entry', async () => {
     const fetchMock = installFetch()
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
-    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
-    expect(screen.getByRole('heading', { name: '完整个人财务对账' })).toBeInTheDocument()
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
+    fireEvent.click(screen.getAllByRole('button', { name: /个人对账/ })[0])
+    expect(screen.getByRole('heading', { name: '个人对账' })).toBeInTheDocument()
     fireEvent.click(screen.getAllByRole('button', { name: /月度对账/ })[0])
     expect(await screen.findByRole('heading', { name: '月度对账' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: '月度对账' })).toHaveLength(2)
@@ -2542,8 +2559,8 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.queryByRole('heading', { name: '2026 年 8 月对账草稿' })).not.toBeInTheDocument()
     await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/v1/original-reconciliations/'))).toHaveLength(1))
     expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/v1/cash-reconciliations/'))).toHaveLength(1)
-    fireEvent.click(screen.getAllByRole('button', { name: /各公司报表/ })[0])
-    expect(await screen.findByRole('heading', { name: '各公司报表' })).toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('button', { name: /公司报表/ })[0])
+    expect(await screen.findByRole('heading', { name: '公司报表' })).toBeInTheDocument()
     expect(await screen.findByText('当前期间没有可展示的公司报表')).toBeInTheDocument()
   })
 
@@ -2570,7 +2587,7 @@ describe('LedgerBridge Web API client', () => {
 
     renderApp()
 
-    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '财务概览', hidden: true })).toBeInTheDocument()
     expect(screen.queryByText('正在读取财务数据')).not.toBeInTheDocument()
   })
 
@@ -2579,7 +2596,7 @@ describe('LedgerBridge Web API client', () => {
 
     renderApp()
 
-    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '财务概览', hidden: true })).toBeInTheDocument()
     expect(screen.queryByText('本月对账尚未建立')).not.toBeInTheDocument()
   })
 
@@ -2600,7 +2617,7 @@ describe('LedgerBridge Web API client', () => {
 
     renderApp()
 
-    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '财务概览', hidden: true })).toBeInTheDocument()
     expect(screen.queryByText('正在读取财务数据')).not.toBeInTheDocument()
     expect(screen.getByText(/正在补充：/)).toBeInTheDocument()
     await act(async () => { releaseRead() })
@@ -2621,9 +2638,9 @@ describe('LedgerBridge Web API client', () => {
       return originalFetch(input, init)
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getByRole('button', { name: '刷新' }))
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     await waitFor(() => expect(screen.queryByText(/正在补充：/)).not.toBeInTheDocument())
     await act(async () => { releaseOldRead() })
     expect(within(overviewSummary()).getByText('0 / 0')).toBeInTheDocument()
@@ -2648,7 +2665,7 @@ describe('LedgerBridge Web API client', () => {
       return originalFetch(input, init)
     })
     renderApp()
-    await screen.findByText('早上好，今天有几项需要确认')
+    await screen.findByRole('heading', { name: '财务概览', hidden: true })
     fireEvent.click(within(reviewWorkspace()).getAllByRole('button', { name: '确认' })[0])
     await screen.findByText(/C-8F21 已确认/)
     expect(screen.getByText('审核后的最新对账')).toBeInTheDocument()
@@ -2977,8 +2994,8 @@ describe('LedgerBridge Web API client', () => {
     })
     renderApp()
 
-    expect(await screen.findByRole('heading', { name: '工资与发放验证' })).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: '工资与发放验证' })).toHaveLength(2)
+    expect(await screen.findByRole('heading', { name: '工资核对' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: '工资核对' })).toHaveLength(2)
     expect(await screen.findByText('七、八月工资测试账本已就绪')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '全部 1' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '2026 年 7 月 0' })).toBeInTheDocument()

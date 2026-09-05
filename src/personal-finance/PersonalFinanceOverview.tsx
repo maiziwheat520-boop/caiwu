@@ -76,7 +76,7 @@ export function PersonalFinanceOverview({ onNavigate, onOpenCandidate, csrfToken
     <>
       <PageHeader
         eyebrow="个人财务"
-        title="完整个人财务对账"
+        title="个人对账"
         description="正式银行流水与测试候选分层展示；归属待校准与会计过账仍严格分开。"
         action={<Button onClick={() => onNavigate('review')}><ListChecks size={17} />处理待审核</Button>}
       />

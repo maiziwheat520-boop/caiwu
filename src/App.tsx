@@ -81,11 +81,11 @@ const CURRENT_MONTH = '2026-08'
 const CLASSIFICATION_GROUPS_UNAVAILABLE_NOTICE = '同类批量归类暂不可用，可继续逐笔审核'
 
 const navigation: Array<{ id: Page; label: string; icon: typeof House }> = [
-  { id: 'overview', label: '概览', icon: House },
-  { id: 'payroll', label: '工资与发放验证', icon: FileXls },
-  { id: 'personal-finance', label: '完整个人财务对账', icon: Bank },
+  { id: 'overview', label: '财务概览', icon: House },
+  { id: 'payroll', label: '工资核对', icon: FileXls },
+  { id: 'personal-finance', label: '个人对账', icon: Bank },
   { id: 'reconciliation', label: '月度对账', icon: Table },
-  { id: 'company-reports', label: '各公司报表', icon: Database },
+  { id: 'company-reports', label: '公司报表', icon: Database },
 ]
 
 const pagePaths: Record<Page, string> = {
@@ -788,7 +788,7 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar" aria-label="主导航">
         <Brand />
-        <nav className="side-nav">
+        <nav className="side-nav" aria-label="桌面主导航">
           {navigation.map((item) => {
             const Icon = item.icon
             return (
@@ -1197,8 +1197,8 @@ function Overview({
     <>
       <PageHeader
         eyebrow={`${accountingMonthLabel(accountingMonth)}对账`}
-        title={pending.length > 0 ? '早上好，今天有几项需要确认' : '当前没有待审核事项'}
-        description="待审核队列覆盖全部月份；金额、营业单元与对账状态按上方月份统计。"
+        title="财务概览"
+        description={`${pending.length > 0 ? '今天有几项需要确认。' : '当前没有待审核事项。'}待审核队列覆盖全部月份；金额、营业单元与对账状态按上方月份统计。`}
         action={pending.length > 0 ? <Button onClick={() => onNavigate('review')}><ListChecks size={17} />开始审核</Button> : undefined}
       />
 

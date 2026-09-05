@@ -46,7 +46,7 @@ describe('OriginalReconciliationPage', () => {
     installSuccessfulReads()
     render(<OriginalReconciliationPage onNavigate={vi.fn()} />)
 
-    expect(await screen.findByText('4 笔流水唯一命中旧表项目规则')).toBeInTheDocument()
+    expect(await screen.findByText('4 笔流水已归入对账项目')).toBeInTheDocument()
     const overview = screen.getByRole('region', { name: '本月对账概览' })
     expect(within(overview).getByText('存在规则冲突')).toBeInTheDocument()
     expect(within(overview).getByText('4 / 6 笔已进入对账项目')).toBeInTheDocument()
@@ -125,7 +125,7 @@ describe('OriginalReconciliationPage', () => {
     render(<OriginalReconciliationPage onNavigate={vi.fn()} />)
 
     expect(await screen.findByText('规则生成结果暂不可用')).toBeInTheDocument()
-    expect(screen.getByText(/不会使用旧候选分类代替正式流水规则结果/)).toBeInTheDocument()
+    expect(screen.getByText('数据尚未读取成功，请稍后重试。')).toBeInTheDocument()
     expect(screen.queryByText('平台实收')).not.toBeInTheDocument()
   })
 
