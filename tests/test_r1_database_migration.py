@@ -26,11 +26,11 @@ MIGRATION_B = Path("alembic/versions/20260824_0013_r1_ledger_reconciliation.py")
 MIGRATION_HARDENING = Path("alembic/versions/20260824_0014_r1_fact_hardening.py")
 MIGRATION_C = Path("alembic/versions/20260824_0015_r1_internal_read_surface.py")
 
-# ``20260902_0030`` and every bank-statement import revision after it refuse
+# ``20260901_0027`` and every bank-statement import revision after it refuse
 # to downgrade on purpose, so a chain that includes them cannot be walked
 # back.  Reversibility is proven against the last revision that still has a
 # downgrade path.
-LAST_REVERSIBLE_REVISION = "20260901_0028"
+LAST_REVERSIBLE_REVISION = "20260831_0026"
 
 INTERNAL_READ_VIEWS = (
     "candidate_current_v",
@@ -1118,11 +1118,17 @@ def _seed_classification_candidate(
         text(
             "INSERT INTO public.candidate_evidence "
             "(candidate_id, ordinal, evidence_ref, kind, media_type_snapshot, "
-            "display_name_snapshot, download_available) VALUES "
+            "display_name_snapshot, download_available, candidate_entity_id, "
+            "evidence_entity_id, evidence_business_unit_id) VALUES "
             "(:candidate, 0, :evidence, 'ATTACHMENT', 'application/pdf', "
-            "'classification.pdf', true)"
+            "'classification.pdf', true, :entity, :entity, :unit)"
         ),
-        {"candidate": candidate_id, "evidence": evidence_ref},
+        {
+            "candidate": candidate_id,
+            "evidence": evidence_ref,
+            "entity": entity_id,
+            "unit": business_unit_id,
+        },
     )
     return candidate_id
 

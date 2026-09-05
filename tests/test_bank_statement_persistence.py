@@ -1023,7 +1023,9 @@ def test_0021_postgresql_replay_overlap_conflict_scope_acl_and_downgrade(
             assert "0000000000005678" not in repr(visible)
 
         engine.dispose()
-        with pytest.raises(RuntimeError, match="generic bank statement imports are forward-only"):
+        # Whichever forward-only revision is highest refuses first, so the
+        # reason is matched by class rather than by today's topmost message.
+        with pytest.raises(RuntimeError, match="forward-only"):
             command.downgrade(config, "20260830_0020")
 
 

@@ -30,11 +30,11 @@ from ledgerbridge.models import (
     Posting,
 )
 
-# ``20260902_0030`` and every bank-statement import revision after it refuse to
+# ``20260901_0027`` and every bank-statement import revision after it refuse to
 # downgrade on purpose, so a chain that includes them cannot be walked back.
 # Reversibility is therefore proven against the last revision that still has a
 # downgrade path.
-LAST_REVERSIBLE_REVISION = "20260901_0028"
+LAST_REVERSIBLE_REVISION = "20260831_0026"
 
 
 def _run_alembic(database_url: str, revision: str, *, downgrade: bool = False) -> None:
