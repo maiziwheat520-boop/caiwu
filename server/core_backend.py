@@ -1080,9 +1080,18 @@ class CoreBackedState:
         events = payload.get("events")
         if not isinstance(candidate, dict) or not isinstance(events, list) or not events:
             return 503, _problem(503, "CORE_CONTRACT_INVALID")
+        # Core returns one event for a plain confirm or ignore, and two when a
+        # decision both corrects and confirms: the first carries the field
+        # changes and the conflict resolution, the second is the confirm.
+        # Forwarding only the last one dropped what the reviewer actually did.
+        try:
+            projected = [_event_from_core(event) for event in events]
+        except (CoreBackendError, TypeError, ValueError, OverflowError):
+            return 503, _problem(503, "CORE_CONTRACT_INVALID")
         return 200, {
             "candidate": _candidate_from_core(candidate),
-            "event": _event_from_core(events[-1]),
+            "event": projected[-1],
+            "events": projected,
         }
 
     def evidence(self, evidence_id: str) -> dict[str, object]:

@@ -443,7 +443,10 @@ function App() {
       }
       const updated = toCandidate(persistedCandidate)
       setCandidates((items) => items.map((item) => (item.id === updated.id ? updated : item)))
-      setReviewEvents((items) => [result.event, ...items.filter((item) => item.id !== result.event.id)])
+      // A decision can produce several events; newest first, and never twice.
+      const decided = [...(result.events ?? [result.event])].reverse()
+      const decidedIds = new Set(decided.map((event) => event.id))
+      setReviewEvents((items) => [...decided, ...items.filter((item) => !decidedIds.has(item.id))])
       setSelectedCandidate(null)
       try {
         const refreshedReconciliation = await api.getReconciliation(selectedMonth)

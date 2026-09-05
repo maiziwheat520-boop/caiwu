@@ -499,6 +499,7 @@ function installFetch(options: {
   recoverySetupRequired?: boolean
   candidatePages?: Array<{ items: ApiCandidate[]; next_cursor: string | null }>
   reviewEventPages?: Array<{ items: ReviewEvent[]; next_cursor: string | null }>
+  decisionEvents?: ReviewEvent[]
   failReviewEvents?: boolean
   runtimeMode?: 'synthetic-preview' | 'authenticated-preview' | 'core-backed'
   evidencePreview?: EvidencePreview
@@ -539,6 +540,7 @@ function installFetch(options: {
     recoverySetupRequired = false,
     candidatePages = [{ items, next_cursor: null }],
     reviewEventPages = [{ items: reviewEvents, next_cursor: null }],
+    decisionEvents,
     failReviewEvents = false,
     runtimeMode = 'authenticated-preview',
     evidencePreview = {
@@ -815,13 +817,14 @@ function installFetch(options: {
       const original = items.find((candidate) => url.includes(candidate.id))!
       const updatedCandidate = {
         ...original,
-        revision: original.revision + 1,
+        revision: decisionEvents?.at(-1)?.to_revision ?? original.revision + 1,
         status: body.decision === 'IGNORE' ? 'IGNORED' as const : 'CONFIRMED' as const,
       }
       candidateDetails[original.id] = updatedCandidate
       return response({
         candidate: updatedCandidate,
-        event: {
+        events: decisionEvents,
+        event: decisionEvents?.at(-1) ?? {
           id: 'event-1', candidate_id: original.id, sequence: 1,
           from_revision: original.revision, to_revision: original.revision + 1,
           decision: body.decision, actor: 'finance-admin', reason: 'review',
@@ -1843,6 +1846,40 @@ describe('LedgerBridge Web API client', () => {
       expected_revision: 2,
       conflict_resolution: '以银行电子回单金额为准',
     })
+  })
+
+  it('immediately shows every decision event newest first without duplicating loaded history', async () => {
+    const resolution: ReviewEvent = {
+      ...reviewEvents[0], id: 'event-resolution', candidate_id: 'candidate-3',
+      sequence: 2, from_revision: 2, to_revision: 3, decision: 'RESOLVE_CONFLICT',
+      reason: '已核对冲突凭证', conflict_resolution: '以银行电子回单金额为准',
+      changes: [{ field: 'amount_minor', previous_value: 1268000, new_value: 1269000, identity_changed: false }],
+      created_at: '2026-08-24T10:00:00+08:00',
+    }
+    const confirmation: ReviewEvent = {
+      ...resolution, id: 'event-confirmation', sequence: 3, from_revision: 3, to_revision: 4,
+      decision: 'CONFIRM', reason: '冲突处理后确认', conflict_resolution: null, changes: [],
+    }
+    installFetch({
+      reviewEventPages: [{ items: [confirmation, ...reviewEvents], next_cursor: null }],
+      decisionEvents: [resolution, confirmation],
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getByRole('button', { name: '查看操作记录' }))
+    const existing = await screen.findByText('冲突处理后确认')
+    fireEvent.click(within(existing.closest('article')!).getByRole('button', { name: '查看候选与证据' }))
+    fireEvent.change(await screen.findByLabelText('冲突处理依据'), { target: { value: '以银行电子回单金额为准' } })
+    fireEvent.click(screen.getByRole('button', { name: '解决冲突并确认' }))
+    await screen.findByText(/C-5B17 冲突已解决/)
+
+    const rows = screen.getAllByRole('article')
+    expect(rows).toHaveLength(3)
+    expect(within(rows[0]).getByText('冲突处理后确认')).toBeInTheDocument()
+    expect(within(rows[1]).getByText('已核对冲突凭证')).toBeInTheDocument()
+    expect(within(rows[1]).getByText('以银行电子回单金额为准')).toBeInTheDocument()
+    expect(within(rows[1]).getByText('¥12,690.00')).toBeInTheDocument()
+    expect(within(rows[2]).getByText('已核对电子缴款书')).toBeInTheDocument()
   })
 
   it('routes blocked candidates to the required resolution flow', async () => {

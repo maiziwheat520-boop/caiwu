@@ -3134,5 +3134,79 @@ class CoreBackedUnlockBffTests(unittest.TestCase):
         self.assertEqual(self.client.unlock_calls, 1)
 
 
+class TwoEventDecisionTests(unittest.TestCase):
+    """A decision that corrects and confirms produces two events, not one.
+
+    Core emits the correction or conflict resolution first and the plain
+    confirm second. The BFF used to forward only the last one, so the audit
+    timeline lost the reviewer's own resolution text and field changes until
+    the page was reloaded.
+    """
+
+    def test_every_event_the_decision_produced_is_forwarded(self) -> None:
+        resolve = core_event()
+        resolve["operation_id"] = "60000000-0000-4000-8000-0000000000aa"
+        resolve["action"] = "RESOLVE_CONFLICT"
+        resolve["from_status"] = "CONFLICTED"
+        resolve["to_status"] = "PENDING"
+        resolve["resolved_conflicts"] = [
+            {"conflict_ref": "conflict-1", "resolution": "以银行回单为准"}
+        ]
+        confirm = core_event()
+
+        class TwoEventClient(FakeCoreClient):
+            def json(self, method: str, path: str, **kwargs: object) -> dict[str, object]:
+                if method == "POST" and "/decisions" in path:
+                    self.calls.append((method, path, None, {}))
+                    return {
+                        "contract_version": "ledgerbridge.candidate-decision.v1",
+                        "operation_id": "60000000-0000-4000-8000-0000000000ff",
+                        "replayed": False,
+                        "candidate": core_candidate(status="CONFIRMED", revision=3),
+                        "events": [resolve, confirm],
+                    }
+                return super().json(method, path, **kwargs)  # type: ignore[arg-type]
+
+        status, payload = build_state(TwoEventClient()).append_decision(
+            CANDIDATE_ID,
+            str(uuid.uuid4()),
+            {
+                "decision": "RESOLVE_CONFLICT",
+                "expected_revision": 1,
+                "reason": "以银行回单为准",
+                "conflict_resolution": "以银行回单为准",
+            },
+        )
+
+        self.assertEqual(status, 200, payload)
+        events = payload["events"]
+        self.assertIsInstance(events, list)
+        self.assertEqual(len(events), 2)
+        # The resolution the reviewer typed lives on the first event only.
+        self.assertEqual(events[0]["conflict_resolution"], "以银行回单为准")  # type: ignore[index]
+        self.assertIsNone(events[1]["conflict_resolution"])  # type: ignore[index]
+        # The single-event field stays for the confirm, as before.
+        self.assertEqual(payload["event"], events[-1])  # type: ignore[index]
+
+    def test_malformed_first_event_returns_a_contract_problem(self) -> None:
+        class InvalidEventClient(FakeCoreClient):
+            def json(self, method: str, path: str, **kwargs: object) -> dict[str, object]:
+                if method == "POST" and "/decisions" in path:
+                    malformed = core_event()
+                    malformed["to_revision"] = "not-a-revision"
+                    return {
+                        "candidate": core_candidate(status="CONFIRMED", revision=3),
+                        "events": [malformed, core_event()],
+                    }
+                return super().json(method, path, **kwargs)  # type: ignore[arg-type]
+
+        status, payload = build_state(InvalidEventClient()).append_decision(
+            CANDIDATE_ID, str(uuid.uuid4()),
+            {"decision": "CONFIRM", "expected_revision": 1, "reason": "checked"},
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["code"], "CORE_CONTRACT_INVALID")
+
+
 if __name__ == "__main__":
     unittest.main()

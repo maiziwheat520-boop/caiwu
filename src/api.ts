@@ -450,7 +450,7 @@ export const api = {
     corrections?: CandidateCorrections
     conflictResolution?: string
     csrfToken: string
-  }) => requestJson<{ candidate: ApiCandidate; event: ReviewEvent }>(
+  }) => requestJson<{ candidate: ApiCandidate; event: ReviewEvent; events?: ReviewEvent[] }>(
     `/api/v1/candidates/${encodeURIComponent(candidate.id)}/decisions`,
     {
       method: 'POST',
