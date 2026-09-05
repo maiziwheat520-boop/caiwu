@@ -36,8 +36,8 @@ from scripts.backup_restore import (
     COMPANY_TRANSACTION_CLASSIFICATION_TRIGGER_CONTRACT,
     MYBANK_CUTOVER_SCHEMA_REVISIONS,
     OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION,
-    PAYROLL_DISBURSEMENT_READ_MODEL_REVISION,
     R1_ROLES,
+    REPORTING_ITEM_CORRECTION_REVISION,
     BackupError,
     _validate_company_transaction_classification_security,
 )
@@ -316,7 +316,7 @@ def test_restore_inventory_covers_classification_facts_and_privileges() -> None:
     metadata = _restore_metadata()
 
     _validate_company_transaction_classification_security(
-        metadata, revision=PAYROLL_DISBURSEMENT_READ_MODEL_REVISION
+        metadata, revision=REPORTING_ITEM_CORRECTION_REVISION
     )
 
     privileges = metadata["company_transaction_classification_effective_table_privileges"]
@@ -330,7 +330,7 @@ def test_restore_inventory_covers_classification_facts_and_privileges() -> None:
     }
     with pytest.raises(BackupError, match="table privilege matrix"):
         _validate_company_transaction_classification_security(
-            drifted, revision=PAYROLL_DISBURSEMENT_READ_MODEL_REVISION
+            drifted, revision=REPORTING_ITEM_CORRECTION_REVISION
         )
 
 
@@ -355,7 +355,7 @@ def test_restore_inventory_rejects_reporting_item_constraint_drift(drift: str) -
 
     with pytest.raises(BackupError, match="state constraints"):
         _validate_company_transaction_classification_security(
-            metadata, revision=PAYROLL_DISBURSEMENT_READ_MODEL_REVISION
+            metadata, revision=REPORTING_ITEM_CORRECTION_REVISION
         )
 
 
