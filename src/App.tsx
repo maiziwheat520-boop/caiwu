@@ -179,6 +179,9 @@ function App() {
   const knownCandidateIdsRef = useRef<Set<string>>(new Set())
   const auditCandidateIdsRef = useRef<Set<string>>(new Set())
   const businessDataLoadedRef = useRef(false)
+  const businessDataRequestRef = useRef(0)
+  const [supplementaryLoads, setSupplementaryLoads] = useState<string[]>([])
+  const [supplementaryFailures, setSupplementaryFailures] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [decisionBusyId, setDecisionBusyId] = useState<string | null>(null)
@@ -260,64 +263,64 @@ function App() {
   }, [loadAuthStatus])
 
   const loadData = useCallback(async () => {
+    const requestId = ++businessDataRequestRef.current
+    let cancelled = false
+    const isCurrent = () => businessDataRequestRef.current === requestId && !cancelled
     setLoading(true)
     setLoadError(null)
+    setSupplementaryLoads([])
+    setSupplementaryFailures([])
     setClassificationGroups([])
     setClassificationGroupsAvailable(false)
+    setPersonalBankData(null)
+    setReconciliation(null)
+    setConnections([])
     setSelectedCandidate(null)
     try {
       const sessionData = await api.getSession()
+      if (!isCurrent()) return false
       setSession(sessionData)
-      const classificationGroupRequest = api.listClassificationGroups().then(
-        (value) => ({ status: 'fulfilled' as const, value }),
-        () => ({ status: 'rejected' as const }),
-      )
-      const personalBankRequest = api.getPersonalBankTransactions().then(
-        (value) => ({ status: 'fulfilled' as const, value }),
-        () => ({ status: 'rejected' as const }),
-      )
-      const reconciliationRequest = api.getReconciliation(selectedMonth).then(
-        (value) => ({ status: 'fulfilled' as const, value }),
-        () => ({ status: 'rejected' as const }),
-      )
-      const [
-        candidateData,
-        reconciliationData,
-        connectionData,
-        classificationGroupResult,
-        personalBankResult,
-      ] = await Promise.all([
-        api.listCandidates(),
-        reconciliationRequest,
-        api.listConnections(),
-        classificationGroupRequest,
-        personalBankRequest,
-      ])
-      setCandidates(candidateData.items.map(toCandidate))
-      if (classificationGroupResult.status === 'fulfilled') {
-        setClassificationGroups(classificationGroupResult.value.items)
-        setClassificationGroupsAvailable(true)
-        setNotice((current) => (
-          current?.message === CLASSIFICATION_GROUPS_UNAVAILABLE_NOTICE ? null : current
-        ))
-      } else {
-        setClassificationGroups([])
-        setClassificationGroupsAvailable(false)
-        setNotice({ tone: 'info', message: CLASSIFICATION_GROUPS_UNAVAILABLE_NOTICE })
+      function loadSupplement<T>(label: string, request: Promise<T>, apply: (value: T) => void) {
+        void request.then((value) => {
+          if (isCurrent()) apply(value)
+        }).catch(() => {
+          if (!isCurrent()) return
+          setSupplementaryFailures((current) => [...current, label])
+          if (label === '分类分组') {
+            setNotice({ tone: 'info', message: CLASSIFICATION_GROUPS_UNAVAILABLE_NOTICE })
+          }
+        }).finally(() => {
+          if (isCurrent()) setSupplementaryLoads((current) => current.filter((item) => item !== label))
+        })
       }
+      setSupplementaryLoads(['分类分组', '银行流水', '对账状态', '连接状态'])
+      loadSupplement('分类分组', api.listClassificationGroups(), (value) => {
+        setClassificationGroups(value.items)
+        setClassificationGroupsAvailable(true)
+        setNotice((current) => current?.message === CLASSIFICATION_GROUPS_UNAVAILABLE_NOTICE ? null : current)
+      })
+      loadSupplement('银行流水', api.getPersonalBankTransactions(), setPersonalBankData)
+      loadSupplement('对账状态', api.getReconciliation(selectedMonth), setReconciliation)
+      loadSupplement('连接状态', api.listConnections(), setConnections)
+      const candidateData = await api.listCandidates()
+      if (!isCurrent()) return false
+      setCandidates(candidateData.items.map(toCandidate))
       setAuditCandidates([])
-      setReconciliation(reconciliationData.status === 'fulfilled' ? reconciliationData.value : null)
-      setConnections(connectionData)
-      setPersonalBankData(personalBankResult.status === 'fulfilled' ? personalBankResult.value : null)
       businessDataLoadedRef.current = true
       return true
     } catch (error) {
+      if (!isCurrent()) return false
+      cancelled = true
+      setSupplementaryLoads([])
+      setSupplementaryFailures([])
       setLoadError(error instanceof Error ? error.message : '无法读取财务数据')
       return false
     } finally {
-      setLoading(false)
+      if (businessDataRequestRef.current === requestId) setLoading(false)
     }
   }, [selectedMonth])
+
+  useEffect(() => () => { businessDataRequestRef.current += 1 }, [])
 
   const loadReviewEvents = useCallback(async (cursor?: string, includeCandidatePages = false) => {
     setReviewEventsLoading(true)
@@ -618,6 +621,11 @@ function App() {
     setLogoutBusy(true)
     try {
       await api.logout(session.csrf_token)
+      businessDataRequestRef.current += 1
+      businessDataLoadedRef.current = false
+      setSupplementaryLoads([])
+      setSupplementaryFailures([])
+      setPersonalBankData(null)
       setAuthStatus({ authenticated: false, setup_required: false, passkey_registered: true, recovery_setup_required: false, recovery_pending: false })
       setSession(null)
       setCandidates([])
@@ -666,6 +674,19 @@ function App() {
       return (
         <>
           <section className="overview-section" id="overview-summary" aria-label="概览摘要">
+            {supplementaryLoads.length > 0 ? (
+              <div className="notice info" role="status">
+                <Info size={18} />
+                <span>正在补充：{supplementaryLoads.join('、')}。已加载的内容可先使用。</span>
+              </div>
+            ) : null}
+            {supplementaryFailures.length > 0 ? (
+              <div className="notice info" role="status">
+                <Info size={18} />
+                <span>{supplementaryFailures.join('、')}暂未读取成功，相关状态尚未确认。</span>
+                <Button variant="ghost" onClick={() => void loadData()}>重试补充数据</Button>
+              </div>
+            ) : null}
             <Overview
               pending={pendingCandidates}
               monthPending={overviewMonthPending}

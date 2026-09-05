@@ -2583,6 +2583,53 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.queryByText('本月对账尚未建立')).not.toBeInTheDocument()
   })
 
+  it.each([
+    '/api/v1/reconciliations/',
+    '/api/v1/candidate-classification-groups',
+    '/api/v1/personal-finance/bank-transactions',
+    '/api/v1/connections',
+  ])('shows the overview while the supplementary read %s is still pending', async (slowPath) => {
+    const fetchMock = installFetch()
+    const originalFetch = fetchMock.getMockImplementation()!
+    let releaseRead: () => void = () => undefined
+    const slowRead = new Promise<void>((resolve) => { releaseRead = resolve })
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input).startsWith(slowPath)) await slowRead
+      return originalFetch(input, init)
+    })
+
+    renderApp()
+
+    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(screen.queryByText('正在读取财务数据')).not.toBeInTheDocument()
+    expect(screen.getByText(/正在补充：/)).toBeInTheDocument()
+    await act(async () => { releaseRead() })
+    await waitFor(() => expect(screen.queryByText(/正在补充：/)).not.toBeInTheDocument())
+  })
+
+  it('ignores a late supplementary response after a newer refresh completed', async () => {
+    const fetchMock = installFetch()
+    const originalFetch = fetchMock.getMockImplementation()!
+    let releaseOldRead: () => void = () => undefined
+    const oldRead = new Promise<void>((resolve) => { releaseOldRead = resolve })
+    let reads = 0
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/api/v1/connections' && ++reads === 1) {
+        await oldRead
+        return response({ items: [{ id: 'HERMES', state: 'CONNECTED', checked_at: '2026-09-05T06:00:00Z', detail: '过时连接不应出现' }] })
+      }
+      return originalFetch(input, init)
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(within(reviewWorkspace()).getByRole('button', { name: '刷新' }))
+    await screen.findByText('早上好，今天有几项需要确认')
+    await waitFor(() => expect(screen.queryByText(/正在补充：/)).not.toBeInTheDocument())
+    await act(async () => { releaseOldRead() })
+    expect(within(overviewSummary()).getByText('0 / 0')).toBeInTheDocument()
+    expect(within(overviewSummary()).queryByText('1 / 1')).not.toBeInTheDocument()
+  })
+
   it('keeps processing-stage and business-unit diagnostics out of the company report page', async () => {
     window.history.replaceState({}, '', '/company-reports')
     installFetch({ runtimeMode: 'core-backed', companyReportResponse: companyReports(true, true) })
