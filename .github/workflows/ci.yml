@@ -52,6 +52,7 @@ jobs:
       LEDGERBRIDGE_TEST_ADMIN_DATABASE_URL: postgresql+psycopg://ledgerbridge_admin:test-only-admin-password@localhost:5432/postgres
       LEDGERBRIDGE_API_DATABASE_URL: postgresql+psycopg://ledgerbridge_api:test-only-api-password@localhost:5432/ledgerbridge_test
       LEDGERBRIDGE_WORKER_DATABASE_URL: postgresql+psycopg://ledgerbridge_worker:test-only-worker-password@localhost:5432/ledgerbridge_test
+      LEDGERBRIDGE_REVERSIBILITY_DATABASE_URL: postgresql+psycopg://ledgerbridge_owner:test-only-owner-password@localhost:5432/ledgerbridge_reversibility
       LEDGERBRIDGE_ARTIFACT_ROOT: /tmp/ledgerbridge-artifacts
       PGPASSWORD: test-only-admin-password
     steps:
@@ -87,18 +88,26 @@ jobs:
       # meaningful floor while its database-backed implementation tests land;
       # production enablement remains separately rejected by configuration.
       - run: uv run --frozen --extra dev pytest --cov=ledgerbridge --cov=scripts.deployment_manifest --cov-report=term-missing --cov-fail-under=90
-      # 20260901_0027 and every bank-statement import revision after it refuse to
-      # downgrade on purpose.  Reversibility is proven over the prefix that still
-      # has a downgrade path; the full chain is then applied from base.
+      # The suite leaves the shared database at head, and 20260901_0027 and every
+      # bank-statement import revision after it refuse to downgrade on purpose, so
+      # the chain can no longer be walked back from there.  Prove reversibility on
+      # a database of its own, over the prefix that still has a downgrade path,
+      # then apply the whole chain from base on top of it.
+      - name: Create the migration reversibility database
+        run: >-
+          psql -h localhost -U ledgerbridge_admin -d postgres
+          -v ON_ERROR_STOP=1
+          -c "DROP DATABASE IF EXISTS ledgerbridge_reversibility"
+          -c "CREATE DATABASE ledgerbridge_reversibility OWNER ledgerbridge_owner"
       - run: uv run --frozen --extra dev alembic upgrade 20260831_0026
         env:
-          LEDGERBRIDGE_DATABASE_URL: ${{ env.LEDGERBRIDGE_MIGRATION_DATABASE_URL }}
+          LEDGERBRIDGE_DATABASE_URL: ${{ env.LEDGERBRIDGE_REVERSIBILITY_DATABASE_URL }}
       - run: uv run --frozen --extra dev alembic downgrade base
         env:
-          LEDGERBRIDGE_DATABASE_URL: ${{ env.LEDGERBRIDGE_MIGRATION_DATABASE_URL }}
+          LEDGERBRIDGE_DATABASE_URL: ${{ env.LEDGERBRIDGE_REVERSIBILITY_DATABASE_URL }}
       - run: uv run --frozen --extra dev alembic upgrade head
         env:
-          LEDGERBRIDGE_DATABASE_URL: ${{ env.LEDGERBRIDGE_MIGRATION_DATABASE_URL }}
+          LEDGERBRIDGE_DATABASE_URL: ${{ env.LEDGERBRIDGE_REVERSIBILITY_DATABASE_URL }}
       - run: uv run --frozen --extra dev bandit -c pyproject.toml -r src alembic scripts
       - run: uv export --quiet --frozen --extra dev --no-emit-project --format requirements.txt --output-file /tmp/ledgerbridge-audit-requirements.txt
       - run: uv run --frozen --extra dev pip-audit --strict --requirement /tmp/ledgerbridge-audit-requirements.txt
