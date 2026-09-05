@@ -28,7 +28,7 @@ try:
         _photo_candidates,
     )
 except ModuleNotFoundError:  # direct ``python scripts/...`` execution
-    from build_controlled_review_bundle import (  # type: ignore[no-redef]
+    from build_controlled_review_bundle import (  # type: ignore[no-redef,import-not-found]
         _NAMESPACE,
         _boc_candidates,
         _photo_candidates,
@@ -159,18 +159,19 @@ def _ocr_details(payload: dict[str, Any], source: SourceManifest) -> tuple[dict[
                 raise HotelPayoutBuildError("OCR bill is invalid")
             if bill["blockers"]:
                 continue
-            required = (
-                bill.get("bill_id"),
-                bill.get("period_start"),
-                bill.get("period_end"),
-                bill.get("source_kind"),
-                bill.get("amount_minor"),
-            )
-            if not all(isinstance(item, str) for item in required[:4]) or not isinstance(
-                required[4], int
+            bill_id = bill.get("bill_id")
+            period_start = bill.get("period_start")
+            period_end = bill.get("period_end")
+            platform = bill.get("source_kind")
+            amount_minor = bill.get("amount_minor")
+            if (
+                not isinstance(bill_id, str)
+                or not isinstance(period_start, str)
+                or not isinstance(period_end, str)
+                or not isinstance(platform, str)
+                or not isinstance(amount_minor, int)
             ):
                 raise HotelPayoutBuildError("review-ready OCR bill fields are incomplete")
-            bill_id, period_start, period_end, platform, amount_minor = required
             if not (period_start.startswith("2026-05") or period_end.startswith("2026-05")):
                 continue
             stable = f"ocr:{source_name}:{bill_id}:{period_start}:{period_end}"
@@ -230,7 +231,9 @@ def _replacement_rows(
 ) -> tuple[HotelReplacement, ...]:
     legacy_by_amount: dict[int, list[UUID]] = {}
     for item in legacy_candidates:
-        amount = int(item["amount_minor"])
+        amount = item["amount_minor"]
+        if not isinstance(amount, int):
+            raise HotelPayoutBuildError("legacy candidate amount is not a minor-unit integer")
         legacy_by_amount.setdefault(amount, []).append(UUID(str(item["candidate_ref"])))
     replacements: list[HotelReplacement] = []
     for candidate in ocr_candidates:

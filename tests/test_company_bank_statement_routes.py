@@ -10,6 +10,7 @@ from ledgerbridge.company_bank_statement_routes import get_service, router
 from ledgerbridge.config import Settings, get_settings
 from ledgerbridge.internal_read_auth import get_internal_read_principal
 from ledgerbridge.internal_read_contract import Capability, EntityGrant, WorkloadPrincipal
+from ledgerbridge.personal_finance_contract import PersonalFinancePage
 from tests.test_personal_finance_routes import ACCOUNT, ENTITY, STATEMENT, _page
 
 
@@ -19,7 +20,15 @@ class _Service:
     def __init__(self) -> None:
         self.calls = []
 
-    def statement(self, principal, *, statement_ref, entity_ref, required_capability, owner_kind):
+    def statement(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        statement_ref: UUID,
+        entity_ref: UUID,
+        required_capability: Capability,
+        owner_kind: str,
+    ) -> PersonalFinancePage:
         self.calls.append((statement_ref, entity_ref, required_capability, owner_kind))
         return _page()
 

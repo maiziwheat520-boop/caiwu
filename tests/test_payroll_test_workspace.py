@@ -1,6 +1,9 @@
+from collections.abc import Callable
 from copy import deepcopy
+from email.message import Message
+from typing import Any, cast
 from urllib.error import HTTPError
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -10,29 +13,34 @@ from ledgerbridge.payroll_integration import (
 )
 
 
+def as_payload(payload: dict[str, object]) -> dict[str, Any]:
+    """`payload_copy` types its values as `object`; assertions walk them as JSON."""
+    return cast(dict[str, Any], payload)
+
+
 class Transport:
-    def __init__(self, response):
+    def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
 
-    def get_json(self, *_args, **_kwargs):
+    def get_json(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return deepcopy(self.response)
 
-    def post_json(self, *_args, **_kwargs):
+    def post_json(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return deepcopy(self.response)
 
 
 class MissingTransport(Transport):
     status_code = 404
 
-    def get_json(self, *_args, **_kwargs):
-        cause = HTTPError("http://payroll/test", self.status_code, "missing", {}, None)
+    def get_json(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        cause = HTTPError("http://payroll/test", self.status_code, "missing", Message(), None)
         try:
             raise cause
         except HTTPError as exc:
             raise PayrollIntegrationError("PAYROLL_PROVIDER_REJECTED", "provider rejected") from exc
 
 
-def projection(company_id="company_demo", batch="batch_demo"):
+def projection(company_id: str = "company_demo", batch: str = "batch_demo") -> dict[str, Any]:
     revision = "a" * 64
     materials = [
         {
@@ -83,7 +91,7 @@ def projection(company_id="company_demo", batch="batch_demo"):
     }
 
 
-def source(response):
+def source(response: dict[str, Any]) -> tuple[UUID, HttpPayrollTestWorkspaceSource]:
     entity = uuid4()
     return entity, HttpPayrollTestWorkspaceSource(
         base_url="http://payroll:4318",
@@ -94,29 +102,29 @@ def source(response):
     )
 
 
-def test_read_accepts_only_july_august_payroll_workspace_materials():
+def test_read_accepts_only_july_august_payroll_workspace_materials() -> None:
     entity, adapter = source(projection())
     result = adapter.read_workspace(
         entity_ref=entity, test_batch_id="batch_demo", provider_headers={}
     )
-    assert result.payload_copy()["routing_counts"] == {
+    assert as_payload(result.payload_copy())["routing_counts"] == {
         "auto_test": 3,
         "review_required": 0,
         "date_unknown": 0,
     }
 
 
-def test_summary_accepts_a_valid_derived_period_and_keeps_auto_test_routing():
+def test_summary_accepts_a_valid_derived_period_and_keeps_auto_test_routing() -> None:
     payload = projection()
     payload["materials"][2]["period"] = "2026-08"
     entity, adapter = source(payload)
     result = adapter.read_workspace(
         entity_ref=entity, test_batch_id="batch_demo", provider_headers={}
     )
-    assert result.payload_copy()["routing_counts"]["auto_test"] == 3
+    assert as_payload(result.payload_copy())["routing_counts"]["auto_test"] == 3
 
 
-def test_test_workspace_get_maps_only_explicit_provider_404_to_stable_missing():
+def test_test_workspace_get_maps_only_explicit_provider_404_to_stable_missing() -> None:
     entity = uuid4()
     adapter = HttpPayrollTestWorkspaceSource(
         base_url="http://payroll:4318",
@@ -130,7 +138,7 @@ def test_test_workspace_get_maps_only_explicit_provider_404_to_stable_missing():
     assert captured.value.error_code == "PAYROLL_TEST_WORKSPACE_NOT_FOUND"
 
 
-def test_test_workspace_get_keeps_other_provider_rejections_fail_closed():
+def test_test_workspace_get_keeps_other_provider_rejections_fail_closed() -> None:
     transport = MissingTransport({})
     transport.status_code = 403
     entity = uuid4()
@@ -159,7 +167,9 @@ def test_test_workspace_get_keeps_other_provider_rejections_fail_closed():
         lambda p: p.update(workspace_revision=0),
     ],
 )
-def test_projection_fails_closed_on_scope_safety_and_routing(mutate):
+def test_projection_fails_closed_on_scope_safety_and_routing(
+    mutate: Callable[[dict[str, Any]], Any],
+) -> None:
     payload = projection()
     mutate(payload)
     entity, adapter = source(payload)
@@ -167,7 +177,7 @@ def test_projection_fails_closed_on_scope_safety_and_routing(mutate):
         adapter.read_workspace(entity_ref=entity, test_batch_id="batch_demo", provider_headers={})
 
 
-def test_create_unwraps_only_valid_test_projection():
+def test_create_unwraps_only_valid_test_projection() -> None:
     payload = {
         "schema_version": "payroll-test-workspace-create-result/v1",
         "replayed": False,
@@ -180,7 +190,7 @@ def test_create_unwraps_only_valid_test_projection():
     assert result.replayed is False
 
 
-def test_clear_receipt_remains_non_payable():
+def test_clear_receipt_remains_non_payable() -> None:
     payload = {
         "schema_version": "payroll-test-workspace-clear-receipt/v1",
         "data_scope": "TEST_ONLY",
@@ -198,10 +208,10 @@ def test_clear_receipt_remains_non_payable():
     result = adapter.clear_workspace(
         entity_ref=entity, test_batch_id="batch_demo", provider_headers={}, body=b"{}"
     )
-    assert result.payload_copy()["payable"] is False
+    assert as_payload(result.payload_copy())["payable"] is False
 
 
-def test_test_workspace_organize_returns_only_versioned_non_payable_material_receipt():
+def test_test_workspace_organize_returns_only_versioned_non_payable_material_receipt() -> None:
     payload = {
         "schema_version": "payroll-test-material-organize-result/v1",
         "data_scope": "TEST_ONLY",
@@ -234,8 +244,8 @@ def test_test_workspace_organize_returns_only_versioned_non_payable_material_rec
         provider_headers={},
         body=b"{}",
     )
-    assert result.payload_copy()["material"]["period"] == "2026-08"
-    assert result.payload_copy()["payable"] is False
+    assert as_payload(result.payload_copy())["material"]["period"] == "2026-08"
+    assert as_payload(result.payload_copy())["payable"] is False
 
 
 @pytest.mark.parametrize(
@@ -246,7 +256,9 @@ def test_test_workspace_organize_returns_only_versioned_non_payable_material_rec
         lambda payload: payload["material"].update(material_type="SUPPORTING_SCAN"),
     ],
 )
-def test_test_workspace_organize_receipt_is_bound_to_the_requested_change(mutate):
+def test_test_workspace_organize_receipt_is_bound_to_the_requested_change(
+    mutate: Callable[[dict[str, Any]], Any],
+) -> None:
     payload = {
         "schema_version": "payroll-test-material-organize-result/v1",
         "data_scope": "TEST_ONLY",
@@ -283,7 +295,7 @@ def test_test_workspace_organize_receipt_is_bound_to_the_requested_change(mutate
         )
 
 
-def test_test_workspace_validation_returns_only_test_review_batches():
+def test_test_workspace_validation_returns_only_test_review_batches() -> None:
     payload = {
         "schema_version": "payroll-test-batch-validation-result/v1",
         "data_scope": "TEST_ONLY",
@@ -315,11 +327,11 @@ def test_test_workspace_validation_returns_only_test_review_batches():
         provider_headers={},
         body=b"{}",
     )
-    assert result.payload_copy()["ready_batch_count"] == 1
-    assert result.payload_copy()["submission_supported"] is False
+    assert as_payload(result.payload_copy())["ready_batch_count"] == 1
+    assert as_payload(result.payload_copy())["submission_supported"] is False
 
 
-def test_test_workspace_validation_receipt_is_bound_to_the_requested_revision():
+def test_test_workspace_validation_receipt_is_bound_to_the_requested_revision() -> None:
     payload = {
         "schema_version": "payroll-test-batch-validation-result/v1",
         "data_scope": "TEST_ONLY",
@@ -345,7 +357,7 @@ def test_test_workspace_validation_receipt_is_bound_to_the_requested_revision():
         )
 
 
-def preview_payload():
+def preview_payload() -> dict[str, Any]:
     return {
         "schema_version": "payroll-test-material-preview/v1",
         "data_scope": "TEST_ONLY",
@@ -386,7 +398,7 @@ def preview_payload():
     }
 
 
-def summary_preview_payload():
+def summary_preview_payload() -> dict[str, Any]:
     return {
         "schema_version": "payroll-summary-authoritative-preview/v1",
         "data_scope": "TEST_ONLY",
@@ -417,7 +429,7 @@ def summary_preview_payload():
     }
 
 
-def wage_input_preview_payload():
+def wage_input_preview_payload() -> dict[str, Any]:
     return {
         "schema_version": "payroll-input-material-preview/v1",
         "data_scope": "TEST_ONLY",
@@ -443,7 +455,7 @@ def wage_input_preview_payload():
     }
 
 
-def legacy_workspace_payload():
+def legacy_workspace_payload() -> dict[str, Any]:
     return {
         "schema_version": "payroll-legacy-feature-workspace/v1",
         "data_scope": "TEST_ONLY",
@@ -517,7 +529,7 @@ def legacy_workspace_payload():
     }
 
 
-def legacy_channel_verification_payload():
+def legacy_channel_verification_payload() -> dict[str, Any]:
     documents = [
         *[
             {
@@ -596,14 +608,14 @@ def legacy_channel_verification_payload():
     }
 
 
-def test_legacy_feature_workspace_read_and_command_preserve_safe_provider_state():
+def test_legacy_feature_workspace_read_and_command_preserve_safe_provider_state() -> None:
     entity, adapter = source(legacy_workspace_payload())
     read = adapter.read_legacy_features(
         entity_ref=entity,
         test_batch_id="batch_demo",
         provider_headers={},
     )
-    assert read.payload_copy()["batches"][0]["lines"][0]["net_pay_cents"] == 500000
+    assert as_payload(read.payload_copy())["batches"][0]["lines"][0]["net_pay_cents"] == 500000
 
     command_payload = {
         "action": "FILL_MAIN",
@@ -620,10 +632,10 @@ def test_legacy_feature_workspace_read_and_command_preserve_safe_provider_state(
         body=b"{}",
     )
     assert command.replayed is False
-    assert command.payload_copy()["workspace"]["revision"] == 1
+    assert as_payload(command.payload_copy())["workspace"]["revision"] == 1
 
 
-def test_legacy_feature_workspace_accepts_opaque_batch_id_with_period_digits():
+def test_legacy_feature_workspace_accepts_opaque_batch_id_with_period_digits() -> None:
     payload = legacy_workspace_payload()
     payload["batches"][0]["batch_id"] = "payroll_history_through_2026_08_2026_07"
     entity, adapter = source(payload)
@@ -634,7 +646,7 @@ def test_legacy_feature_workspace_accepts_opaque_batch_id_with_period_digits():
         provider_headers={},
     )
 
-    assert read.payload_copy()["batches"][0]["batch_id"] == (
+    assert as_payload(read.payload_copy())["batches"][0]["batch_id"] == (
         "payroll_history_through_2026_08_2026_07"
     )
 
@@ -649,7 +661,7 @@ def test_legacy_feature_workspace_accepts_opaque_batch_id_with_period_digits():
         "file://private/payroll-batch",
     ],
 )
-def test_legacy_feature_workspace_rejects_sensitive_batch_id(batch_id):
+def test_legacy_feature_workspace_rejects_sensitive_batch_id(batch_id: str) -> None:
     payload = legacy_workspace_payload()
     payload["batches"][0]["batch_id"] = batch_id
     entity, adapter = source(payload)
@@ -662,7 +674,7 @@ def test_legacy_feature_workspace_rejects_sensitive_batch_id(batch_id):
         )
 
 
-def test_legacy_feature_workspace_accepts_independent_rules_before_a_monthly_batch():
+def test_legacy_feature_workspace_accepts_independent_rules_before_a_monthly_batch() -> None:
     payload = legacy_workspace_payload()
     payload["batches"] = []
     entity, adapter = source(payload)
@@ -673,10 +685,10 @@ def test_legacy_feature_workspace_accepts_independent_rules_before_a_monthly_bat
         provider_headers={},
     )
 
-    assert read.payload_copy()["batches"] == []
+    assert as_payload(read.payload_copy())["batches"] == []
 
 
-def test_legacy_feature_workspace_accepts_opaque_account_digest():
+def test_legacy_feature_workspace_accepts_opaque_account_digest() -> None:
     payload = legacy_workspace_payload()
     payload["batches"][0]["lines"][0]["account_id"] = "account_9989905356105395ee4273d3"
     entity, adapter = source(payload)
@@ -687,10 +699,12 @@ def test_legacy_feature_workspace_accepts_opaque_account_digest():
         provider_headers={},
     )
 
-    assert read.payload_copy()["batches"][0]["lines"][0]["account_id"].startswith("account_")
+    assert as_payload(read.payload_copy())["batches"][0]["lines"][0]["account_id"].startswith(
+        "account_"
+    )
 
 
-def test_legacy_feature_workspace_accepts_generated_monthly_payroll_without_main_material():
+def test_legacy_feature_workspace_accepts_generated_monthly_payroll_without_main_material() -> None:
     payload = legacy_workspace_payload()
     payload["batches"][0].pop("main_material_id")
     entity, adapter = source(payload)
@@ -701,10 +715,10 @@ def test_legacy_feature_workspace_accepts_generated_monthly_payroll_without_main
         provider_headers={},
     )
 
-    assert "main_material_id" not in read.payload_copy()["batches"][0]
+    assert "main_material_id" not in as_payload(read.payload_copy())["batches"][0]
 
 
-def test_legacy_feature_command_accepts_the_merged_verification_and_summary_action():
+def test_legacy_feature_command_accepts_the_merged_verification_and_summary_action() -> None:
     command_payload = {
         "action": "VERIFY_AND_UPDATE_SUMMARY",
         "replayed": False,
@@ -721,7 +735,7 @@ def test_legacy_feature_command_accepts_the_merged_verification_and_summary_acti
         body=b"{}",
     )
 
-    assert command.payload_copy()["action"] == "VERIFY_AND_UPDATE_SUMMARY"
+    assert as_payload(command.payload_copy())["action"] == "VERIFY_AND_UPDATE_SUMMARY"
 
 
 @pytest.mark.parametrize(
@@ -733,7 +747,9 @@ def test_legacy_feature_command_accepts_the_merged_verification_and_summary_acti
         lambda rule: rule.update(payable=True),
     ],
 )
-def test_legacy_feature_workspace_rejects_malformed_review_rules(mutate):
+def test_legacy_feature_workspace_rejects_malformed_review_rules(
+    mutate: Callable[[dict[str, Any]], Any],
+) -> None:
     payload = legacy_workspace_payload()
     mutate(payload["rules"]["review_rules"][0])
     entity, adapter = source(payload)
@@ -746,16 +762,18 @@ def test_legacy_feature_workspace_rejects_malformed_review_rules(mutate):
         )
 
 
-def test_legacy_feature_workspace_accepts_complete_channel_and_total_reconciliation():
+def test_legacy_feature_workspace_accepts_complete_channel_and_total_reconciliation() -> None:
     payload = legacy_workspace_payload()
     payload["batches"][0]["verification"] = legacy_channel_verification_payload()
     entity, adapter = source(payload)
 
-    read = adapter.read_legacy_features(
-        entity_ref=entity,
-        test_batch_id="batch_demo",
-        provider_headers={},
-    ).payload_copy()
+    read = as_payload(
+        adapter.read_legacy_features(
+            entity_ref=entity,
+            test_batch_id="batch_demo",
+            provider_headers={},
+        ).payload_copy()
+    )
 
     verification = read["batches"][0]["verification"]
     assert verification["theoretical_total_cents"] == 500000
@@ -775,7 +793,9 @@ def test_legacy_feature_workspace_accepts_complete_channel_and_total_reconciliat
         ),
     ],
 )
-def test_legacy_feature_workspace_rejects_channel_reconciliation_drift(mutate):
+def test_legacy_feature_workspace_rejects_channel_reconciliation_drift(
+    mutate: Callable[[dict[str, Any]], Any],
+) -> None:
     payload = legacy_workspace_payload()
     verification = legacy_channel_verification_payload()
     mutate(verification)
@@ -802,7 +822,9 @@ def test_legacy_feature_workspace_rejects_channel_reconciliation_drift(mutate):
         lambda payload: payload["batches"][0].update(bank_account="6222000000000138"),
     ],
 )
-def test_legacy_feature_workspace_rejects_scope_payment_money_or_sensitive_drift(mutate):
+def test_legacy_feature_workspace_rejects_scope_payment_money_or_sensitive_drift(
+    mutate: Callable[[dict[str, Any]], Any],
+) -> None:
     payload = legacy_workspace_payload()
     mutate(payload)
     entity, adapter = source(payload)
@@ -814,7 +836,7 @@ def test_legacy_feature_workspace_rejects_scope_payment_money_or_sensitive_drift
         )
 
 
-def test_test_workspace_preview_returns_masked_non_payable_lines():
+def test_test_workspace_preview_returns_masked_non_payable_lines() -> None:
     entity, adapter = source(preview_payload())
     result = adapter.preview_material(
         entity_ref=entity,
@@ -822,12 +844,12 @@ def test_test_workspace_preview_returns_masked_non_payable_lines():
         material_id="material_old",
         provider_headers={},
     )
-    assert result.payload_copy()["lines"][0]["account_masked"] == "****0138"
-    assert result.payload_copy()["total_net_pay_cents"] == 500000
-    assert result.payload_copy()["submission_supported"] is False
+    assert as_payload(result.payload_copy())["lines"][0]["account_masked"] == "****0138"
+    assert as_payload(result.payload_copy())["total_net_pay_cents"] == 500000
+    assert as_payload(result.payload_copy())["submission_supported"] is False
 
 
-def test_test_workspace_preview_accepts_renamed_wage_input_content_rows():
+def test_test_workspace_preview_accepts_renamed_wage_input_content_rows() -> None:
     entity, adapter = source(wage_input_preview_payload())
     result = adapter.preview_material(
         entity_ref=entity,
@@ -835,7 +857,7 @@ def test_test_workspace_preview_accepts_renamed_wage_input_content_rows():
         material_id="material_attendance",
         provider_headers={},
     )
-    payload = result.payload_copy()
+    payload = as_payload(result.payload_copy())
     assert payload["canonical_name"] == "2026.7_阿姨考勤表"
     assert payload["columns"] == ["姓名", "考勤天数", "工资合计"]
     assert payload["preview_rows"][0]["values"][0] == "员工甲"
@@ -851,7 +873,9 @@ def test_test_workspace_preview_accepts_renamed_wage_input_content_rows():
         lambda payload: payload["preview_rows"][0]["values"].__setitem__(2, "6222021234567890123"),
     ],
 )
-def test_test_workspace_wage_input_preview_fails_closed_on_contract_drift(mutate):
+def test_test_workspace_wage_input_preview_fails_closed_on_contract_drift(
+    mutate: Callable[[dict[str, Any]], Any],
+) -> None:
     payload = wage_input_preview_payload()
     mutate(payload)
     entity, adapter = source(payload)
@@ -864,7 +888,7 @@ def test_test_workspace_wage_input_preview_fails_closed_on_contract_drift(mutate
         )
 
 
-def test_test_workspace_preview_accepts_authoritative_summary_months_and_store_totals():
+def test_test_workspace_preview_accepts_authoritative_summary_months_and_store_totals() -> None:
     entity, adapter = source(summary_preview_payload())
     result = adapter.preview_material(
         entity_ref=entity,
@@ -872,7 +896,7 @@ def test_test_workspace_preview_accepts_authoritative_summary_months_and_store_t
         material_id="material_summary",
         provider_headers={},
     )
-    payload = result.payload_copy()
+    payload = as_payload(result.payload_copy())
     assert payload["source_of_truth"] == "PAYROLL_SUMMARY"
     assert payload["periods"][0]["stores"][1]["net_pay_cents"] == 14_019_198
     assert payload["periods"][0]["total_net_pay_cents"] == 17_261_198
@@ -892,7 +916,9 @@ def test_test_workspace_preview_accepts_authoritative_summary_months_and_store_t
         lambda payload: payload.update(payable=True),
     ],
 )
-def test_test_workspace_summary_preview_fails_closed_on_contract_drift(mutate):
+def test_test_workspace_summary_preview_fails_closed_on_contract_drift(
+    mutate: Callable[[dict[str, Any]], Any],
+) -> None:
     payload = summary_preview_payload()
     mutate(payload)
     entity, adapter = source(payload)
@@ -918,7 +944,9 @@ def test_test_workspace_summary_preview_fails_closed_on_contract_drift(mutate):
         lambda payload: payload.update(payable=True),
     ],
 )
-def test_test_workspace_preview_fails_closed_on_scope_money_or_payment_drift(mutate):
+def test_test_workspace_preview_fails_closed_on_scope_money_or_payment_drift(
+    mutate: Callable[[dict[str, Any]], Any],
+) -> None:
     payload = preview_payload()
     mutate(payload)
     entity, adapter = source(payload)
@@ -931,7 +959,7 @@ def test_test_workspace_preview_fails_closed_on_scope_money_or_payment_drift(mut
         )
 
 
-def test_test_workspace_preview_accepts_an_exact_blocking_net_mismatch_for_review():
+def test_test_workspace_preview_accepts_an_exact_blocking_net_mismatch_for_review() -> None:
     payload = preview_payload()
     payload["status"] = "NEEDS_HUMAN_REVIEW"
     payload["auto_batch_eligible"] = False
@@ -953,10 +981,10 @@ def test_test_workspace_preview_accepts_an_exact_blocking_net_mismatch_for_revie
         material_id="material_old",
         provider_headers={},
     )
-    assert result.payload_copy()["status"] == "NEEDS_HUMAN_REVIEW"
+    assert as_payload(result.payload_copy())["status"] == "NEEDS_HUMAN_REVIEW"
 
 
-def test_test_workspace_preview_rejects_net_mismatch_exception_for_another_row():
+def test_test_workspace_preview_rejects_net_mismatch_exception_for_another_row() -> None:
     payload = preview_payload()
     payload["status"] = "NEEDS_HUMAN_REVIEW"
     payload["auto_batch_eligible"] = False
@@ -983,7 +1011,7 @@ def test_test_workspace_preview_rejects_net_mismatch_exception_for_another_row()
 
 
 @pytest.mark.parametrize("unique_field", ["employee_id", "account_id"])
-def test_test_workspace_preview_rejects_duplicate_payroll_identity(unique_field):
+def test_test_workspace_preview_rejects_duplicate_payroll_identity(unique_field: str) -> None:
     payload = preview_payload()
     duplicate = dict(payload["lines"][0])
     duplicate["employee_id"] = "emp_preview_002"

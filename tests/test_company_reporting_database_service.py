@@ -8,6 +8,9 @@ from uuid import UUID
 import pytest
 from sqlalchemy.orm import Session
 
+from ledgerbridge.company_reporting_composition_contract import (
+    ConfirmedCandidateComposition,
+)
 from ledgerbridge.company_reporting_contract import CompanyReportBasis
 from ledgerbridge.company_reporting_service import DatabaseCompanyReportingService
 from ledgerbridge.internal_read_contract import (
@@ -323,8 +326,10 @@ def test_database_company_composition_reads_categories_at_one_audit_horizon() ->
     )
 
     assert page.contract_version == "ledgerbridge.company-report-composition.v1"
-    assert page.items[0].positive.total_minor == 7300
-    assert page.items[0].negative.items[0].category_code is None
+    first_composition = page.items[0]
+    assert isinstance(first_composition, ConfirmedCandidateComposition)
+    assert first_composition.positive.total_minor == 7300
+    assert first_composition.negative.items[0].category_code is None
     composition_calls = [
         call for call in session.calls if "get_company_report_composition_v1_as_of" in call[0]
     ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -157,7 +158,9 @@ def test_company_report_v1_uses_basis_specific_metrics_and_common_pending_counts
     assert item.taxonomy_version is None
     assert item.balance.model_dump() == _balance()
     assert isinstance(item.months[0], CompanyReportMonth)
-    assert isinstance(item.months[0].business_units[0], CompanyReportBusinessUnit)
+    business_units = item.months[0].business_units
+    assert business_units is not None
+    assert isinstance(business_units[0], CompanyReportBusinessUnit)
 
 
 @pytest.mark.parametrize("basis", list(CompanyReportBasis))
@@ -285,7 +288,7 @@ def test_unavailable_balance_cannot_be_fabricated_from_a_metric_net() -> None:
     ],
 )
 def test_business_unit_breakdown_status_cannot_hide_or_invent_rows(
-    updates: dict[str, object],
+    updates: dict[str, Any],
 ) -> None:
     with pytest.raises(ValidationError):
         CompanyReportMonth.model_validate(_month(**updates))

@@ -1,9 +1,10 @@
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from ledgerbridge.bank_statement_contract import BankStatementParserProfile
+from ledgerbridge.bank_statement_contract import BankStatement, BankStatementParserProfile
 from ledgerbridge.boc_company_statement import (
     _HEADER_MARKERS,
     BocCompanyStatementError,
@@ -81,7 +82,7 @@ def _rows() -> list[list[str]]:
     ]
 
 
-def _parse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rows: list[list[str]]):
+def _parse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rows: list[list[str]]) -> BankStatement:
     source = (tmp_path / "statement.xls").resolve()
     source.write_bytes(_OLE)
     book = _Book(rows)
@@ -116,7 +117,9 @@ def test_parser_reconciles_company_xls_and_selects_counterparty_by_direction(
     ],
 )
 def test_parser_rejects_balance_identity_total_and_period_conflicts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutate
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutate: Callable[[list[list[str]]], None],
 ) -> None:
     rows = _rows()
     mutate(rows)

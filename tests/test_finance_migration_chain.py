@@ -9,9 +9,9 @@ from typing import cast
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from test_company_transaction_classification import _restore_metadata
 
 from scripts import backup_restore as backup
+from tests.test_company_transaction_classification import _restore_metadata
 
 PRODUCTION = "20260905_0046"
 FEE = "20260905_0047"

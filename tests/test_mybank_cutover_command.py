@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -26,6 +27,7 @@ from ledgerbridge.mybank_cutover_plan_builder import (
 from ledgerbridge.mybank_statement_cutover import (
     MyBankEvidenceMode,
     MyBankExistingAccountStatementPlan,
+    MyBankStatementCutoverPlan,
     MyBankStatementCutoverReceipt,
     ProductionCounts,
 )
@@ -38,7 +40,7 @@ OPERATION_REF = UUID("84000000-0000-4000-8000-000000000005")
 ALIAS_REF = UUID("84000000-0000-4000-8000-000000000006")
 
 
-def _synthetic_plan(tmp_path: Path) -> dict[str, object]:
+def _synthetic_plan(tmp_path: Path) -> dict[str, Any]:
     return {
         "schema_version": MYBANK_CUTOVER_PLAN_SCHEMA,
         "target_revision": "a" * 40,
@@ -102,10 +104,10 @@ def _write_synthetic_mybank_xlsx(path: Path, *, empty: bool = False) -> bytes:
     return write_fixture(path, empty=empty)
 
 
-def _synthetic_draft(tmp_path: Path) -> dict[str, object]:
+def _synthetic_draft(tmp_path: Path) -> dict[str, Any]:
     payload = _synthetic_plan(tmp_path)
     payload["schema_version"] = MYBANK_CUTOVER_DRAFT_SCHEMA
-    payload["scope"]["owner_kind"] = "COMPANY"  # type: ignore[index]
+    payload["scope"]["owner_kind"] = "COMPANY"
     payload["source"] = {
         "path": str((tmp_path / "synthetic-statement.xlsx").resolve()),
         "account_suffix": "7968",
@@ -113,17 +115,17 @@ def _synthetic_draft(tmp_path: Path) -> dict[str, object]:
     return payload
 
 
-def _synthetic_existing_account_plan(tmp_path: Path) -> dict[str, object]:
+def _synthetic_existing_account_plan(tmp_path: Path) -> dict[str, Any]:
     payload = _synthetic_plan(tmp_path)
     payload["schema_version"] = MYBANK_EXISTING_ACCOUNT_PLAN_SCHEMA
-    payload["scope"]["owner_kind"] = "COMPANY"  # type: ignore[index]
-    payload["scope"]["evidence_mode"] = "CREATE_NEW"  # type: ignore[index]
+    payload["scope"]["owner_kind"] = "COMPANY"
+    payload["scope"]["evidence_mode"] = "CREATE_NEW"
     payload["account"] = {"managed_account_ref": str(ACCOUNT_REF)}
     payload.pop("principal")
     return payload
 
 
-def _synthetic_existing_account_draft(tmp_path: Path) -> dict[str, object]:
+def _synthetic_existing_account_draft(tmp_path: Path) -> dict[str, Any]:
     payload = _synthetic_existing_account_plan(tmp_path)
     payload["schema_version"] = MYBANK_EXISTING_ACCOUNT_DRAFT_SCHEMA
     payload["source"] = {
@@ -221,7 +223,9 @@ def test_private_plan_loads_one_explicit_owner_account_mapping(tmp_path: Path) -
     assert loaded.cutover.business_unit_ref == BUSINESS_UNIT_REF
     assert loaded.cutover.owner_kind is EntityType.PERSON
     assert loaded.cutover.managed_account_ref == ACCOUNT_REF
+    assert isinstance(loaded.cutover, MyBankStatementCutoverPlan)
     assert loaded.cutover.registry_plan.accounts[0].aliases[0].alias_value.endswith("1357")
+    assert loaded.principal is not None
     assert loaded.principal.grants[0].entity_ref == ENTITY_REF
     assert loaded.principal.grants[0].allow_account_registry is True
     assert loaded.safety_proof.restore_report.parent == loaded.safety_proof.backup_directory
@@ -245,7 +249,7 @@ def test_existing_account_plan_loads_without_account_registration_payload(
     assert loaded.cutover.owner_kind is EntityType.COMPANY
     assert loaded.principal is None
     payload = _synthetic_existing_account_plan(tmp_path)
-    assert set(payload["account"]) == {"managed_account_ref"}  # type: ignore[arg-type]
+    assert set(payload["account"]) == {"managed_account_ref"}
 
 
 def test_private_draft_is_finalized_from_verified_source_without_guessing_metadata(
@@ -271,6 +275,7 @@ def test_private_draft_is_finalized_from_verified_source_without_guessing_metada
     }
     loaded = load_private_mybank_cutover_plan(plan_path)
     assert loaded.cutover.owner_kind is EntityType.COMPANY
+    assert isinstance(loaded.cutover, MyBankStatementCutoverPlan)
     assert loaded.cutover.registry_plan.owner_entity_ref == ENTITY_REF
 
 
@@ -306,9 +311,9 @@ def test_existing_account_plan_requires_explicit_supported_evidence_mode(
 ) -> None:
     payload = _synthetic_existing_account_plan(tmp_path)
     if mode is None:
-        del payload["scope"]["evidence_mode"]  # type: ignore[index]
+        del payload["scope"]["evidence_mode"]
     else:
-        payload["scope"]["evidence_mode"] = mode  # type: ignore[index]
+        payload["scope"]["evidence_mode"] = mode
     path = (tmp_path / "invalid-existing-account-plan.json").resolve()
     _write_private_plan(path, payload)
 
@@ -320,7 +325,7 @@ def test_private_draft_wrong_account_mapping_publishes_no_plan(tmp_path: Path) -
     source_path = (tmp_path / "synthetic-statement.xlsx").resolve()
     _write_synthetic_mybank_xlsx(source_path)
     draft = _synthetic_draft(tmp_path)
-    draft["source"]["account_suffix"] = "0000"  # type: ignore[index]
+    draft["source"]["account_suffix"] = "0000"
     draft_path = (tmp_path / "cutover-draft.json").resolve()
     plan_path = (tmp_path / "cutover-plan.json").resolve()
     _write_private_plan(draft_path, draft)
@@ -353,7 +358,7 @@ def test_private_plan_builder_command_prints_no_source_or_alias_values(
     rendered = capsys.readouterr().out
     assert rendered.strip() == "MYBANK_CUTOVER_PLAN_READY"
     assert str(source_path) not in rendered
-    assert draft["account"]["aliases"][0]["alias_value"] not in rendered  # type: ignore[index]
+    assert draft["account"]["aliases"][0]["alias_value"] not in rendered
 
 
 def test_existing_account_builder_explicitly_skips_empty_statement(
@@ -388,7 +393,9 @@ def test_preflight_writes_private_bound_receipt_without_disclosing_plan_values(
     _write_private_plan(plan_path, payload)
     calls: list[tuple[str, bool]] = []
 
-    def execute(_loaded: object, database_url: str, *, commit: bool) -> object:
+    def execute(
+        _loaded: object, database_url: str, *, commit: bool
+    ) -> MyBankStatementCutoverReceipt:
         calls.append((database_url, commit))
         return _receipt()
 
@@ -419,8 +426,8 @@ def test_preflight_writes_private_bound_receipt_without_disclosing_plan_values(
     }
     rendered = capsys.readouterr().out
     assert "MYBANK_CUTOVER_PREFLIGHT_OK" in rendered
-    assert payload["source"]["path"] not in rendered  # type: ignore[index]
-    assert payload["account"]["aliases"][0]["alias_value"] not in rendered  # type: ignore[index]
+    assert payload["source"]["path"] not in rendered
+    assert payload["account"]["aliases"][0]["alias_value"] not in rendered
 
 
 def test_existing_account_plan_uses_same_rollback_only_command_gate(
@@ -431,7 +438,9 @@ def test_existing_account_plan_uses_same_rollback_only_command_gate(
     _write_private_plan(plan_path, _synthetic_existing_account_plan(tmp_path))
     observed: list[tuple[type[object], bool]] = []
 
-    def execute(loaded: object, _database_url: str, *, commit: bool) -> object:
+    def execute(
+        loaded: object, _database_url: str, *, commit: bool
+    ) -> MyBankStatementCutoverReceipt:
         observed.append((type(loaded.cutover), commit))  # type: ignore[attr-defined]
         return _existing_account_receipt()
 
@@ -481,7 +490,9 @@ def test_production_execution_requires_explicit_gate_and_bound_preflight(
     }
     calls: list[tuple[str, bool]] = []
 
-    def execute(_loaded: object, database_url: str, *, commit: bool) -> object:
+    def execute(
+        _loaded: object, database_url: str, *, commit: bool
+    ) -> MyBankStatementCutoverReceipt:
         calls.append((database_url, commit))
         return _receipt()
 

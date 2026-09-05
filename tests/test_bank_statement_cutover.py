@@ -11,8 +11,6 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import create_engine, text
-from test_mybank_statement_cutover import _safety_proof
-from test_r1_database_migration import _legacy_r1_database, _upgrade_config
 
 from alembic import command
 from ledgerbridge.bank_statement_contract import (
@@ -24,6 +22,7 @@ from ledgerbridge.bank_statement_contract import (
 from ledgerbridge.bank_statement_cutover import (
     BankStatementCutoverGates,
     BankStatementCutoverReceipt,
+    BankStatementEvidenceDescriptor,
     BankStatementExistingAccountRunner,
     ProductionCounts,
     run_transactional_database_bank_statement_existing_account_import,
@@ -51,6 +50,8 @@ from ledgerbridge.mybank_statement_cutover import (
     _expected_after_existing_account,
     _read_production_counts,
 )
+from tests.test_mybank_statement_cutover import _safety_proof
+from tests.test_r1_database_migration import _legacy_r1_database, _upgrade_config
 
 STATEMENT_REF = UUID("72000000-0000-4000-8000-000000000001")
 EVIDENCE_REF = UUID("72000000-0000-4000-8000-000000000002")
@@ -151,7 +152,7 @@ def test_generic_existing_account_runner_keeps_evidence_and_registry_zero_delta(
     plan = _plan(source, statement)
     before = _counts()
     after = _expected_after_existing_account(before, plan)
-    evidence: list[object] = []
+    evidence: list[tuple[Path, BankStatementEvidenceDescriptor]] = []
     authorized: list[object] = []
     imports = iter((_result(created=True), _result(created=False)))
     observed_counts = iter((before, after, after))
@@ -200,7 +201,7 @@ def test_generic_existing_account_runner_keeps_evidence_and_registry_zero_delta(
     assert receipt.after_counts.managed_accounts == before.managed_accounts
     assert len(authorized) == 2
     assert len(evidence) == 1
-    _, descriptor = evidence[0]  # type: ignore[misc]
+    _, descriptor = evidence[0]
     assert descriptor.display_name.endswith(".xls")
 
 
@@ -284,7 +285,7 @@ def test_generic_command_binds_preflight_receipt_before_production(
         plan_path.chmod(0o600)
     calls: list[tuple[str, bool]] = []
 
-    def execute(_loaded: object, database_url: str, *, commit: bool) -> object:
+    def execute(_loaded: object, database_url: str, *, commit: bool) -> BankStatementCutoverReceipt:
         calls.append((database_url, commit))
         return _command_receipt()
 

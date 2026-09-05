@@ -112,6 +112,7 @@ def confirm_test_historical_candidates(
     rows = (
         connection.execute(
             text(
+                ""  # nosec B608 - scope_sql below is one of two fixed literals.
                 "SELECT c.id AS candidate_id, c.entity_id, latest.revision, "
                 "latest.status, latest.business_unit_id, latest.category_id, "
                 "latest.amount_minor, latest.accounting_month "

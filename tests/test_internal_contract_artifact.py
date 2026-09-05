@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from scripts.internal_contract_schema import (
     CONTRACT_VERSION,
@@ -38,7 +39,7 @@ def test_contract_covers_every_internal_response_model() -> None:
 
 
 @pytest.mark.parametrize("model", MODELS, ids=lambda model: model.__name__)
-def test_every_contract_model_forbids_unknown_fields(model: type) -> None:
+def test_every_contract_model_forbids_unknown_fields(model: type[BaseModel]) -> None:
     # A response model that silently accepts extra fields would let Core widen
     # the wire shape without the artifact showing a diff.
     assert model.model_config.get("extra") == "forbid", (

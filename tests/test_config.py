@@ -1,7 +1,8 @@
 from pathlib import Path
+from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from ledgerbridge.config import (
     EvidenceUnlockerRuntimeSettings,
@@ -144,7 +145,7 @@ def test_internal_read_api_is_generation_bound_and_reader_url_is_explicit(tmp_pa
 def test_candidate_command_api_is_complete_synthetic_and_nonproduction(
     tmp_path: Path,
 ) -> None:
-    base = {
+    base: dict[str, Any] = {
         "database_url": "sqlite+pysqlite:///:memory:",
         "artifact_root": tmp_path.resolve(),
         "enable_internal_read_api": True,
@@ -156,7 +157,7 @@ def test_candidate_command_api_is_complete_synthetic_and_nonproduction(
 
     enabled = Settings(
         **base,
-        internal_command_assertion_key="k" * 32,
+        internal_command_assertion_key=SecretStr("k" * 32),
         internal_command_assertion_issuer="ledgerbridge-web-test",
         internal_command_assertion_audience="ledgerbridge-core-test",
     )
@@ -168,7 +169,7 @@ def test_candidate_command_api_is_complete_synthetic_and_nonproduction(
             internal_read_backend="database",
             reader_database_url="postgresql+psycopg://ledgerbridge_reader@db/app",
             internal_read_cursor_key="c" * 32,
-            internal_command_assertion_key="k" * 32,
+            internal_command_assertion_key=SecretStr("k" * 32),
             internal_command_assertion_issuer="ledgerbridge-web-test",
             internal_command_assertion_audience="ledgerbridge-core-test",
         )
@@ -180,7 +181,7 @@ def test_candidate_command_api_is_complete_synthetic_and_nonproduction(
             api_database_url="postgresql://ledgerbridge_api@db/app",
             artifact_root=tmp_path.resolve(),
             enable_internal_candidate_command_api=True,
-            internal_command_assertion_key="k" * 32,
+            internal_command_assertion_key=SecretStr("k" * 32),
             internal_command_assertion_issuer="ledgerbridge-web-test",
             internal_command_assertion_audience="ledgerbridge-core-test",
         )
@@ -204,7 +205,7 @@ def test_candidate_command_api_is_complete_synthetic_and_nonproduction(
         enable_internal_candidate_command_api=True,
         internal_candidate_command_backend="database",
         internal_candidate_command_operational_gate="d1-production-v1",
-        internal_command_assertion_key="k" * 32,
+        internal_command_assertion_key=SecretStr("k" * 32),
         internal_command_assertion_issuer="ledgerbridge-web-test",
         internal_command_assertion_audience="ledgerbridge-core-test",
     )

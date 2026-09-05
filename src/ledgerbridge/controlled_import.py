@@ -752,7 +752,10 @@ def _insert_evidence(
 
 def _insert_candidate(
     connection: Connection,
-    manifest: PreparedManifest,
+    # Only the entity, business unit and the evidence display fields are read,
+    # and a prepared manifest carries those unchanged from its source.  The
+    # hotel payout cutover inserts candidates against the source manifest.
+    manifest: SourceManifest | PreparedManifest,
     category: ImportCategory,
     candidate: ImportCandidate,
 ) -> None:

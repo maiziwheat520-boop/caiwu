@@ -5,12 +5,13 @@ import json
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
 
 from ledgerbridge.bank_statement_contract import (
+    BankStatement,
     BankStatementParserProfile,
 )
 from ledgerbridge.bank_statement_cutover_plan import (
@@ -99,7 +100,7 @@ def _parse(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     rows: list[list[str]] | None = None,
-):
+) -> tuple[Path, BankStatement]:
     source = (tmp_path / "synthetic.xls").resolve()
     source.write_bytes(_OLE)
     book = _Book(rows or _rows())
@@ -249,8 +250,8 @@ def test_generic_persistence_request_carries_ccb_source_profile_identity(
     assert request["parser_profile"] == "ccb_personal_xls_v1"
     assert request["source_system"] == "ccb_personal_xls_export"
     assert request["transaction_count"] == 2
-    first = request["transactions"][0]
-    assert first["transaction_name"] == "消费 | 网银"
+    transactions = cast(list[dict[str, Any]], request["transactions"])
+    assert transactions[0]["transaction_name"] == "消费 | 网银"
 
 
 def test_plan_builder_derives_all_statement_facts_and_rejects_legacy_evidence_policy(
@@ -262,7 +263,7 @@ def test_plan_builder_derives_all_statement_facts_and_rejects_legacy_evidence_po
     backup.mkdir()
     draft = (tmp_path / "draft.json").resolve()
     output = (tmp_path / "plan.json").resolve()
-    payload = {
+    payload: dict[str, Any] = {
         "schema_version": BANK_STATEMENT_EXISTING_ACCOUNT_DRAFT_SCHEMA,
         "target_revision": "a" * 40,
         "parser": {"profile": "ccb_personal_xls_v1"},

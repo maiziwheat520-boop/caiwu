@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from ledgerbridge.abc_company_statement import AbcCompanyStatementError, parse_abc_company_xls
-from ledgerbridge.bank_statement_contract import BankStatementParserProfile
+from ledgerbridge.bank_statement_contract import BankStatement, BankStatementParserProfile
 
 _OLE = bytes.fromhex("D0CF11E0A1B11AE1") + b"synthetic-abc-company-xls"
 
@@ -68,7 +68,9 @@ def _rows() -> list[list[object]]:
     ]
 
 
-def _parse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rows: list[list[object]]):
+def _parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rows: list[list[object]]
+) -> BankStatement:
     path = (tmp_path / "statement.xls").resolve()
     path.write_bytes(_OLE)
     book = _Book(rows)

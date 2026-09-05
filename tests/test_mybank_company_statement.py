@@ -268,6 +268,7 @@ def test_company_range_parser_accepts_official_header_variants(
     headers: tuple[str, ...],
 ) -> None:
     metadata = _rows()[:4]
+    transactions: list[tuple[str, ...]]
     if len(headers) == 11:
         transactions = [
             (

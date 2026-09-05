@@ -16,8 +16,6 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
-from test_mybank_statement import _write_synthetic_mybank_xlsx
-from test_r1_database_migration import _legacy_r1_database, _upgrade_config
 
 from alembic import command
 from ledgerbridge.account_registry import (
@@ -25,6 +23,12 @@ from ledgerbridge.account_registry import (
     AccountRegistryPlan,
     AccountRegistryPlanResult,
     ManagedAccountRegistration,
+)
+from ledgerbridge.bank_statement_contract import (
+    BankStatement as MyBankStatement,
+)
+from ledgerbridge.bank_statement_contract import (
+    BankStatementTransaction as MyBankTransaction,
 )
 from ledgerbridge.bank_statement_persistence import (
     BankStatementImportContext,
@@ -36,8 +40,8 @@ from ledgerbridge.encrypted_artifacts import EncryptedArtifactStore
 from ledgerbridge.file_key_provider import bootstrap_file_key
 from ledgerbridge.internal_read_contract import Capability, EntityGrant, WorkloadPrincipal
 from ledgerbridge.models import EntityType
-from ledgerbridge.mybank_statement import MyBankStatement, MyBankTransaction
 from ledgerbridge.mybank_statement_cutover import (
+    ExistingAccountStatementPlan,
     MyBankCutoverSafetyProof,
     MyBankEvidenceDescriptor,
     MyBankEvidenceMode,
@@ -57,6 +61,8 @@ from ledgerbridge.mybank_statement_cutover import (
     run_transactional_database_mybank_statement_cutover,
     verify_mybank_cutover_safety_proof,
 )
+from tests.test_mybank_statement import _write_synthetic_mybank_xlsx
+from tests.test_r1_database_migration import _legacy_r1_database, _upgrade_config
 
 STATEMENT_REF = UUID("83000000-0000-4000-8000-000000000001")
 EVIDENCE_REF = UUID("83000000-0000-4000-8000-000000000002")
@@ -394,12 +400,12 @@ class _StatementImporter:
 
 class _ExistingAccountAuthorizer:
     def __init__(self, events: list[str] | None = None) -> None:
-        self.calls: list[tuple[MyBankExistingAccountStatementPlan, MyBankStatement]] = []
+        self.calls: list[tuple[ExistingAccountStatementPlan, MyBankStatement]] = []
         self._events = events
 
     def authorize(
         self,
-        plan: MyBankExistingAccountStatementPlan,
+        plan: ExistingAccountStatementPlan,
         statement: MyBankStatement,
     ) -> None:
         if self._events is not None:

@@ -3718,7 +3718,7 @@ def _validate_legacy_channel_verification(
         if evidence_type not in document_counts:
             _invalid_response("payroll legacy evidence type is invalid")
         _require_stable_identifier(evidence_ref, "evidence_ref")
-        assert isinstance(evidence_ref, str)
+        assert isinstance(evidence_ref, str)  # nosec B101 - the check above rejects non-str.
         if evidence_ref in document_refs:
             _invalid_response("payroll legacy evidence references are duplicated")
         document_refs.add(evidence_ref)

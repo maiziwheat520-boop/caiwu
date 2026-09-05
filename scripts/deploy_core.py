@@ -186,7 +186,7 @@ def _require_not_behind(repository: Path, deployed: str, head: str) -> None:
     """Refuse to let an older branch overwrite a newer production revision."""
     if deployed == head:
         raise DeploymentRefused("this revision is already deployed")
-    result = subprocess.run(  # nosec B603
+    result = subprocess.run(  # nosec B603 B607
         ["git", "merge-base", "--is-ancestor", deployed, head],
         cwd=repository,
         capture_output=True,

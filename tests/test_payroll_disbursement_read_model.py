@@ -22,7 +22,8 @@ from scripts.backup_restore import (
 
 def test_payroll_projection_executes_in_postgres_and_preserves_role_boundary() -> None:
     from sqlalchemy import create_engine, text
-    from test_r1_database_migration import _fresh_head_r1_database
+
+    from tests.test_r1_database_migration import _fresh_head_r1_database
 
     with _fresh_head_r1_database() as database_url:
         engine = create_engine(database_url)

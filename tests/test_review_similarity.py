@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -17,6 +18,7 @@ from ledgerbridge.candidate_contract import (
     ReviewSummary,
     SourceProjection,
 )
+from ledgerbridge.counterparty import CounterpartyClass
 from ledgerbridge.review_similarity import (
     GroupExclusionCode,
     RuleLearningBlockCode,
@@ -64,7 +66,9 @@ def _candidate(
         accounting_month="2026-05",
         summary=summary,
         counterparty_ref=counterparty_ref,
-        counterparty_class="known_business" if counterparty_ref is not None else None,
+        counterparty_class=(
+            CounterpartyClass.KNOWN_BUSINESS if counterparty_ref is not None else None
+        ),
         confidence_basis_points=confidence,
         source=SourceProjection(
             ingest_channel=IngestChannel.CONTROLLED_UPLOAD,
@@ -148,12 +152,12 @@ def test_direction_type_entity_account_and_source_do_not_cross_group(
     changed: str,
     value: object,
 ) -> None:
-    base = {
+    base: dict[str, Any] = {
         "short_id": "C-BASE",
         "summary": _yuebao_summary("2026-05-01"),
         "amount_minor": 1,
     }
-    other = {
+    other: dict[str, Any] = {
         "short_id": "C-DIFF",
         "summary": _yuebao_summary("2026-05-02"),
         "amount_minor": -1 if changed == "summary" and "支出" in str(value) else 1,

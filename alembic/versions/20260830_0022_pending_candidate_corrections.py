@@ -453,7 +453,9 @@ def _command_functions_sql(*, allow_pending_corrections: bool) -> str:
                 v_events := ARRAY[v_event_one, v_event_two];
         """
     )
-    return f"""
+    return (
+        ""  # nosec B608 - every interpolated fragment above is a fixed literal.
+        f"""
         CREATE OR REPLACE FUNCTION internal_command.append_candidate_transition(
             p_candidate_id uuid, p_from_revision integer, p_action varchar(32),
             p_actor_ref varchar(200), p_reason varchar(1000), p_decided_at timestamptz,
@@ -863,3 +865,4 @@ def _command_functions_sql(*, allow_pending_corrections: bool) -> str:
         END
         $function$;
     """
+    )

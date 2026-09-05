@@ -14,13 +14,6 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
-from test_r1_database_migration import (
-    _append_audit_event,
-    _assert_db_rejection,
-    _legacy_r1_database,
-    _temporarily_runtime_membership,
-    _upgrade_config,
-)
 
 from alembic import command
 from ledgerbridge.account_registry import (
@@ -29,6 +22,12 @@ from ledgerbridge.account_registry import (
     AccountRegistryPlan,
     AccountRegistryPlanResult,
     ManagedAccountRegistration,
+)
+from ledgerbridge.bank_statement_contract import (
+    BankStatement as MyBankStatement,
+)
+from ledgerbridge.bank_statement_contract import (
+    BankStatementTransaction as MyBankTransaction,
 )
 from ledgerbridge.bank_statement_persistence import (
     BankStatementImportContext,
@@ -45,11 +44,17 @@ from ledgerbridge.internal_read_contract import (
     WorkloadPrincipal,
 )
 from ledgerbridge.models import EntityType
-from ledgerbridge.mybank_statement import MyBankStatement, MyBankTransaction
 from scripts.backup_restore import (
     BANK_STATEMENT_SECURITY_SQL,
     BackupError,
     _validate_bank_statement_security,
+)
+from tests.test_r1_database_migration import (
+    _append_audit_event,
+    _assert_db_rejection,
+    _legacy_r1_database,
+    _temporarily_runtime_membership,
+    _upgrade_config,
 )
 
 STATEMENT_REF = UUID("82000000-0000-4000-8000-000000000001")

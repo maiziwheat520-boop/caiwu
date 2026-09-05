@@ -9,6 +9,8 @@ from pydantic import ValidationError
 from ledgerbridge.company_reporting_composition_contract import (
     CompanyReportCategoryComposition,
     CompanyReportCompositionPage,
+    ConfirmedCandidateComposition,
+    PostedLedgerComposition,
 )
 from ledgerbridge.internal_read_contract import (
     READ_ROUTE_CAPABILITIES,
@@ -69,9 +71,11 @@ def test_composition_contract_keeps_candidate_sign_semantics_explicit() -> None:
         }
     )
 
-    assert page.items[0].positive.total_minor == 10000
-    assert page.items[0].negative.total_minor == 3000
-    assert page.items[0].negative.items[0].category_label is None
+    composition = page.items[0]
+    assert isinstance(composition, ConfirmedCandidateComposition)
+    assert composition.positive.total_minor == 10000
+    assert composition.negative.total_minor == 3000
+    assert composition.negative.items[0].category_label is None
 
 
 def test_composition_contract_accepts_posted_income_and_expense_categories() -> None:
@@ -89,8 +93,10 @@ def test_composition_contract_accepts_posted_income_and_expense_categories() -> 
         }
     )
 
-    assert page.items[0].basis.value == "POSTED_LEDGER"
-    assert page.items[0].revenue.total_minor == 10000
+    composition = page.items[0]
+    assert isinstance(composition, PostedLedgerComposition)
+    assert composition.basis.value == "POSTED_LEDGER"
+    assert composition.revenue.total_minor == 10000
 
 
 @pytest.mark.parametrize(

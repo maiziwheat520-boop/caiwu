@@ -215,8 +215,8 @@ def test_closed_initial_lifecycle_uses_audit_bound_append_only_revision(tmp_path
     loaded = load_private_account_registry_intake(plan_path)
     session = _LifecycleSession([{"revision": 1, "status": "ACTIVE"}])
 
-    revision, status = _ensure_initial_lifecycle(  # type: ignore[arg-type]
-        session,
+    revision, status = _ensure_initial_lifecycle(
+        session,  # type: ignore[arg-type]
         loaded.plan,
         registry_created=True,
     )
@@ -240,8 +240,8 @@ def test_lifecycle_replay_requires_exact_initial_history(tmp_path: Path) -> None
         ]
     )
 
-    assert _ensure_initial_lifecycle(  # type: ignore[arg-type]
-        exact,
+    assert _ensure_initial_lifecycle(
+        exact,  # type: ignore[arg-type]
         loaded.plan,
         registry_created=False,
     ) == (2, "CLOSED")
@@ -249,8 +249,8 @@ def test_lifecycle_replay_requires_exact_initial_history(tmp_path: Path) -> None
 
     conflicting = _LifecycleSession([{"revision": 1, "status": "ACTIVE"}])
     with pytest.raises(AccountRegistryIntakeError, match="replay conflicts"):
-        _ensure_initial_lifecycle(  # type: ignore[arg-type]
-            conflicting,
+        _ensure_initial_lifecycle(
+            conflicting,  # type: ignore[arg-type]
             loaded.plan,
             registry_created=False,
         )
@@ -262,8 +262,8 @@ def test_lifecycle_replay_requires_exact_initial_history(tmp_path: Path) -> None
             {"revision": 3, "status": "INACTIVE"},
         ]
     )
-    assert _ensure_initial_lifecycle(  # type: ignore[arg-type]
-        later_change,
+    assert _ensure_initial_lifecycle(
+        later_change,  # type: ignore[arg-type]
         loaded.plan,
         registry_created=False,
     ) == (2, "CLOSED")
@@ -418,8 +418,8 @@ def test_transaction_runs_two_applies_then_forces_deferred_constraints(
         lambda *_args: next(audit_counts),
     )
 
-    result = run_transactional_account_registry_intake(  # type: ignore[arg-type]
-        Engine(),
+    result = run_transactional_account_registry_intake(
+        Engine(),  # type: ignore[arg-type]
         loaded,
         commit=False,
     )
@@ -484,9 +484,9 @@ def test_fresh_evidence_failure_aborts_staged_artifact(
     monkeypatch.setattr(intake_module, "_insert_fresh_evidence", reject_insert)
 
     with pytest.raises(AccountRegistryIntakeError, match="synthetic persistence rejection"):
-        _ensure_exact_evidence(  # type: ignore[arg-type]
-            session,
-            store,
+        _ensure_exact_evidence(
+            session,  # type: ignore[arg-type]
+            store,  # type: ignore[arg-type]
             loaded,
         )
 

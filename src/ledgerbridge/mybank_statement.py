@@ -15,7 +15,7 @@ from itertools import pairwise
 from pathlib import Path, PurePosixPath
 from typing import Final, Never
 from uuid import UUID, uuid5
-from xml.etree import ElementTree
+from xml.etree import ElementTree  # nosec B405 - _parse_xml rejects DOCTYPE and ENTITY first.
 from zoneinfo import ZoneInfo
 
 from ledgerbridge.bank_statement_contract import (
@@ -790,7 +790,7 @@ def _parse_xml(raw: bytes) -> ElementTree.Element:
     if b"<!DOCTYPE" in raw.upper() or b"<!ENTITY" in raw.upper():
         raise MyBankStatementError("statement XML declarations are unsafe")
     try:
-        return ElementTree.fromstring(raw)
+        return ElementTree.fromstring(raw)  # nosec B314 - declarations are rejected above.
     except ElementTree.ParseError as exc:
         raise MyBankStatementError("statement XML is invalid") from exc
 

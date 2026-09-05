@@ -736,7 +736,8 @@ R1_CUTOVER_INVENTORY_TABLES = tuple(
     )
 )
 _R1_CUTOVER_ROW_COUNTS_SQL = ", ".join(
-    f"'{table}', (SELECT count(*) FROM public.{table})" for table in R1_CUTOVER_INVENTORY_TABLES
+    f"'{table}', (SELECT count(*) FROM public.{table})"  # nosec B608 - fixed table allowlist.
+    for table in R1_CUTOVER_INVENTORY_TABLES
 )
 R1_CUTOVER_INVENTORY_SQL = (
     ""  # nosec B608 - table names come only from fixed repository allowlists.

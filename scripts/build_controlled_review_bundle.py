@@ -215,7 +215,7 @@ def build_bundle(
                 build_hotel_payout_cutover_manifest,
             )
         except ModuleNotFoundError:  # direct ``python scripts/...`` execution
-            from build_hotel_payout_cutover import (  # type: ignore[no-redef]
+            from build_hotel_payout_cutover import (  # type: ignore[no-redef,import-not-found]
                 build_hotel_payout_cutover_manifest,
             )
 

@@ -60,6 +60,13 @@ python_version = "3.12"
 strict = true
 packages = ["ledgerbridge"]
 
+# `rapidocr` lives in the optional `ocr` extra.  Its only import is lazy and
+# already guarded by ImportError, so runtimes without the extra -- CI included
+# -- are a supported configuration, not a missing dependency.
+[[tool.mypy.overrides]]
+module = ["rapidocr.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"
 testpaths = ["tests"]

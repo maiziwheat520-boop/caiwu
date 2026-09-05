@@ -29,8 +29,14 @@ def _upgrade(url: str, revision: str) -> None:
     command.upgrade(config, revision)
 
 
+def _require(condition: object, message: str) -> None:
+    """These checks are the rehearsal's product; `-O` must not remove them."""
+    if not condition:
+        raise AssertionError(message)
+
+
 def _append_audit(connection: Any, action: str, payload: dict[str, object]) -> UUID:
-    return connection.execute(
+    audit_id: UUID = connection.execute(
         text(
             "SELECT public.append_audit_event(:actor, :action, :reason, :rule_version, "
             "CAST(:payload AS jsonb))"
@@ -43,6 +49,7 @@ def _append_audit(connection: Any, action: str, payload: dict[str, object]) -> U
             "payload": json.dumps(payload, separators=(",", ":")),
         },
     ).scalar_one()
+    return audit_id
 
 
 def _seed_pending_candidate(owner_url: str) -> dict[str, UUID]:
@@ -156,7 +163,7 @@ def _seed_pending_candidate(owner_url: str) -> dict[str, UUID]:
                 ),
                 {"candidate": candidate_id, "evidence": evidence_ref},
             )
-            payload = {
+            payload: dict[str, object] = {
                 "event_ref": str(create_event),
                 "candidate_id": str(candidate_id),
                 "candidate_ref": str(candidate_id),
@@ -234,24 +241,31 @@ def _exercise(owner_url: str, api_url: str, reader_url: str, facts: dict[str, UU
     try:
         with api.begin() as connection:
             receipt = connection.execute(_DECISION_SQL, parameters).scalar_one()
-            assert receipt["replayed"] is False
-            assert receipt["candidate"]["status"] == "CONFIRMED"
-            assert receipt["candidate"]["revision"] == 2
-            assert len(receipt["events"]) == 1
-            assert connection.execute(
-                text(
-                    "SELECT NOT has_table_privilege(current_user, 'public.candidate', 'SELECT') "
-                    "AND NOT has_table_privilege(current_user, "
-                    "'public.candidate_revision', 'INSERT')"
-                )
-            ).scalar_one()
+            _require(receipt["replayed"] is False, "first decision was replayed")
+            _require(
+                receipt["candidate"]["status"] == "CONFIRMED",
+                "decision did not confirm the candidate",
+            )
+            _require(receipt["candidate"]["revision"] == 2, "candidate revision did not advance")
+            _require(len(receipt["events"]) == 1, "decision did not emit exactly one event")
+            _require(
+                connection.execute(
+                    text(
+                        "SELECT NOT has_table_privilege(current_user, "
+                        "'public.candidate', 'SELECT') "
+                        "AND NOT has_table_privilege(current_user, "
+                        "'public.candidate_revision', 'INSERT')"
+                    )
+                ).scalar_one(),
+                "API role reached base tables it must not read or write",
+            )
         with api.begin() as connection:
             replay = connection.execute(
                 _DECISION_SQL,
                 {**parameters, "jti": uuid4()},
             ).scalar_one()
-            assert replay["replayed"] is True
-            assert replay["candidate"]["revision"] == 2
+            _require(replay["replayed"] is True, "replay was not recognised as a replay")
+            _require(replay["candidate"]["revision"] == 2, "replay moved the candidate")
         try:
             with api.begin() as connection:
                 connection.execute(
@@ -259,7 +273,7 @@ def _exercise(owner_url: str, api_url: str, reader_url: str, facts: dict[str, UU
                     {**parameters, "operation": uuid4(), "jti": uuid4()},
                 ).scalar_one()
         except SQLAlchemyError as error:
-            assert _sqlstate(error) == "LB002"
+            _require(_sqlstate(error) == "LB002", "stale revision raised the wrong SQLSTATE")
         else:
             raise AssertionError("stale revision unexpectedly succeeded")
         with reader.begin() as connection:
@@ -282,8 +296,8 @@ def _exercise(owner_url: str, api_url: str, reader_url: str, facts: dict[str, UU
                 .scalars()
                 .all()
             )
-            assert len(events) == 1
-            assert events[0]["action"] == "CONFIRM"
+            _require(len(events) == 1, "reader saw the wrong number of events")
+            _require(events[0]["action"] == "CONFIRM", "reader saw the wrong action")
         with owner.begin() as connection:
             counts = connection.execute(
                 text(
@@ -296,7 +310,7 @@ def _exercise(owner_url: str, api_url: str, reader_url: str, facts: dict[str, UU
                 ),
                 facts,
             ).one()
-            assert tuple(counts) == (2, 2, 1, 2)
+            _require(tuple(counts) == (2, 2, 1, 2), "owner counts do not match the rehearsal")
     finally:
         api.dispose()
         reader.dispose()

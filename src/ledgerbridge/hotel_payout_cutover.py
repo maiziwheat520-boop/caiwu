@@ -365,23 +365,25 @@ def _preflight_cutover(
             raise HotelPayoutCutoverError("existing OCR evidence identity conflicts")
 
     for replacement in cutover.replacements:
-        row = _current_candidate_row(connection, replacement.legacy_candidate_ref, lock=True)
+        candidate_row = _current_candidate_row(
+            connection, replacement.legacy_candidate_ref, lock=True
+        )
         if (
-            row["source_system_id"] != "hotel_photo_reconciliation"
-            or row["status"] != "PENDING"
-            or row["entity_id"] != cutover.entity_ref
-            or row["business_unit_id"] != cutover.business_unit_ref
-            or row["amount_minor"] != replacement.amount_minor
+            candidate_row["source_system_id"] != "hotel_photo_reconciliation"
+            or candidate_row["status"] != "PENDING"
+            or candidate_row["entity_id"] != cutover.entity_ref
+            or candidate_row["business_unit_id"] != cutover.business_unit_ref
+            or candidate_row["amount_minor"] != replacement.amount_minor
         ):
             raise HotelPayoutCutoverError("legacy hotel candidate is not replaceable")
     for link in cutover.evidence_links:
-        row = _current_candidate_row(connection, link.evidence_candidate_ref, lock=False)
+        candidate_row = _current_candidate_row(connection, link.evidence_candidate_ref, lock=False)
         if (
-            row["source_system_id"] != "boc_mail_derived_review"
-            or row["status"] != "PENDING"
-            or row["entity_id"] != cutover.entity_ref
-            or row["business_unit_id"] != cutover.business_unit_ref
-            or row["amount_minor"] != link.amount_minor
+            candidate_row["source_system_id"] != "boc_mail_derived_review"
+            or candidate_row["status"] != "PENDING"
+            or candidate_row["entity_id"] != cutover.entity_ref
+            or candidate_row["business_unit_id"] != cutover.business_unit_ref
+            or candidate_row["amount_minor"] != link.amount_minor
         ):
             raise HotelPayoutCutoverError("bank evidence candidate does not match cutover")
     return evidence_refs - set(evidence_by_ref)
@@ -394,6 +396,7 @@ def _current_candidate_row(
     row = (
         connection.execute(
             text(
+                ""  # nosec B608 - suffix above is one of two fixed literals.
                 "SELECT c.id, c.entity_id, cs.source_system_id, r.revision, r.status, "
                 "r.business_unit_id, r.business_unit_ref_snapshot, "
                 "r.business_unit_label_snapshot, r.category_id, r.category_code_snapshot, "

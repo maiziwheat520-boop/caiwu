@@ -1788,7 +1788,7 @@ class _DatabaseEvidenceBoundary:
             else:
                 self._abort_publication()
             raise
-        assert session is not None
+        assert session is not None  # nosec B101 - every path above either binds or raises.
         self._pending_session = session
         self._evidence_staged = True
 
