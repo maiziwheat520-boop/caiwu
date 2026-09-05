@@ -2014,15 +2014,21 @@ def test_security_function_forward_migration_repairs_historical_definitions(
             connection.execute(text("ALTER TABLE business_unit DISABLE TRIGGER USER"))
             connection.execute(text("ALTER TABLE posting DISABLE TRIGGER USER"))
             connection.execute(text("ALTER TABLE journal_entry DISABLE TRIGGER USER"))
+            connection.execute(text("ALTER TABLE audit_event DISABLE TRIGGER USER"))
             connection.execute(text("DELETE FROM posting_attribution"))
             connection.execute(text("DELETE FROM journal_entry_attribution"))
             connection.execute(text("DELETE FROM reporting_category"))
             connection.execute(text("DELETE FROM business_unit"))
             connection.execute(text("DELETE FROM posting"))
             connection.execute(text("DELETE FROM journal_entry"))
+            # 20260830_0022 additionally guards on the audit log, which the
+            # POSTED transition above is required to write; it goes last because
+            # journal_entry carries the foreign keys into it.
+            connection.execute(text("DELETE FROM audit_event"))
         # PostgreSQL requires the pending row-level trigger events to be
         # committed before the trigger state can be restored.
         with temporary_admin_engine.begin() as connection:
+            connection.execute(text("ALTER TABLE audit_event ENABLE TRIGGER USER"))
             connection.execute(text("ALTER TABLE journal_entry ENABLE TRIGGER USER"))
             connection.execute(text("ALTER TABLE posting ENABLE TRIGGER USER"))
             connection.execute(text("ALTER TABLE business_unit ENABLE TRIGGER USER"))
