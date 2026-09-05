@@ -338,6 +338,32 @@ class SyntheticState:
     def connections(self) -> list[dict[str, str]]:
         return deepcopy(SYNTHETIC_CONNECTIONS)
 
+    def company_bank_statements(self) -> dict[str, object]:
+        # Synthetic preview has no company bank review backend, and inventing
+        # company statements here would put invented financial rows in front of
+        # anyone running the offline preview. Report the same unavailability the
+        # core-backed adapter reports when its client is absent, so the route
+        # answers with a structured problem instead of crashing on a missing
+        # attribute.
+        raise CoreBackendError(
+            503,
+            _problem(
+                503,
+                "COMPANY_BANK_REVIEW_UNAVAILABLE",
+                "合成预览未连接公司账单复核后端",
+            ),
+        )
+
+    def company_transaction_classifications(self) -> dict[str, object]:
+        raise CoreBackendError(
+            503,
+            _problem(
+                503,
+                "COMPANY_CLASSIFICATION_REVIEW_UNAVAILABLE",
+                "合成预览未连接公司流水分类后端",
+            ),
+        )
+
     def candidate_detail(self, candidate_id: str) -> dict[str, object] | None:
         with self.lock:
             candidate = self.persistence.get_candidate(candidate_id) if self.persistence is not None else self.candidates.get(candidate_id)

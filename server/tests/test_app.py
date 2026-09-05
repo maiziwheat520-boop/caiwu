@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from server.app import SyntheticState, create_server, run
+from server.core_backend import CoreBackendError
 
 
 class SyntheticBffTests(unittest.TestCase):
@@ -681,3 +682,27 @@ class SyntheticBffTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SyntheticCompanyEndpointTests(unittest.TestCase):
+    """Synthetic preview has no company review backend and must say so.
+
+    Both routes previously called through to a method SyntheticState did not
+    define, so the offline preview answered these two paths with an
+    AttributeError traceback instead of a response.
+    """
+
+    def test_company_endpoints_report_unavailable_rather_than_crashing(self) -> None:
+        state = SyntheticState()
+        for read, expected in (
+            (state.company_bank_statements, "COMPANY_BANK_REVIEW_UNAVAILABLE"),
+            (
+                state.company_transaction_classifications,
+                "COMPANY_CLASSIFICATION_REVIEW_UNAVAILABLE",
+            ),
+        ):
+            with self.subTest(expected=expected):
+                with self.assertRaises(CoreBackendError) as raised:
+                    read()
+                self.assertEqual(raised.exception.status, 503)
+                self.assertEqual(raised.exception.payload["code"], expected)
