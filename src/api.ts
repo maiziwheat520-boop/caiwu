@@ -85,6 +85,30 @@ export function createOperationId(): string {
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  if ((init?.method ?? 'GET').toUpperCase() !== 'GET') return fetchJson<T>(path, init)
+
+  const controller = new AbortController()
+  const callerSignal = init?.signal
+  const abortFromCaller = () => controller.abort(callerSignal?.reason)
+  if (callerSignal?.aborted) abortFromCaller()
+  else callerSignal?.addEventListener('abort', abortFromCaller, { once: true })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new ApiError('读取数据超过 20 秒，请检查网络连接后重试。', 408, 'READ_TIMEOUT'))
+      controller.abort()
+    }, 20_000)
+  })
+  try {
+    // Race the entire JSON read so stalled response bodies also have a deadline.
+    return await Promise.race([fetchJson<T>(path, { ...init, signal: controller.signal }), deadline])
+  } finally {
+    clearTimeout(timer)
+    callerSignal?.removeEventListener('abort', abortFromCaller)
+  }
+}
+
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: 'same-origin',
     ...init,
