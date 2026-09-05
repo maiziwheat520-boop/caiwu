@@ -87,11 +87,17 @@ class HostFacts:
 
 
 def _run(command: tuple[str, ...], *, cwd: Path | None = None) -> str:
+    # The encoding is pinned. Left to the platform default this decodes remote
+    # output as GBK on this machine, and a single non-GBK byte in a container's
+    # log raises inside subprocess's reader thread -- which would swallow the
+    # error text of a failing step just when it is needed most.
     result = subprocess.run(  # nosec B603
         list(command),
         cwd=cwd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if result.returncode != 0:
