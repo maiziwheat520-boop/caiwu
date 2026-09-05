@@ -575,13 +575,15 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
         if candidate_ref is not None:
             scopes = (self._event_scope(principal, candidate_ref),)
         else:
+            # Reuse the reader's scope builder rather than re-deriving it here.
+            # This branch used to read grant.business_unit_bindings directly,
+            # so a grant carrying refs or IDs without explicit bindings -- which
+            # the model permits and every candidate read rejects outright --
+            # silently produced a narrower scope set instead of failing closed,
+            # quietly hiding the events of every assigned candidate.
             scopes = tuple(
                 (grant.entity_ref, business_unit_id)
-                for grant in principal.grants
-                for business_unit_id in (
-                    *(value for _, value in grant.business_unit_bindings),
-                    *((None,) if grant.allow_unassigned_candidates else ()),
-                )
+                for grant, business_unit_id in self._candidate_scopes(principal, business_unit=None)
             )
             if not scopes:
                 raise ResourceNotVisible("candidate event scope is not visible")
@@ -908,22 +910,11 @@ class DatabaseInternalReviewService(DatabaseInternalReadService):
     def _event_scope(
         self,
         principal: WorkloadPrincipal,
-        candidate_ref: UUID | None,
+        candidate_ref: UUID,
     ) -> tuple[UUID, UUID | None]:
-        if candidate_ref is not None:
-            candidate = self.get_candidate(principal, candidate_ref)
-            current, _ = self._command_scope(principal, candidate, None)
-            return candidate.entity_ref, current
-        bindings = [
-            (grant.entity_ref, binding_id)
-            for grant in principal.grants
-            for _, binding_id in grant.business_unit_bindings
-        ]
-        if len(bindings) != 1:
-            raise CandidateCommandUnavailable(
-                "database event listing requires exactly one bound business-unit scope"
-            )
-        return bindings[0]
+        candidate = self.get_candidate(principal, candidate_ref)
+        current, _ = self._command_scope(principal, candidate, None)
+        return candidate.entity_ref, current
 
     @staticmethod
     def _command_scope(
