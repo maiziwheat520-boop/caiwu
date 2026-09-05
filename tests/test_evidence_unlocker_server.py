@@ -109,7 +109,9 @@ async def test_server_rejects_unexpected_peer_uid_before_processing(tmp_path: Pa
     server = await start_evidence_unlocker_server(
         socket_path,
         CountingProcessor(),
-        allowed_uid=int(os.geteuid()) + 1,  # type: ignore[attr-defined]
+        # `os.geteuid` is POSIX-only, so the ignore fires on Windows and would
+        # itself be unused on CI's Linux; listing both codes suits either platform.
+        allowed_uid=int(os.geteuid()) + 1,  # type: ignore[attr-defined,unused-ignore]
     )
     try:
         with pytest.raises(EvidenceUnlockerClientError):
