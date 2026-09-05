@@ -536,6 +536,7 @@ export type CompanyTransactionCategory =
 
 export type CompanyOperatingFeeReportingItem =
   | 'BANK_FEES'
+  | 'SOCIAL_SECURITY'
   | 'TAX'
   | 'INSURANCE'
   | 'DISINFECTION'

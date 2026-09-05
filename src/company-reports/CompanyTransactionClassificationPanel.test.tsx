@@ -28,6 +28,41 @@ const page: CompanyTransactionClassificationsResponse = {
 describe('CompanyTransactionClassificationPanel', () => {
   afterEach(() => vi.restoreAllMocks())
 
+  it.each([['社保', 'SOCIAL_SECURITY'], ['税款', 'TAX']])('suggests %s for treasury debits but submits only after explicit confirmation', async (label, code) => {
+    const treasuryPage = { ...page, items: [{ ...page.items[0], amount_minor: -120000, counterparty_name: '国家金库某支库' }] }
+    vi.spyOn(api, 'getCompanyTransactionClassifications').mockResolvedValue(treasuryPage)
+    const review = vi.spyOn(api, 'reviewCompanyTransactionClassification').mockResolvedValue({
+      contract_version: 'ledgerbridge.company-transaction-classification-review.v1',
+      transaction_ref: transactionRef, status: 'CONFIRMED', category_code: 'OPERATING_FEE',
+      reporting_item_code: code, reporting_item_revision: 1, revision: 2, created: true,
+    })
+    render(<CompanyTransactionClassificationPanel csrfToken="csrf-test" />)
+    const choice = await screen.findByRole('button', { name: label })
+    expect(screen.getByLabelText(`确认分类 ${transactionRef}`)).toHaveValue('')
+    expect(review).not.toHaveBeenCalled()
+    fireEvent.click(choice)
+    expect(screen.getByLabelText(`确认分类 ${transactionRef}`)).toHaveValue('OPERATING_FEE')
+    expect(screen.getByLabelText(`营运费明细 ${transactionRef}`)).toHaveValue(code)
+    expect(review).not.toHaveBeenCalled()
+    const approve = screen.getByRole('button', { name: '确认本笔分类' })
+    expect(approve).toBeDisabled()
+    fireEvent.change(screen.getByLabelText(`审批理由 ${transactionRef}`), { target: { value: '已核对本笔缴款凭证' } })
+    fireEvent.click(approve)
+    await waitFor(() => expect(review).toHaveBeenCalledWith({ transaction: treasuryPage.items[0],
+      categoryCode: 'OPERATING_FEE', reportingItemCode: code, reason: '已核对本笔缴款凭证', csrfToken: 'csrf-test' }))
+  })
+
+  it.each([[120000, '国家金库'], [0, '国库'], [-120000, '普通供应商']])('does not suggest treasury choices for amount %s and counterparty %s', async (amount, counterparty) => {
+    vi.spyOn(api, 'getCompanyTransactionClassifications').mockResolvedValue({ ...page,
+      items: [{ ...page.items[0], amount_minor: Number(amount), counterparty_name: String(counterparty) }] })
+    render(<CompanyTransactionClassificationPanel csrfToken="csrf-test" />)
+    await screen.findByText('1 条待确认')
+    expect(screen.queryByRole('button', { name: '社保' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '税款' })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText(`确认分类 ${transactionRef}`), { target: { value: 'OPERATING_FEE' } })
+    expect(screen.getByRole('option', { name: '社保' })).toHaveValue('SOCIAL_SECURITY')
+  })
+
   it('requires an explicit per-transaction category and reason before approval', async () => {
     vi.spyOn(api, 'getCompanyTransactionClassifications').mockResolvedValue(page)
     const review = vi.spyOn(api, 'reviewCompanyTransactionClassification').mockResolvedValue({
