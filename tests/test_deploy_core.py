@@ -206,6 +206,30 @@ def test_a_failure_after_the_host_is_touched_raises_deployment_failed(
     assert any("tar" in str(command) for command in host.commands), "a backup must be taken first"
 
 
+def test_a_failed_release_puts_the_old_file_contents_back(repository: Path) -> None:
+    # Restarting the old image is not on its own a rollback: the host's source
+    # tree would keep the new files, so its manifest would stop describing what
+    # is deployed and the next release would diff against a tree nobody chose.
+    older, _ = _revisions(repository)
+
+    class _BreakingHost(_StubHost):
+        def shell(self, script: str) -> str:
+            self.commands.append(("shell", script))
+            if "tar" in script or "sed" in script or "printf" in script:
+                return ""
+            raise subprocess.CalledProcessError(1, ("remote",), output="build failed")
+
+    host = _BreakingHost(revision=older)
+    with pytest.raises(DeploymentFailed):
+        _deploy(repository, host, dry_run=False)
+
+    # second.txt did not exist at the previous revision, so putting it back
+    # means removing it rather than restoring content.
+    assert any(
+        command[0] == "rm" and command[-1].endswith("second.txt") for command in host.commands
+    ), "a file the release added must be removed on rollback"
+
+
 def test_host_facts_are_immutable() -> None:
     facts = HostFacts(deployed_revision="a" * 40, compose_files=("one.yml",))
 

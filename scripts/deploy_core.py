@@ -30,6 +30,7 @@ import re
 import shlex
 import subprocess  # nosec B404
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -248,23 +249,76 @@ def _set_revision(host: Host, root: PurePosixPath, revision: str) -> None:
     for key in ("LEDGERBRIDGE_REVISION", "DEPLOYED_REVISION"):
         # The .env file holds credentials; it is edited in place and never read back.
         host.shell(f"sudo sed -i {shlex.quote(f's/^{key}=.*/{key}={revision}/')} {env}")
+    # shlex.join quotes the format string, so the newline survives Python, this
+    # script's own quoting, and the remote shell. Hand-escaping it does not:
+    # the first release this script ran wrote a literal "n" onto the end of the
+    # revision, and the check below is what caught it.
     host.shell(
-        f"printf %s\\\\n {shlex.quote(revision)} | "
-        f"sudo tee {shlex.quote(str(root / 'DEPLOYED_REVISION'))} > /dev/null"
+        shlex.join(("printf", "%s\n", revision))
+        + " | "
+        + shlex.join(("sudo", "tee", str(root / "DEPLOYED_REVISION")))
+        + " > /dev/null"
     )
     written = host.run("cat", str(root / "DEPLOYED_REVISION")).strip()
     if written != revision:
         raise DeploymentFailed(f"revision marker did not take: {written!r}")
 
 
-def _rollback(host: Host, facts: HostFacts, root: PurePosixPath, services: tuple[str, ...]) -> str:
+def _restore_files(
+    host: Host,
+    repository: Path,
+    root: PurePosixPath,
+    revision: str,
+    changed: tuple[str, ...],
+    staging: Path,
+) -> None:
+    """Put back the file contents that were live at `revision`.
+
+    Restarting the old image is not on its own a rollback: the host's source
+    tree would keep the new files, so its manifest would no longer describe
+    what is deployed, and the next release would compute its diff against a
+    tree nobody chose.
+
+    A file the release added does not exist at `revision`, so putting it back
+    means removing it. That is safe in a way deleting during a release is not:
+    the only thing removed is what this run just uploaded.
+    """
+    for name in changed:
+        previous = subprocess.run(  # nosec B603 B607
+            ["git", "show", f"{revision}:{name}"],
+            cwd=repository,
+            capture_output=True,
+            check=False,
+        )
+        if previous.returncode != 0:
+            host.run("rm", "-f", str(root / name))
+            continue
+        local = staging / Path(name).name
+        local.write_bytes(previous.stdout)
+        remote = PurePosixPath("/tmp") / f"lb-rollback-{Path(name).name}"  # nosec B108
+        host.upload(local, remote)
+        host.run("install", "-o", "root", "-g", "root", "-m", "644", str(remote), str(root / name))
+        host.run("rm", "-f", str(remote))
+
+
+def _rollback(
+    host: Host,
+    facts: HostFacts,
+    root: PurePosixPath,
+    services: tuple[str, ...],
+    *,
+    repository: Path,
+    changed: tuple[str, ...],
+    staging: Path,
+) -> str:
     """Return the host to the revision that was live when this run started."""
     try:
+        _restore_files(host, repository, root, facts.deployed_revision, changed, staging)
         _set_revision(host, root, facts.deployed_revision)
         _compose(host, facts, root, "up", "-d", *services)
         states = _await_health(host, services)
         return f"rolled back to {facts.deployed_revision[:7]}; services {states}"
-    except (subprocess.CalledProcessError, DeploymentFailed) as error:
+    except (subprocess.CalledProcessError, DeploymentFailed, OSError) as error:
         return (
             f"ROLLBACK FAILED ({error}); the host is between revisions and needs a person: "
             f"restore {DEFAULT_BACKUP_ROOT} and restart from {facts.deployed_revision[:7]}"
@@ -376,7 +430,19 @@ def deploy(
     except (subprocess.CalledProcessError, DeploymentFailed, OSError) as error:
         detail = getattr(error, "output", None) or str(error)
         print(f"\nFAILED: {detail}", file=sys.stderr)
-        print(_rollback(host, facts, root, services), file=sys.stderr)
+        with tempfile.TemporaryDirectory() as scratch:
+            print(
+                _rollback(
+                    host,
+                    facts,
+                    root,
+                    services,
+                    repository=repository,
+                    changed=changed,
+                    staging=Path(scratch),
+                ),
+                file=sys.stderr,
+            )
         print(f"pre-deploy backup: {backup}", file=sys.stderr)
         raise DeploymentFailed(str(detail)) from error
 
