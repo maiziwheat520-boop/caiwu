@@ -82,6 +82,14 @@ class _Session:
             raise self.failure
         if "current_audit_horizon" in sql:
             return _Result([{"sequence": 11, "hash": b"h" * 32}])
+        if "get_candidate_as_of" in sql:
+            assert params is not None
+            matches = [
+                row
+                for row in [self.candidate_row]
+                if row.get("candidate_ref") == params["candidate_ref"]
+            ]
+            return _Result(matches[:1])
         if "list_candidates_as_of" in sql:
             return _Result([self.candidate_row])
         if "list_candidate_evidence_satisfactions" in sql:

@@ -634,31 +634,7 @@ class DatabaseInternalReadService:
             _validate_month(month)
         if business_unit is not None and not (1 <= len(business_unit) <= 100):
             raise ValueError("business_unit must contain 1 to 100 characters")
-        scopes_by_grant: list[tuple[EntityGrant, UUID | None]] = []
-        for grant in principal.grants:
-            if (grant.business_unit_refs or grant.business_unit_ids) and not (
-                grant.business_unit_bindings
-            ):
-                raise InternalReadBackendUnavailable(
-                    "database grants require explicit business-unit ref/UUID bindings"
-                )
-            selected_bindings = tuple(
-                (ref, value)
-                for ref, value in grant.business_unit_bindings
-                if business_unit is None or ref == business_unit
-            )
-            scopes_by_grant.extend((grant, value) for _, value in selected_bindings)
-            if grant.allow_unassigned_candidates:
-                scopes_by_grant.append((grant, None))
-
-        # Scope order must be stable across pages: a cursor carries one keyset
-        # position per scope and resumes them by index.
-        scopes_by_grant.sort(
-            key=lambda item: (
-                str(item[0].entity_ref),
-                "" if item[1] is None else str(item[1]),
-            )
-        )
+        scopes_by_grant = self._candidate_scopes(principal, business_unit=business_unit)
 
         if cursor is not None and self._cursor_signer is None:
             raise InternalReadBackendUnavailable("signed cursor key is unavailable")
@@ -846,24 +822,132 @@ class DatabaseInternalReadService:
                 raise InternalReadBackendUnavailable("signed cursor could not be issued") from exc
         return CandidatePage(items=page_items, next_cursor=next_cursor)
 
+    def _candidate_scopes(
+        self,
+        principal: WorkloadPrincipal,
+        *,
+        business_unit: str | None,
+    ) -> list[tuple[EntityGrant, UUID | None]]:
+        """Every authorized (entity, business unit) pair, in a stable order.
+
+        The order matters: a page cursor carries one keyset position per scope
+        and resumes them by index.
+        """
+        scopes: list[tuple[EntityGrant, UUID | None]] = []
+        for grant in principal.grants:
+            if (grant.business_unit_refs or grant.business_unit_ids) and not (
+                grant.business_unit_bindings
+            ):
+                raise InternalReadBackendUnavailable(
+                    "database grants require explicit business-unit ref/UUID bindings"
+                )
+            selected_bindings = tuple(
+                (ref, value)
+                for ref, value in grant.business_unit_bindings
+                if business_unit is None or ref == business_unit
+            )
+            scopes.extend((grant, value) for _, value in selected_bindings)
+            if grant.allow_unassigned_candidates:
+                scopes.append((grant, None))
+        scopes.sort(
+            key=lambda item: (
+                str(item[0].entity_ref),
+                "" if item[1] is None else str(item[1]),
+            )
+        )
+        return scopes
+
     def get_candidate(
         self,
         principal: WorkloadPrincipal,
         candidate_ref: UUID,
     ) -> CandidateProjection:
         require_capability(principal, Capability.CANDIDATE_READ)
-        # Migration C intentionally exposes a bounded list function rather than
-        # a broad candidate SELECT.  Resolve a single object through that same
-        # allowlisted path, then apply object scope before returning it.
-        cursor: str | None = None
-        while True:
-            page = self.list_candidates(principal, cursor=cursor)
-            for candidate in page.items:
-                if candidate.candidate_ref == candidate_ref:
-                    return candidate
-            if page.next_cursor is None:
-                break
-            cursor = page.next_cursor
+        # Resolving one candidate used to page through the whole collection,
+        # which reached 1.5 s for a candidate near the end of the ledger. The
+        # allowlisted reader now answers by reference, one indexed lookup per
+        # authorized scope, and object scope is still applied to the row.
+        scopes = self._candidate_scopes(principal, business_unit=None)
+        try:
+            with self._session_factory() as session:
+                sequence, horizon_hash = self._audit_horizon(session)
+                for grant, business_unit_id in scopes:
+                    row = (
+                        session.execute(
+                            text(
+                                """
+                                SELECT * FROM internal_read.get_candidate_as_of(
+                                    :entity_id, :business_unit_id, :candidate_ref,
+                                    :horizon_sequence, :horizon_hash
+                                )
+                                """
+                            ),
+                            {
+                                "entity_id": grant.entity_ref,
+                                "business_unit_id": business_unit_id,
+                                "candidate_ref": candidate_ref,
+                                "horizon_sequence": sequence,
+                                "horizon_hash": horizon_hash,
+                            },
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    if row is None:
+                        continue
+                    row_map = cast(Mapping[str, object], dict(row))
+                    candidate = self._candidate(row_map)
+                    if candidate.entity_ref != grant.entity_ref:
+                        raise InternalReadBackendUnavailable(
+                            "database candidate scope binding is invalid"
+                        )
+                    if business_unit_id is None:
+                        if candidate.business_unit_ref is not None:
+                            raise InternalReadBackendUnavailable(
+                                "database candidate scope binding is invalid"
+                            )
+                    else:
+                        expected_ref = next(
+                            ref
+                            for ref, value in grant.business_unit_bindings
+                            if value == business_unit_id
+                        )
+                        if candidate.business_unit_ref != expected_ref:
+                            raise InternalReadBackendUnavailable(
+                                "database candidate scope binding is invalid"
+                            )
+                    if candidate.candidate_ref != candidate_ref:
+                        raise InternalReadBackendUnavailable(
+                            "database candidate reference does not match the request"
+                        )
+                    satisfied: frozenset[ReviewRiskCode] = frozenset()
+                    counterparty: tuple[str, CounterpartyClass] | None = None
+                    if business_unit_id is not None:
+                        satisfied = self._candidate_risk_satisfactions(
+                            session,
+                            entity_ref=grant.entity_ref,
+                            business_unit_id=business_unit_id,
+                            candidate_ids=(candidate_ref,),
+                            horizon_sequence=sequence,
+                            horizon_hash=horizon_hash,
+                        ).get(candidate_ref, frozenset())
+                        counterparty = self._candidate_counterparty_facts(
+                            session,
+                            entity_ref=grant.entity_ref,
+                            business_unit_id=business_unit_id,
+                            candidate_ids=(candidate_ref,),
+                            horizon_sequence=sequence,
+                            horizon_hash=horizon_hash,
+                        ).get(candidate_ref)
+                    return self._candidate(
+                        row_map,
+                        satisfied_review_risk_codes=satisfied,
+                        counterparty=counterparty,
+                    )
+        except (InternalReadBackendUnavailable, ResourceNotVisible):
+            raise
+        except (SQLAlchemyError, ValueError, TypeError, KeyError) as exc:
+            raise InternalReadBackendUnavailable("database candidate read failed") from exc
         raise ResourceNotVisible("resource was not found")
 
     def get_evidence(

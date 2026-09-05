@@ -17,7 +17,6 @@ from ledgerbridge.counterparty import CounterpartyClass
 from ledgerbridge.crypto import SecretStreamCipher, _parse_envelope
 from ledgerbridge.encrypted_artifacts import EncryptedArtifactStore
 from ledgerbridge.internal_read_contract import (
-    CandidatePage,
     Capability,
     EntityGrant,
     ResourceNotVisible,
@@ -104,6 +103,12 @@ class _Session:
                 []
                 if self.accounting_dimensions is None
                 else [{"dimensions": self.accounting_dimensions}]
+            )
+        if "get_candidate_as_of" in sql:
+            assert params is not None
+            wanted = params["candidate_ref"]
+            return _Result(
+                [row for row in self.candidate_rows if row.get("candidate_ref") == wanted][:1]
             )
         if "list_candidates_as_of" in sql:
             return _Result(self.candidate_rows)
@@ -993,17 +998,38 @@ def test_database_reader_scans_past_nonmatching_month_rows() -> None:
     assert session.calls == 2
 
 
-def test_database_candidate_detail_follows_issued_cursors() -> None:
+def test_database_candidate_detail_resolves_by_reference_without_paging() -> None:
+    # Resolving a detail used to walk the candidate pages until the reference
+    # turned up, which reached 1.5 s for a candidate near the end of the ledger.
     candidate = SyntheticInternalReadService()._fixture.candidates[1]
+    row = candidate.model_dump()
+    row["entity_ref"] = ENTITY
+    row["business_unit_ref"] = "unit-demo-a"
+    session = _Session(row)
+    service = DatabaseInternalReadService(
+        lambda: cast(Session, session), ReadCursorSigner("k" * 32)
+    )
 
-    class PagedService(DatabaseInternalReadService):
-        calls = 0
+    detail = service.get_candidate(_principal(), candidate.candidate_ref)
 
-        def list_candidates(self, principal: WorkloadPrincipal, **kwargs: Any) -> CandidatePage:
-            self.calls += 1
-            if self.calls == 1:
-                return CandidatePage(items=(), next_cursor="next")
-            return CandidatePage(items=(candidate,))
+    assert detail.candidate_ref == candidate.candidate_ref
+    statements = session.statements
+    assert any("get_candidate_as_of" in statement for statement in statements)
+    assert not [statement for statement in statements if "list_candidates_as_of" in statement], (
+        "a detail read must not page through the candidate collection"
+    )
+    assert all("public." not in statement for statement in statements)
 
-    service = PagedService(lambda: cast(Session, _Session({})), ReadCursorSigner("k" * 32))
-    assert service.get_candidate(_principal(), candidate.candidate_ref) == candidate
+
+def test_database_candidate_detail_is_not_visible_outside_scope() -> None:
+    candidate = SyntheticInternalReadService()._fixture.candidates[1]
+    row = candidate.model_dump()
+    row["entity_ref"] = ENTITY
+    row["business_unit_ref"] = "unit-demo-a"
+    session = _Session(row)
+    service = DatabaseInternalReadService(
+        lambda: cast(Session, session), ReadCursorSigner("k" * 32)
+    )
+
+    with pytest.raises(ResourceNotVisible):
+        service.get_candidate(_principal(), UUID("40000000-0000-4000-8000-00000000dead"))
