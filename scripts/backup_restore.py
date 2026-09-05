@@ -2537,6 +2537,7 @@ BANK_STATEMENT_REVIEW_API_GRANT_REVISION = "20260902_0035"
 CASH_RECONCILIATION_REVISION = "20260903_0036"
 COMPANY_TRANSACTION_CLASSIFICATION_REVISION = "20260903_0037"
 PAYROLL_DISBURSEMENT_READ_MODEL_REVISION = "20260905_0048"
+REPORTING_ITEM_CORRECTION_REVISION = "20260905_0049"
 COMPANY_TRANSACTION_CLASSIFICATION_TABLE = "company_transaction_classification"
 COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES = {
     ("public", "r1_validate_company_transaction_classification"): "",
@@ -2575,6 +2576,11 @@ COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES = {
         "p_entity_ref uuid, p_pay_period text, p_audit_horizon_sequence bigint, "
         "p_audit_horizon_hash bytea, p_limit integer"
     ),
+    ("internal_import", "correct_company_transaction_reporting_item"): (
+        "p_transaction_ref uuid, p_expected_revision integer, "
+        "p_expected_category_code text, p_expected_reporting_item_code text, "
+        "p_reporting_item_code text, p_operation_id uuid, p_actor_ref text, p_reason text"
+    ),
     ("internal_import", "backfill_company_transaction_reporting_item"): (
         "p_transaction_ref uuid, p_expected_revision integer, "
         "p_expected_category_code text, p_reporting_item_code text, "
@@ -2600,6 +2606,7 @@ COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_RESULTS = {
     ("internal_read", "get_company_transaction_classification_summary_as_of"): "jsonb",
     ("internal_read", "get_company_transaction_classification_summary_v2_as_of"): "jsonb",
     ("internal_read", "list_payroll_disbursement_records_as_of"): "TABLE(item jsonb)",
+    ("internal_import", "correct_company_transaction_reporting_item"): "jsonb",
     ("internal_import", "backfill_company_transaction_reporting_item"): "jsonb",
     ("internal_import", "resolve_company_transaction_reporting_item"): (
         "TABLE(item_code text, item_revision integer)"
@@ -3050,6 +3057,7 @@ MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
         CANDIDATE_BY_REF_READER_REVISION,
         OPERATING_FEE_REPORTING_ITEM_REVIEW_REVISION,
         PAYROLL_DISBURSEMENT_READ_MODEL_REVISION,
+        REPORTING_ITEM_CORRECTION_REVISION,
     }
 )
 COMPANY_REPORTING_SCHEMA = "company_reporting_read"
@@ -7060,6 +7068,10 @@ def _validate_company_transaction_classification_security(
         )
         expected_function_executors.pop(
             ("internal_read", "get_company_transaction_classification_summary_as_of")
+        )
+    if revision < REPORTING_ITEM_CORRECTION_REVISION:
+        expected_function_signatures.pop(
+            ("internal_import", "correct_company_transaction_reporting_item")
         )
     if revision < PAYROLL_DISBURSEMENT_READ_MODEL_REVISION:
         expected_function_signatures.pop(

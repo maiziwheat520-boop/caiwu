@@ -1,3 +1,19 @@
+## 2026-09-05 reporting-item correction
+
+Owner: Codex, ai/chatgpt/social-tax-correction-20260905.
+
+Adds an owner-only, version-checked maintenance function for changing an already
+assigned reporting item within the same confirmed category. Existing review and
+backfill rejection rules remain unchanged. Corrections retain BACKFILL as the
+maintenance source with reporting-item-correction.v1 and old/new item audit fields.
+No runtime role is granted access. The approved application is seven social-security
+payments and one tax payment formerly assigned the combined reporting item.
+
+Validation: isolated production clone rejected missing function before migration,
+wrong old item/revision, nonexistent target, runtime-role execution, and conflicting
+idempotency replay; eight corrections and unchanged replay passed. Original rows,
+source facts, journal entries and postings remain intact. Full migration recovery
+checks and production application are recorded in the shared work.md.
 ## 2026-09-05 integrated finance release candidate
 
 Ownership: Codex, ai/chatgpt/finance-integration-optimized-20260905. The candidate
