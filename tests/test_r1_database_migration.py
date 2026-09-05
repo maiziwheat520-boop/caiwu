@@ -1025,6 +1025,7 @@ def _seed_classification_candidate(
     business_unit_id: UUID,
     category_id: UUID,
     category_code: str,
+    category_label: str,
     summary: str,
     amount_minor: int,
     evidence_ref: UUID,
@@ -1082,7 +1083,7 @@ def _seed_classification_candidate(
             "category_label_snapshot, amount_minor, currency, accounting_month, summary, "
             "confidence_basis_points, created_at, updated_at) VALUES "
             "(:candidate, 1, 'PENDING', :unit, 'unit-a', 'Unit A', :category, "
-            ":category_code, 'Platform review', :amount, 'CNY', DATE '2026-08-01', "
+            ":category_code, :category_label, :amount, 'CNY', DATE '2026-08-01', "
             ":summary, 9900, :now, :now)"
         ),
         {
@@ -1090,6 +1091,7 @@ def _seed_classification_candidate(
             "unit": business_unit_id,
             "category": category_id,
             "category_code": category_code,
+            "category_label": category_label,
             "amount": amount_minor,
             "summary": summary,
             "now": now,
@@ -3644,6 +3646,7 @@ def test_0026_batch_recomputes_risk_key_atomically_and_replays_closed_receipt(
             business_unit_id=cast(UUID, facts["unit"]),
             category_id=platform_category,
             category_code="ALIPAY_TRANSACTION_REVIEW",
+            category_label="Alipay review",
             summary=summary,
             amount_minor=101,
             evidence_ref=cast(UUID, facts["evidence"]),
@@ -3654,6 +3657,7 @@ def test_0026_batch_recomputes_risk_key_atomically_and_replays_closed_receipt(
             business_unit_id=cast(UUID, facts["unit"]),
             category_id=platform_category,
             category_code="ALIPAY_TRANSACTION_REVIEW",
+            category_label="Alipay review",
             summary=summary.replace("2026-08-01", "2026-08-02"),
             amount_minor=202,
             evidence_ref=cast(UUID, facts["evidence"]),
@@ -3664,6 +3668,7 @@ def test_0026_batch_recomputes_risk_key_atomically_and_replays_closed_receipt(
             business_unit_id=cast(UUID, facts["unit"]),
             category_id=cast(UUID, facts["category"]),
             category_code="category-a",
+            category_label="Category A",
             summary=summary.replace("2026-08-01", "2026-08-03"),
             amount_minor=303,
             evidence_ref=cast(UUID, facts["evidence"]),

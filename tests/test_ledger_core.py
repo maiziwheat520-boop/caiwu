@@ -2003,19 +2003,28 @@ def test_security_function_forward_migration_repairs_historical_definitions(
         # facts behind so the protected downgrade path is exercised by the
         # migration itself.  Remove only this disposable database's R1 facts
         # before the test continues with the historical downgrade assertion.
+        # 20260830_0024 guards its downgrade against every R1 fact table, which
+        # includes the ledger itself, so the POSTED entry and its postings have
+        # to go as well -- not just the attribution rows layered on top of them.
         temporary_admin_engine = create_engine(temporary_owner_url)
         with temporary_admin_engine.begin() as connection:
             connection.execute(text("ALTER TABLE posting_attribution DISABLE TRIGGER USER"))
             connection.execute(text("ALTER TABLE journal_entry_attribution DISABLE TRIGGER USER"))
             connection.execute(text("ALTER TABLE reporting_category DISABLE TRIGGER USER"))
             connection.execute(text("ALTER TABLE business_unit DISABLE TRIGGER USER"))
+            connection.execute(text("ALTER TABLE posting DISABLE TRIGGER USER"))
+            connection.execute(text("ALTER TABLE journal_entry DISABLE TRIGGER USER"))
             connection.execute(text("DELETE FROM posting_attribution"))
             connection.execute(text("DELETE FROM journal_entry_attribution"))
             connection.execute(text("DELETE FROM reporting_category"))
             connection.execute(text("DELETE FROM business_unit"))
+            connection.execute(text("DELETE FROM posting"))
+            connection.execute(text("DELETE FROM journal_entry"))
         # PostgreSQL requires the pending row-level trigger events to be
         # committed before the trigger state can be restored.
         with temporary_admin_engine.begin() as connection:
+            connection.execute(text("ALTER TABLE journal_entry ENABLE TRIGGER USER"))
+            connection.execute(text("ALTER TABLE posting ENABLE TRIGGER USER"))
             connection.execute(text("ALTER TABLE business_unit ENABLE TRIGGER USER"))
             connection.execute(text("ALTER TABLE reporting_category ENABLE TRIGGER USER"))
             connection.execute(text("ALTER TABLE journal_entry_attribution ENABLE TRIGGER USER"))

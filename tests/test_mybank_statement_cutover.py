@@ -1381,25 +1381,10 @@ def test_database_cutover_persists_encrypted_evidence_and_replays_atomically(
         bootstrap_file_key(key_file, generation="synthetic-v1")
         artifact_root = (tmp_path / "artifacts").resolve()
         artifact_root.mkdir(mode=0o700)
-        before = ProductionCounts(
-            evidence_objects=0,
-            encrypted_object_identities=0,
-            encrypted_blob_versions=0,
-            managed_accounts=0,
-            managed_account_lifecycles=0,
-            account_registry_operations=0,
-            managed_account_aliases=0,
-            account_business_unit_assignments=0,
-            fact_business_unit_allocation_sets=0,
-            fact_business_unit_allocation_items=0,
-            bank_statements=0,
-            bank_statement_transactions=0,
-            bank_statement_observations=0,
-            bank_statement_reviews=0,
-            candidates=0,
-            latest_pending_candidates=0,
-            audit_events=0,
-        )
+        # The fixture seeds the entity and business unit this cutover targets, and
+        # the schema audits that seeding, so the preflight gate has to be built
+        # from what the database actually holds rather than from an empty ledger.
+        before = _read_production_counts(engine)
         gates = replace(
             _gates(before, schema_revision=_head_revision()),
             verify_fact_conflict=True,
@@ -1453,24 +1438,22 @@ def test_database_cutover_persists_encrypted_evidence_and_replays_atomically(
 
         assert receipt.created is True
         assert receipt.replay_created is False
-        assert receipt.after_counts == ProductionCounts(
-            evidence_objects=1,
-            encrypted_object_identities=1,
-            encrypted_blob_versions=1,
-            managed_accounts=1,
-            managed_account_lifecycles=1,
-            account_registry_operations=1,
-            managed_account_aliases=1,
-            account_business_unit_assignments=0,
-            fact_business_unit_allocation_sets=0,
-            fact_business_unit_allocation_items=0,
-            bank_statements=1,
-            bank_statement_transactions=2,
-            bank_statement_observations=2,
-            bank_statement_reviews=1,
-            candidates=0,
-            latest_pending_candidates=0,
-            audit_events=12,
+        # Every field the cutover does not name has to come back untouched, so the
+        # comparison stays a whole-record equality rather than a handful of deltas.
+        assert receipt.after_counts == replace(
+            before,
+            evidence_objects=before.evidence_objects + 1,
+            encrypted_object_identities=before.encrypted_object_identities + 1,
+            encrypted_blob_versions=before.encrypted_blob_versions + 1,
+            managed_accounts=before.managed_accounts + 1,
+            managed_account_lifecycles=before.managed_account_lifecycles + 1,
+            account_registry_operations=before.account_registry_operations + 1,
+            managed_account_aliases=before.managed_account_aliases + 1,
+            bank_statements=before.bank_statements + 1,
+            bank_statement_transactions=before.bank_statement_transactions + 2,
+            bank_statement_observations=before.bank_statement_observations + 2,
+            bank_statement_reviews=before.bank_statement_reviews + 1,
+            audit_events=before.audit_events + 12,
         )
         with engine.connect() as connection:
             evidence = connection.execute(
