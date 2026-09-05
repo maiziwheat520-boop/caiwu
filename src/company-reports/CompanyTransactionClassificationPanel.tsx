@@ -27,6 +27,7 @@ const OPERATING_FEE_OPTIONS: Array<{
   label: string
 }> = [
   { value: 'BANK_FEES', label: '银行手续费' },
+  { value: 'SOCIAL_SECURITY', label: '社保' },
   { value: 'TAX', label: '税费' },
   { value: 'INSURANCE', label: '保险费' },
   { value: 'DISINFECTION', label: '消杀费用' },
@@ -152,6 +153,26 @@ export function CompanyTransactionClassificationPanel({ csrfToken }: { csrfToken
                   <p>{transaction.counterparty_name || '未提供交易对象'} · {transaction.transaction_name}</p>
                 </div>
                 <div className="company-classification-fields">
+                  {transaction.amount_minor < 0 && /国家金库|国库/.test(transaction.counterparty_name ?? '') ? (
+                    <fieldset style={{ gridColumn: '1 / -1', minWidth: 0 }}>
+                      <legend>国库扣款用途待确认</legend>
+                      <p>请根据本笔缴款凭证选择社保或税款；选择只填写分类，填写理由后再确认。</p>
+                      {([
+                        ['SOCIAL_SECURITY', '社保'],
+                        ['TAX', '税款'],
+                      ] as const).map(([value, label]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          disabled={savingRef !== null}
+                          aria-pressed={draft.categoryCode === 'OPERATING_FEE' && draft.reportingItemCode === value}
+                          onClick={() => updateDraft(transaction.transaction_ref, {
+                            categoryCode: 'OPERATING_FEE', reportingItemCode: value,
+                          })}
+                        >{label}</button>
+                      ))}
+                    </fieldset>
+                  ) : null}
                   <label>
                     <span>确认分类</span>
                     <select
