@@ -1,0 +1,24 @@
+# Production storage topology for the secure host.
+#
+# Binds the artifact and PostgreSQL volumes onto the encrypted /srv/ledgerbridge-secure
+# mount instead of Docker's default volume location. This file lived only on the
+# production host until 2026-09-05, so a manifest-verified deploy either deleted it
+# or failed verification, and nothing recorded where production storage actually is.
+#
+# Only included in the production compose invocation; local and CI runs use the
+# default volumes from docker-compose.yml.
+volumes:
+  artifacts:
+    name: ledgerbridge_artifacts-secure
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/ledgerbridge-secure/artifacts
+  postgres-data:
+    name: ledgerbridge_postgres-data-secure
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/ledgerbridge-secure/postgres
