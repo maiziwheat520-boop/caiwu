@@ -273,6 +273,22 @@ describe('PayrollLegacyWorkbench', () => {
     expect(screen.queryByLabelText('网商银行发放流水1')).not.toBeInTheDocument()
   })
 
+  it('keeps payroll unavailable and actual payments unknown when source mapping cannot be read', async () => {
+    mockRead()
+    vi.mocked(api.getPayrollDisbursementRecords).mockRejectedValue(new Error('source mapping unavailable'))
+    const command = vi.spyOn(api, 'runPayrollLegacyCommand')
+    render(<PayrollLegacyWorkbench testWorkspace={testWorkspace} csrfToken="csrf-test" />)
+    await screen.findByRole('region', { name: '工资概览' })
+    fireEvent.click(screen.getByRole('button', { name: '复核本月已发并更新汇总' }))
+    const review = screen.getByRole('region', { name: '发放复核分类' })
+    expect(await within(review).findByText(/工资发放读取投影暂不可用/)).toBeInTheDocument()
+    expect(within(review).queryByRole('region', { name: '已入库工资流水' })).not.toBeInTheDocument()
+    expect(within(review).getAllByText('等待证据')).toHaveLength(2)
+    expect(within(review).getAllByText('证据缺失')).toHaveLength(2)
+    expect(within(review).queryByText('完全一致')).not.toBeInTheDocument()
+    expect(command).not.toHaveBeenCalled()
+  })
+
   it('reads stored evidence and matched results without issuing a write command', async () => {
     const verifiedWorkspace = structuredClone(legacyWorkspace)
     verifiedWorkspace.batches[0].verification = {
