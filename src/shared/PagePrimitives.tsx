@@ -64,3 +64,13 @@ export function Metric({ label, value, detail, icon, tone, primary = false }: {
     </article>
   )
 }
+
+export function StatusLine({ icon, label, detail, tone }: { icon: React.ReactNode; label: string; detail: string; tone: string }) {
+  return (
+    <div className={`status-line ${tone}`}>
+      <span className="status-icon">{icon}</span>
+      <strong>{label}</strong>
+      <span>{detail}</span>
+    </div>
+  )
+}

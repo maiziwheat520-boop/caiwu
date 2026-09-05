@@ -16,10 +16,8 @@ import {
   ClockCounterClockwise,
   Copy,
   Database,
-  FileText,
   FileXls,
   Fingerprint,
-  FolderOpen,
   House,
   Info,
   ListChecks,
@@ -38,7 +36,6 @@ import {
 } from './api'
 import type {
   AccountingDimensions,
-  ApiCandidate,
   AuthResult,
   AuthStatus,
   Candidate,
@@ -47,7 +44,6 @@ import type {
   ClassificationGroup,
   ClassificationTarget,
   ConnectionStatus,
-  EvidenceReference,
   Notice,
   Page,
   PersonalBankStatement,
@@ -56,14 +52,21 @@ import type {
   ReviewEvent,
   Session,
 } from './types'
-import { ErrorState, LoadingState, Metric, PageHeader } from './shared/PagePrimitives'
+import { ErrorState, LoadingState, Metric, PageHeader, StatusLine } from './shared/PagePrimitives'
 import { currency } from './shared/format'
 import { AuditLog } from './audit/AuditLog'
 import { CandidateDialog } from './candidates/CandidateDialog'
+import { toCandidate } from './candidates/candidateMapping'
+import {
+  counterpartyFor,
+  isPlatformInternalAccount,
+  materialNameFor,
+  summaryFields,
+} from './personal-finance/personalFinanceRules'
+import { FilesAndConnections } from './connections/FilesAndConnections'
+import { PersonalFinanceOverview } from './personal-finance/PersonalFinanceOverview'
 import { SourceIcon } from './candidates/candidatePresentation'
 import { accountingMonthLabel, type CandidateUpdateIntent } from './candidates/candidateLabels'
-import { PersonalBankTransactionsPanel } from './personal-finance/PersonalBankTransactionsPanel'
-import { useCompleteCandidatePages } from './personal-finance/useCompleteCandidatePages'
 import { CompanyBankStatementReviewPanel } from './company-reports/CompanyBankStatementReviewPanel'
 import { CompanyTransactionClassificationPanel } from './company-reports/CompanyTransactionClassificationPanel'
 
@@ -114,51 +117,6 @@ function scrollToOverviewSection(anchor: '#overview-summary' | '#review' | '#fil
 }
 
 
-const sourceLabels: Record<ApiCandidate['source_channel'], Candidate['source']> = {
-  telegram: 'Telegram',
-  dingtalk: '钉钉',
-  weixin: '微信',
-  hermes: 'Hermes',
-  outlook: '中行账单（复核材料）',
-  controlled_upload: '照片凭证',
-  synthetic: '合成数据',
-}
-
-function toCandidate(candidate: ApiCandidate | CandidateDetail): Candidate {
-  const blockerCodes = new Set(candidate.blockers.map((blocker) => blocker.code))
-  const reviewRisks = candidate.review_risks ?? []
-  const source = candidate.summary.startsWith('微信 |')
-    ? '微信'
-    : candidate.summary.startsWith('支付宝 |')
-      ? '支付宝'
-      : sourceLabels[candidate.source_channel]
-  return {
-    id: candidate.id,
-    shortId: candidate.short_id,
-    revision: candidate.revision,
-    source,
-    sourceChannel: candidate.source_channel,
-    receivedAt: new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(candidate.received_at)),
-    businessUnit: candidate.business_unit,
-    businessUnitRef: candidate.business_unit_ref ?? '',
-    category: candidate.category,
-    categoryCode: candidate.category_code ?? '',
-    amount: minorToMajor(candidate.amount_minor),
-    amountMinor: candidate.amount_minor,
-    accountingMonth: candidate.accounting_month,
-    summary: candidate.summary,
-    evidence: candidate.evidence,
-    confidence: candidate.confidence_basis_points / 10000,
-    status: candidate.status,
-    blockers: candidate.blockers,
-    reviewRisks,
-    reviewEvents: 'review_events' in candidate ? candidate.review_events : [],
-    incomplete: candidate.status === 'INCOMPLETE' || blockerCodes.has('MISSING_ACCOUNTING_MONTH'),
-    conflict: candidate.status === 'CONFLICTED' || blockerCodes.has('BUSINESS_KEY_CONFLICT') || blockerCodes.has('DUPLICATE_MESSAGE') || blockerCodes.has('DUPLICATE_ATTACHMENT'),
-    raw: candidate,
-  }
-}
-
 function isBulkEligible(candidate: Candidate, classificationGroups: ClassificationGroup[]): boolean {
   const groupedMember = classificationGroups
     .flatMap((group) => group.members)
@@ -170,130 +128,6 @@ function isBulkEligible(candidate: Candidate, classificationGroups: Classificati
     && !candidate.incomplete
     && !candidate.conflict
     && (!groupedMember || (groupedMember.one_click_eligible && !groupedMember.amount_outlier))
-}
-
-const materialRiskCodes = new Set([
-  'FUNDING_STATEMENT_REQUIRED',
-  'RELATED_ACCOUNT_STATEMENT_REQUIRED',
-  'HOTEL_PAYOUT_STATEMENT_REQUIRED',
-])
-
-const platformInternalAccounts = new Set(['花呗', '余额宝', '账户余额', '零钱', '零钱通'])
-
-function summaryFields(candidate: Candidate): string[] {
-  return candidate.summary.split('|').map((value) => value.trim())
-}
-
-function candidateCashflowMinor(candidate: Candidate): number {
-  const statedDirection = summaryFields(candidate)[2]
-  if (statedDirection === '收入') return Math.abs(candidate.amountMinor)
-  if (statedDirection === '支出') return -Math.abs(candidate.amountMinor)
-  return candidate.amountMinor
-}
-
-type PersonalTransaction = {
-  candidate: Candidate
-  cashflowMinor: number
-  date: string
-  transactionType: string
-  counterparty: string
-  sourceKind: 'PLATFORM' | 'BANK'
-  scopeStatus: 'PERSONAL' | 'UNASSIGNED'
-}
-
-type PersonalFinanceSelection = {
-  entries: PersonalTransaction[]
-  unassignedEntries: PersonalTransaction[]
-  excludedCount: number
-  deduplicatedCount: number
-}
-
-function personalTransaction(candidate: Candidate): PersonalTransaction | null {
-  if (candidate.status !== 'CONFIRMED') return null
-  const fields = summaryFields(candidate)
-  if (fields.length < 7 || !/^\d{4}-\d{2}-\d{2}$/.test(fields[1])) return null
-  const sourceKind = fields[0] === '微信' || fields[0] === '支付宝'
-    ? 'PLATFORM'
-    : fields[0].includes('银行')
-      ? 'BANK'
-      : null
-  if (!sourceKind) return null
-
-  const scope = `${candidate.businessUnit} ${candidate.businessUnitRef}`.trim()
-  if (/(公司|酒店|宾馆|门店|company|hotel)/i.test(scope)) return null
-
-  return {
-    candidate,
-    cashflowMinor: candidateCashflowMinor(candidate),
-    date: fields[1],
-    transactionType: fields[3],
-    counterparty: fields[4],
-    sourceKind,
-    scopeStatus: /(个人|本人|personal)/i.test(scope) ? 'PERSONAL' : 'UNASSIGNED',
-  }
-}
-
-function selectPersonalFinanceEntries(candidates: Candidate[]): PersonalFinanceSelection {
-  const eligible = candidates.flatMap((candidate) => {
-    const entry = personalTransaction(candidate)
-    return entry ? [entry] : []
-  })
-  const excludedCount = candidates.length - eligible.length
-  let deduplicatedCount = 0
-  const groups = eligible.reduce((result, entry) => {
-    const direction = entry.cashflowMinor < 0 ? 'OUT' : 'IN'
-    const key = `${entry.date}|${direction}|${Math.abs(entry.cashflowMinor)}|${entry.counterparty}`
-    const group = result.get(key) ?? []
-    group.push(entry)
-    result.set(key, group)
-    return result
-  }, new Map<string, PersonalTransaction[]>())
-
-  const deduplicatedEntries = [...groups.values()].flatMap((group) => {
-    const isTransfer = group.some((entry) => /(转账|提现)/.test(entry.transactionType))
-    const preferredKind = isTransfer ? 'BANK' : 'PLATFORM'
-    const preferred = group.filter((entry) => entry.sourceKind === preferredKind)
-    const lowerPriority = group.filter((entry) => entry.sourceKind !== preferredKind)
-    if (preferred.length === 0 || lowerPriority.length === 0) return group
-
-    const pairedCount = Math.min(preferred.length, lowerPriority.length)
-    deduplicatedCount += pairedCount
-    return [...preferred, ...lowerPriority.slice(pairedCount)]
-  })
-
-  return {
-    entries: deduplicatedEntries.filter((entry) => entry.scopeStatus === 'PERSONAL'),
-    unassignedEntries: deduplicatedEntries.filter((entry) => entry.scopeStatus === 'UNASSIGNED'),
-    excludedCount,
-    deduplicatedCount,
-  }
-}
-
-function counterpartyFor(candidate: Candidate): string {
-  return summaryFields(candidate)[4] ?? ''
-}
-
-function paymentMethodFor(candidate: Candidate): string {
-  return summaryFields(candidate)[5] ?? ''
-}
-
-function isPlatformInternalAccount(value: string): boolean {
-  const normalized = value.trim().replace(/^(支付宝|微信)[:：]?/, '')
-  return platformInternalAccounts.has(normalized)
-}
-
-function materialNameFor(candidate: Candidate, riskCode: string): string | null {
-  if (!materialRiskCodes.has(riskCode)) return null
-  if (riskCode === 'FUNDING_STATEMENT_REQUIRED') {
-    const paymentMethod = paymentMethodFor(candidate)
-    if (!paymentMethod) return '资金账户明细'
-    return !isPlatformInternalAccount(paymentMethod) ? `${paymentMethod}明细` : null
-  }
-  if (riskCode === 'RELATED_ACCOUNT_STATEMENT_REQUIRED') {
-    const counterparty = counterpartyFor(candidate)
-    return isPlatformInternalAccount(counterparty) ? null : `${counterparty || '关联账户'}同期流水`
-  }
-  return '酒店平台收款银行流水'
 }
 
 const AUDIT_CANDIDATE_FETCH_CONCURRENCY = 6
@@ -1399,211 +1233,6 @@ function Overview({
   )
 }
 
-function StatusLine({ icon, label, detail, tone }: { icon: React.ReactNode; label: string; detail: string; tone: string }) {
-  return (
-    <div className={`status-line ${tone}`}>
-      <span className="status-icon">{icon}</span>
-      <strong>{label}</strong>
-      <span>{detail}</span>
-    </div>
-  )
-}
-
-function PersonalFinanceOverview({ onNavigate, onOpenCandidate, csrfToken }: {
-  onNavigate: (page: Page) => void
-  onOpenCandidate: (candidate: Candidate) => void
-  csrfToken: string
-}) {
-  const completeCandidatePages = useCompleteCandidatePages()
-  const candidates = completeCandidatePages.candidates?.map(toCandidate) ?? []
-  const completeCandidatesAvailable = completeCandidatePages.candidates !== null
-
-  const pending = candidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
-  const personalSelection = selectPersonalFinanceEntries(candidates)
-  const financialEntries = personalSelection.entries
-  const unassignedEntries = personalSelection.unassignedEntries
-  const testEntries = [...financialEntries, ...unassignedEntries]
-  const confirmedPendingPostingCount = testEntries.length
-  const financialCandidates = testEntries.map((entry) => entry.candidate)
-  const incomeMinor = testEntries.reduce((total, entry) => total + Math.max(entry.cashflowMinor, 0), 0)
-  const expenseMinor = testEntries.reduce((total, entry) => total + Math.abs(Math.min(entry.cashflowMinor, 0)), 0)
-  const netMinor = incomeMinor - expenseMinor
-  const evidenceCount = new Set(financialCandidates.flatMap((candidate) => candidate.evidence.map((evidence) => evidence.id))).size
-
-  const categoryTotals = testEntries.reduce((totals, entry) => {
-    const amountMinor = Math.abs(entry.cashflowMinor)
-    if (amountMinor === 0) return totals
-    const category = entry.candidate.category.trim() || '待分类'
-    totals.set(category, (totals.get(category) ?? 0) + amountMinor)
-    return totals
-  }, new Map<string, number>())
-  const categorizedTotalMinor = [...categoryTotals.values()].reduce((total, amountMinor) => total + amountMinor, 0)
-  const categoryShares = [...categoryTotals.entries()]
-    .map(([category, amountMinor]) => ({
-      category,
-      amountMinor,
-      percentage: categorizedTotalMinor > 0 ? (amountMinor / categorizedTotalMinor) * 100 : 0,
-    }))
-    .sort((left, right) => right.amountMinor - left.amountMinor || left.category.localeCompare(right.category, 'zh-CN'))
-
-  const monthlyTotals = testEntries.reduce((totals, entry) => {
-    if (!entry.candidate.accountingMonth) return totals
-    const current = totals.get(entry.candidate.accountingMonth) ?? { incomeMinor: 0, expenseMinor: 0 }
-    if (entry.cashflowMinor >= 0) current.incomeMinor += entry.cashflowMinor
-    else current.expenseMinor += Math.abs(entry.cashflowMinor)
-    totals.set(entry.candidate.accountingMonth, current)
-    return totals
-  }, new Map<string, { incomeMinor: number; expenseMinor: number }>())
-  const monthlyTrend = [...monthlyTotals.entries()]
-    .map(([month, totals]) => ({ ...totals, month, netMinor: totals.incomeMinor - totals.expenseMinor }))
-    .sort((left, right) => right.month.localeCompare(left.month))
-  const latestTrend = monthlyTrend[0]
-  const leadingCategory = categoryShares[0]
-  return (
-    <>
-      <PageHeader
-        eyebrow="个人财务"
-        title="完整个人财务对账"
-        description="正式银行流水与测试候选分层展示；归属待校准与会计过账仍严格分开。"
-        action={<Button onClick={() => onNavigate('review')}><ListChecks size={17} />处理待审核</Button>}
-      />
-
-      {!completeCandidatesAvailable ? (
-        completeCandidatePages.error ? (
-          <ErrorState
-            message={`${completeCandidatePages.error}；未显示不完整的收支合计。`}
-            onRetry={() => { void completeCandidatePages.reload() }}
-          />
-        ) : (
-          <LoadingState
-            title="正在核对完整个人财务范围"
-            description="正在逐页读取已授权候选；全部读取完成前不会显示收支合计。"
-          />
-        )
-      ) : <>
-        {completeCandidatePages.error ? (
-          <div className="personal-finance-boundary" role="alert">
-            <span>完整汇总刷新失败，已保留上一次成功读取的结果：{completeCandidatePages.error}</span>
-            <Button size="1" variant="soft" disabled={completeCandidatePages.loading} onClick={() => { void completeCandidatePages.reload() }}>
-              <ArrowsClockwise className={completeCandidatePages.loading ? 'state-spinner' : undefined} size={14} />
-              重新读取
-            </Button>
-          </div>
-        ) : completeCandidatePages.loading ? (
-          <div className="personal-finance-boundary" role="status">正在刷新完整候选分页，当前仍显示上一次完整结果。</div>
-        ) : null}
-
-      <section className="panel personal-posting-status" aria-label="个人财务入账状态">
-        <div>
-          <span>入账链路</span>
-          <h2>{confirmedPendingPostingCount} 条已确认、尚未过账</h2>
-          <p>“确认”只代表审核完成并进入对账草稿，不等于已生成会计分录。系统会在主体和账户映射校准后生成平衡草稿，再由你明确确认过账。</p>
-        </div>
-        <Badge color="amber">正式过账未启用</Badge>
-      </section>
-
-      <section className="panel personal-review-priority" aria-label="个人财务待审核">
-        <div className="panel-heading">
-          <div><h2>待审核</h2><p>先处理仍可能改变收支归类的事项</p></div>
-          <div className="personal-review-actions"><Badge color={pending.length > 0 ? 'amber' : 'green'}>{pending.length} 条</Badge><Button size="1" variant="soft" onClick={() => onNavigate('review')}>查看全部<CaretRight size={14} /></Button></div>
-        </div>
-        {pending.length > 0 ? (
-          <div className="personal-review-list">
-            {pending.slice(0, 4).map((candidate) => (
-              <button key={candidate.id} onClick={() => onOpenCandidate(candidate)} type="button">
-                <span><strong>{candidate.shortId}</strong><small>{candidate.businessUnit} · {candidate.category} · {accountingMonthLabel(candidate.accountingMonth)}</small></span>
-                <span>{candidate.summary}</span>
-                <strong>{currency.format(minorToMajor(candidateCashflowMinor(candidate)))}</strong>
-                <CaretRight size={16} />
-              </button>
-            ))}
-          </div>
-        ) : <div className="empty-state compact-empty personal-review-empty"><CheckCircle size={30} /><h3>当前没有待审核事项</h3><p>新导入的风险或信息不完整事项会出现在这里。</p></div>}
-      </section>
-
-      <section className="metric-grid personal-finance-metrics" aria-label="个人财务收支概览">
-        <Metric primary label="测试收入" value={currency.format(minorToMajor(incomeMinor))} detail={`${testEntries.filter((entry) => entry.cashflowMinor >= 0).length} 条已确认收入，含归属待校准`} icon={<CloudArrowUp size={20} />} />
-        <Metric label="测试支出" value={currency.format(minorToMajor(expenseMinor))} detail={`${testEntries.filter((entry) => entry.cashflowMinor < 0).length} 条已确认支出，含归属待校准`} icon={<Bank size={20} />} />
-        <Metric label="测试净额" value={currency.format(minorToMajor(netMinor))} detail="全量测试试算，尚未过账" icon={<ArrowsClockwise size={20} />} />
-        <Metric label="原始材料" value={`${evidenceCount} 份`} detail="只计入本次汇总所依据的材料" icon={<FolderOpen size={20} />} />
-      </section>
-
-      <div className="personal-finance-boundary" role="status">
-        <span>{personalSelection.excludedCount} 条不属于个人范围或状态未确认，未计入汇总</span>
-        <span>{unassignedEntries.length} 条已确认记录归属待校准，单独列示</span>
-        <span>{personalSelection.deduplicatedCount} 条跨来源重复记录已合并</span>
-      </div>
-
-      {unassignedEntries.length > 0 ? (
-        <section className="panel personal-unassigned-panel" aria-label="个人财务归属待校准">
-          <div className="panel-heading">
-            <div><h2>归属待校准</h2><p>以下记录全部展开并进入上方测试试算，但归属确认前不会进入个人正式账簿。</p></div>
-            <Badge color="amber">{unassignedEntries.length} 条归属待校准</Badge>
-          </div>
-          <div className="personal-review-list">
-            {unassignedEntries.map((entry) => (
-              <button key={entry.candidate.id} onClick={() => onOpenCandidate(entry.candidate)} type="button">
-                <span><strong>{entry.candidate.shortId}</strong><small>{entry.candidate.businessUnit || '主体待校准'} · {entry.candidate.category} · {accountingMonthLabel(entry.candidate.accountingMonth)}</small></span>
-                <span>{entry.candidate.summary}</span>
-                <strong>{currency.format(minorToMajor(entry.cashflowMinor))}</strong>
-                <CaretRight size={16} />
-              </button>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      <div className="personal-insight-grid">
-        <section className="panel personal-category-panel">
-          <div className="panel-heading"><div><h2>测试分类占比</h2><p>按全部试算收入与支出的绝对金额计算</p></div></div>
-          {categoryShares.length > 0 ? (
-            <div className="personal-category-list">
-              {categoryShares.map((item) => (
-                <article key={item.category}>
-                  <div><strong>{item.category}</strong><span>{currency.format(minorToMajor(item.amountMinor))}</span><b>{item.percentage.toFixed(1)}%</b></div>
-                  <div aria-label={`${item.category}占比 ${item.percentage.toFixed(1)}%`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={Number(item.percentage.toFixed(1))} className="personal-category-bar" role="progressbar"><span style={{ width: `${item.percentage}%` }} /></div>
-                </article>
-              ))}
-            </div>
-          ) : <p className="personal-finance-empty">暂无可统计的收支分类。</p>}
-        </section>
-
-        <section className="panel personal-trend-panel">
-          <div className="panel-heading"><div><h2>测试月度趋势</h2><p>按全部已确认试算记录的归属月份汇总</p></div></div>
-          {latestTrend ? (
-            <p className="personal-trend-summary">
-              {accountingMonthLabel(latestTrend.month)}净额 {currency.format(minorToMajor(latestTrend.netMinor))}
-              {leadingCategory ? `；当前金额占比最高的分类是${leadingCategory.category} ${leadingCategory.percentage.toFixed(1)}%` : ''}。
-            </p>
-          ) : null}
-          {monthlyTrend.length > 0 ? (
-            <div className="personal-trend-list">
-              {monthlyTrend.map((item) => (
-                <article key={item.month}>
-                  <strong>{accountingMonthLabel(item.month)}</strong>
-                  <dl><div><dt>收入</dt><dd>{currency.format(minorToMajor(item.incomeMinor))}</dd></div><div><dt>支出</dt><dd>{currency.format(minorToMajor(item.expenseMinor))}</dd></div><div><dt>净额</dt><dd>{currency.format(minorToMajor(item.netMinor))}</dd></div></dl>
-                </article>
-              ))}
-            </div>
-          ) : <p className="personal-finance-empty">暂无已确认归属月份的收支数据。</p>}
-        </section>
-      </div>
-      </>}
-
-      <PersonalBankTransactionsPanel csrfToken={csrfToken} />
-
-      <section className="panel report-entry-panel personal-finance-actions">
-        <div><h2>材料与对账去向</h2><p>查看原始账单、凭证、待补材料和月度对账。</p></div>
-        <div className="review-header-actions">
-          <Button variant="outline" color="gray" onClick={() => onNavigate('files')}>查看材料总览</Button>
-          <Button variant="outline" color="gray" onClick={() => onNavigate('reconciliation')}>查看月度对账</Button>
-        </div>
-      </section>
-    </>
-  )
-}
-
-
 function ReviewQueue({ candidates, bankStatements, csrfToken, onBankStatementReviewed, classificationGroups, classificationGroupsAvailable, onOpenCandidate, onUpdate, onRefresh, busyId, batchBusy, onBatchConfirm }: {
   candidates: Candidate[]
   bankStatements: PersonalBankStatement[]
@@ -1819,250 +1448,6 @@ function ReviewQueue({ candidates, bankStatements, csrfToken, onBankStatementRev
           </article>
         ))}
       </section>
-    </>
-  )
-}
-
-const connectionStateLabel: Record<ConnectionStatus['state'], string> = {
-  CONNECTED: '已连接',
-  DISCONNECTED: '已断开',
-  DEGRADED: '服务降级',
-  NOT_CONFIGURED: '未配置',
-}
-
-function ConnectionBadge({ connection }: { connection?: ConnectionStatus }) {
-  const state = connection?.state ?? 'NOT_CONFIGURED'
-  const color = state === 'CONNECTED' ? 'green' : state === 'DEGRADED' ? 'amber' : 'gray'
-  return <Badge color={color}>{connectionStateLabel[state]}</Badge>
-}
-
-function EvidenceUnlockDialog({ evidence, csrfToken, onClose, onUnlocked }: {
-  evidence: EvidenceReference
-  csrfToken: string
-  onClose: () => void
-  onUnlocked: () => Promise<void>
-}) {
-  const [password, setPassword] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault()
-    if (busy || password.length === 0 || !evidence.source_ref) return
-    setBusy(true)
-    setError(null)
-    const submittedPassword = { value: password }
-    let unlocked = false
-    setPassword('')
-    try {
-      await api.unlockEvidence({
-        sourceRef: evidence.source_ref,
-        password: submittedPassword.value,
-        csrfToken,
-      })
-      unlocked = true
-    } catch (unlockError) {
-      setError(unlockError instanceof Error ? unlockError.message : '账单解锁失败，请检查密码后重试')
-    } finally {
-      submittedPassword.value = ''
-      setPassword('')
-      setBusy(false)
-    }
-    if (!unlocked) return
-    onClose()
-    await onUnlocked()
-  }
-
-  return (
-    <Dialog.Root open onOpenChange={(open) => {
-      if (!open && !busy) {
-        setPassword('')
-        setError(null)
-        onClose()
-      }
-    }}>
-      <Dialog.Content maxWidth="460px">
-        <Dialog.Title>输入账单解压密码</Dialog.Title>
-        <Dialog.Description>密码只用于本次解锁请求，提交后立即从输入框清除。</Dialog.Description>
-        <form className="evidence-unlock-form" onSubmit={(event) => void submit(event)}>
-          <label htmlFor="evidence-unlock-password">解压密码</label>
-          <TextField.Root
-            autoComplete="off"
-            autoFocus
-            id="evidence-unlock-password"
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            aria-describedby={error ? 'evidence-unlock-error' : undefined}
-          />
-          {error ? <div className="auth-error" id="evidence-unlock-error" role="alert"><Warning size={17} />{error}</div> : null}
-          <div className="auth-actions">
-            <Button type="button" variant="outline" color="gray" disabled={busy} onClick={() => {
-              setPassword('')
-              setError(null)
-              onClose()
-            }}>取消</Button>
-            <Button type="submit" disabled={busy || password.length === 0}>{busy ? '正在解锁' : '解锁账单'}</Button>
-          </div>
-        </form>
-      </Dialog.Content>
-    </Dialog.Root>
-  )
-}
-
-function FilesAndConnections({ candidates, connections, csrfToken, onOpenCandidate, onRefresh, onNotice }: {
-  candidates: Candidate[]
-  connections: ConnectionStatus[]
-  csrfToken: string | null
-  onOpenCandidate: (candidate: Candidate) => void
-  onRefresh: () => Promise<boolean>
-  onNotice: (notice: Notice) => void
-}) {
-  const [selectedUnlockEvidence, setSelectedUnlockEvidence] = useState<EvidenceReference | null>(null)
-  const [dismissedUnlockSources, setDismissedUnlockSources] = useState<Set<string>>(() => new Set())
-  const connection = (id: ConnectionStatus['id']) => connections.find((item) => item.id === id)
-  const evidenceLibrary = [...candidates.reduce((items, candidate) => {
-    for (const evidence of candidate.evidence) {
-      const contentKey = evidence.sha256 ? `sha256:${evidence.sha256.toLowerCase()}` : `id:${evidence.id}`
-      const unlockKey = evidence.unlock_status || evidence.source_ref
-        ? `:unlock:${evidence.unlock_status ?? 'UNKNOWN'}:${evidence.source_ref ?? 'none'}`
-        : ''
-      const dedupeKey = `${contentKey}${unlockKey}`
-      const current = items.get(dedupeKey) ?? {
-        evidence,
-        candidates: [] as Candidate[],
-        sources: new Set<string>(),
-        periods: new Set<string>(),
-      }
-      if (!current.candidates.some((item) => item.id === candidate.id)) current.candidates.push(candidate)
-      current.sources.add(candidate.source)
-      if (candidate.accountingMonth) current.periods.add(candidate.accountingMonth)
-      items.set(dedupeKey, current)
-    }
-    return items
-  }, new Map<string, { evidence: EvidenceReference; candidates: Candidate[]; sources: Set<string>; periods: Set<string> }>()).values()]
-  const automaticUnlockEvidence = csrfToken
-    ? evidenceLibrary.find(({ evidence }) => (
-        evidence.unlock_status === 'PASSWORD_REQUIRED'
-        && Boolean(evidence.source_ref)
-        && !dismissedUnlockSources.has(evidence.source_ref ?? '')
-      ))?.evidence ?? null
-    : null
-  const unlockEvidence = selectedUnlockEvidence ?? automaticUnlockEvidence
-  const actionableCandidates = candidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
-  const materialGaps = [...actionableCandidates.reduce((items, candidate) => {
-    for (const risk of candidate.reviewRisks) {
-      if (!materialRiskCodes.has(risk.code)) continue
-      const material = materialNameFor(candidate, risk.code)
-      if (!material) continue
-      const period = candidate.accountingMonth ?? ''
-      const key = `${risk.code}:${material}:${period}`
-      const current = items.get(key) ?? { material, period, reasons: new Set<string>(), candidates: new Set<string>() }
-      current.reasons.add(risk.message)
-      current.candidates.add(candidate.id)
-      items.set(key, current)
-    }
-    return items
-  }, new Map<string, { material: string; period: string; reasons: Set<string>; candidates: Set<string> }>()).values()]
-
-  const closeUnlockDialog = () => {
-    const dismissedSourceRef = unlockEvidence?.source_ref
-    if (dismissedSourceRef) {
-      setDismissedUnlockSources((current) => new Set(current).add(dismissedSourceRef))
-    }
-    setSelectedUnlockEvidence(null)
-  }
-
-  return (
-    <>
-      <PageHeader
-        eyebrow="服务与文件"
-        title="文件与连接"
-        description="状态来自同源 API。界面不显示令牌或其他敏感凭据。"
-        action={<Button variant="outline" color="gray" onClick={onRefresh}><ArrowsClockwise size={17} />重新检查</Button>}
-      />
-
-      <section className="panel evidence-library-panel">
-        <div className="panel-heading"><div><h2>已导入账单与凭证</h2><p>按证据编号去重，展开后可进入关联候选查看原始内容。</p></div><Badge color="gray">{evidenceLibrary.length} 份</Badge></div>
-        {evidenceLibrary.length > 0 ? (
-          <div className="evidence-library-list">
-            {evidenceLibrary.map((item) => {
-              const hasPending = item.candidates.some((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
-              const allConfirmed = item.candidates.every((candidate) => candidate.status === 'CONFIRMED')
-              const status = hasPending ? '含待审核' : allConfirmed ? '已确认' : '已归档'
-              return (
-                <article className="evidence-library-item" key={item.evidence.id}>
-                  <div className="evidence-library-title"><FileText size={20} /><div><strong>{item.evidence.original_filename ?? (item.evidence.kind === 'message' ? '消息原文' : '原始文件')}</strong><span>{[...item.sources].join('、')}</span></div><Badge color={hasPending ? 'amber' : allConfirmed ? 'green' : 'gray'}>{status}</Badge></div>
-                  <div className="evidence-library-meta"><span>{[...item.periods].map(accountingMonthLabel).join('、') || '期间待确认'}</span><span>证据 {item.evidence.id}</span></div>
-                  {item.evidence.unlock_status === 'PASSWORD_REQUIRED' ? (
-                    <Button className="evidence-unlock-button" size="1" variant="soft" color="amber" disabled={!csrfToken || !item.evidence.source_ref} onClick={() => setSelectedUnlockEvidence(item.evidence)}>输入解压密码</Button>
-                  ) : null}
-                  <details>
-                    <summary>关联 {item.candidates.length} 条候选</summary>
-                    <div className="evidence-candidate-links">
-                      {item.candidates.map((candidate) => <button key={candidate.id} onClick={() => onOpenCandidate(candidate)} type="button">{candidate.shortId} · {candidate.businessUnit} · {candidate.category}</button>)}
-                    </div>
-                  </details>
-                </article>
-              )
-            })}
-          </div>
-        ) : <div className="empty-state compact-empty"><FolderOpen size={34} weight="light" /><h2>尚无已导入材料</h2><p>Core 返回的候选证据会显示在这里。</p></div>}
-      </section>
-
-      <section className="panel material-gap-panel" aria-label="待补账单清单">
-        <div className="panel-heading"><div><h2>待补账单清单</h2><p>只展示 Core 明确标记的资金、关联账户和酒店结算材料缺口。</p></div><Badge color={materialGaps.length > 0 ? 'amber' : 'green'}>{materialGaps.length} 项</Badge></div>
-        {materialGaps.length > 0 ? (
-          <div className="material-gap-list">
-            {materialGaps.map((gap) => (
-              <article className="material-gap-card" key={`${gap.material}:${gap.period}`}>
-                <Warning size={20} />
-                <div><strong>{gap.material}</strong><span>{accountingMonthLabel(gap.period || null)}</span><span>影响 {gap.candidates.size} 条记录</span><p>{[...gap.reasons].join('；')}</p></div>
-              </article>
-            ))}
-          </div>
-        ) : <div className="empty-state compact-empty"><CheckCircle size={34} weight="light" /><h2>当前没有明确材料缺口</h2><p>这里只依据 Core 风险事实，不推测缺失账单。</p></div>}
-      </section>
-
-      <div className="connection-grid">
-        <section className="panel connection-card">
-          <div className="connection-title"><div className="service-icon onedrive"><CloudArrowUp size={24} weight="fill" /></div><div><h2>OneDrive Personal</h2><p>应用专用文件夹</p></div><ConnectionBadge connection={connection('onedrive_appfolder')} /></div>
-          <p>仅访问 <code>Apps/LedgerBridge</code>，不读取 OneDrive 中的其他文件。</p>
-          <div className="permission-line"><ShieldCheck size={17} /><span>计划权限：Files.ReadWrite.AppFolder</span></div>
-          <Button disabled>连接功能尚未开放</Button>
-        </section>
-        <section className="panel connection-card">
-          <div className="connection-title"><div className="service-icon hermes"><Database size={24} weight="fill" /></div><div><h2>Hermes 消息入口</h2><p>Telegram、钉钉、微信</p></div><ConnectionBadge connection={connection('hermes_ingress')} /></div>
-          <p>只处理启用后的主账号私聊。家庭账号、群聊和历史消息均不在范围内。</p>
-          <div className="permission-line"><ShieldCheck size={17} /><span>附件在消息入口即时提取与留证</span></div>
-          <Button variant="soft" color="gray" disabled>规则由后台配置</Button>
-        </section>
-        <section className="panel connection-card">
-          <div className="connection-title"><div className="service-icon office"><FileText size={24} weight="fill" /></div><div><h2>LibreOffice 计算服务</h2><p>Hermes 后台进程</p></div><ConnectionBadge connection={connection('libreoffice_worker')} /></div>
-          <p>在临时副本上重算工作簿，检查公式错误和关键值，不覆盖原始文件。</p>
-          <div className="permission-line"><Info size={17} /><span>结果标记为 LibreOffice 已验证</span></div>
-          <Button variant="soft" color="gray" disabled>策略由后台配置</Button>
-        </section>
-      </div>
-
-      <section className="panel files-panel">
-        <div className="panel-heading"><div><h2>最近的工作簿</h2><p>连接 OneDrive 后显示应用文件夹中的版本</p></div><Button variant="outline" color="gray" disabled><CloudArrowUp size={17} />上传副本</Button></div>
-        <div className="empty-state compact-empty"><FolderOpen size={34} weight="light" /><h2>尚未连接文件来源</h2><p>连接后，系统会显示可用于月度对账的工作簿副本。</p></div>
-      </section>
-
-      {unlockEvidence && csrfToken ? (
-        <EvidenceUnlockDialog
-          evidence={unlockEvidence}
-          csrfToken={csrfToken}
-          onClose={closeUnlockDialog}
-          onUnlocked={async () => {
-            const refreshed = await onRefresh()
-            onNotice(refreshed
-              ? { tone: 'success', message: '账单已解锁，数据已刷新' }
-              : { tone: 'info', message: '已解锁，但列表刷新失败，请重试刷新' })
-          }}
-        />
-      ) : null}
     </>
   )
 }
