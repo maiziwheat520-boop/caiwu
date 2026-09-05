@@ -63,6 +63,10 @@ from ledgerbridge.internal_read_contract import (
 )
 from ledgerbridge.internal_read_cursor import CursorInvalid, ReadCursorSigner
 from ledgerbridge.keyring import KeyProviderError, WrappedKey
+from ledgerbridge.personal_finance_summary import (
+    PersonalFinanceSummary,
+    build_personal_finance_summary,
+)
 from ledgerbridge.review_risk import derive_review_risks
 
 _RESOURCE_PACKAGE = "ledgerbridge.synthetic_read_data"
@@ -856,6 +860,33 @@ class DatabaseInternalReadService:
             )
         )
         return scopes
+
+    def personal_finance_summary(
+        self,
+        principal: WorkloadPrincipal,
+    ) -> PersonalFinanceSummary:
+        """Summarise personal cash movement across every visible candidate.
+
+        The browser used to do this by paging the whole collection before it
+        could show a single total. Walking it here costs one round trip from
+        the workbench instead of one per page.
+        """
+        authorize_collection_read(principal, Capability.CANDIDATE_READ)
+        candidates: list[CandidateProjection] = []
+        cursor: str | None = None
+        seen: set[str] = set()
+        while True:
+            page = self.list_candidates(principal, cursor=cursor)
+            candidates.extend(page.items)
+            if len(candidates) > 20_000:
+                raise InternalReadBackendUnavailable("personal finance collection is too large")
+            if page.next_cursor is None:
+                break
+            if page.next_cursor in seen:
+                raise InternalReadBackendUnavailable("personal finance cursor repeated")
+            seen.add(page.next_cursor)
+            cursor = page.next_cursor
+        return build_personal_finance_summary(tuple(candidates))
 
     def get_candidate(
         self,

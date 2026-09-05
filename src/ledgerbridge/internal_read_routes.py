@@ -64,6 +64,7 @@ from ledgerbridge.internal_read_service import (
     SyntheticInternalReadService,
     SyntheticResourceIntegrityError,
 )
+from ledgerbridge.personal_finance_summary import PersonalFinanceSummary
 from ledgerbridge.text import contains_unstorable_text
 
 _MONTH = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
@@ -412,6 +413,17 @@ def get_accounting_dimensions(
     service: Service,
 ) -> AccountingDimensions:
     return service.get_accounting_dimensions(principal, entity_ref=params.entity_ref)
+
+
+@router.get("/personal-finance-summary", response_model=PersonalFinanceSummary)
+def get_personal_finance_summary(
+    principal: CandidatePrincipal,
+    service: Service,
+) -> PersonalFinanceSummary:
+    authorize_collection_read(principal, Capability.CANDIDATE_READ)
+    if not isinstance(service, DatabaseInternalReadService):
+        raise InternalReadProblem(status.HTTP_400_BAD_REQUEST, "INVALID_QUERY")
+    return service.personal_finance_summary(principal)
 
 
 @router.get("/candidates", response_model=CandidatePage)

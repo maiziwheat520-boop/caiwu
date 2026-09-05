@@ -29,6 +29,7 @@ from ledgerbridge.internal_read_contract import (
     LedgerSummary,
     ReconciliationProjection,
 )
+from ledgerbridge.personal_finance_summary import PersonalFinanceSummary
 
 CONTRACT_VERSION = "ledgerbridge.internal-contract.v1"
 
@@ -44,6 +45,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     CapabilitiesResponse,
     ClassificationGroupPage,
     LedgerSummary,
+    PersonalFinanceSummary,
     ReconciliationProjection,
 )
 

@@ -4275,6 +4275,316 @@
       "title": "LedgerSummary",
       "type": "object"
     },
+    "PersonalFinanceSummary": {
+      "$defs": {
+        "CandidateStatus": {
+          "enum": [
+            "INCOMPLETE",
+            "CONFLICTED",
+            "PENDING",
+            "CONFIRMED",
+            "IGNORED",
+            "SUPERSEDED"
+          ],
+          "title": "CandidateStatus",
+          "type": "string"
+        },
+        "CategoryShare": {
+          "additionalProperties": false,
+          "properties": {
+            "amount_minor": {
+              "title": "Amount Minor",
+              "type": "integer"
+            },
+            "basis_points": {
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Basis Points",
+              "type": "integer"
+            },
+            "category": {
+              "title": "Category",
+              "type": "string"
+            }
+          },
+          "required": [
+            "category",
+            "amount_minor",
+            "basis_points"
+          ],
+          "title": "CategoryShare",
+          "type": "object"
+        },
+        "MonthlyTotal": {
+          "additionalProperties": false,
+          "properties": {
+            "expense_minor": {
+              "title": "Expense Minor",
+              "type": "integer"
+            },
+            "income_minor": {
+              "title": "Income Minor",
+              "type": "integer"
+            },
+            "month": {
+              "title": "Month",
+              "type": "string"
+            },
+            "net_minor": {
+              "title": "Net Minor",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "month",
+            "income_minor",
+            "expense_minor",
+            "net_minor"
+          ],
+          "title": "MonthlyTotal",
+          "type": "object"
+        },
+        "PendingCandidate": {
+          "additionalProperties": false,
+          "properties": {
+            "accounting_month": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Accounting Month"
+            },
+            "business_unit_label": {
+              "title": "Business Unit Label",
+              "type": "string"
+            },
+            "candidate_ref": {
+              "title": "Candidate Ref",
+              "type": "string"
+            },
+            "category_label": {
+              "title": "Category Label",
+              "type": "string"
+            },
+            "short_id": {
+              "title": "Short Id",
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/CandidateStatus"
+            },
+            "summary": {
+              "title": "Summary",
+              "type": "string"
+            }
+          },
+          "required": [
+            "candidate_ref",
+            "short_id",
+            "business_unit_label",
+            "category_label",
+            "accounting_month",
+            "summary",
+            "status"
+          ],
+          "title": "PendingCandidate",
+          "type": "object"
+        },
+        "PersonalEntry": {
+          "additionalProperties": false,
+          "description": "One personal cash movement, with everything the page renders.",
+          "properties": {
+            "accounting_month": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Accounting Month"
+            },
+            "business_unit_label": {
+              "title": "Business Unit Label",
+              "type": "string"
+            },
+            "candidate_ref": {
+              "title": "Candidate Ref",
+              "type": "string"
+            },
+            "cashflow_minor": {
+              "title": "Cashflow Minor",
+              "type": "integer"
+            },
+            "category_label": {
+              "title": "Category Label",
+              "type": "string"
+            },
+            "counterparty": {
+              "title": "Counterparty",
+              "type": "string"
+            },
+            "date": {
+              "title": "Date",
+              "type": "string"
+            },
+            "scope_status": {
+              "enum": [
+                "PERSONAL",
+                "UNASSIGNED"
+              ],
+              "title": "Scope Status",
+              "type": "string"
+            },
+            "short_id": {
+              "title": "Short Id",
+              "type": "string"
+            },
+            "source_kind": {
+              "enum": [
+                "PLATFORM",
+                "BANK"
+              ],
+              "title": "Source Kind",
+              "type": "string"
+            },
+            "summary": {
+              "title": "Summary",
+              "type": "string"
+            },
+            "transaction_type": {
+              "title": "Transaction Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "candidate_ref",
+            "short_id",
+            "business_unit_label",
+            "category_label",
+            "accounting_month",
+            "summary",
+            "cashflow_minor",
+            "date",
+            "transaction_type",
+            "counterparty",
+            "source_kind",
+            "scope_status"
+          ],
+          "title": "PersonalEntry",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "candidate_total": {
+          "title": "Candidate Total",
+          "type": "integer"
+        },
+        "category_shares": {
+          "items": {
+            "$ref": "#/$defs/CategoryShare"
+          },
+          "maxItems": 200,
+          "title": "Category Shares",
+          "type": "array"
+        },
+        "contract_version": {
+          "const": "ledgerbridge.personal-finance-summary.v1",
+          "default": "ledgerbridge.personal-finance-summary.v1",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "deduplicated_count": {
+          "title": "Deduplicated Count",
+          "type": "integer"
+        },
+        "entry_total": {
+          "title": "Entry Total",
+          "type": "integer"
+        },
+        "evidence_count": {
+          "title": "Evidence Count",
+          "type": "integer"
+        },
+        "excluded_count": {
+          "title": "Excluded Count",
+          "type": "integer"
+        },
+        "expense_entry_count": {
+          "title": "Expense Entry Count",
+          "type": "integer"
+        },
+        "expense_minor": {
+          "title": "Expense Minor",
+          "type": "integer"
+        },
+        "income_entry_count": {
+          "title": "Income Entry Count",
+          "type": "integer"
+        },
+        "income_minor": {
+          "title": "Income Minor",
+          "type": "integer"
+        },
+        "monthly_totals": {
+          "items": {
+            "$ref": "#/$defs/MonthlyTotal"
+          },
+          "maxItems": 200,
+          "title": "Monthly Totals",
+          "type": "array"
+        },
+        "net_minor": {
+          "title": "Net Minor",
+          "type": "integer"
+        },
+        "pending_preview": {
+          "items": {
+            "$ref": "#/$defs/PendingCandidate"
+          },
+          "maxItems": 4,
+          "title": "Pending Preview",
+          "type": "array"
+        },
+        "pending_total": {
+          "title": "Pending Total",
+          "type": "integer"
+        },
+        "unassigned_entries": {
+          "items": {
+            "$ref": "#/$defs/PersonalEntry"
+          },
+          "maxItems": 1000,
+          "title": "Unassigned Entries",
+          "type": "array"
+        }
+      },
+      "required": [
+        "candidate_total",
+        "pending_total",
+        "pending_preview",
+        "entry_total",
+        "income_minor",
+        "expense_minor",
+        "net_minor",
+        "income_entry_count",
+        "expense_entry_count",
+        "evidence_count",
+        "excluded_count",
+        "deduplicated_count",
+        "unassigned_entries",
+        "category_shares",
+        "monthly_totals"
+      ],
+      "title": "PersonalFinanceSummary",
+      "type": "object"
+    },
     "ReconciliationProjection": {
       "$defs": {
         "Blocker": {

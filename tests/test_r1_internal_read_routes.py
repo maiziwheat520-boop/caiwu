@@ -136,6 +136,7 @@ def test_router_topology_matches_the_frozen_contract() -> None:
         "/internal/v1/accounting-dimensions",
         "/internal/v1/candidates",
         "/internal/v1/candidates/{id}",
+        "/internal/v1/personal-finance-summary",
         "/internal/v1/evidence/{id}/content",
         "/internal/v1/reconciliations/{month}",
         "/internal/v1/ledger-summary",
