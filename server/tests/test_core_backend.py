@@ -3262,3 +3262,70 @@ class TwoEventDecisionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def core_learned_rule(**overrides: object) -> dict[str, object]:
+    rule: dict[str, object] = {
+        "contract_version": "ledgerbridge.learned-classification-rule.v1",
+        "rule_ref": "rule_0f9a2c",
+        "revision": 1,
+        "status": "ACTIVE",
+        "group_ref": CLASSIFICATION_GROUP_REF,
+        "conditions": core_classification_group()["conditions"],
+        "business_unit_ref": "unit-demo-a",
+        "category_code": "SETTLEMENT",
+        "source_candidate_ref": CANDIDATE_ID,
+        "source_decision_operation_id": "60000000-0000-4000-8000-000000000009",
+        "effective_from": "2026-08-24T10:00:00+08:00",
+        "created_at": "2026-08-24T10:00:00+08:00",
+        "effective_to": None,
+        "disabled_at": None,
+    }
+    rule.update(overrides)
+    return rule
+
+
+class LearnedClassificationRuleTests(unittest.TestCase):
+    """A learned rule must not be able to take the whole page down.
+
+    Core already accepts active_rules= in its group builder and would populate
+    this field; no call site passes one yet. The BFF used to reject the entire
+    response whenever the field was not null, so wiring learned rules up in
+    Core would have surfaced as an unexplained 503.
+    """
+
+    def _client(self, rule: object) -> ClassificationCoreClient:
+        class RuleClient(ClassificationCoreClient):
+            def json(self, method: str, path: str, **kwargs: object) -> dict[str, object]:
+                payload = super().json(method, path, **kwargs)  # type: ignore[arg-type]
+                if method == "GET" and path.endswith("candidate-classification-groups"):
+                    payload["items"][0]["active_rule"] = rule  # type: ignore[index]
+                return payload
+
+        return RuleClient()
+
+    def test_a_well_formed_rule_is_forwarded_instead_of_failing_the_page(self) -> None:
+        page = build_state(self._client(core_learned_rule())).candidate_classification_groups()
+
+        group = page["items"][0]  # type: ignore[index]
+        self.assertEqual(group["active_rule"]["rule_ref"], "rule_0f9a2c")  # type: ignore[index]
+        self.assertEqual(group["active_rule"]["status"], "ACTIVE")  # type: ignore[index]
+
+    def test_a_rule_for_another_group_is_still_refused(self) -> None:
+        rule = core_learned_rule(group_ref="cg_" + "0" * 32)
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(self._client(rule)).candidate_classification_groups()
+        self.assertEqual(raised.exception.status, 503)
+
+    def test_a_malformed_rule_is_still_refused(self) -> None:
+        for overrides in (
+            {"status": "RETIRED"},
+            {"revision": 0},
+            {"business_unit_ref": ""},
+            {"conditions": "not-an-object"},
+        ):
+            with self.subTest(overrides=overrides):
+                rule = core_learned_rule(**overrides)
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(self._client(rule)).candidate_classification_groups()
+                self.assertEqual(raised.exception.status, 503)
