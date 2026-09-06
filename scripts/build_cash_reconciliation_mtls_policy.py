@@ -104,7 +104,21 @@ def _derived_grants(current: MtlsWorkloadPolicyV2) -> tuple[EntityGrant, ...]:
     ):
         raise CashReconciliationPolicyError("COMPANY_SCOPE_INVALID")
 
-    grants = (*personal_grants, *company_grants)
+    # Managed personal bank owners need not have a candidate review batch. The
+    # old batch-only filter silently dropped their already-authorized cash facts.
+    # Reuse the exact existing registry-only grant. EntityGrant deliberately
+    # rejects an empty grant; inventing a review batch or granting unassigned
+    # candidates would enlarge a different surface.
+    bank_grants = tuple(
+        grant
+        for grant in primary.principal.grants
+        if grant.allow_account_registry
+        and not grant.business_unit_refs
+        and not grant.business_unit_ids
+        and not grant.business_unit_bindings
+        and not grant.allow_unassigned_candidates
+    )
+    grants = (*personal_grants, *bank_grants, *company_grants)
     if len({grant.entity_ref for grant in grants}) != len(grants):
         raise CashReconciliationPolicyError("CANDIDATE_POLICY_INVALID")
     return grants

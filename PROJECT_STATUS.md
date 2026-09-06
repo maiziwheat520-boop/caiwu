@@ -1,3 +1,21 @@
+## 2026-09-06 monthly reconciliation acceptance repair
+
+Owner: Codex, ai/chatgpt/monthly-authoritative-mapping-20260906.
+The cash policy builder now preserves the primary Web identity's already authorized
+registry-only personal bank grant. A generation-bound repair CLI prepares but does not
+activate that scope repair, retaining all certificates and unrelated grants/capabilities.
+An owner-only private-plan command appends exact-fact reviewed expense classifications;
+default execution rolls back, repeated operations do not add revisions, and errors do not
+print financial parameters. No schema change or automatic posting is introduced.
+
+Validation: initial full suite 2663 passed/225 environment-platform skips; additional
+focused tests pass. Fresh production encrypted backup and isolated restore succeeded.
+The real isolated PostgreSQL clone passed seven corrections, exact source/version refusals,
+conflicting replay, zero-delta replay, mid-batch rollback, concurrent one-winner behavior,
+runtime-role refusal, and unchanged source/journal/posting checks. Independent review's
+financial-log HIGH was fixed. Production activation is pending; annual WeChat and payroll
+source integration must not be misrepresented as completed by this repair.
+
 ## 2026-09-05 reporting-item correction
 
 Owner: Codex, ai/chatgpt/social-tax-correction-20260905.
