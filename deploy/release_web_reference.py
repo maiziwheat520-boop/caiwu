@@ -83,12 +83,12 @@ def run(args):
         raise RuntimeError('Private report must not be a symlink')
     shutil.copyfile(args.report, release / 'private-report.json')
     # Validate with the same candidate parser before stopping anything.
-    command('python3', '-c',
+    command('python3', '-S', '-c',
         'import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); '
-        'from server.monthly_review import load_monthly_review; '
+        'from monthly_review import load_monthly_review; '
         'r=load_monthly_review(Path(sys.argv[2]),"2026-08"); '
         'assert r["authority"]=="NON_AUTHORITATIVE_REFERENCE"',
-        str(release), str(release / 'private-report.json'))
+        str(release / 'server'), str(release / 'private-report.json'))
     existing_report = report.exists()
     for name in ('dist', 'server'):
         shutil.copytree(ROOT / name, backup / name)

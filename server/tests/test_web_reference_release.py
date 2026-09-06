@@ -4,12 +4,15 @@ import io
 from pathlib import Path
 import tarfile
 import subprocess
+import sys
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 
 from deploy import release_web_reference as release
+from server.tests.test_monthly_review import package
 
 
 class ReferenceReleaseTests(unittest.TestCase):
@@ -102,6 +105,18 @@ class ReferenceReleaseTests(unittest.TestCase):
             with tempfile.TemporaryDirectory(dir=self.root) as stage:
                 with self.assertRaises(RuntimeError):
                     release.validate_archive(self.archive, Path(stage))
+
+    def test_report_preflight_requires_only_standard_library(self):
+        self.report.write_text(json.dumps(package()), encoding='utf-8')
+        source_directory = Path(__file__).resolve().parents[1]
+        result = subprocess.run([sys.executable, '-S', '-c',
+            'import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); '
+            'from monthly_review import load_monthly_review; '
+            'r=load_monthly_review(Path(sys.argv[2]),"2026-08"); '
+            'assert r["authority"]=="NON_AUTHORITATIVE_REFERENCE"; '
+            'assert "server.auth" not in sys.modules', str(source_directory), str(self.report)],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == '__main__':
