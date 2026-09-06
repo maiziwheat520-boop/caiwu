@@ -32,6 +32,11 @@ stops Web, swaps frozen files, installs only its own private file in existing
 read-only `/config`, and recreates Web with the existing compose configuration.
 Health or access-guard failure restores the old files and recreates old Web.
 Failure to stop an already-removed container must not prevent rollback.
+Before stopping Web, code/assets are normalized to POSIX 755 directories and
+644 files (never private config). The candidate is imported in a separate,
+network-disabled read-only container using the current image and service UID.
+The private report remains mode600; only that file is mounted for preflight,
+not authentication state, credentials or the database.
 
 Post-cutover verify exact revision, assets and private-file hashes, healthy Web,
 anonymous API401/static404, and unchanged Core revision and migration head.

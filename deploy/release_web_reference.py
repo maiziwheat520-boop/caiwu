@@ -61,6 +61,34 @@ def validate_archive(archive, destination):
     for path in (destination / 'dist').rglob('*'):
         if path.is_file() and (path.suffix == '.json' or b'ledgerbridge.monthly-review-package.v1' in path.read_bytes()):
             raise RuntimeError('Private data or unexpected JSON in public assets')
+    # Windows tar entries can omit POSIX directory modes. These two trees contain
+    # only public assets and application code; never normalize private config.
+    for name in ('dist', 'server'):
+        base = destination / name
+        for path in (base, *base.rglob('*')):
+            os.chmod(path, 0o755 if path.is_dir() else 0o644)
+
+
+def preflight_container(candidate):
+    owner = (ROOT / 'config').stat()
+    user = f'{owner.st_uid}:{owner.st_gid}'
+    if command('docker', 'inspect', '--format', '{{.Config.User}}', CONTAINER).strip() != user:
+        raise RuntimeError('Private report owner differs from the running service identity')
+    image = command('docker', 'inspect', '--format', '{{.Image}}', CONTAINER).strip()
+    command('docker', 'run', '--rm', '--pull', 'never', '--network', 'none',
+        '--read-only', '--user', user, '--cap-drop', 'ALL',
+        '--security-opt', 'no-new-privileges:true', '--workdir', '/app',
+        '-e', 'PYTHONPATH=/vendor', '-e', 'PYTHONDONTWRITEBYTECODE=1',
+        '-v', f'{candidate / "server"}:/app/server:ro',
+        '-v', f'{candidate / "dist"}:/site:ro',
+        '-v', f'{ROOT / "vendor"}:/vendor:ro',
+        '-v', f'{candidate / "private-report.json"}:/reference.json:ro',
+        image, 'python', '-c',
+        'from pathlib import Path; import server.app; '
+        'from server.monthly_review import load_monthly_review; '
+        'assert Path("/site/index.html").read_bytes(); '
+        'r=load_monthly_review(Path("/reference.json"),"2026-08"); '
+        'assert r["authority"]=="NON_AUTHORITATIVE_REFERENCE"')
 
 
 def run(args):
@@ -85,6 +113,10 @@ def run(args):
     if report.is_symlink():
         raise RuntimeError('Private report must not be a symlink')
     shutil.copyfile(args.report, release / 'private-report.json')
+    os.chmod(release / 'private-report.json', 0o600)
+    if hasattr(os, 'chown'):
+        owner = (ROOT / 'config').stat()
+        os.chown(release / 'private-report.json', owner.st_uid, owner.st_gid)
     # Validate with the same candidate parser before stopping anything.
     command('python3', '-S', '-c',
         'import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); '
@@ -92,6 +124,7 @@ def run(args):
         'r=load_monthly_review(Path(sys.argv[2]),"2026-08"); '
         'assert r["authority"]=="NON_AUTHORITATIVE_REFERENCE"',
         str(release / 'server'), str(release / 'private-report.json'))
+    preflight_container(release)
     existing_report = report.exists()
     for name in ('dist', 'server'):
         shutil.copytree(ROOT / name, backup / name)

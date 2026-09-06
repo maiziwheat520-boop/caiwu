@@ -35,11 +35,14 @@ class ReferenceReleaseTests(unittest.TestCase):
         self.root_patch.start()
         self.command = patch.object(release, 'command', return_value='')
         self.command.start()
+        self.preflight = patch.object(release, 'preflight_container')
+        self.preflight.start()
         self.previous_umask = release.os.umask(0o022)
 
     def tearDown(self):
         release.os.umask(self.previous_umask)
         self.command.stop()
+        self.preflight.stop()
         self.root_patch.stop()
         self.temp.cleanup()
 
@@ -124,6 +127,21 @@ class ReferenceReleaseTests(unittest.TestCase):
             'assert "server.auth" not in sys.modules', str(source_directory), str(self.report)],
             capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_archive_normalizes_only_code_and_assets_not_private_configuration(self):
+        with tempfile.TemporaryDirectory(dir=self.root) as stage:
+            target = Path(stage)
+            release.validate_archive(self.archive, target)
+            self.assertEqual((target / 'dist/index.html').stat().st_mode & 0o444, 0o444)
+            if sys.platform != 'win32':
+                self.assertEqual((target / 'server').stat().st_mode & 0o777, 0o755)
+
+    def test_runtime_preflight_failure_does_not_stop_live_service(self):
+        with (patch.object(release, 'preflight_container', side_effect=RuntimeError('candidate unreadable')),
+              patch.object(release, 'command') as command):
+            with self.assertRaisesRegex(RuntimeError, 'candidate unreadable'):
+                release.run(self.args)
+            self.assertFalse(any(call.args[:2] == ('docker', 'stop') for call in command.call_args_list))
 
 
 if __name__ == '__main__':
