@@ -1935,17 +1935,20 @@ def test_runtime_role_split_removes_preexisting_owner_membership(
         _run_alembic(rendered, "20260823_0006")
         temporary_engine = create_engine(temporary_url)
         with temporary_engine.connect() as connection:
-            assert connection.execute(
-                text(
-                    """
-                    SELECT rolname, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
-                           rolinherit, rolreplication, rolbypassrls
-                    FROM pg_roles
-                    WHERE rolname IN ('ledgerbridge_api', 'ledgerbridge_worker')
-                    ORDER BY rolname
-                    """
-                )
-            ).all() == [
+            assert [
+                tuple(row)
+                for row in connection.execute(
+                    text(
+                        """
+                        SELECT rolname, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
+                               rolinherit, rolreplication, rolbypassrls
+                        FROM pg_roles
+                        WHERE rolname IN ('ledgerbridge_api', 'ledgerbridge_worker')
+                        ORDER BY rolname
+                        """
+                    )
+                ).all()
+            ] == [
                 ("ledgerbridge_api", True, False, False, False, False, False, False),
                 ("ledgerbridge_worker", True, False, False, False, False, False, False),
             ]
