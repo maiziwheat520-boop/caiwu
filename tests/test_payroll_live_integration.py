@@ -225,6 +225,18 @@ def test_not_ready_status_and_dashboard_return_only_safe_setup_summary() -> None
             "PAYROLL_DEMO_DATA_NOT_ALLOWED",
         ),
         (lambda v: v.update({"payable": True}), "PAYROLL_PAYMENT_MODE_NOT_ALLOWED"),
+        (
+            lambda v: v.update({"submission_supported": True}),
+            "PAYROLL_PAYMENT_MODE_NOT_ALLOWED",
+        ),
+        (
+            lambda v: v.update({"payment_submission_supported": True}),
+            "PAYROLL_PAYMENT_MODE_NOT_ALLOWED",
+        ),
+        (
+            lambda v: v["server_capabilities"].update({"payment_submission": True}),
+            "PAYROLL_PAYMENT_MODE_NOT_ALLOWED",
+        ),
         (lambda v: v["server_capabilities"].pop("payment_submission"), "PAYROLL_PROVIDER_RESPONSE"),
         (lambda v: v.update({"projection_revision": 7}), "PAYROLL_PROVIDER_RESPONSE"),
     ],
@@ -239,6 +251,37 @@ def test_projection_rejects_unsafe_contract_variants(
     with pytest.raises(PayrollIntegrationError) as captured:
         source.list_batches(entity_ref=ENTITY, provider_headers=PROVIDER_HEADERS)
     assert captured.value.error_code == expected_code
+
+
+def test_read_status_rejects_a_payment_capable_provider() -> None:
+    """The live path has no separate status document: provider capability is
+    asserted on the same frozen projection every read validates."""
+
+    projection = copy.deepcopy(_projection())
+    projection["server_capabilities"]["payment_submission"] = True  # type: ignore[index]
+    source = _source(_projection_transport(projection))
+    with pytest.raises(PayrollIntegrationError) as captured:
+        source.read_status(
+            entity_ref=ENTITY,
+            provider_headers=PROVIDER_HEADERS,
+            allowed_actions=("VERIFY_RECEIPTS",),
+        )
+    assert captured.value.error_code == "PAYROLL_PAYMENT_MODE_NOT_ALLOWED"
+
+
+def test_read_status_rejects_a_projection_missing_its_payment_flags() -> None:
+    """Absent payment flags must fail closed rather than default to safe."""
+
+    projection = copy.deepcopy(_projection())
+    del projection["payable"]
+    source = _source(_projection_transport(projection))
+    with pytest.raises(PayrollIntegrationError) as captured:
+        source.read_status(
+            entity_ref=ENTITY,
+            provider_headers=PROVIDER_HEADERS,
+            allowed_actions=("VERIFY_RECEIPTS",),
+        )
+    assert captured.value.error_code == "PAYROLL_PROVIDER_RESPONSE"
 
 
 def _receipt(*, replayed: bool = False) -> dict[str, object]:

@@ -1516,21 +1516,6 @@ def _validate_status(value: Mapping[str, object]) -> None:
         )
 
 
-def _validate_live_status(value: Mapping[str, object]) -> None:
-    if (
-        value.get("schema_version") != STATUS_SCHEMA
-        or value.get("status") != "ready"
-        or type(value.get("demo_mode")) is not bool
-        or value.get("payment_submission_supported") is not False
-        or value.get("payment_execution_supported", False) is not False
-        or value.get("payable", False) is not False
-    ):
-        raise PayrollIntegrationError(
-            "PAYROLL_STATUS_UNSAFE",
-            "payroll provider status is not safe for non-payable integration",
-        )
-
-
 _COMMAND_RECEIPT_FIELDS = frozenset(
     {
         "schema_version",
