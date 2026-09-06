@@ -30,9 +30,19 @@ READER_URL = "postgresql+psycopg://ledgerbridge_reader@db/app"
 
 
 def _settings(tmp_path: Path, **overrides: Any) -> Settings:
-    """The smallest development install, adjusted by the caller."""
+    """The smallest development install, adjusted by the caller.
+
+    Every field the model would otherwise read from the environment is pinned,
+    including the ones a test needs to be absent: CI exports a full set of
+    database URLs, and a refusal that only fires on a developer's machine is not
+    a refusal that has been tested.
+    """
     fields: dict[str, Any] = {
+        "env": "development",
         "database_url": "sqlite+pysqlite:///:memory:",
+        "api_database_url": None,
+        "worker_database_url": None,
+        "reader_database_url": None,
         "artifact_root": tmp_path.resolve(),
     }
     fields.update(overrides)
@@ -760,6 +770,7 @@ def test_an_absent_origin_is_not_a_private_docker_service(tmp_path: Path) -> Non
 
 def _unlocker(tmp_path: Path, **overrides: Any) -> EvidenceUnlockerRuntimeSettings:
     fields: dict[str, Any] = {
+        "env": "development",
         "artifact_root": tmp_path.resolve(),
         "internal_read_evidence_key_file": (tmp_path / "evidence-key.json").resolve(),
         "internal_evidence_unlock_socket_path": (tmp_path / "unlocker.sock").resolve(),
