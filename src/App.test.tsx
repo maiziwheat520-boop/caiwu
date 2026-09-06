@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+vi.mock('./shared/monthPolicy', () => ({ previousBusinessMonth: () => '2026-08' }))
 import { Theme } from '@radix-ui/themes'
 import App from './App'
 import type { AccountingDimensions, ApiCandidate, AuthStatus, CashReconciliation, ClassificationGroup, EvidencePreview, OriginalReconciliation, PersonalFinanceSummary, ReviewEvent } from './types'
@@ -400,13 +401,13 @@ function reportCompany(basis: TestReportBasis, posted = false) {
 function companyReports(withCompany = false, posted = false) {
   return {
     contract_version: 'ledgerbridge.company-reports-bff.v1',
-    from_month: '2026-01',
+    from_month: '2026-08',
     to_month: '2026-08',
     posted_ledger_status: 'AVAILABLE',
     layers: reportBases.map((basis) => ({
       contract_version: 'ledgerbridge.company-report.v1',
       basis,
-      from_month: '2026-01',
+      from_month: '2026-08',
       to_month: '2026-08',
       items: withCompany ? [reportCompany(basis, posted && basis === 'POSTED_LEDGER')] : [],
     })),
@@ -682,7 +683,7 @@ function installFetch(options: {
       return response(payrollVerifyResult)
     }
     if (url in payrollResponses) return response(payrollResponses[url])
-    if (url === '/api/v1/company-reports') {
+    if (url === '/api/v1/company-reports' || url.startsWith('/api/v1/company-reports?')) {
       if (shouldFailCompanyReports) {
         shouldFailCompanyReports = false
         return response({ title: '公司报表暂不可用', status: 503, code: 'UNAVAILABLE' }, 503)
@@ -2278,6 +2279,7 @@ describe('LedgerBridge Web API client', () => {
     expect(within(formal).queryByText('建行正式对方')).not.toBeInTheDocument()
 
     fireEvent.click(within(formal).getByRole('button', { name: '查看流水明细（3 笔）' }))
+    fireEvent.click(within(formal).getByRole('button', { name: '清除筛选' }))
     expect(within(formal).getByText('建行正式对方')).toBeInTheDocument()
     fireEvent.change(within(formal).getByLabelText('银行账户筛选'), { target: { value: secondStatementRef } })
     expect(within(formal).getByText('符合条件 1 笔')).toBeInTheDocument()
@@ -2301,6 +2303,7 @@ describe('LedgerBridge Web API client', () => {
 
     const formal = await screen.findByRole('region', { name: '个人正式银行流水' })
     fireEvent.click(await within(formal).findByRole('button', { name: '查看流水明细（2 笔）' }))
+    fireEvent.click(within(formal).getByRole('button', { name: '清除筛选' }))
     expect(await within(formal).findByText('陈莹')).toBeInTheDocument()
     expect(within(formal).queryByText('陈莹 6')).not.toBeInTheDocument()
     expect(within(formal).getByText('跨行转账 · 手机银行 · 中国工商银行 · 对方尾号 7442')).toBeInTheDocument()
@@ -2324,6 +2327,9 @@ describe('LedgerBridge Web API client', () => {
     expect(testSummary.compareDocumentPosition(formal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
     fireEvent.click(within(formal).getByRole('button', { name: '查看流水明细（2 笔）' }))
+    expect(within(formal).getByLabelText('流水开始日期')).toHaveValue('2026-08-01')
+    expect(within(formal).getByLabelText('流水结束日期')).toHaveValue('2026-08-31')
+    fireEvent.click(within(formal).getByRole('button', { name: '清除筛选' }))
     expect(within(formal).getByText('正式对方甲')).toBeInTheDocument()
   })
 

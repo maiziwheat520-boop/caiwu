@@ -67,6 +67,7 @@ import { FilesAndConnections } from './connections/FilesAndConnections'
 import { PersonalFinanceOverview } from './personal-finance/PersonalFinanceOverview'
 import { SourceIcon } from './candidates/candidatePresentation'
 import { accountingMonthLabel, type CandidateUpdateIntent } from './candidates/candidateLabels'
+import { previousBusinessMonth } from './shared/monthPolicy'
 import { CompanyBankStatementReviewPanel } from './company-reports/CompanyBankStatementReviewPanel'
 import { CompanyTransactionClassificationPanel } from './company-reports/CompanyTransactionClassificationPanel'
 
@@ -77,7 +78,6 @@ const OriginalReconciliationPage = lazy(() => import('./original-reconciliation/
 const PayrollWorkspacePage = lazy(() => import('./payroll/PayrollWorkspacePage')
   .then((module) => ({ default: module.PayrollWorkspacePage })))
 
-const CURRENT_MONTH = '2026-08'
 const CLASSIFICATION_GROUPS_UNAVAILABLE_NOTICE = '同类批量归类暂不可用，可继续逐笔审核'
 
 const navigation: Array<{ id: Page; label: string; icon: typeof House }> = [
@@ -168,7 +168,7 @@ function App() {
   const [classificationGroupsAvailable, setClassificationGroupsAvailable] = useState(false)
   const [session, setSession] = useState<Session | null>(null)
   const [reconciliation, setReconciliation] = useState<ReconciliationData | null>(null)
-  const selectedMonth = CURRENT_MONTH
+  const [selectedMonth] = useState(previousBusinessMonth)
   const [connections, setConnections] = useState<ConnectionStatus[]>([])
   const [reviewEvents, setReviewEvents] = useState<ReviewEvent[]>([])
   const [auditCandidates, setAuditCandidates] = useState<Candidate[]>([])
@@ -1475,7 +1475,7 @@ function ReviewQueue({ candidates, bankStatements, csrfToken, onBankStatementRev
               <p>{candidate.summary}</p>
               <div className="candidate-meta">
                 <span>{candidate.businessUnit}</span>
-                <span>{candidate.accountingMonth ?? '建议归入 2026-08'}</span>
+                <span>{candidate.accountingMonth ?? '归属月份待确认'}</span>
                 <span>置信度 {Math.round(candidate.confidence * 100)}%</span>
                 {candidate.evidence.some((item) => item.kind === 'attachment') ? <span><Paperclip size={14} />{candidate.evidence.filter((item) => item.kind === 'attachment').length} 个附件</span> : null}
               </div>

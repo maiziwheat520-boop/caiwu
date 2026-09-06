@@ -1,5 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+vi.mock('../shared/monthPolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../shared/monthPolicy')>()
+  return { previousBusinessMonth: (now?: Date) => now ? actual.previousBusinessMonth(now) : '2026-08' }
+})
 
 import { api } from '../api'
 import type {
@@ -114,7 +118,11 @@ describe('PayrollHistorySummary', () => {
 
     render(<PayrollHistorySummary workspace={workspace} />)
 
-    expect(await screen.findByRole('heading', { name: '2026-07 工资汇总' })).toBeInTheDocument()
+    expect(await screen.findByText('2026 年 8 月尚无工资汇总，请明确选择历史月份；不会用最新旧期替代。')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '2026-07 工资汇总' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('对账月份')).toHaveValue('2026-08')
+    fireEvent.change(screen.getByLabelText('对账月份'), { target: { value: '2026-07' } })
+    expect(screen.getByRole('heading', { name: '2026-07 工资汇总' })).toBeInTheDocument()
     expect(api.previewPayrollSummaryMaterial).toHaveBeenCalledTimes(1)
     expect(api.previewPayrollSummaryMaterial).toHaveBeenCalledWith('material_authoritative_summary')
     expect(screen.getByRole('complementary', { name: '账期与版本' })).toBeInTheDocument()
@@ -134,6 +142,8 @@ describe('PayrollHistorySummary', () => {
 
     fireEvent.change(screen.getByLabelText('对账月份'), { target: { value: '2026-06' } })
     expect(screen.getByRole('heading', { name: '2026-06 工资汇总' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: '本期环比（2026-05 → 2026-06）' })).toBeInTheDocument()
+    expect(screen.queryByText('本期环比（06 → 07）')).not.toBeInTheDocument()
     expect(screen.getAllByText('¥170,339.98')).toHaveLength(2)
   })
 

@@ -529,6 +529,11 @@ export const api = {
       `/api/v1/cash-reconciliations/${encodeURIComponent(accountingMonth)}`,
     ),
 
+  getMonthlyReview: (accountingMonth: string) =>
+    requestJson<import('./types').MonthlyReview>(
+      `/api/v1/monthly-reconciliation-reviews/${encodeURIComponent(accountingMonth)}`,
+    ),
+
   listConnections: async () => {
     const response = await requestJson<{ items: ConnectionStatus[] }>('/api/v1/connections')
     return response.items

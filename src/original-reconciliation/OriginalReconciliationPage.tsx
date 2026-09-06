@@ -17,6 +17,9 @@ import type { CashReconciliation, OriginalReconciliation, Page } from '../types'
 import { PageHeader } from '../shared/PagePrimitives'
 import { MonthInput } from '../shared/TemporalControls'
 import './OriginalReconciliationPage.css'
+import { groupCashRows, cashSourceLabel } from './groupCashRows'
+import { MonthlyReviewPanel } from './MonthlyReviewPanel'
+import { previousBusinessMonth } from '../shared/monthPolicy'
 import {
   currentAccountCounterpartyNote,
   historicalClassificationCorrection,
@@ -29,17 +32,6 @@ const flowLabels: Record<FlowKind, string> = {
   income: '收入',
   expense: '支出',
   current: '往来款',
-}
-
-function currentMonth() {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    year: 'numeric',
-    month: '2-digit',
-    timeZone: 'Asia/Shanghai',
-  }).formatToParts(new Date())
-  const year = parts.find((part) => part.type === 'year')?.value ?? '2026'
-  const month = parts.find((part) => part.type === 'month')?.value ?? '01'
-  return `${year}-${month}`
 }
 
 function monthLabel(month: string) {
@@ -61,8 +53,8 @@ export function OriginalReconciliationPage({ onNavigate }: {
 }) {
   const [selectedMonthOverride, setSelectedMonthOverride] = useState<string | null>(null)
   const [selectedFlow, setSelectedFlow] = useState<FlowKind>('income')
-  const [data, setData] = useState<OriginalReconciliation | null>(null)
-  const [cashData, setCashData] = useState<CashReconciliation | null>(null)
+  const [rawData, setData] = useState<OriginalReconciliation | null>(null)
+  const [rawCashData, setCashData] = useState<CashReconciliation | null>(null)
   const [loading, setLoading] = useState(false)
   const [cashError, setCashError] = useState<string | null>(null)
   const [projectionWarning, setProjectionWarning] = useState<string | null>(null)
@@ -70,7 +62,9 @@ export function OriginalReconciliationPage({ onNavigate }: {
   const [expandedRuleKey, setExpandedRuleKey] = useState<string | null>(null)
   const requestRef = useRef(0)
   const scopeRef = useRef<OriginalReconciliation['scope'] | null>(null)
-  const selectedMonth = selectedMonthOverride ?? currentMonth()
+  const selectedMonth = selectedMonthOverride ?? previousBusinessMonth()
+  const data = rawData?.month === selectedMonth ? rawData : null
+  const cashData = rawCashData?.accounting_month === selectedMonth ? rawCashData : null
 
   const load = useCallback(async () => {
     const requestId = ++requestRef.current
@@ -87,19 +81,19 @@ export function OriginalReconciliationPage({ onNavigate }: {
         api.getCashReconciliation(selectedMonth),
       ] as const)
     if (requestId !== requestRef.current) return
-    if (projectionResult.status === 'fulfilled') {
+    if (projectionResult.status === 'fulfilled' && projectionResult.value.month === selectedMonth) {
       scopeRef.current = projectionResult.value.scope
       setData(projectionResult.value)
     } else {
       setData(null)
       setProjectionWarning('旧口径补充待办暂不可用')
     }
-    if (cashResult.status === 'fulfilled') {
+    if (cashResult.status === 'fulfilled' && cashResult.value.accounting_month === selectedMonth) {
       setCashData(cashResult.value)
     } else {
       setCashData(null)
       setCashError(
-        cashResult.reason instanceof Error
+        cashResult.status === 'rejected' && cashResult.reason instanceof Error
           ? cashResult.reason.message
           : '无法读取规则生成的月度对账',
       )
@@ -109,13 +103,13 @@ export function OriginalReconciliationPage({ onNavigate }: {
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0)
-    return () => window.clearTimeout(timer)
+    return () => { window.clearTimeout(timer); requestRef.current += 1 }
   }, [load])
 
   const selectedMonthLabel = monthLabel(selectedMonth)
-  const selectedCashRows = cashData?.rows.filter((row) => (
+  const selectedCashRows = groupCashRows(cashData?.rows.filter((row) => (
     row.flow_kind === selectedFlow.toUpperCase() && row.transaction_count > 0
-  )) ?? []
+  )) ?? [])
   const laneDefinitions = [
     { kind: 'income' as const, label: '收入', detail: '经营流入', icon: <ArrowDown size={19} /> },
     { kind: 'expense' as const, label: '支出', detail: '经营流出', icon: <ArrowUp size={19} /> },
@@ -142,7 +136,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
       <PageHeader
         eyebrow="财务核对"
         title="月度对账"
-        description="按正式银行和微信流水生成当月收入、支出与往来款。"
+        description="按公司和分类汇总实时流水，历史回测、补记及工资来源单独核对。"
         action={(
           <div className="original-reconciliation-filters">
             <MonthInput
@@ -153,6 +147,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
               value={selectedMonth}
               onChange={(event) => {
                 if (!event.target.value) return
+                requestRef.current += 1
                 setData(null)
                 setCashData(null)
                 setSelectedFlow('income')
@@ -175,8 +170,8 @@ export function OriginalReconciliationPage({ onNavigate }: {
       <section className="statement-source-notice" aria-label="账单数据入口状态">
         <Receipt size={20} />
         <div>
-          <strong>按实际收支月份核对流水</strong>
-          <span>以已导入的银行和微信流水为依据，汇总收入、支出与往来款。</span>
+          <strong>实时现金流水 · 实际收支月份</strong>
+          <span>每月默认处理上月数据，可选择其他月份；不移动原始收付款日期。仅覆盖已导入、已授权的流水，不代表材料齐全或整表结清。</span>
         </div>
       </section>
 
@@ -191,7 +186,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
                 ? '存在规则冲突'
                 : cashData.unmatched_fact_count > 0
                   ? '有流水待归类'
-                  : '全部流水已归类'
+                  : '已导入流水均已归类'
               : loading
                 ? '正在核对'
                 : '等待数据'}
@@ -264,8 +259,8 @@ export function OriginalReconciliationPage({ onNavigate }: {
                 <article key={row.rule_key} className={`statement-item ${selectedFlow}`}>
                   <div className="statement-item-status"><Badge color="green">自动生成</Badge><span>{selectedMonth}</span></div>
                   <div className="statement-item-main"><strong>{row.item_label}</strong><span>{row.transaction_count} 笔实收流水</span></div>
-                  <div className="statement-item-context"><span>{row.business_unit_label}</span><small>{row.source_kind === 'BANK_TRANSACTION' ? '银行流水' : '微信流水'}</small></div>
-                  <div className="statement-item-amount"><strong>{selectedFlow === 'expense' ? '-' : selectedFlow === 'income' ? '+' : ''}{currency.format(minorToMajor(row.amount_minor))}</strong><span>{row.rule_key}</span></div>
+                  <div className="statement-item-context"><span>{row.business_unit_label}</span><small>{row.sourceKinds.map(cashSourceLabel).join('、')}</small></div>
+                  <div className="statement-item-amount"><strong>{selectedFlow === 'expense' ? '-' : selectedFlow === 'income' ? '+' : ''}{currency.format(minorToMajor(row.amount_minor))}</strong><span>{row.sourceKeys.length} 项来源已归并</span></div>
                   <button
                     aria-controls={detailsId}
                     aria-expanded={detailsOpen}
@@ -285,11 +280,11 @@ export function OriginalReconciliationPage({ onNavigate }: {
                     >
                       {row.facts.map((fact) => (
                         <div key={fact.fact_ref} className="statement-fact-row">
-                          {row.source_kind === 'CANDIDATE'
+                          {fact.source_kind === 'CANDIDATE'
                             ? <span>{selectedMonth}（月粒度）</span>
                             : <time dateTime={fact.occurred_on}>{fact.occurred_on}</time>}
                           <strong>{currency.format(minorToMajor(fact.amount_minor))}</strong>
-                          <code>{fact.fact_ref}</code>
+                          <code><span>{fact.fact_ref}</span><br />{cashSourceLabel(fact.source_kind)} · {fact.source_ref}<br />{fact.rule_key}</code>
                         </div>
                       ))}
                     </div>
@@ -307,6 +302,8 @@ export function OriginalReconciliationPage({ onNavigate }: {
           </div>
         </div>
       </section>
+
+      <MonthlyReviewPanel month={selectedMonth} />
 
       {cashError ? (
         <section className="projection-state-alert" role="alert">

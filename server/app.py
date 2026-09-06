@@ -29,6 +29,7 @@ from .core_backend import (
     sqlite_contains_business_facts,
 )
 from .evidence_preview import EvidencePreviewError, build_evidence_preview
+from .monthly_review import MonthlyReviewUnavailable, load_monthly_review
 from .persistence import (
     IdempotencyConflictError,
     IdempotencyRecord,
@@ -1226,6 +1227,29 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 )
             return
         if not self._require_session():
+            return
+        review_match = re.fullmatch(r"/api/v1/monthly-reconciliation-reviews/([^/]+)", path)
+        if review_match:
+            month = review_match.group(1)
+            if query or not MONTH_PATTERN.fullmatch(month):
+                self._send_json(400, _problem(400, "INVALID_MONTHLY_REVIEW_QUERY", "仅接受对账月份，不接受文件或主体参数"))
+                return
+            manager = self.preview_server.auth_manager
+            token = self._session_token()
+            subject = manager.payroll_session_subject(token) if manager and token else None
+            owner = getattr(state, "user_subject", None)
+            if not isinstance(subject, str) or not isinstance(owner, str) or not hmac.compare_digest(
+                subject.encode("utf-8"), owner.encode("utf-8")
+            ):
+                self._send_json(403, _problem(403, "MONTHLY_REVIEW_SCOPE_MISMATCH", "审核附件仅向已绑定的完整认证主体开放"))
+                return
+            try:
+                package_path = Path(os.environ.get("MONTHLY_RECONCILIATION_REVIEW_FILE", "/config/monthly-reconciliation-review.json"))
+                result = load_monthly_review(package_path, month)
+            except MonthlyReviewUnavailable:
+                self._send_json(503, _problem(503, "MONTHLY_REVIEW_UNAVAILABLE", "已确认审核附件暂不可用"))
+                return
+            self._send_json(200, result)
             return
         payroll_reads = {
             "/api/v1/payroll/status": "payroll_status",

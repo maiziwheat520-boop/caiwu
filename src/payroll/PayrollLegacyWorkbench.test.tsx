@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+vi.mock('../shared/monthPolicy', () => ({ previousBusinessMonth: () => '2026-08' }))
 
 import { api } from '../api'
 import type {
@@ -298,6 +299,7 @@ describe('PayrollLegacyWorkbench', () => {
     await screen.findByRole('region', { name: '工资概览' })
     fireEvent.click(screen.getByRole('button', { name: '复核本月已发并更新汇总' }))
     const review = screen.getByRole('region', { name: '发放复核分类' })
+    fireEvent.change(screen.getByLabelText('查看已保存月份'), { target: { value: '2026-07' } })
     expect(await within(review).findByText(/七月独有代发流水/)).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('查看已保存月份'), { target: { value: '2026-08' } })
     await waitFor(() => expect(api.getPayrollDisbursementRecords).toHaveBeenCalledWith('2026-08'))

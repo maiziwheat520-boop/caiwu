@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 
 import { api, ApiError } from '../api'
 import { MonthInput } from '../shared/TemporalControls'
+import { previousBusinessMonth } from '../shared/monthPolicy'
 import type {
   PayrollTestBatchValidationResult,
   PayrollInputMaterialPreview,
@@ -25,7 +26,7 @@ const PAGE_SIZE = 25
 // The panel offers the months inside the current test window; Core and the BFF
 // gate on the cutoff itself, so widening the window only changes this list.
 const TEST_WINDOW_MONTHS = ['2026-07', '2026-08'] as const
-type Filter = (typeof TEST_WINDOW_MONTHS)[number]
+type Filter = string
 
 export type PayrollMaterialRole = 'attendance' | 'aunt_attendance' | 'review_statistics'
 
@@ -85,9 +86,7 @@ export function PayrollTestWorkspaceActionsPanel({
   onWorkspaceChange,
   onConfirmedMaterials,
 }: Props) {
-  const [filter, setFilter] = useState<Filter>(() => (
-    workspace.data.materials.some((material) => material.period === '2026-08') ? '2026-08' : '2026-07'
-  ))
+  const [filter, setFilter] = useState<Filter>(previousBusinessMonth)
   const [page, setPage] = useState(0)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
@@ -142,7 +141,7 @@ export function PayrollTestWorkspaceActionsPanel({
 
   const confirmSelection = () => {
     if (
-      !currentSelection.attendance ||
+      (filter !== '2026-07' && filter !== '2026-08') || !currentSelection.attendance ||
       !currentSelection.aunt_attendance || !currentSelection.review_statistics
     ) return
     const selection: PayrollConfirmedMaterials = {
@@ -245,7 +244,7 @@ export function PayrollTestWorkspaceActionsPanel({
       </header>
 
       <div className="payroll-test-summary" aria-label="材料状态汇总">
-        {TEST_WINDOW_MONTHS.map((month) => (
+        {Array.from(new Set([previousBusinessMonth(), ...TEST_WINDOW_MONTHS])).sort().map((month) => (
           <button
             key={month}
             type="button"

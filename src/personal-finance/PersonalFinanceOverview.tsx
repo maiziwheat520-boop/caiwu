@@ -14,6 +14,7 @@ import type { Page } from '../types'
 import { ErrorState, LoadingState, Metric, PageHeader } from '../shared/PagePrimitives'
 import { currency } from '../shared/format'
 import { accountingMonthLabel } from '../candidates/candidateLabels'
+import { previousBusinessMonth } from '../shared/monthPolicy'
 import { PersonalBankTransactionsPanel } from './PersonalBankTransactionsPanel'
 import { usePersonalFinanceSummary } from './usePersonalFinanceSummary'
 
@@ -35,7 +36,8 @@ export function PersonalFinanceOverview({ onNavigate, onOpenCandidateRef, csrfTo
 }) {
   const { summary, loading, error, reload } = usePersonalFinanceSummary()
   const leadingCategory = summary?.category_shares[0]
-  const latestTrend = summary?.monthly_totals[0]
+  const businessMonth = previousBusinessMonth()
+  const latestTrend = summary?.monthly_totals.find((item) => item.month === businessMonth)
 
   return (
     <>
@@ -149,7 +151,7 @@ export function PersonalFinanceOverview({ onNavigate, onOpenCandidateRef, csrfTo
               {accountingMonthLabel(latestTrend.month)}净额 {currency.format(minorToMajor(latestTrend.net_minor))}
               {leadingCategory ? `；当前金额占比最高的分类是${leadingCategory.category} ${percentage(leadingCategory.basis_points)}%` : ''}。
             </p>
-          ) : null}
+          ) : <p className="personal-finance-empty">{accountingMonthLabel(businessMonth)}尚无月度汇总，不以其他月份代替。</p>}
           {summary.monthly_totals.length > 0 ? (
             <div className="personal-trend-list">
               {summary.monthly_totals.map((item) => (

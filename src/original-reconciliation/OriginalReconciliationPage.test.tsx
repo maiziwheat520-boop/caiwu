@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as monthPolicy from '../shared/monthPolicy'
 import { api } from '../api'
 import { originalReconciliationFixture } from '../test-fixtures/original-reconciliation'
 import type { CashReconciliation } from '../types'
@@ -35,11 +36,15 @@ const cashReconciliation: CashReconciliation = {
 }
 
 function installSuccessfulReads() {
-  vi.spyOn(api, 'getOriginalReconciliation').mockResolvedValue(originalReconciliationFixture)
+  vi.spyOn(api, 'getOriginalReconciliation').mockImplementation(async ({ accountingMonth }) => ({ ...originalReconciliationFixture, month: accountingMonth }))
   vi.spyOn(api, 'getCashReconciliation').mockResolvedValue(cashReconciliation)
 }
 
 describe('OriginalReconciliationPage', () => {
+  beforeEach(() => {
+    vi.spyOn(monthPolicy, 'previousBusinessMonth').mockReturnValue('2026-09')
+    vi.spyOn(api, 'getMonthlyReview').mockRejectedValue(new Error('Synthetic report not loaded'))
+  })
   afterEach(() => vi.restoreAllMocks())
 
   it('renders only the rule-generated monthly reconciliation totals', async () => {
@@ -147,5 +152,32 @@ describe('OriginalReconciliationPage', () => {
 
     await vi.waitFor(() => expect(api.getCashReconciliation).toHaveBeenLastCalledWith('2026-08'))
     expect(api.getOriginalReconciliation).toHaveBeenLastCalledWith(expect.objectContaining({ accountingMonth: '2026-08' }))
+  })
+  it('uses the common workbench month instead of the current calendar month', async () => {
+    vi.mocked(monthPolicy.previousBusinessMonth).mockReturnValue('2026-08')
+    installSuccessfulReads()
+    render(<OriginalReconciliationPage onNavigate={vi.fn()} />)
+    await vi.waitFor(() => expect(api.getCashReconciliation).toHaveBeenCalledWith('2026-08'))
+    expect(screen.getByLabelText('选择对账月份')).toHaveValue('2026-08')
+  })
+  it('does not refill old cash when its request finishes after changing month', async () => {
+    let finishOld!: (value: CashReconciliation) => void
+    vi.spyOn(api, 'getCashReconciliation').mockImplementation(() => new Promise(resolve => { finishOld = resolve }))
+    vi.spyOn(api, 'getOriginalReconciliation').mockResolvedValue({ ...originalReconciliationFixture, month: '2026-09' })
+    render(<OriginalReconciliationPage onNavigate={vi.fn()} />)
+    await vi.waitFor(() => expect(api.getCashReconciliation).toHaveBeenCalled())
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('选择对账月份'), { target: { value: '2026-08' } })
+      finishOld(cashReconciliation)
+      await Promise.resolve()
+    })
+    expect(screen.queryByText('平台实收')).not.toBeInTheDocument()
+  })
+  it('rejects a cash response whose month differs from the selected month', async () => {
+    installSuccessfulReads()
+    vi.mocked(api.getCashReconciliation).mockResolvedValue({ ...cashReconciliation, accounting_month: '2026-07' })
+    render(<OriginalReconciliationPage onNavigate={vi.fn()} />)
+    expect(await screen.findByText('规则生成结果暂不可用')).toBeInTheDocument()
+    expect(screen.queryByText('平台实收')).not.toBeInTheDocument()
   })
 })

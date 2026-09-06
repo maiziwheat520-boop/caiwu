@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+vi.mock('../shared/monthPolicy', () => ({ previousBusinessMonth: () => '2026-08' }))
 
 import { api } from '../api'
 import type {

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+vi.mock('../shared/monthPolicy', () => ({ previousBusinessMonth: () => '2026-05' }))
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { api } from '../api'
 import type { CompanyReportsResponse } from '../types'
@@ -413,7 +414,7 @@ describe('CompanyReportsPage', () => {
     fireEvent.click(within(companyTabs).getByRole('tab', { name: '公司五' }))
     expect(screen.getByRole('region', { name: '公司五 财务汇总' })).toBeInTheDocument()
     expect(getReports).toHaveBeenCalledTimes(1)
-    expect(getReports).toHaveBeenCalledWith({})
+    expect(getReports).toHaveBeenCalledWith({ fromMonth: '2026-05', toMonth: '2026-05' })
   })
 
   it('keeps posted-ledger processing details out of the report page', async () => {

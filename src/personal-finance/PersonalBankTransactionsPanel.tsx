@@ -5,6 +5,7 @@ import { ArrowsClockwise, Bank, CaretDown, CaretUp, CloudArrowDown, CloudArrowUp
 import { api, minorToMajor } from '../api'
 import type { PersonalBankStatement, PersonalBankTransaction, PersonalBankTransactionsResponse } from '../types'
 import { DateInput } from '../shared/TemporalControls'
+import { previousBusinessMonth } from '../shared/monthPolicy'
 import { presentPersonalBankTransaction } from './personalBankPresentation'
 
 const currency = new Intl.NumberFormat('zh-CN', {
@@ -109,8 +110,11 @@ function PersonalBankFacts({ data, csrfToken, reviewBusy, setReviewBusy, reload 
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [accountFilter, setAccountFilter] = useState('all')
   const [directionFilter, setDirectionFilter] = useState<'all' | 'income' | 'expense'>('all')
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
+  const [dateFrom, setDateFrom] = useState(() => `${previousBusinessMonth()}-01`)
+  const [dateTo, setDateTo] = useState(() => {
+    const [year, month] = previousBusinessMonth().split('-').map(Number)
+    return new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10)
+  })
   const [query, setQuery] = useState('')
   const [visibleCount, setVisibleCount] = useState(transactionPageSize)
   const summary = data.summary
@@ -163,7 +167,7 @@ function PersonalBankFacts({ data, csrfToken, reviewBusy, setReviewBusy, reload 
       <div className="personal-bank-details-entry">
         <div>
           <strong>银行流水明细</strong>
-          <span>按账户、日期、收支方向或交易对象查询，不在个人财务首屏默认展开。</span>
+          <span>明细默认业务上月；上方为全部已导入账单汇总。可按账户、日期、方向查询，或清空筛选查看历史。</span>
         </div>
         <Button
           aria-controls="personal-bank-transaction-details"

@@ -48,3 +48,17 @@
   .statement-fact-row { grid-template-columns: 94px auto; gap: 6px 12px; }
   .statement-fact-row code { grid-column: 1 / 3; }
 }
+.monthly-review-panel { margin-top: 16px; padding: 18px; }
+.monthly-review-panel .panel-heading { padding: 0 0 12px; }
+.monthly-review-panel p { color: #52647b; line-height: 1.65; }
+.monthly-review-panel details { margin: 12px 0; border-top: 1px solid #e5ebf2; padding-top: 12px; }
+.monthly-review-panel summary { color: #315c89; cursor: pointer; font-weight: 600; }
+.monthly-review-policy { padding: 12px 14px; background: #f5f8fc; border: 1px solid #e0e7f0; border-radius: 8px; margin: 10px 0; }
+.monthly-review-total { display: flex; justify-content: space-between; gap: 16px; padding: 16px 0 4px; }
+.monthly-review-total strong { color: #203e60; font-variant-numeric: tabular-nums; }
+.monthly-review-table-wrap { overflow-x: auto; }
+.monthly-review-panel table { width: 100%; border-collapse: collapse; font-size: var(--font-small); }
+.monthly-review-panel th, .monthly-review-panel td { padding: 10px; border-bottom: 1px solid #e5ebf2; text-align: left; vertical-align: top; }
+.monthly-review-panel td:not(:first-child) { font-variant-numeric: tabular-nums; }
+.monthly-review-panel td small { display: block; min-width: 160px; color: #65778f; }
+.monthly-review-panel th { color: #64758a; white-space: nowrap; }

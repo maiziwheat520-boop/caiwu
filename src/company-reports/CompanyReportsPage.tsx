@@ -16,6 +16,7 @@ import type {
 } from '../types'
 import { ErrorState, LoadingState, PageHeader } from '../shared/PagePrimitives'
 import { MonthInput } from '../shared/TemporalControls'
+import { previousBusinessMonth } from '../shared/monthPolicy'
 import { companyTabLabel } from './companyLabels'
 
 const ALL_COMPANIES = '__all_companies__'
@@ -26,15 +27,21 @@ export function CompanyReportsPage() {
   const [error, setError] = useState<string | null>(null)
   const [selectedCompanyRef, setSelectedCompanyRef] = useState('')
   const [basis, setBasis] = useState<CompanyReportLayer['basis']>('CONFIRMED_CANDIDATE')
-  const [fromMonth, setFromMonth] = useState('')
-  const [toMonth, setToMonth] = useState('')
-  const [appliedRange, setAppliedRange] = useState<{ fromMonth: string; toMonth: string } | null>(null)
+  const [fromMonth, setFromMonth] = useState(previousBusinessMonth)
+  const [toMonth, setToMonth] = useState(previousBusinessMonth)
+  const [appliedRange, setAppliedRange] = useState(() => {
+    const month = previousBusinessMonth()
+    return { fromMonth: month, toMonth: month }
+  })
 
   const loadReports = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.getCompanyReports(appliedRange ?? {})
+      const response = await api.getCompanyReports(appliedRange)
+      if (response.from_month !== appliedRange.fromMonth || response.to_month !== appliedRange.toMonth) {
+        throw new Error('返回期间与选定业务月份不一致，不以其他月份代替')
+      }
       setReports(response)
       const statementLayer = response.layers.find((layer) => layer.basis === 'ACCOUNT_STATEMENT')
       const hasClassifiedTransactions = response.transaction_classifications?.items.some(
@@ -71,7 +78,13 @@ export function CompanyReportsPage() {
   if (loading) {
     return <>{header}<LoadingState title="正在读取公司报表" description="正在分别读取已确认来源、账户流水与正式入账投影。" /></>
   }
-  if (error) return <>{header}<ErrorState message={error} onRetry={() => void loadReports()} /></>
+  if (error) return <>{header}<ErrorState message={error} onRetry={() => void loadReports()} />
+    <section aria-label="重新选择报表期间" className="company-report-range">
+      <MonthInput label="开始月份" value={fromMonth} onChange={(event) => setFromMonth(event.target.value)} />
+      <MonthInput label="结束月份" value={toMonth} onChange={(event) => setToMonth(event.target.value)} />
+      <button type="button" disabled={!isReportMonth(fromMonth) || !isReportMonth(toMonth) || fromMonth > toMonth || monthDistance(fromMonth, toMonth) >= 24} onClick={() => setAppliedRange({ fromMonth, toMonth })}>应用期间</button>
+    </section>
+  </>
   if (!reports) return null
 
   const companyIndex = new Map<string, { name: string; currencyCode: string }>()
@@ -108,7 +121,7 @@ export function CompanyReportsPage() {
     || !isReportMonth(toMonth)
     || fromMonth > toMonth
     || monthDistance(fromMonth, toMonth) >= 24
-  const activeRange = appliedRange ?? { fromMonth: reports.from_month, toMonth: reports.to_month }
+  const activeRange = appliedRange
   const rangeDirty = fromMonth !== activeRange.fromMonth || toMonth !== activeRange.toMonth
 
   const toolbar = (

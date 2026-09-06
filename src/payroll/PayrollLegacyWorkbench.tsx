@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { previousBusinessMonth } from '../shared/monthPolicy'
 import type { ReactNode } from 'react'
 import {
   ArrowClockwise,
@@ -242,8 +243,8 @@ export function PayrollLegacyWorkbench({
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null)
   const [task, setTask] = useState<TaskId>('generate')
-  const [period, setPeriod] = useState('')
-  const [generationPeriod, setGenerationPeriod] = useState<string>(confirmedMaterials?.period ?? '2026-08')
+  const [period, setPeriod] = useState(previousBusinessMonth)
+  const [generationPeriod, setGenerationPeriod] = useState<string>(previousBusinessMonth)
   const [adjustments, setAdjustments] = useState<PayrollLegacyAdjustment[]>([])
   const [adjustmentPeriod, setAdjustmentPeriod] = useState('')
   const [rules, setRules] = useState<EditableRule[]>([])
@@ -256,7 +257,7 @@ export function PayrollLegacyWorkbench({
     reason: string
   }>>({})
 
-  const applyWorkspace = useCallback((nextWorkspace: PayrollLegacyWorkspace, nextPeriod = nextWorkspace.active_period) => {
+  const applyWorkspace = useCallback((nextWorkspace: PayrollLegacyWorkspace, nextPeriod = previousBusinessMonth()) => {
     const batch = activeBatchFrom(nextWorkspace, nextPeriod)
     setWorkspace(nextWorkspace)
     setPeriod(nextPeriod)
@@ -346,7 +347,7 @@ export function PayrollLegacyWorkbench({
         payload,
         csrfToken,
       })
-      applyWorkspace(result.data.workspace)
+      applyWorkspace(result.data.workspace, typeof payload.period === 'string' ? payload.period : period)
       setMessage({ tone: 'success', text: '已保存并重新读取最新工资工作区' })
     } catch (error) {
       const status = error instanceof ApiError ? error.status : 0
@@ -561,8 +562,7 @@ export function PayrollLegacyWorkbench({
                 <strong>{generationBatch ? '本月工资已生成' : materialsConfirmedForGeneration ? '生成本月工资' : '先确认本月三类工资素材'}</strong>
                 <p>{generationBatch ? '工资已按选定期间生成，请继续进行发放复核。' : materialsConfirmedForGeneration ? '所需素材已确认，可以按员工参数和全局规则生成。' : '考勤表、阿姨考勤表和好评统计必须各选定一个版本。'}</p>
                 <PeriodSelect label="工资月份" fieldClassName="payroll-flow-period" value={generationPeriod} onChange={(event) => changeGenerationPeriod(event.target.value)}>
-                  <option value="2026-07">{formatMonthLabel('2026-07')}</option>
-                  <option value="2026-08">{formatMonthLabel('2026-08')}</option>
+                  {Array.from(new Set([previousBusinessMonth(), generationPeriod, ...testWorkspace.data.materials.flatMap((material) => material.period ? [material.period] : []), ...(workspace?.batches.map((batch) => batch.period) ?? [])])).sort().reverse().map((month) => <option key={month} value={month}>{formatMonthLabel(month)}</option>)}
                 </PeriodSelect>
                 {generationBatch ? (
                   <button type="button" className="primary" onClick={openGenerationVerification}>进入发放复核</button>
@@ -588,6 +588,7 @@ export function PayrollLegacyWorkbench({
             </div>
             {workspace && workspace.batches.length > 0 ? (
               <PeriodSelect label="查看已保存月份" value={period} onChange={(event) => applyWorkspace(workspace, event.target.value)}>
+                {!activeBatch ? <option value={period}>{formatMonthLabel(period)}（尚未生成）</option> : null}
                 {workspace.batches.map((batch) => <option key={batch.period} value={batch.period}>{formatMonthLabel(batch.period)}</option>)}
               </PeriodSelect>
             ) : null}

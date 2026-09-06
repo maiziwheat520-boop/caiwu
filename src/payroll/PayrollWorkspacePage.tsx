@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { previousBusinessMonth } from '../shared/monthPolicy'
+import { defaultPayrollBatch } from './defaultPayrollBatch'
 import { Badge, Button } from '@radix-ui/themes'
 import { CheckCircle, Database, Info, ShieldCheck, Warning } from '@phosphor-icons/react'
 import { api, ApiError, minorToMajor } from '../api'
@@ -174,7 +176,7 @@ export function PayrollWorkspacePage() {
     (evidence) => evidence.status === 'READY_FOR_MATCHING' && evidence.period === batch.pay_period,
   ))
   const selectedBatch = eligibleBatches.find((batch) => batch.batch_id === selectedBatchId)
-    ?? (eligibleBatches.length === 1 ? eligibleBatches[0] : null)
+    ?? (selectedBatchId === '' ? defaultPayrollBatch(eligibleBatches) : null)
   const evidenceForBatch = selectedBatch
     ? verification?.available_evidence.filter((evidence) => evidence.period === selectedBatch.pay_period) ?? []
     : []
@@ -392,16 +394,16 @@ export function PayrollWorkspacePage() {
                 <p className="payroll-evidence-required">请先导入发放回单/流水</p>
               ) : canVerifyReceipts ? (
                 <div className="payroll-evidence-command">
-                  {eligibleBatches.length > 1 ? (
-                    <PeriodSelect label="选择工资批次" value={selectedBatchId} onChange={(event) => { setSelectedBatchId(event.target.value); setSelectedEvidence([]) }}>
-                        <option value="">请选择</option>
+                  {eligibleBatches.length > 0 ? (
+                    <PeriodSelect label="选择工资批次" value={selectedBatch?.batch_id ?? ''} onChange={(event) => { setSelectedBatchId(event.target.value); setSelectedEvidence([]) }}>
+                        <option value="">{formatMonthLabel(previousBusinessMonth())}无唯一可核验批次，请明确选择</option>
                         {eligibleBatches.map((batch) => <option key={batch.batch_id} value={batch.batch_id}>{formatMonthLabel(batch.pay_period)}</option>)}
                     </PeriodSelect>
                   ) : null}
                   <div className="payroll-evidence-options">
                     <div className="payroll-evidence-completeness">
                       <strong>本月应收 7 份账单</strong>
-                      <span>工资表理论总额：{currency.format(minorToMajor(selectedBatch?.lines.reduce((sum, line) => sum + line.net_pay_minor, 0) ?? 0))}</span>
+                      <span>工资表理论总额：{selectedBatch ? currency.format(minorToMajor(selectedBatch.lines.reduce((sum, line) => sum + line.net_pay_minor, 0))) : '未选择批次'}</span>
                       <ul>
                         {verificationEvidenceRequirements.map((requirement) => {
                           const received = evidenceForBatch.filter(

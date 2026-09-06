@@ -437,6 +437,25 @@ export type CompanyReportCategorySlice = {
   fact_count: number
 }
 
+export type MonthlyReview = {
+  authority: 'NON_AUTHORITATIVE_REFERENCE'
+  contract_version: 'ledgerbridge.monthly-review.v1'
+  accounting_month: string
+  revision: string
+  confirmed_on: string
+  production_posted: false
+  policy: {
+    expense_basis: 'ACTUAL_PAYMENT_MONTH'; income_basis: 'SCREENSHOT_SETTLEMENT_PERIOD'
+    legacy_payroll_through: string; workbench_payroll_from: string; workbench_status: 'NOT_CONNECTED'
+  }
+  adjustments: Array<{ id: string; label: string; month: string; amount_minor: number; balance_effect_minor: number; cash_effect_minor: 0; status: 'PENDING_ENTRY'; note: string }>
+  bridges: Array<{ id: string; label: string; month: string; amount_minor: number; balance_effect_minor: number; cash_effect_minor: 0; status: 'PENDING_BRIDGE'; note: string }>
+  pending: Array<{ id: string; label: string; month: string; amount_minor: number; status: 'AWAITING_PAYMENT' | 'PENDING_ENTRY'; note: string }>
+  historical_payroll: Array<{ period: string; total_minor: number; stores: Array<{ label: string; amount_minor: number | null }> }>
+  backtest: Array<{ month: string; label: string; original_minor: number | null; matched_minor: number | null; difference_minor: number | null; status: string; note: string }>
+  accepted_exceptions: Array<{ id: string; label: string; note: string; status: 'ACCEPTED_OPEN' }>
+}
+
 export type CashReconciliation = {
   contract_version: 'ledgerbridge.cash-reconciliation.v2'
   accounting_month: string
