@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Badge, Button } from '@radix-ui/themes'
 import {
-  ArrowDown,
-  ArrowUp,
   ArrowsLeftRight,
-  CaretDown,
-  CaretUp,
   ClockCounterClockwise,
   Info,
   ListChecks,
@@ -17,7 +13,7 @@ import type { CashReconciliation, OriginalReconciliation, Page } from '../types'
 import { PageHeader } from '../shared/PagePrimitives'
 import { MonthInput } from '../shared/TemporalControls'
 import './OriginalReconciliationPage.css'
-import { groupCashRows, cashSourceLabel } from './groupCashRows'
+import { CashCategorySummary } from './CashCategorySummary'
 import { MonthlyReviewPanel } from './MonthlyReviewPanel'
 import { previousBusinessMonth } from '../shared/monthPolicy'
 import {
@@ -52,14 +48,12 @@ export function OriginalReconciliationPage({ onNavigate }: {
   onNavigate: (page: Page) => void
 }) {
   const [selectedMonthOverride, setSelectedMonthOverride] = useState<string | null>(null)
-  const [selectedFlow, setSelectedFlow] = useState<FlowKind>('income')
   const [rawData, setData] = useState<OriginalReconciliation | null>(null)
   const [rawCashData, setCashData] = useState<CashReconciliation | null>(null)
   const [loading, setLoading] = useState(false)
   const [cashError, setCashError] = useState<string | null>(null)
   const [projectionWarning, setProjectionWarning] = useState<string | null>(null)
   const [showAllIssues, setShowAllIssues] = useState(false)
-  const [expandedRuleKey, setExpandedRuleKey] = useState<string | null>(null)
   const requestRef = useRef(0)
   const scopeRef = useRef<OriginalReconciliation['scope'] | null>(null)
   const selectedMonth = selectedMonthOverride ?? previousBusinessMonth()
@@ -107,14 +101,6 @@ export function OriginalReconciliationPage({ onNavigate }: {
   }, [load])
 
   const selectedMonthLabel = monthLabel(selectedMonth)
-  const selectedCashRows = groupCashRows(cashData?.rows.filter((row) => (
-    row.flow_kind === selectedFlow.toUpperCase() && row.transaction_count > 0
-  )) ?? [])
-  const laneDefinitions = [
-    { kind: 'income' as const, label: '收入', detail: '经营流入', icon: <ArrowDown size={19} /> },
-    { kind: 'expense' as const, label: '支出', detail: '经营流出', icon: <ArrowUp size={19} /> },
-    { kind: 'current' as const, label: '往来款', detail: '不计损益', icon: <ArrowsLeftRight size={19} /> },
-  ]
   const incomeSourceRuleCount = cashData?.rules.filter((rule) => rule.flow_kind === 'INCOME').length ?? 0
   const expenseSourceRuleCount = cashData?.rules.filter((rule) => rule.flow_kind === 'EXPENSE').length ?? 0
   const gapLabels = data
@@ -150,9 +136,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
                 requestRef.current += 1
                 setData(null)
                 setCashData(null)
-                setSelectedFlow('income')
                 setShowAllIssues(false)
-                setExpandedRuleKey(null)
                 setSelectedMonthOverride(event.target.value)
               }}
             />
@@ -177,7 +161,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
 
       <section className="reconciliation-overview" aria-label="本月对账概览">
         <div className="reconciliation-overview-status">
-          <span>本月结果</span>
+          <span>当前导入范围</span>
           <strong>
             {cashData
               ? cashData.eligible_fact_count === 0
@@ -186,7 +170,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
                 ? '存在规则冲突'
                 : cashData.unmatched_fact_count > 0
                   ? '有流水待归类'
-                  : '已导入流水均已归类'
+                  : '分类已返回 · 覆盖待核验'
               : loading
                 ? '正在核对'
                 : '等待数据'}
@@ -197,7 +181,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
           <div><dt>已归入</dt><dd>{cashData?.matched_fact_count ?? '—'}</dd><small>笔流水</small></div>
           <div><dt>未识别</dt><dd>{cashData?.unmatched_fact_count ?? '—'}</dd><small>不计入合计</small></div>
           <div className={cashData?.conflicted_fact_count ? 'is-critical' : ''}><dt>规则冲突</dt><dd>{cashData?.conflicted_fact_count ?? '—'}</dd><small>需优先处理</small></div>
-          <div><dt>生效规则</dt><dd>{cashData?.rules.length ?? '—'}</dd><small>当前授权范围</small></div>
+          <div><dt>材料覆盖</dt><dd>待核验</dd><small>不代表整月结清</small></div>
         </dl>
       </section>
 
@@ -210,97 +194,7 @@ export function OriginalReconciliationPage({ onNavigate }: {
           <Button variant="soft" onClick={() => onNavigate('review')}><ListChecks size={16} />处理待审核</Button>
         </div>
 
-        <div className="statement-flow-tabs" role="tablist" aria-label="业务性质">
-          {laneDefinitions.map((lane) => {
-            const cashRows = cashData?.rows.filter((row) => row.flow_kind === lane.kind.toUpperCase()) ?? []
-            const amountMinor = cashRows.reduce((total, row) => total + row.amount_minor, 0)
-            const itemCount = cashRows.reduce((total, row) => total + row.transaction_count, 0)
-            const active = selectedFlow === lane.kind
-            return (
-              <button
-                key={lane.kind}
-                id={`statement-flow-${lane.kind}`}
-                aria-controls="statement-flow-panel"
-                aria-selected={active}
-                className={`${active ? 'active' : ''} ${lane.kind}`}
-                role="tab"
-                type="button"
-                onClick={() => {
-                  setSelectedFlow(lane.kind)
-                  setExpandedRuleKey(null)
-                }}
-              >
-                <span className="statement-flow-icon">{lane.icon}</span>
-                <span className="statement-flow-copy"><strong>{lane.label}</strong><small>{lane.detail}</small></span>
-                <span className="statement-flow-value"><strong>{cashData ? currency.format(minorToMajor(amountMinor)) : '—'}</strong><small>{cashData ? `${itemCount} 笔` : '待读取'}</small></span>
-              </button>
-            )
-          })}
-        </div>
-
-        <div className="current-account-rule"><Info size={17} /><span>往来款不计入收入或支出</span></div>
-
-        <div
-          id="statement-flow-panel"
-          className="statement-flow-panel"
-          role="tabpanel"
-          aria-labelledby={`statement-flow-${selectedFlow}`}
-        >
-          <div className="statement-flow-panel-heading">
-            <div><h3>{flowLabels[selectedFlow]}</h3><p>{selectedFlow === 'current' ? '核对往来双方、资金性质和对应账单' : `核对${flowLabels[selectedFlow]}来源、归属和金额`}</p></div>
-            <Badge color={!cashData ? 'gray' : selectedFlow === 'income' ? 'green' : selectedFlow === 'expense' ? 'red' : 'blue'}>{cashData ? `${selectedCashRows.reduce((total, row) => total + row.transaction_count, 0)} 笔` : '待读取'}</Badge>
-          </div>
-
-          <div className="statement-item-list">
-            {selectedCashRows.map((row, rowIndex) => {
-              const detailsOpen = expandedRuleKey === row.rule_key
-              const detailsId = `statement-facts-${selectedFlow}-${rowIndex}`
-              return (
-                <article key={row.rule_key} className={`statement-item ${selectedFlow}`}>
-                  <div className="statement-item-status"><Badge color="green">自动生成</Badge><span>{selectedMonth}</span></div>
-                  <div className="statement-item-main"><strong>{row.item_label}</strong><span>{row.transaction_count} 笔实收流水</span></div>
-                  <div className="statement-item-context"><span>{row.business_unit_label}</span><small>{row.sourceKinds.map(cashSourceLabel).join('、')}</small></div>
-                  <div className="statement-item-amount"><strong>{selectedFlow === 'expense' ? '-' : selectedFlow === 'income' ? '+' : ''}{currency.format(minorToMajor(row.amount_minor))}</strong><span>{row.sourceKeys.length} 项来源已归并</span></div>
-                  <button
-                    aria-controls={detailsId}
-                    aria-expanded={detailsOpen}
-                    className="statement-item-disclosure"
-                    type="button"
-                    onClick={() => setExpandedRuleKey(detailsOpen ? null : row.rule_key)}
-                  >
-                    {detailsOpen ? <CaretUp size={15} /> : <CaretDown size={15} />}
-                    {detailsOpen ? '收起流水明细' : `查看 ${row.transaction_count} 笔流水明细`}
-                  </button>
-                  {detailsOpen ? (
-                    <div
-                      id={detailsId}
-                      aria-label={`${row.item_label}流水明细`}
-                      className="statement-fact-list"
-                      role="region"
-                    >
-                      {row.facts.map((fact) => (
-                        <div key={fact.fact_ref} className="statement-fact-row">
-                          {fact.source_kind === 'CANDIDATE'
-                            ? <span>{selectedMonth}（月粒度）</span>
-                            : <time dateTime={fact.occurred_on}>{fact.occurred_on}</time>}
-                          <strong>{currency.format(minorToMajor(fact.amount_minor))}</strong>
-                          <code><span>{fact.fact_ref}</span><br />{cashSourceLabel(fact.source_kind)} · {fact.source_ref}<br />{fact.rule_key}</code>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </article>
-              )
-            })}
-            {selectedCashRows.length === 0 ? (
-              <div className="empty-state compact-empty statement-empty">
-                <Receipt size={30} />
-                <h3>{cashData ? `本月没有${flowLabels[selectedFlow]}事项` : loading ? '正在读取本月流水' : '规则生成结果暂不可用'}</h3>
-                <p>{cashData ? cashData.eligible_fact_count === 0 ? '切换月份，或检查本月账单是否已导入。' : '切换上方业务性质查看本月其他事项。' : loading ? '读取完成后显示本月收支与往来款。' : '数据尚未读取成功，请稍后重试。'}</p>
-              </div>
-            ) : null}
-          </div>
-        </div>
+        <CashCategorySummary key={selectedMonth} data={cashData} month={selectedMonth} loading={loading} />
       </section>
 
       <MonthlyReviewPanel month={selectedMonth} />

@@ -55,12 +55,12 @@ describe('OriginalReconciliationPage', () => {
     const overview = screen.getByRole('region', { name: '本月对账概览' })
     expect(within(overview).getByText('存在规则冲突')).toBeInTheDocument()
     expect(within(overview).getByText('4 / 6 笔已进入对账项目')).toBeInTheDocument()
-    const lanes = screen.getByRole('tablist', { name: '业务性质' })
-    expect(within(lanes).getByRole('tab', { name: /收入/ })).toHaveTextContent('¥120.00')
-    expect(within(lanes).getByRole('tab', { name: /支出/ })).toHaveTextContent('¥30.00')
-    expect(within(lanes).getByRole('tab', { name: /往来款/ })).toHaveTextContent('¥20.00')
+    expect(screen.getByRole('region', { name: '收入分类汇总' })).toHaveTextContent('¥120.00')
+    expect(screen.getByRole('region', { name: '支出分类汇总' })).toHaveTextContent('¥30.00')
+    expect(screen.getByRole('region', { name: '往来款分类汇总' })).toHaveTextContent('净流入 ¥20.00')
+    expect(screen.queryByRole('tablist', { name: '业务性质' })).not.toBeInTheDocument()
     expect(screen.getByText('平台实收')).toBeInTheDocument()
-    expect(screen.getByText('2 笔实收流水')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '查看 2 笔流水明细' })).toBeInTheDocument()
   })
 
   it('expands a monthly item into its exact source facts', async () => {
@@ -84,18 +84,47 @@ describe('OriginalReconciliationPage', () => {
     expect(screen.queryByRole('region', { name: '平台实收流水明细' })).not.toBeInTheDocument()
   })
 
+  it('shows business categories first and keeps counterparties and gross current amounts out of the summary', async () => {
+    installSuccessfulReads()
+    const base = cashReconciliation.rows[2]
+    vi.mocked(api.getCashReconciliation).mockResolvedValue({ ...cashReconciliation,
+      rows: [...cashReconciliation.rows.slice(0, 2),
+        { ...base, rule_key: 'person-a', item_label: '示例对方甲', source_kind: 'BANK_TRANSACTION',
+          source_ref: 'company_transaction_classification:RELATED_PARTY_CURRENT:OTHER',
+          amount_minor: 10_000, facts: [{ fact_ref: 'current-a', occurred_on: '2026-09-01', amount_minor: 10_000 }] },
+        { ...base, rule_key: 'person-b', item_label: '示例对方乙', source_kind: 'BANK_TRANSACTION',
+          source_ref: 'company_transaction_classification:RELATED_PARTY_CURRENT:OTHER',
+          amount_minor: 7_000, facts: [{ fact_ref: 'current-b', occurred_on: '2026-09-02', amount_minor: -7_000 }] }],
+    })
+    render(<OriginalReconciliationPage onNavigate={vi.fn()} />)
+    const current = await screen.findByRole('region', { name: '往来款分类汇总' })
+    expect(within(current).getByText('关联往来')).toBeVisible()
+    expect(current).toHaveTextContent('净流入 ¥30.00')
+    expect(within(current).queryByText('¥170.00')).not.toBeInTheDocument()
+    expect(screen.queryByText('示例对方甲')).not.toBeInTheDocument()
+    expect(screen.queryByText('示例对方乙')).not.toBeInTheDocument()
+    fireEvent.click(within(current).getByRole('button', { name: '查看 2 笔流水明细' }))
+    const details = within(current).getByRole('region', { name: '关联往来流水明细' })
+    expect(details).toHaveTextContent('示例对方甲')
+    expect(details).toHaveTextContent('示例对方乙')
+    expect(within(details).getByText('-¥70.00')).toBeInTheDocument()
+    expect(within(details).getAllByText('current-a')).toHaveLength(1)
+    expect(screen.getByRole('region', { name: '支出分类汇总' })).toBeVisible()
+    expect(screen.getByRole('region', { name: '收入分类汇总' })).toBeVisible()
+  })
+
   it('does not present a month-granularity candidate as an exact payment date', async () => {
     installSuccessfulReads()
     render(<OriginalReconciliationPage onNavigate={vi.fn()} />)
 
-    fireEvent.click(await screen.findByRole('tab', { name: /往来款/ }))
-    fireEvent.click(screen.getByRole('button', { name: '查看 1 笔流水明细' }))
+    const current = await screen.findByRole('region', { name: '往来款分类汇总' })
+    fireEvent.click(within(current).getByRole('button', { name: '查看 1 笔流水明细' }))
 
     const details = screen.getByRole('region', { name: '往来款流水明细' })
     expect(within(details).getByText('2026-09（月粒度）')).toBeInTheDocument()
     expect(within(details).queryByText('2026-09-01')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('tab', { name: /收入/ }))
+    fireEvent.click(screen.getByRole('button', { name: '查看 2 笔流水明细' }))
     expect(screen.queryByRole('region', { name: '往来款流水明细' })).not.toBeInTheDocument()
   })
 
@@ -108,7 +137,19 @@ describe('OriginalReconciliationPage', () => {
     expect(within(issues).getByText('多规则冲突')).toBeInTheDocument()
     expect(within(issues).getByText('未命中规则')).toBeInTheDocument()
     expect(within(issues).getByText('income.hotel-a、income.hotel-b')).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: /收入/ })).toHaveTextContent('2 笔')
+    expect(screen.getByRole('region', { name: '收入分类汇总' })).toHaveTextContent('2 笔')
+  })
+
+  it('does not equate all returned facts being classified with complete monthly coverage', async () => {
+    installSuccessfulReads()
+    vi.mocked(api.getCashReconciliation).mockResolvedValue({ ...cashReconciliation,
+      eligible_fact_count: 4, matched_fact_count: 4, unmatched_fact_count: 0,
+      conflicted_fact_count: 0, issue_count: 0, issues: [],
+    })
+    render(<OriginalReconciliationPage onNavigate={vi.fn()} />)
+    expect(await screen.findByText('分类已返回 · 覆盖待核验')).toBeVisible()
+    expect(screen.getByText(/分类金额不等于整月已结清/)).toBeVisible()
+    expect(screen.queryByText('已导入流水均已归类')).not.toBeInTheDocument()
   })
 
   it('lists scoped Core rules instead of a hard-coded registry', async () => {

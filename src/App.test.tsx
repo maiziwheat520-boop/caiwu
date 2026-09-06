@@ -2771,10 +2771,9 @@ describe('LedgerBridge Web API client', () => {
     expect(window.location.search).toBe('')
     expect(screen.queryByRole('table', { name: '原口径固定列对账表' })).not.toBeInTheDocument()
     const workflow = screen.getByRole('region', { name: '收支与往来事项' })
-    const lanes = within(workflow).getByRole('tablist', { name: '业务性质' })
-    expect(within(lanes).getByRole('tab', { name: /收入/ })).toBeInTheDocument()
-    expect(within(lanes).getByRole('tab', { name: /支出/ })).toBeInTheDocument()
-    expect(within(lanes).getByRole('tab', { name: /往来款/ })).toBeInTheDocument()
+    expect(await within(workflow).findByRole('region', { name: '收入分类汇总' })).toBeVisible()
+    expect(within(workflow).getByRole('region', { name: '支出分类汇总' })).toBeVisible()
+    expect(within(workflow).getByRole('region', { name: '往来款分类汇总' })).toBeVisible()
     expect(screen.getByRole('region', { name: '旧表项目取数来源' })).toBeInTheDocument()
 
     fireEvent.click(within(workflow).getByRole('button', { name: '处理待审核' }))
@@ -2872,7 +2871,7 @@ describe('LedgerBridge Web API client', () => {
       },
     })
     renderApp()
-    expect(await screen.findByRole('heading', { name: '本月没有收入事项' })).toBeInTheDocument()
+    expect(await screen.findByText('本月没有收入事项')).toBeInTheDocument()
     expect(screen.queryByText(/截图导入|受控导入/)).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: '原口径合计' })).not.toBeInTheDocument()
     expect(screen.queryByRole('table', { name: '原口径固定列对账表' })).not.toBeInTheDocument()
