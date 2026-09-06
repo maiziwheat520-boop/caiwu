@@ -140,6 +140,15 @@ uv run --frozen --extra dev python scripts/r1_synthetic_hermes_triage_demo.py
 The synthetic keyword classifier marks the fixture as a candidate; the
 unavailable classifier keeps the same message as `AMBIGUOUS_RETAIN`.
 
+The candidate-intent handoff is also replayable without persistence:
+
+```bash
+uv run --frozen --extra dev python scripts/r1_synthetic_candidate_intent_demo.py
+```
+
+It binds the triaged message, source event, entity, and evidence digest into an
+immutable intent and explicitly reports `writes_posting: false`.
+
 Quality gate:
 
 ```bash

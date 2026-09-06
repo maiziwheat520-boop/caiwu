@@ -149,10 +149,10 @@ def classify_private_message(
 def _require_text(field: str, value: str, maximum: int, *, allow_empty: bool = False) -> None:
     if not isinstance(value, str):
         raise HermesMessageError(f"{field} must be text")
-    if (not allow_empty and not value.strip()) or len(value.encode("utf-8")) > maximum:
-        raise HermesMessageError(f"{field} is outside the allowed bounds")
     if contains_unstorable_text(value):
         raise HermesMessageError(f"{field} contains non-storable text")
+    if (not allow_empty and not value.strip()) or len(value.encode("utf-8")) > maximum:
+        raise HermesMessageError(f"{field} is outside the allowed bounds")
 
 
 def utc_now() -> datetime:
