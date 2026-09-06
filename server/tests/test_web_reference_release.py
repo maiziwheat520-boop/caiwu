@@ -80,6 +80,13 @@ class ReferenceReleaseTests(unittest.TestCase):
                 release.run(self.args)
             command.assert_not_called()
 
+    def test_ownership_failure_is_detected_before_staging_or_stop(self):
+        with patch.object(release.os, 'access', return_value=False), patch.object(release, 'command') as command:
+            with self.assertRaisesRegex(RuntimeError, 'nothing stopped'):
+                release.run(self.args)
+            command.assert_not_called()
+        self.assertFalse((self.root / ('.monthly-release-' + 'b'*12)).exists())
+
     def test_rollback_restores_files_even_if_candidate_container_is_missing(self):
         stop_count = 0
         def docker(*args):

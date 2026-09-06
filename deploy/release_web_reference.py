@@ -73,6 +73,9 @@ def run(args):
         raise RuntimeError('Production baseline changed')
     if digest(args.archive) != args.archive_sha256 or digest(args.report) != args.report_sha256:
         raise RuntimeError('Frozen input hash mismatch')
+    for path in (ROOT, ROOT / 'server', ROOT / 'dist', ROOT / 'REVISION', ROOT / 'config'):
+        if not os.access(path, os.W_OK):
+            raise RuntimeError('Deployment file ownership requires the authorized scoped maintenance account; nothing stopped')
     release = ROOT / ('.monthly-release-' + args.revision[:12])
     backup = ROOT / ('.monthly-before-' + args.revision[:12])
     release.mkdir(mode=0o700)
@@ -108,6 +111,7 @@ def run(args):
         raise RuntimeError('Production changed during staging')
     swapped = []
     report_replaced = False
+    revision_replaced = False
     try:
         command('docker', 'stop', CONTAINER)
         for name in ('dist', 'server'):
@@ -117,9 +121,13 @@ def run(args):
         # Keep bind-mounted config directory intact; replace only our own report.
         shutil.copyfile(release / 'private-report.json', report.with_suffix('.staged'))
         os.chmod(report.with_suffix('.staged'), 0o600)
+        if hasattr(os, 'chown'):
+            owner = (ROOT / 'config').stat()
+            os.chown(report.with_suffix('.staged'), owner.st_uid, owner.st_gid)
         os.replace(report.with_suffix('.staged'), report)
         report_replaced = True
         (ROOT / 'REVISION').write_text(args.revision + '\n')
+        revision_replaced = True
         recreate()
         for path, expected in (('/api/v1/monthly-reconciliation-reviews/2026-08', 401),
                                ('/monthly-reconciliation-review.json', 404),
@@ -148,7 +156,8 @@ def run(args):
                 shutil.copy2(backup / 'private-report.json', report)
             else:
                 report.rename(release / 'private-report.failed.json')
-        shutil.copy2(backup / 'REVISION', ROOT / 'REVISION')
+        if revision_replaced:
+            shutil.copy2(backup / 'REVISION', ROOT / 'REVISION')
         recreate()
         print(json.dumps(dict(status='rolled_back', revision=args.expected, backup=str(backup))))
         raise
