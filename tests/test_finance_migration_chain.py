@@ -19,8 +19,18 @@ PAYROLL = "20260905_0048"
 CORRECTION = "20260905_0049"
 # 0050 only replaces a trigger function body; it registers no new object.
 SNAPSHOT_TRIGGER_REPAIR = "20260906_0050"
+# 0051 only widens the import function's profile allowlist; it registers
+# no new object either.
+BOC_COMPANY_CSV_PDF = "20260906_0051"
 CORRECTION_FUNCTION = ("internal_import", "correct_company_transaction_reporting_item")
-STAGES = (PRODUCTION, FEE, PAYROLL, CORRECTION, SNAPSHOT_TRIGGER_REPAIR)
+STAGES = (
+    PRODUCTION,
+    FEE,
+    PAYROLL,
+    CORRECTION,
+    SNAPSHOT_TRIGGER_REPAIR,
+    BOC_COMPANY_CSV_PDF,
+)
 OWNER = "ledgerbridge_owner"
 V1_COMMAND = ("internal_command", "review_company_transaction_classification")
 V1_SUMMARY = ("internal_read", "get_company_transaction_classification_summary_as_of")
@@ -139,9 +149,9 @@ def test_finance_release_has_one_unambiguous_migration_path() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
         revisions = list(scripts.walk_revisions())
-        assert scripts.get_heads() == [SNAPSHOT_TRIGGER_REPAIR]
+        assert scripts.get_heads() == [BOC_COMPANY_CSV_PDF]
     assert len({item.revision for item in revisions}) == len(revisions)
-    release_path = list(scripts.iterate_revisions(SNAPSHOT_TRIGGER_REPAIR, "20260904_0045"))
+    release_path = list(scripts.iterate_revisions(BOC_COMPANY_CSV_PDF, "20260904_0045"))
     assert [item.revision for item in release_path] == list(reversed(STAGES))
     assert all(item.dependencies is None for item in release_path)
 

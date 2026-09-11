@@ -43,6 +43,14 @@ def parse_bank_statement(
         from ledgerbridge.boc_company_statement import parse_boc_company_xls
 
         parser = parse_boc_company_xls
+    elif profile is BankStatementParserProfile.BOC_COMPANY_CSV_V1:
+        from ledgerbridge.boc_company_statement import parse_boc_company_csv
+
+        parser = parse_boc_company_csv
+    elif profile is BankStatementParserProfile.BOC_COMPANY_PDF_V1:
+        from ledgerbridge.boc_company_pdf_statement import parse_boc_company_pdf
+
+        parser = parse_boc_company_pdf
     elif profile is BankStatementParserProfile.ABC_PERSONAL_PDF_V1:
         from ledgerbridge.abc_statement import parse_abc_personal_pdf
 

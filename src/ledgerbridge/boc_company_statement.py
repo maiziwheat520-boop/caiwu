@@ -1,8 +1,20 @@
-"""Fail-closed parser for BOC company-account legacy XLS exports."""
+"""Fail-closed parser for BOC company-account online-banking exports.
+
+Online banking renders one and the same query as a legacy ``.xls`` workbook and
+as a ``.csv`` text file. The two containers carry an identical 38-column layout,
+identical self-declared totals and an identical time range; the only differences
+are the container itself and a title row that the workbook puts in front of the
+metadata block. One shared reader therefore serves both, which is what keeps the
+derived ``transaction_serial`` equal across them: importing the same month twice,
+once from each container, is recognised as the same transactions rather than
+doubling the ledger. Two separately written readers could not guarantee that.
+"""
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import re
 from datetime import date, datetime, time
@@ -15,9 +27,11 @@ from zoneinfo import ZoneInfo
 import xlrd  # type: ignore[import-untyped]
 
 from ledgerbridge.bank_statement_contract import (
+    BOC_COMPANY_CSV_V1,
     BOC_COMPANY_XLS_V1,
     BankStatement,
     BankStatementParserProfile,
+    BankStatementParserSpec,
     BankStatementTransaction,
 )
 
@@ -30,6 +44,11 @@ _DATE: Final = re.compile(r"^[0-9]{8}$")
 _TIME: Final = re.compile(r"^[0-9]{2}:[0-9]{2}:[0-9]{2}$")
 _RANGE: Final = re.compile(r"^([0-9]{8})-([0-9]{8})$")
 _MAX_ROWS: Final = 100_000
+# The first line of the text container always names the account query. It is the
+# cheapest proof that a candidate decoding produced Chinese text rather than mojibake.
+_CSV_MARKER: Final = "Inquirer account number"
+# The metadata block is seven self-declared rows; the column header follows it.
+_METADATA_ROWS: Final = 7
 _MAX_TEXT: Final = 300
 _SHANGHAI: Final = ZoneInfo("Asia/Shanghai")
 _HEADER_MARKERS: Final = (
@@ -84,40 +103,89 @@ def parse_boc_company_xls(
     expected_sha256: str,
     managed_account_suffix: str,
 ) -> BankStatement:
-    if _DIGEST.fullmatch(expected_sha256) is None:
-        raise BocCompanyStatementError("expected source digest is invalid")
-    if _ACCOUNT_SUFFIX.fullmatch(managed_account_suffix) is None:
-        raise BocCompanyStatementError("managed account suffix is invalid")
-    raw = _read_source(source_path)
-    source_sha256 = hashlib.sha256(raw).hexdigest()
-    if source_sha256 != expected_sha256:
-        raise BocCompanyStatementError("source digest changed")
+    """Read the legacy workbook container, whose title row offsets the metadata."""
+
+    raw = _read_source(source_path, ".xls", expected_sha256, managed_account_suffix)
     if not raw.startswith(_OLE_MAGIC):
         raise BocCompanyStatementError("statement is not a legacy Excel container")
-    rows = _read_workbook_rows(raw)
-    if len(rows) < 10:
+    return _statement(
+        raw,
+        _read_workbook_rows(raw),
+        metadata_at=1,
+        spec=BOC_COMPANY_XLS_V1,
+        profile=BankStatementParserProfile.BOC_COMPANY_XLS_V1,
+        worksheet_index=1,
+        managed_account_suffix=managed_account_suffix,
+    )
+
+
+def parse_boc_company_csv(
+    source_path: Path,
+    *,
+    expected_sha256: str,
+    managed_account_suffix: str,
+) -> BankStatement:
+    """Read the text container, which has no title row and starts at the metadata."""
+
+    raw = _read_source(source_path, ".csv", expected_sha256, managed_account_suffix)
+    return _statement(
+        raw,
+        _read_csv_rows(raw),
+        metadata_at=0,
+        spec=BOC_COMPANY_CSV_V1,
+        profile=BankStatementParserProfile.BOC_COMPANY_CSV_V1,
+        worksheet_index=0,
+        managed_account_suffix=managed_account_suffix,
+    )
+
+
+def _statement(
+    raw: bytes,
+    rows: list[list[object]],
+    *,
+    metadata_at: int,
+    spec: BankStatementParserSpec,
+    profile: BankStatementParserProfile,
+    worksheet_index: int,
+    managed_account_suffix: str,
+) -> BankStatement:
+    """Reconcile already-tabulated rows into one statement.
+
+    ``metadata_at`` is where the seven self-declared rows begin; the column
+    header follows them, and the transactions follow the header.
+    """
+
+    source_sha256 = hashlib.sha256(raw).hexdigest()
+    header_at = metadata_at + _METADATA_ROWS
+    if len(rows) < header_at + 2:
         raise BocCompanyStatementError("statement contains no transaction rows")
 
-    account_number = _metadata(rows[1], "Inquirer account number")
+    account_number = _metadata(rows[metadata_at], "Inquirer account number")
     if _ACCOUNT_NUMBER.fullmatch(account_number) is None or not account_number.endswith(
         managed_account_suffix
     ):
         raise BocCompanyStatementError("statement does not belong to the managed account")
-    declared_count = _integer(_metadata(rows[2], "Total number"), "transaction count")
-    debit_count = _integer(_metadata(rows[3], "Total Numbers of Debited Payments"), "debit count")
-    debit_total = _minor(_metadata(rows[4], "Total Debit Amount of Payments"), "debit total")
-    credit_count = _integer(
-        _metadata(rows[5], "Total Numbers of Credited Payments"), "credit count"
+    declared_count = _integer(_metadata(rows[metadata_at + 1], "Total number"), "transaction count")
+    debit_count = _integer(
+        _metadata(rows[metadata_at + 2], "Total Numbers of Debited Payments"), "debit count"
     )
-    credit_total = _minor(_metadata(rows[6], "Total Credit Amount of Payments"), "credit total")
-    period_match = _RANGE.fullmatch(_metadata(rows[7], "Time Range"))
+    debit_total = _minor(
+        _metadata(rows[metadata_at + 3], "Total Debit Amount of Payments"), "debit total"
+    )
+    credit_count = _integer(
+        _metadata(rows[metadata_at + 4], "Total Numbers of Credited Payments"), "credit count"
+    )
+    credit_total = _minor(
+        _metadata(rows[metadata_at + 5], "Total Credit Amount of Payments"), "credit total"
+    )
+    period_match = _RANGE.fullmatch(_metadata(rows[metadata_at + 6], "Time Range"))
     if period_match is None:
         raise BocCompanyStatementError("statement period is invalid")
     metadata_start = _date(period_match.group(1))
     metadata_end = _date(period_match.group(2))
     if metadata_start > metadata_end:
         raise BocCompanyStatementError("statement period is reversed")
-    headers = tuple(_text(value) for value in rows[8])
+    headers = tuple(_text(value) for value in rows[header_at])
     if len(headers) != len(_HEADER_MARKERS) or any(
         marker not in header for marker, header in zip(_HEADER_MARKERS, headers, strict=True)
     ):
@@ -129,7 +197,7 @@ def parse_boc_company_xls(
     negative_count = positive_count = 0
     negative_total = positive_total = 0
     previous_balance: int | None = None
-    for row_number, values in enumerate(rows[9:], start=10):
+    for row_number, values in enumerate(rows[header_at + 1 :], start=header_at + 2):
         if len(values) != len(_HEADER_MARKERS) or not any(values):
             raise BocCompanyStatementError("statement transaction row is invalid")
         occurred_on = _date(_text(values[10]))
@@ -249,26 +317,83 @@ def parse_boc_company_xls(
         statement_ref=uuid5(_NAMESPACE, f"boc-company-statement:{source_sha256}"),
         source_sha256=source_sha256,
         source_size=len(raw),
-        declared_media_type=BOC_COMPANY_XLS_V1.declared_media_type,
+        declared_media_type=spec.declared_media_type,
         currency="CNY",
-        institution_code=BOC_COMPANY_XLS_V1.institution_code,
+        institution_code=spec.institution_code,
         account_suffix=managed_account_suffix,
-        worksheet_index=1,
-        header_row_number=9,
+        worksheet_index=worksheet_index,
+        header_row_number=header_at + 1,
         transactions=tuple(transactions),
-        parser_profile=BankStatementParserProfile.BOC_COMPANY_XLS_V1,
-        source_system=BOC_COMPANY_XLS_V1.source_system,
+        parser_profile=profile,
+        source_system=spec.source_system,
         parser_facts_sha256=parser_facts_sha256,
     )
 
 
-def _read_source(path: Path) -> bytes:
-    if not isinstance(path, Path) or not path.is_absolute() or path.suffix.lower() != ".xls":
-        raise BocCompanyStatementError("statement path must be an absolute XLS file")
+def _read_source(
+    path: Path, suffix: str, expected_sha256: str, managed_account_suffix: str
+) -> bytes:
+    if _DIGEST.fullmatch(expected_sha256) is None:
+        raise BocCompanyStatementError("expected source digest is invalid")
+    if _ACCOUNT_SUFFIX.fullmatch(managed_account_suffix) is None:
+        raise BocCompanyStatementError("managed account suffix is invalid")
+    if not isinstance(path, Path) or not path.is_absolute() or path.suffix.lower() != suffix:
+        container = suffix.lstrip(".").upper()
+        raise BocCompanyStatementError(f"statement path must be an absolute {container} file")
     try:
-        return path.read_bytes()
+        raw = path.read_bytes()
     except OSError as exc:
         raise BocCompanyStatementError("statement could not be read") from exc
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise BocCompanyStatementError("source digest changed")
+    return raw
+
+
+def _decode_csv(raw: bytes) -> str:
+    """Decode the text container without guessing.
+
+    The same online-banking export has been observed as GBK and as UTF-8 with a
+    byte-order mark. Guessing wrong does not raise: it yields mojibake that only
+    fails later, at "the header is unrecognisable", one layer away from the real
+    cause. So a candidate decoding is accepted only when its first line names the
+    account query; if neither candidate does, the file is rejected here.
+    """
+
+    ordered = ("utf-8-sig", "gbk") if raw.startswith(b"\xef\xbb\xbf") else ("gbk", "utf-8-sig")
+    for encoding in ordered:
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if _CSV_MARKER in text.partition("\n")[0]:
+            return text
+    raise BocCompanyStatementError("statement text encoding is invalid")
+
+
+def _read_csv_rows(raw: bytes) -> list[list[object]]:
+    """Tabulate the text container to the same 38-column shape as the workbook.
+
+    Online banking suffixes almost every field with a tab so that Excel does not
+    read account numbers as numbers, and pads the seven metadata rows with extra
+    empty columns beyond the header width. Dropping trailing blank columns and
+    padding back to the known width normalises both, so a transaction yields the
+    same field values here as in the workbook, and therefore the same serial.
+    """
+
+    text = _decode_csv(raw)
+    width = len(_HEADER_MARKERS)
+    rows: list[list[object]] = []
+    for values in csv.reader(io.StringIO(text, newline="")):
+        while values and not values[-1].strip():
+            values.pop()
+        if not values:
+            continue
+        if len(values) > width:
+            raise BocCompanyStatementError("statement row is wider than the known layout")
+        if len(rows) > _MAX_ROWS:
+            raise BocCompanyStatementError("statement transaction count is invalid")
+        rows.append([*values, *[""] * (width - len(values))])
+    return rows
 
 
 def _read_workbook_rows(raw: bytes) -> list[list[object]]:
