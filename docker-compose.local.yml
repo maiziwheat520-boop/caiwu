@@ -1,0 +1,52 @@
+# PostgreSQL for local single-user mode. Nothing else runs here.
+#
+# The production compose builds and runs the application image; locally the
+# Python side runs on the host under uv, so the only thing Docker is needed for
+# is the database. That is not a shortcut: Core's invariants - balanced entries,
+# the internal_read definer functions, the triggers - live in PostgreSQL, so a
+# local run without PostgreSQL would be a different fact layer wearing the same
+# name.
+#
+# The port is published on loopback only, and on 5433 rather than 5432 so that a
+# local run cannot quietly attach to an existing PostgreSQL on this machine.
+#
+# Usage:
+#   python scripts/local_mode.py init      # writes .env.local, not committed
+#   docker compose --env-file .env.local -f docker-compose.local.yml up -d
+#   python scripts/local_mode.py migrate
+#   python scripts/local_mode.py serve
+
+services:
+  postgres:
+    image: postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
+    container_name: ledgerbridge-local-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ledgerbridge}
+      POSTGRES_USER: ${POSTGRES_USER:-ledgerbridge_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?local owner password is required}
+      POSTGRES_INITDB_ARGS: --data-checksums
+      # The same four runtime roles as production. Local mode logs in as one
+      # user, but the roles still exist, so a production dump restores here
+      # without rewriting ownership.
+      LEDGERBRIDGE_APP_DB_PASSWORD: ${LEDGERBRIDGE_APP_DB_PASSWORD:?app password is required}
+      LEDGERBRIDGE_API_DB_PASSWORD: ${LEDGERBRIDGE_API_DB_PASSWORD:?api password is required}
+      LEDGERBRIDGE_WORKER_DB_PASSWORD: ${LEDGERBRIDGE_WORKER_DB_PASSWORD:?worker password is required}
+      LEDGERBRIDGE_READER_DB_PASSWORD: ${LEDGERBRIDGE_READER_DB_PASSWORD:?reader password is required}
+    restart: unless-stopped
+    mem_limit: 512m
+    pids_limit: 128
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - local-postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres-init-runtime-role.sh:/docker-entrypoint-initdb.d/10-ledgerbridge-runtime-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  # Named separately from the production volume so that `docker compose down -v`
+  # in one tree can never take the other one with it.
+  local-postgres-data:

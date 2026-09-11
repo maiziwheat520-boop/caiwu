@@ -8,13 +8,17 @@ that it refuses when it should, not that it starts on this machine.
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 from tempfile import gettempdir
 from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.exc import OperationalError
 
+import ledgerbridge.db
+import scripts.local_mode as local_mode_script
 from ledgerbridge.config import Settings
 from ledgerbridge.local_mode import (
     LOCAL_POLICY_GENERATION,
@@ -31,6 +35,11 @@ REMOTE_DATABASE = "postgresql+psycopg://ledgerbridge:pw@ledger.internal:5432/led
 # artifact_root must be absolute, and "absolute" on Windows does not mean /var.
 ARTIFACT_ROOT = Path(gettempdir()) / "ledgerbridge-local-mode-test"
 ENTITY = UUID("10000000-0000-4000-8000-000000000001")
+
+
+def _password_of(written: str, key: str) -> str:
+    line = next(row for row in written.splitlines() if row.startswith(f"{key}="))
+    return line.partition("=")[2]
 
 
 def profile(**overrides: object) -> LocalProfile:
@@ -172,3 +181,101 @@ def test_unassigned_facts_stay_visible_locally() -> None:
 
     assert principal.grants[0].allow_unassigned_candidates
     assert principal.grants[0].business_unit_refs == frozenset()
+
+
+def test_init_writes_an_env_file_without_printing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The generated passwords must reach the file and nothing else.
+
+    A password echoed once lives in a scrollback buffer forever, so the check is
+    not that init prints something harmless but that nothing it prints appears in
+    the file it wrote.
+    """
+    env_file = tmp_path / ".env.local"
+    monkeypatch.setattr(local_mode_script, "ENV_FILE", env_file)
+
+    assert local_mode_script.command_init(argparse.Namespace()) == 0
+
+    written = env_file.read_text(encoding="utf-8")
+    printed = capsys.readouterr().out
+    assert "LEDGERBRIDGE_API_DB_PASSWORD=" in written
+    assert printed.strip() == f"wrote {env_file.name}"
+    secret = _password_of(written, "LEDGERBRIDGE_API_DB_PASSWORD")
+    assert secret not in printed
+
+
+def test_init_refuses_to_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """New passwords against an initialised volume lock everyone out.
+
+    The roles were created on first boot with the old passwords; rewriting the
+    file produces a database nobody can log into, and the failure would surface
+    one step later looking like a connection bug.
+    """
+    env_file = tmp_path / ".env.local"
+    monkeypatch.setattr(local_mode_script, "ENV_FILE", env_file)
+    local_mode_script.command_init(argparse.Namespace())
+    first = env_file.read_text(encoding="utf-8")
+
+    local_mode_script.command_init(argparse.Namespace())
+
+    assert env_file.read_text(encoding="utf-8") == first
+
+
+def test_every_generated_role_password_differs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The database init script rejects duplicate role passwords outright."""
+    env_file = tmp_path / ".env.local"
+    monkeypatch.setattr(local_mode_script, "ENV_FILE", env_file)
+    local_mode_script.command_init(argparse.Namespace())
+
+    written = env_file.read_text(encoding="utf-8")
+    passwords = [
+        _password_of(written, f"LEDGERBRIDGE_{role.upper()}_DB_PASSWORD")
+        for role in ("app", "api", "worker", "reader")
+    ]
+
+    assert len(set(passwords)) == len(passwords)
+
+
+def test_a_missing_env_file_says_which_step_was_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Otherwise a missing file looks like a database that will not connect."""
+    monkeypatch.setattr(local_mode_script, "ENV_FILE", tmp_path / ".env.local")
+
+    with pytest.raises(LocalModeRefused, match="init"):
+        local_mode_script._env_value("LEDGERBRIDGE_LOCAL_DATABASE_URL")
+
+
+def test_the_generated_local_url_points_at_loopback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The URL init writes must be one guard() accepts; otherwise step three
+    refuses what step one produced."""
+    env_file = tmp_path / ".env.local"
+    monkeypatch.setattr(local_mode_script, "ENV_FILE", env_file)
+    local_mode_script.command_init(argparse.Namespace())
+
+    url = local_mode_script._env_value("LEDGERBRIDGE_LOCAL_DATABASE_URL")
+
+    guard(settings(database_url=url, reader_database_url=url))
+
+
+def test_an_unreachable_database_says_so_instead_of_raising_a_driver_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ "The launcher is wrong" and "the database is not up" must not look alike.
+
+    Both otherwise surface as a page that will not load, and a raw psycopg
+    traceback sends the reader into the wrong half of the system.
+    """
+
+    def refuse_to_connect(_url: str) -> object:
+        raise OperationalError("select 1", {}, Exception("connection refused"))
+
+    monkeypatch.setattr(ledgerbridge.db, "get_session_factory", refuse_to_connect)
+
+    with pytest.raises(LocalModeRefused, match="did not answer"):
+        local_mode_script._entity_refs(LOCAL_DATABASE)
