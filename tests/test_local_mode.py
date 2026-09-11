@@ -14,6 +14,7 @@ from tempfile import gettempdir
 from uuid import UUID
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
 
@@ -279,3 +280,19 @@ def test_an_unreachable_database_says_so_instead_of_raising_a_driver_error(
 
     with pytest.raises(LocalModeRefused, match="did not answer"):
         local_mode_script._entity_refs(LOCAL_DATABASE)
+
+
+def test_the_local_app_answers_on_the_capabilities_route() -> None:
+    """Wire the real app and ask it something that needs no database.
+
+    Middleware order, the principal verifier and the settings override are all
+    runtime wiring: get any of them wrong and the module still imports, the
+    tests above still pass, and the failure only appears when someone opens the
+    page. This is the cheapest thing that proves the assembly holds.
+    """
+    app = local_mode_script._build_app(profile())
+
+    with TestClient(app) as client:
+        response = client.get("/internal/v1/capabilities")
+
+    assert response.status_code == 200
