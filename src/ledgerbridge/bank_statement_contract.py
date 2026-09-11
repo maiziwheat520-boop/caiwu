@@ -23,6 +23,8 @@ class BankStatementParserProfile(StrEnum):
     CCB_PERSONAL_XLS_V1 = "ccb_personal_xls_v1"
     BOC_PERSONAL_PDF_V1 = "boc_personal_pdf_v1"
     BOC_COMPANY_XLS_V1 = "boc_company_xls_v1"
+    BOC_COMPANY_CSV_V1 = "boc_company_csv_v1"
+    BOC_COMPANY_PDF_V1 = "boc_company_pdf_v1"
     ABC_PERSONAL_PDF_V1 = "abc_personal_pdf_v1"
     ABC_COMPANY_XLS_V1 = "abc_company_xls_v1"
 
@@ -85,6 +87,29 @@ BOC_COMPANY_XLS_V1: Final = BankStatementParserSpec(
     display_extension=".xls",
     allowed_owner_kinds=frozenset({"COMPANY"}),
 )
+# The same online-banking query the XLS profile reads, exported as GBK or UTF-8
+# text. Identical 38-column layout, so both containers agree on transaction
+# identity; only the container and a one-row metadata offset differ.
+BOC_COMPANY_CSV_V1: Final = BankStatementParserSpec(
+    profile=BankStatementParserProfile.BOC_COMPANY_CSV_V1,
+    institution_code="boc",
+    source_system="boc_company_csv_export",
+    declared_media_type="text/csv",
+    display_extension=".csv",
+    allowed_owner_kinds=frozenset({"COMPANY"}),
+)
+# The statement the bank mails monthly, which is a different document from the
+# online-banking export: no transaction time, no counterparty account, separate
+# debit and credit columns, but carrying its own opening balance, period totals
+# and closing balance.
+BOC_COMPANY_PDF_V1: Final = BankStatementParserSpec(
+    profile=BankStatementParserProfile.BOC_COMPANY_PDF_V1,
+    institution_code="boc",
+    source_system="boc_company_pdf_statement",
+    declared_media_type="application/pdf",
+    display_extension=".pdf",
+    allowed_owner_kinds=frozenset({"COMPANY"}),
+)
 ABC_PERSONAL_PDF_V1: Final = BankStatementParserSpec(
     profile=BankStatementParserProfile.ABC_PERSONAL_PDF_V1,
     institution_code="abc",
@@ -111,6 +136,8 @@ _SPECS: Final = {
         CCB_PERSONAL_XLS_V1,
         BOC_PERSONAL_PDF_V1,
         BOC_COMPANY_XLS_V1,
+        BOC_COMPANY_CSV_V1,
+        BOC_COMPANY_PDF_V1,
         ABC_PERSONAL_PDF_V1,
         ABC_COMPANY_XLS_V1,
     )
@@ -173,6 +200,8 @@ class BankStatement:
                 BankStatementParserProfile.CCB_PERSONAL_XLS_V1,
                 BankStatementParserProfile.BOC_PERSONAL_PDF_V1,
                 BankStatementParserProfile.BOC_COMPANY_XLS_V1,
+                BankStatementParserProfile.BOC_COMPANY_CSV_V1,
+                BankStatementParserProfile.BOC_COMPANY_PDF_V1,
                 BankStatementParserProfile.ABC_PERSONAL_PDF_V1,
                 BankStatementParserProfile.MYBANK_COMPANY_DAILY_XLSX_V2,
                 BankStatementParserProfile.MYBANK_COMPANY_RANGE_XLSX_V3,
