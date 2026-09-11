@@ -123,6 +123,25 @@ table, no new writer.
 - Still to do: `docker-compose.local.yml`, `scripts/local_mode.py`, the Web
   local mode, importing the statements, and the parser and rule carry-over.
 
+## Baseline correction (2026-09-11)
+
+This task started from `448d700` on `ai/chatgpt/company-mybank-production-import`,
+named as the integration branch by `PROJECT_STATUS.md`. That document is dated
+2026-09-02 and is stale: `448d700` sits two commits past its merge-base with
+`production/core`, which is 121 commits ahead. The branch has been rebased onto
+`production/core`; the local database followed from schema `20260902_0034` to
+`20260906_0051`, which is also the first real application of that last
+migration - it had been verified by source assertion only.
+
+## Later decisions (2026-09-11, user)
+
+4. The review screen keeps its write buttons in local mode. Core's local mode
+   serves only the GET read routes, so a confirm or ignore POST fails at Core.
+   The UI is not yet honest about that; it was left alone rather than redesigned
+   in passing.
+5. The BOC company CSV and PDF readers stay on a local branch. They are merged
+   into this branch for local use and do not enter the production release line.
+
 ## Review findings
 
 -
