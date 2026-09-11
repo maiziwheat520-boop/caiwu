@@ -1,6 +1,6 @@
 # Task: Local single-user mode
 
-- Status: proposed
+- Status: active
 - Implementation owner: Claude (`ai/claude/local-single-user-mode`)
 - Review owner: user
 - Branch: `ai/claude/local-single-user-mode`, worktree
@@ -96,23 +96,32 @@ table, no new writer.
   restored dump returns the same facts.
 - Importing one statement twice in local mode produces an exact zero delta.
 
-## Open questions for the user
+## Decisions (2026-09-11, user)
 
-1. Local PostgreSQL in Docker, or a file-backed local database? Core's
-   invariants (balanced entries, `internal_read` definer functions, triggers)
-   are enforced *in PostgreSQL*. A file-backed store would mean losing them,
-   which would recreate the second-fact-layer problem in a new place. The
-   proposal above assumes local PostgreSQL in Docker for that reason.
-2. UI shape: reuse `LedgerBridge-Web` pointed at loopback, or the Tkinter
-   desktop window that already exists in the old toolbox? The Web path reuses
-   real screens; the desktop path is what the user has been opening so far.
-3. What happens to `D:\repos\finance-desk` and `~/.finance-desk`: freeze in
-   place, or delete once the equivalent data is confirmed present here?
+1. Local storage is PostgreSQL in Docker on loopback. Core's invariants
+   (balanced entries, `internal_read` definer functions, triggers) are enforced
+   *in PostgreSQL*; a file-backed store would lose them and recreate the
+   second-fact-layer problem somewhere new.
+2. The UI is `LedgerBridge-Web` pointed at loopback, not a new desktop window.
+   That needs a fourth Web mode beside `synthetic-preview`,
+   `authenticated-preview` and `core-backed`: plain HTTP to Core over loopback,
+   no client certificates, no Passkey, and a refusal to start on a non-loopback
+   bind.
+3. `finance-desk` and `~/.finance-desk` are frozen in place, not deleted. They
+   stay readable for comparison until local mode answers the same questions;
+   nothing new is written there.
 
 ## Implementation evidence
 
-- Not started. This document is the proposal required by `AGENTS.md`
-  ("Do not silently alter frozen architecture ... wait for user approval").
+- `src/ledgerbridge/local_mode.py` and `tests/test_local_mode.py`: the profile
+  and its refusals. 11 tests, with `ruff`, `ruff format` and `mypy` clean.
+- Two intended refusals turned out to be enforced by `Settings` itself (a
+  production read API without the R1 gate, and real ingest). Those tests assert
+  the upstream `ValidationError` and keep local mode's own check as a second
+  net, exercised through `model_copy` so that relaxing the upstream validator
+  turns this suite red instead of silently emptying the net.
+- Still to do: `docker-compose.local.yml`, `scripts/local_mode.py`, the Web
+  local mode, importing the statements, and the parser and rule carry-over.
 
 ## Review findings
 
