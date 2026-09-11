@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from .auth import AuthError, AuthManager, AuthStore
 from .core_backend import (
     CLASSIFICATION_RISK_CODES,
+    LOCAL_SESSION_PRINCIPAL,
     PAYROLL_TEST_MATERIAL_TYPES,
     CoreBackedState,
     CoreBackendError,
@@ -95,10 +96,128 @@ PAYROLL_LEGACY_ACTIONS = {
 MAX_REQUEST_BYTES = 64 * 1024
 JSON_SAFE_INTEGER = 9_007_199_254_740_991
 STATUSES = {"INCOMPLETE", "PENDING", "CONFLICTED", "CONFIRMED", "IGNORED", "SUPERSEDED"}
+SUPPORTED_MODES = frozenset(
+    {"synthetic-preview", "authenticated-preview", "core-backed", "local-single-user"}
+)
+AUTHENTICATED_MODES = frozenset({"authenticated-preview", "core-backed"})
+#: Core's local profile listens here (``ledgerbridge.local_mode.LOCAL_PORT``).
+LOCAL_CORE_BASE_URL = "http://127.0.0.1:8661"
+#: Local mode still sends the BFF user assertion, because the Core client always
+#: does. Core's local profile installs a fixed principal and reads nothing from
+#: the request, so these values name the caller in the audit trail rather than
+#: authorising it. The key is minted per start and never stored: a credential
+#: kept on disk so a process can authenticate to itself is a liability with no
+#: matching benefit.
+LOCAL_WORKLOAD_PRINCIPAL = "workload:local-single-user"
+LOCAL_ASSERTION_ISSUER = "ledgerbridge-web-local"
+LOCAL_ASSERTION_AUDIENCE = "ledgerbridge-core-local"
+#: The assertion subject and the browser session principal are the same person,
+#: so they are the same string by construction rather than by coincidence.
+LOCAL_USER_SUBJECT = LOCAL_SESSION_PRINCIPAL
+LOCAL_GENERATION = 1
+#: Settings that only mean something on the deployed path. Local mode refuses
+#: them rather than ignoring them: an operator who set CORE_CERT_FILE believes
+#: the connection is mutually authenticated, and quietly dropping it would leave
+#: that belief in place.
+LOCAL_MODE_FORBIDDEN_ENV = (
+    "CORE_CA_FILE",
+    "CORE_CERT_FILE",
+    "CORE_KEY_FILE",
+    "CORE_USER_ASSERTION_KEY",
+    "CORE_WORKLOAD_PRINCIPAL",
+    "CORE_POLICY_GENERATION",
+    "TRUSTED_PROXY_CIDRS",
+)
 
 
 def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _is_loopback_bind(address: str) -> bool:
+    """Report whether a bind address can only be reached from this machine.
+
+    An empty ``BIND_ADDRESS`` is not loopback: ``HTTPServer`` reads it as every
+    interface, which is the exact failure this check exists to catch.
+    """
+    if address == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(address).is_loopback
+    except ValueError:
+        return False
+
+
+def _build_local_single_user_state(bind_address: str) -> CoreBackedState:
+    """Build the Core adapter for one person on one machine.
+
+    Local mode is the deployed core-backed path with the two things that have
+    nobody to protect removed: the mTLS handshake, because both ends are this
+    laptop, and the Passkey, because the only person who can reach the socket is
+    already sitting at the keyboard. Everything that carries meaning about the
+    books - the same Core client, the same adapter, the same read routes - is
+    reused unchanged, so local mode cannot drift into a second interpretation of
+    a financial fact.
+
+    Removing the transport check makes the bind address load-bearing. On
+    loopback the operating system is the access control; on any other interface
+    there is none at all, and the whole ledger is readable by whoever is on the
+    network. That is why the refusal below is hard rather than a warning.
+    """
+    if not _is_loopback_bind(bind_address):
+        raise SystemExit(
+            "Refusing to start local-single-user mode on a non-loopback BIND_ADDRESS: "
+            f"{bind_address or '(every interface)'}; this mode authenticates nobody"
+        )
+    present = [name for name in LOCAL_MODE_FORBIDDEN_ENV if os.environ.get(name, "").strip()]
+    if present:
+        raise SystemExit(
+            "Refusing local-single-user mode: these settings belong to the deployed "
+            f"path and would be ignored here: {', '.join(present)}"
+        )
+    if os.environ.get("PAYROLL_COMMANDS_ENABLED", "0") in {"1", "true", "True"}:
+        raise SystemExit(
+            "Refusing local-single-user mode: payroll commands need a verified user "
+            "assertion, which local Core does not check"
+        )
+    entity_ref = os.environ.get("CORE_ENTITY_REF", "").strip()
+    business_unit_ref = os.environ.get("CORE_BUSINESS_UNIT_REF", "").strip()
+    missing = sorted(
+        name
+        for name, value in (
+            ("CORE_ENTITY_REF", entity_ref),
+            ("CORE_BUSINESS_UNIT_REF", business_unit_ref),
+        )
+        if not value
+    )
+    if missing:
+        # These two say which books to open, not who may open them. Local mode
+        # drops credentials, not scope, so there is nothing to infer here.
+        raise SystemExit(
+            "Refusing local-single-user mode: required Core scope is missing: "
+            f"{', '.join(missing)}"
+        )
+    try:
+        client = CoreHttpClient(
+            base_url=os.environ.get("CORE_BASE_URL", "").strip() or LOCAL_CORE_BASE_URL,
+            timeout_seconds=float(os.environ.get("CORE_TIMEOUT_SECONDS", "10")),
+            plaintext_loopback=True,
+        )
+        return CoreBackedState(
+            client,
+            assertion_key=secrets.token_bytes(32),
+            assertion_issuer=LOCAL_ASSERTION_ISSUER,
+            assertion_audience=LOCAL_ASSERTION_AUDIENCE,
+            workload_principal=LOCAL_WORKLOAD_PRINCIPAL,
+            policy_generation=LOCAL_GENERATION,
+            user_subject=LOCAL_USER_SUBJECT,
+            authentication_generation=LOCAL_GENERATION,
+            entity_ref=entity_ref,
+            business_unit_ref=business_unit_ref,
+            local_session=True,
+        )
+    except (OSError, ValueError) as error:
+        raise SystemExit("Refusing local-single-user mode: invalid Core settings") from error
 
 
 def _build_company_report_client(
@@ -2040,7 +2159,7 @@ def create_server(
         )
     except ValueError as error:
         raise ValueError("TRUSTED_PROXY_CIDRS must contain exact IP networks") from error
-    if mode in {"authenticated-preview", "core-backed"} and not trusted_proxy_networks:
+    if mode in AUTHENTICATED_MODES and not trusted_proxy_networks:
         raise ValueError("authenticated modes require at least one trusted proxy host")
     if any(network.prefixlen != network.max_prefixlen for network in trusted_proxy_networks):
         raise ValueError("TRUSTED_PROXY_CIDRS must contain only IPv4 /32 or IPv6 /128 hosts")
@@ -2056,7 +2175,7 @@ def create_server(
 
 def run() -> None:
     mode = os.environ.get("LEDGERBRIDGE_MODE", "synthetic-preview")
-    if mode not in {"synthetic-preview", "authenticated-preview", "core-backed"}:
+    if mode not in SUPPORTED_MODES:
         raise SystemExit("Refusing to start: unsupported LedgerBridge mode")
     site_root = os.environ.get("SITE_ROOT", "/site")
     bind_address = os.environ.get("BIND_ADDRESS", "127.0.0.1")
@@ -2067,7 +2186,7 @@ def run() -> None:
     persistence: SQLitePersistence | None = None
     actor = "prototype-single-user"
     state: SyntheticState | CoreBackedState
-    if mode in {"authenticated-preview", "core-backed"}:
+    if mode in AUTHENTICATED_MODES:
         if not cookie_secure:
             raise SystemExit("Refusing to start authenticated-preview without Secure cookies")
         trusted_proxy_cidrs = os.environ.get("TRUSTED_PROXY_CIDRS", "").strip()
@@ -2242,6 +2361,8 @@ def run() -> None:
             )
         except (OSError, ValueError) as error:
             raise SystemExit("Refusing core-backed mode: invalid Core settings") from error
+    elif mode == "local-single-user":
+        state = _build_local_single_user_state(bind_address)
     else:
         state = SyntheticState(
             cookie_secure=cookie_secure,

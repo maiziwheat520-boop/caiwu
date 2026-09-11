@@ -943,7 +943,13 @@ function App() {
     return <AuthScreen status={authStatus} onAuthenticated={completeAuthentication} onRecoveryCancelled={loadAuthStatus} />
   }
 
-  const isCoreBacked = session?.runtime_mode === 'core-backed'
+  const isLocalSingleUser = session?.runtime_mode === 'local-single-user'
+  // Both modes read the same Core, so both show real books. They are kept apart
+  // in the label because the guarantees differ: the deployed path is mutually
+  // authenticated, and local mode is trusted because nothing off this machine
+  // can reach it. A reader who cannot tell which one they are in cannot judge
+  // what a number on screen is worth.
+  const isCoreBacked = session?.runtime_mode === 'core-backed' || isLocalSingleUser
 
   return (
     <div className="app-shell">
@@ -972,9 +978,15 @@ function App() {
         <div className="sidebar-foot">
           <div className="secure-line">
             <ShieldCheck size={17} weight="fill" />
-            <span>{isCoreBacked ? '正式数据环境' : '演示数据环境'}</span>
+            <span>{isLocalSingleUser ? '本机单用户环境' : isCoreBacked ? '正式数据环境' : '演示数据环境'}</span>
           </div>
-          <span>{isCoreBacked ? 'Core 是唯一业务事实源' : '无真实财务数据'}</span>
+          <span>
+            {isLocalSingleUser
+              ? '本机 Core 是唯一业务事实源'
+              : isCoreBacked
+                ? 'Core 是唯一业务事实源'
+                : '无真实财务数据'}
+          </span>
         </div>
       </aside>
 
@@ -983,9 +995,11 @@ function App() {
           <div className="mobile-brand"><Brand compact /></div>
           <div className="prototype-flag">
             <span className="flag-dot" />
-            {isCoreBacked
-              ? '正式环境 · Core 实时业务数据'
-              : '演示环境 · 登录已启用 · 合成业务数据'}
+            {isLocalSingleUser
+              ? '本机环境 · 回环连接本机 Core · 无远程访问'
+              : isCoreBacked
+                ? '正式环境 · Core 实时业务数据'
+                : '演示环境 · 登录已启用 · 合成业务数据'}
           </div>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger>

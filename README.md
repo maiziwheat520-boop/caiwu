@@ -32,6 +32,28 @@ python deploy/server.py
 
 默认监听 `127.0.0.1:8080`；只在受信内网预览时显式设置 `BIND_ADDRESS`。
 
+## 本机单用户模式
+
+`LEDGERBRIDGE_MODE=local-single-user` 让 BFF 用明文 HTTP 连接同一台电脑上的 Core 本机档案（默认 `http://127.0.0.1:8661`）。它复用 `core-backed` 的同一个 Core 客户端、同一个适配器和同一批 `/internal/v1` 只读路由，只去掉在一台电脑上无人可验证的部分：没有 mTLS 证书、没有 Passkey、没有受信代理、没有 Secure Cookie（回环上没有 TLS）。
+
+```bash
+npm run build
+LEDGERBRIDGE_MODE=local-single-user \
+  BIND_ADDRESS=127.0.0.1 \
+  CORE_ENTITY_REF=<entity uuid> \
+  CORE_BUSINESS_UNIT_REF=<business unit> \
+  python deploy/server.py
+```
+
+`CORE_ENTITY_REF` 和 `CORE_BUSINESS_UNIT_REF` 说明打开哪套账，不是凭据，因此仍然必填。
+
+本模式不做任何身份验证，唯一的访问控制是监听地址，所以以下情况直接拒绝启动，而不是降级或告警：
+
+- `BIND_ADDRESS` 不是回环地址（含留空，即监听全部接口）。
+- `CORE_BASE_URL` 不是回环 `http://` origin。
+- 出现只属于部署路径的设置：`CORE_CA_FILE`、`CORE_CERT_FILE`、`CORE_KEY_FILE`、`CORE_USER_ASSERTION_KEY`、`CORE_WORKLOAD_PRINCIPAL`、`CORE_POLICY_GENERATION`、`TRUSTED_PROXY_CIDRS`。设置了却被忽略，会让运维以为连接已经双向认证。
+- `PAYROLL_COMMANDS_ENABLED=1`：工资命令需要经过校验的用户断言，本机 Core 不校验。
+
 Hermes 合成数据预览的容器部署方式见 [DEPLOYMENT.md](./DEPLOYMENT.md)。
 
 后续真实接入的运行边界见 [集成架构](./docs/ARCHITECTURE.md)，草拟接口见 [OpenAPI 合同](./contracts/openapi.yaml)。

@@ -3,20 +3,23 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import re
+import secrets
 import sqlite3
 import ssl
 import time
 import uuid
 from contextlib import closing
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import (
+    HTTPHandler,
     HTTPRedirectHandler,
     HTTPSHandler,
     Request,
@@ -29,6 +32,7 @@ MAX_EVIDENCE_RESPONSE_BYTES = 128 * 1024 * 1024
 JSON_SAFE_INTEGER = 9_007_199_254_740_991
 SAFE_HEADER_VALUE = re.compile(r"^[\x21-\x7e]+$")
 EVIDENCE_UNLOCK_CORE_PATH = "/internal/v1/evidence/unlocks"
+LOCAL_SESSION_PRINCIPAL = "local-single-user"
 EVIDENCE_UNLOCK_STATUSES = {"NOT_REQUIRED", "PASSWORD_REQUIRED", "UNLOCKED"}
 PAYROLL_STATUS_CORE_PATH = "/internal/v1/payroll/status"
 PAYROLL_TEST_WORKSPACES_CORE_PATH = "/internal/v1/payroll/test-workspaces"
@@ -116,21 +120,43 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
+def _is_loopback_host(host: str) -> bool:
+    """Report whether a URL hostname can only name this machine."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
 class CoreHttpClient:
-    """Bounded loopback mTLS client for the closed LedgerBridge Core surface."""
+    """Bounded loopback mTLS client for the closed LedgerBridge Core surface.
+
+    ``plaintext_loopback`` drops the TLS layer for local single-user mode, where
+    Core runs as a second process on the same machine and there is no second
+    party to authenticate. It is not a relaxation that a deployment can drift
+    into: the caller must ask for it by name, the URL must then be ``http://``
+    on a loopback host, and passing TLS material alongside it is refused rather
+    than silently ignored. Everything below the transport - the path allow-list,
+    the response ceilings, the redirect refusal - is unchanged, because none of
+    it depended on TLS.
+    """
 
     def __init__(
         self,
         *,
         base_url: str,
-        ca_file: str | Path,
-        certificate_file: str | Path,
-        private_key_file: str | Path,
+        ca_file: str | Path | None = None,
+        certificate_file: str | Path | None = None,
+        private_key_file: str | Path | None = None,
         timeout_seconds: float = 10.0,
+        plaintext_loopback: bool = False,
     ) -> None:
         parsed = urlsplit(base_url)
+        expected_scheme = "http" if plaintext_loopback else "https"
         if (
-            parsed.scheme != "https"
+            parsed.scheme != expected_scheme
             or parsed.query
             or parsed.fragment
             or parsed.username is not None
@@ -138,15 +164,29 @@ class CoreHttpClient:
             or not parsed.hostname
             or parsed.path not in {"", "/"}
         ):
-            raise ValueError("CORE_BASE_URL must be an origin-only HTTPS URL")
+            raise ValueError(
+                f"CORE_BASE_URL must be an origin-only {expected_scheme.upper()} URL"
+            )
         if not 0 < timeout_seconds <= 30:
             raise ValueError("Core timeout must be between 0 and 30 seconds")
-        context = ssl.create_default_context(cafile=str(ca_file))
-        context.minimum_version = ssl.TLSVersion.TLSv1_3
-        context.load_cert_chain(str(certificate_file), str(private_key_file))
+        if plaintext_loopback:
+            if not _is_loopback_host(parsed.hostname):
+                raise ValueError("A plaintext Core client accepts a loopback host only")
+            if ca_file or certificate_file or private_key_file:
+                raise ValueError(
+                    "A plaintext Core client cannot carry TLS material; it would be ignored"
+                )
+            opener = build_opener(_NoRedirect(), HTTPHandler())
+        else:
+            if not ca_file or not certificate_file or not private_key_file:
+                raise ValueError("A Core mTLS client requires a CA, a certificate and a key")
+            context = ssl.create_default_context(cafile=str(ca_file))
+            context.minimum_version = ssl.TLSVersion.TLSv1_3
+            context.load_cert_chain(str(certificate_file), str(private_key_file))
+            opener = build_opener(_NoRedirect(), HTTPSHandler(context=context))
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
-        self._opener = build_opener(_NoRedirect(), HTTPSHandler(context=context))
+        self._opener = opener
 
     def json(
         self,
@@ -275,6 +315,7 @@ class CoreBackedState:
         payroll_test_batch_id: str | None = None,
         payroll_test_workspace_autocreate: bool = False,
         payroll_test_workspace_expected_store_revision: int = 0,
+        local_session: bool = False,
     ) -> None:
         if not 32 <= len(assertion_key) <= 256:
             raise ValueError("CORE_USER_ASSERTION_KEY must contain 32 to 256 bytes")
@@ -372,18 +413,37 @@ class CoreBackedState:
         if evidence_unlock_path not in {None, "", EVIDENCE_UNLOCK_CORE_PATH}:
             raise ValueError("Core evidence unlock path is unsupported")
         self.evidence_unlock_path = EVIDENCE_UNLOCK_CORE_PATH if evidence_unlock_path else None
-        # These fields are unreachable when core-backed mode has its required
-        # AuthManager, but keep the server Interface closed and explicit.
-        self.cookie_secure = True
-        self.cookie_name = "__Host-ledgerbridge_session"
-        self.session_id = ""
-        self.csrf_token = ""
+        # In core-backed mode these fields are unreachable, because that mode
+        # requires an AuthManager and the Passkey session supersedes them; they
+        # exist to keep the server Interface closed and explicit.
+        #
+        # Local single-user mode has no AuthManager, so the handler falls back to
+        # these. The session it mints is not authentication and does not pretend
+        # to be: the only thing keeping a stranger out is that the socket is on
+        # loopback. What it still buys is a CSRF token and a same-origin cookie,
+        # so a page in another tab cannot drive this one. The cookie is not
+        # ``Secure`` and not ``__Host-`` prefixed because there is no TLS on
+        # loopback and the browser would simply never send it back.
+        self.cookie_secure = not local_session
+        self.cookie_name = (
+            "ledgerbridge_local_session" if local_session else "__Host-ledgerbridge_session"
+        )
+        self.local_session = local_session
+        self.session_id = secrets.token_urlsafe(32) if local_session else ""
+        self.csrf_token = secrets.token_urlsafe(32) if local_session else ""
+        self.session_expires_at = datetime.now(timezone.utc) + timedelta(hours=12)
 
     def session_active(self) -> bool:
-        return False
+        return self.local_session and datetime.now(timezone.utc) < self.session_expires_at
 
     def session_payload(self) -> dict[str, str]:
-        raise CoreBackendError(503, _problem(503, "AUTH_BACKEND_REQUIRED"))
+        if not self.local_session:
+            raise CoreBackendError(503, _problem(503, "AUTH_BACKEND_REQUIRED"))
+        return {
+            "principal": LOCAL_SESSION_PRINCIPAL,
+            "csrf_token": self.csrf_token,
+            "expires_at": self.session_expires_at.isoformat(timespec="seconds"),
+        }
 
     def list_candidates(
         self,
