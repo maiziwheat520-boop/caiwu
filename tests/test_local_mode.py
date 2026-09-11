@@ -15,6 +15,7 @@ from tempfile import gettempdir
 from uuid import UUID
 
 import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
@@ -24,6 +25,7 @@ import scripts.local_mode as local_mode_script
 from ledgerbridge.config import Settings
 from ledgerbridge.local_mode import (
     LOCAL_POLICY_GENERATION,
+    LocalBook,
     LocalModeRefused,
     LocalProfile,
     guard,
@@ -37,6 +39,8 @@ REMOTE_DATABASE = "postgresql+psycopg://ledgerbridge:pw@ledger.internal:5432/led
 # artifact_root must be absolute, and "absolute" on Windows does not mean /var.
 ARTIFACT_ROOT = Path(gettempdir()) / "ledgerbridge-local-mode-test"
 ENTITY = UUID("10000000-0000-4000-8000-000000000001")
+UNIT = UUID("10000000-0000-4000-8000-000000000002")
+BOOK = LocalBook(entity_ref=ENTITY, business_units=(("household", UNIT),))
 
 
 def _password_of(written: str, key: str) -> str:
@@ -47,8 +51,9 @@ def _password_of(written: str, key: str) -> str:
 def profile(**overrides: object) -> LocalProfile:
     fields: dict[str, object] = {
         "database_url": LOCAL_DATABASE,
+        "api_database_url": LOCAL_DATABASE,
         "artifact_root": ARTIFACT_ROOT,
-        "entity_refs": (ENTITY,),
+        "books": (BOOK,),
     }
     fields.update(overrides)
     return LocalProfile(**fields)  # type: ignore[arg-type]
@@ -116,6 +121,17 @@ def test_refuses_a_remote_database() -> None:
         guard(settings(database_url=REMOTE_DATABASE, reader_database_url=REMOTE_DATABASE))
 
 
+def test_refuses_a_remote_writer_even_when_the_reader_is_local() -> None:
+    """Local mode holds two connections, so both have to be checked.
+
+    The writer only ever appends "this document was opened", but it appends it
+    somewhere, and a remote somewhere means a local session writing into
+    production's audit chain.
+    """
+    with pytest.raises(LocalModeRefused, match="local database only"):
+        guard(settings(api_database_url=REMOTE_DATABASE))
+
+
 def test_reads_the_host_out_of_a_driver_qualified_url() -> None:
     """The +psycopg scheme suffix must not hide the host name.
 
@@ -164,7 +180,7 @@ def test_the_local_identity_does_not_come_from_the_request() -> None:
     Reading headers would let anything that can reach the port name the identity
     it wants.
     """
-    verify = local_verifier(local_principal([ENTITY]))
+    verify = local_verifier(local_principal([BOOK]))
 
     verified = verify({"headers": [(b"x-ledgerbridge-principal", b"workload:somebody-else")]})
 
@@ -179,10 +195,33 @@ def test_unassigned_facts_stay_visible_locally() -> None:
     of it missing, which is the very thing that motivated writing a separate
     program in the first place.
     """
-    principal = local_principal([ENTITY])
+    principal = local_principal([BOOK])
 
     assert principal.grants[0].allow_unassigned_candidates
-    assert principal.grants[0].business_unit_refs == frozenset()
+
+
+def test_assigned_facts_stay_visible_locally() -> None:
+    """The grant carries both keys the read design keeps for a business unit.
+
+    The HTTP layer authorizes on the human ref and the scoped SQL functions
+    query the UUID, and the contract refuses to resolve one into the other. A
+    grant naming only the entity therefore sees nothing that was ever assigned -
+    which the live database demonstrated: an imported candidate was invisible
+    until the units were granted, while every unit test still passed.
+    """
+    grant = local_principal([BOOK]).grants[0]
+
+    assert grant.business_unit_refs == frozenset({"household"})
+    assert grant.business_unit_ids == frozenset({UNIT})
+    assert grant.business_unit_bindings == (("household", UNIT),)
+
+
+def test_a_book_with_no_business_unit_is_still_granted() -> None:
+    """A purely personal book has no units, and must still open."""
+    grant = local_principal([LocalBook(entity_ref=ENTITY)]).grants[0]
+
+    assert grant.business_unit_refs == frozenset()
+    assert grant.allow_unassigned_candidates
 
 
 def test_init_writes_an_env_file_without_printing_it(
@@ -263,13 +302,14 @@ def test_the_generated_local_url_points_at_loopback(
     monkeypatch.setattr(local_mode_script, "ENV_FILE", env_file)
     local_mode_script.command_init(argparse.Namespace())
 
-    url = local_mode_script._env_value("LEDGERBRIDGE_LOCAL_READER_DATABASE_URL")
+    reader = local_mode_script._env_value("LEDGERBRIDGE_LOCAL_READER_DATABASE_URL")
+    writer = local_mode_script._env_value("LEDGERBRIDGE_LOCAL_API_DATABASE_URL")
 
-    guard(settings(database_url=url, reader_database_url=url))
+    guard(settings(database_url=reader, reader_database_url=reader, api_database_url=writer))
 
 
-def test_requests_are_served_through_the_reader_role() -> None:
-    """The served connection must be the reader, not a roomier role.
+def test_each_connection_uses_the_role_its_job_needs() -> None:
+    """Three jobs, three roles, exactly as production separates them.
 
     The reader can execute the internal_read definer functions and can select
     from no base table at all. That restriction is what the read design rests
@@ -283,11 +323,14 @@ def test_requests_are_served_through_the_reader_role() -> None:
     try:
         local_mode_script.command_init(argparse.Namespace())
         served = local_mode_script._env_value("LEDGERBRIDGE_LOCAL_READER_DATABASE_URL")
+        audited = local_mode_script._env_value("LEDGERBRIDGE_LOCAL_API_DATABASE_URL")
         bootstrap = local_mode_script._env_value("LEDGERBRIDGE_MIGRATION_DATABASE_URL")
     finally:
         local_mode_script.ENV_FILE = original
 
     assert "ledgerbridge_reader:" in served
+    # Opening a document appends an audit event, which the reader cannot write.
+    assert "ledgerbridge_api:" in audited
     # The entity list is a bootstrap question, asked once through the owner role
     # before the first request, never through the connection that serves them.
     assert "ledgerbridge_owner:" in bootstrap
@@ -308,7 +351,7 @@ def test_an_unreachable_database_says_so_instead_of_raising_a_driver_error(
     monkeypatch.setattr(ledgerbridge.db, "get_session_factory", refuse_to_connect)
 
     with pytest.raises(LocalModeRefused, match="did not answer"):
-        local_mode_script._entity_refs(LOCAL_DATABASE)
+        local_mode_script._books(LOCAL_DATABASE)
 
 
 def test_the_local_app_answers_on_the_capabilities_route() -> None:
@@ -325,3 +368,63 @@ def test_the_local_app_answers_on_the_capabilities_route() -> None:
         response = client.get("/internal/v1/capabilities")
 
     assert response.status_code == 200
+
+
+def test_the_local_app_serves_the_routes_the_ui_asks_for() -> None:
+    """Mounting one router was enough to answer /capabilities and nothing else.
+
+    The Web client asks for statements, reconciliations and reports as well, and
+    a missing router does not fail at startup - it fails as a 404 on a page,
+    which reads like missing data rather than a missing mount.
+    """
+    paths = {
+        route.path
+        for router in local_mode_script._read_routers()
+        for route in router.routes
+        if isinstance(route, APIRoute)
+    }
+
+    assert {
+        "/internal/v1/candidates",
+        "/internal/v1/personal-finance-summary",
+        "/internal/v1/company-bank-statements/{statement_ref}",
+        "/internal/v1/reconciliations/{month}",
+        "/internal/v1/ledger-summary",
+    } <= paths
+
+
+def test_the_local_app_refuses_to_serve_a_writing_route() -> None:
+    """Read-only has to be a property of the assembly, not of a curated list.
+
+    Otherwise it holds only for as long as everyone adding a router remembers,
+    and the failure is silent: a POST that works locally and is refused in
+    production is the wrong way round.
+    """
+    from ledgerbridge.internal_candidate_command_routes import router as command_router
+
+    routers = local_mode_script._read_routers()
+    # The check must see something, or "no writer found" is vacuously true.
+    assert sum(len(router.routes) for router in routers) > 5  # not vacuously true
+    local_mode_script._refuse_non_read_routes(routers)
+
+    with pytest.raises(LocalModeRefused, match="reads only"):
+        local_mode_script._refuse_non_read_routes((*routers, command_router))
+
+
+def test_a_command_router_contributes_its_reads_and_not_its_commands() -> None:
+    """Two review views live inside a router that also writes decisions.
+
+    Taking the route objects across rather than re-declaring them is what keeps
+    each one's own dependencies - including the module gate its source router
+    applies - instead of growing a second copy of somebody else's
+    authorization that drifts quietly.
+    """
+    from ledgerbridge.internal_candidate_command_routes import router as command_router
+
+    taken = local_mode_script._reads_of(command_router)
+
+    assert {route.path for route in taken.routes if isinstance(route, APIRoute)} == {
+        "/internal/v1/candidate-events",
+        "/internal/v1/candidate-classification-groups",
+    }
+    assert all(route in command_router.routes for route in taken.routes)

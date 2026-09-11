@@ -142,6 +142,99 @@ migration - it had been verified by source assertion only.
 5. The BOC company CSV and PDF readers stay on a local branch. They are merged
    into this branch for local use and do not enter the production release line.
 
+## Import chain (2026-09-12)
+
+`docs/operations/LOCAL_IMPORT.md` is the runbook. Summary of what it settles:
+
+- The controlled-review batch path (`controlled_import.py`) runs locally,
+  unmodified, and is the shape D-028 describes: bounded preparation,
+  transactional write as the owner role, receipt, idempotent replay. It is now
+  reachable as `local_mode.py import`, which reads the database URL out of
+  `.env.local` so importing never means pasting a password into a shell.
+- The registered-account statement cutover path does **not** run here.
+  `verify_mybank_cutover_safety_proof` runs before the preflight and the
+  execution alike, and demands a v3 encrypted backup plus a passed isolated
+  restore rehearsal whose inventory equals the live counts. Those artifacts come
+  only from `scripts/backup_restore.py`, which targets Hermes (`/srv/ai-center`,
+  `/dev/shm`, `gpg`, GNU `tar`) and does not run on Windows. Hand-writing them
+  would be forging a proof, not configuring a tool.
+- `run_account_registry_intake.py` refuses unless `LEDGERBRIDGE_ENV=production`
+  on both its paths, so a Managed Account cannot be registered locally either.
+
+### Proved against the live local database, 2026-09-12
+
+- Import, then replay: `replayed=false` then `replayed=true`, with an unchanged
+  audit horizon and a zero row delta across `entity`, `candidate`,
+  `evidence_object` and `audit_event`. This is the task's fourth acceptance
+  test, met for the batch path.
+- A second batch appeared in `check` without anyone widening a list
+  (`entities: 2`, `business_units: 2`).
+- `serve` on `127.0.0.1:8661` (confirmed loopback-only by `netstat`) answered
+  `/internal/v1/capabilities`, `/internal/v1/candidates` (2 rows, from both
+  books) and `/internal/v1/personal-finance-summary`, each `Cache-Control:
+  no-store`.
+- `/internal/v1/evidence/{ref}/content` returned the decrypted synthetic
+  document, and the read appended `internal.read.evidence.content` by
+  `workload:local-single-user` to the audit chain.
+
+## Findings the live data forced (2026-09-12)
+
+Three defects that every unit test passed through, all found by importing real
+rows rather than by reading the code:
+
+1. **The local grant saw nothing that was assigned.** `local_principal` granted
+   the entity with an empty business-unit set. The read design keeps two
+   independent keys per unit - the ref the HTTP layer authorizes on and the UUID
+   the scoped SQL functions query - and refuses to resolve one into the other,
+   so an assigned candidate was invisible while the page rendered cleanly. Fixed
+   by carrying `LocalBook(entity_ref, business_units)` through the bootstrap.
+2. **The local app mounted one router.** `/capabilities` answered, so the
+   assembly test passed; the Web client also asks for statements,
+   reconciliations, reports and personal finance, all of which would have 404ed
+   and read as missing data. Now the six GET-only routers `main.py` mounts are
+   mounted, and `_refuse_non_read_routes` makes "local mode serves reads only" a
+   property the process asserts about itself before it binds a socket, rather
+   than a list someone has to keep curating.
+3. **Evidence downloads failed closed.** They need an evidence key file and a
+   persistent audit sink, and the sink writes through the api role - which local
+   mode had collapsed into the reader. The profile now carries both URLs and the
+   guard checks both hosts.
+
+## Open issues (awaiting user decision)
+
+1. **D-028's repeat-import relaxation is not implemented for statement
+   cutovers.** D-028 says that once an import capability is released and
+   restore-verified, further files use a bounded preview, transactional write,
+   receipt, count check and idempotent replay, and do not repeat the whole
+   recovery rehearsal. Every statement import still verifies a full backup and
+   restore proof, and `MYBANK_CUTOVER.md` still instructs one fresh
+   backup/restore inventory per plan. Closing the gap means changing a gate on
+   the path that writes real financial facts; not changed here.
+2. **Four review views are mounted but disabled.** `candidate-events`,
+   `candidate-classification-groups`, `company-transaction-classifications` and
+   its summary are GET routes living inside command routers; Core gates the
+   whole module behind `enable_internal_candidate_command_api`, which also
+   requires a command assertion key, issuer and audience. Their reads are
+   mounted without the commands beside them, so the failure says
+   `CANDIDATE_COMMAND_DISABLED` rather than "not found" and enabling the module
+   later is a settings change. Whether to enable it locally is a decision: it
+   means minting an assertion key on a single-user machine and declaring the
+   command API enabled in a profile that serves no command.
+
+## A destructive mistake, recorded
+
+A `local_mode.py verify` subcommand was written that ran the whole suite with
+the local role URLs exported, and it was wrong twice over: it emptied
+`ledgerbridge` (the schema survived at head; every row did not), and exporting
+the `LEDGERBRIDGE_*` variables process-wide failed 117 tests that pass with a
+clean environment. It has been removed; the local database was re-imported.
+
+What stands from that exercise is the targeted run: the eight files holding
+PostgreSQL integration tests pass in full against the local container - 178
+tests, including all five privilege-boundary assertions - which is the evidence
+that the local database enforces what Core's does rather than merely holding
+the same rows.
+
 ## Review findings
 
 -

@@ -1,11 +1,17 @@
 """Start LedgerBridge on one machine, for one person.
 
-Four steps, each separately runnable so that a failure says which one failed:
+Five steps, each separately runnable so that a failure says which one failed:
 
     python scripts/local_mode.py init      # write .env.local (not committed)
     docker compose --env-file .env.local -f docker-compose.local.yml up -d
     python scripts/local_mode.py migrate   # alembic upgrade head
+    python scripts/local_mode.py import --source-manifest <path>
     python scripts/local_mode.py serve     # loopback API
+
+`serve` refuses on an empty database, so the import is not optional: an
+identity holding no grants would render a clean empty page that looks exactly
+like a working install. See docs/operations/LOCAL_IMPORT.md for what can be
+imported on one machine and what cannot.
 
 Only PostgreSQL runs in Docker. The Python side runs on the host under uv,
 because the only thing the container buys locally is the database, and Core's
@@ -25,11 +31,13 @@ import os
 import secrets
 import subprocess
 import sys
+from collections.abc import Iterable
 from contextlib import suppress
 from pathlib import Path
+from typing import Final
 from uuid import UUID
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT / "src") not in sys.path:
@@ -38,6 +46,7 @@ if str(REPO_ROOT / "src") not in sys.path:
 from ledgerbridge.local_mode import (  # noqa: E402
     LOCAL_HOST,
     LOCAL_PORT,
+    LocalBook,
     LocalModeRefused,
     LocalProfile,
     local_principal,
@@ -46,6 +55,10 @@ from ledgerbridge.local_mode import (  # noqa: E402
 
 ENV_FILE = REPO_ROOT / ".env.local"
 LOCAL_STATE = Path.home() / ".ledgerbridge-local"
+#: Evidence is encrypted at rest locally too, with a key this machine keeps and
+#: never rotates. It lives outside the repository for the same reason .env.local
+#: does: nothing under the working tree should hold a key by accident.
+EVIDENCE_KEY_FILE = LOCAL_STATE / "keys" / "evidence-key.json"
 DATABASE = "ledgerbridge"
 HOST_PORT = 5433
 
@@ -84,6 +97,7 @@ def command_init(_args: argparse.Namespace) -> int:
     lines += [
         f"LEDGERBRIDGE_MIGRATION_DATABASE_URL={_database_url('owner', passwords['owner'])}",
         f"LEDGERBRIDGE_LOCAL_READER_DATABASE_URL={_database_url('reader', passwords['reader'])}",
+        f"LEDGERBRIDGE_LOCAL_API_DATABASE_URL={_database_url('api', passwords['api'])}",
         "",
     ]
     ENV_FILE.write_text("\n".join(lines), encoding="utf-8")
@@ -122,7 +136,19 @@ def command_migrate(_args: argparse.Namespace) -> int:
     return completed.returncode
 
 
-def _entity_refs(database_url: str) -> tuple[UUID, ...]:
+#: Every entity on this machine with the business units it owns. Grants need
+#: both keys the read design keeps for a unit - the ref the HTTP layer
+#: authorizes on and the UUID the scoped SQL functions query - so the bootstrap
+#: reads them together rather than resolving one into the other later.
+_BOOKS_SQL = """
+SELECT e.id AS entity_id, u.ref AS unit_ref, u.id AS unit_id
+FROM public.entity AS e
+LEFT JOIN public.business_unit AS u ON u.entity_id = e.id AND u.retired_at IS NULL
+ORDER BY e.name, u.ref
+"""
+
+
+def _books(database_url: str) -> tuple[LocalBook, ...]:
     """Every entity in the local database, in a stable order.
 
     This is a bootstrap question, not a read-path query, and it deliberately
@@ -136,39 +162,131 @@ def _entity_refs(database_url: str) -> tuple[UUID, ...]:
     Reading the list here rather than taking it as an argument means a freshly
     imported company appears without anyone remembering to widen a list.
     """
-    from sqlalchemy import select
+    from sqlalchemy import text
     from sqlalchemy.exc import OperationalError
 
     from ledgerbridge.db import get_session_factory
-    from ledgerbridge.models.ledger import Entity
 
     # A short connect timeout, because the default waits about two minutes and
     # the answer to "is the database up" should not take two minutes. The URL
     # carries a password, so failures name only the host and port.
     probe_url = f"{database_url}{'&' if '?' in database_url else '?'}connect_timeout=3"
+    units: dict[UUID, list[tuple[str, UUID]]] = {}
     try:
         with get_session_factory(probe_url)() as session:
-            return tuple(session.scalars(select(Entity.id).order_by(Entity.name)).all())
+            for row in session.execute(text(_BOOKS_SQL)).mappings():
+                owned = units.setdefault(row["entity_id"], [])
+                if row["unit_id"] is not None:
+                    owned.append((row["unit_ref"], row["unit_id"]))
     except OperationalError as failure:
         raise LocalModeRefused(
             f"the local database at {LOCAL_HOST}:{HOST_PORT} did not answer; "
             "start it with `docker compose --env-file .env.local "
             "-f docker-compose.local.yml up -d`"
         ) from failure
+    return tuple(
+        LocalBook(entity_ref=entity, business_units=tuple(owned)) for entity, owned in units.items()
+    )
+
+
+_READ_METHODS: Final = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _read_routers() -> tuple[APIRouter, ...]:
+    """The routers `main.py` mounts that answer questions rather than change facts.
+
+    Local mode is read-only over facts, so the command routers - candidate
+    decisions, statement reviews, evidence unlock, payroll - are left off. That
+    is also why the list is written out here instead of importing `main.app`:
+    reusing the deployed app would mount every writer by default, and the next
+    writer added there would arrive locally without anyone choosing it.
+    """
+    from ledgerbridge.cash_reconciliation_routes import router as cash_reconciliation
+    from ledgerbridge.company_bank_statement_routes import router as company_bank_statement
+    from ledgerbridge.company_reporting_routes import router as company_reporting
+    from ledgerbridge.company_transaction_classification_routes import router as classification
+    from ledgerbridge.internal_candidate_command_routes import router as candidate_command
+    from ledgerbridge.internal_read_routes import router as internal_read
+    from ledgerbridge.original_reconciliation_routes import router as original_reconciliation
+    from ledgerbridge.personal_finance_routes import router as personal_finance
+
+    return (
+        internal_read,
+        company_reporting,
+        company_bank_statement,
+        personal_finance,
+        original_reconciliation,
+        cash_reconciliation,
+        # These two are command routers that also answer questions: the review
+        # screen's event history and its classification groups live beside the
+        # decisions that write. Dropping the whole router would cost the local
+        # UI two views it only reads, so the reads are taken and the commands
+        # left behind.
+        _reads_of(candidate_command),
+        _reads_of(classification),
+    )
+
+
+def _reads_of(router: APIRouter) -> APIRouter:
+    """One router holding only the GET routes of a router that also commands.
+
+    The route objects are moved across as they are, not re-declared, so each one
+    keeps the dependencies and route class its own module gave it - including
+    the internal-read-API gate the source router applies to everything it
+    carries. Re-declaring them here would be a second, quietly diverging copy of
+    somebody else's authorization.
+    """
+    from fastapi.routing import APIRoute
+
+    taken = APIRouter()
+    taken.routes = [
+        route
+        for route in router.routes
+        if isinstance(route, APIRoute) and route.methods and route.methods <= _READ_METHODS
+    ]
+    return taken
+
+
+def _refuse_non_read_routes(routers: Iterable[APIRouter]) -> None:
+    """Make "local mode is read-only" true of the assembly, not just the list.
+
+    Choosing read-only routers is a judgement that has to be re-made every time
+    one is added, and a router that grows a POST later would bring it here
+    silently. This turns the property into something the process asserts about
+    itself before it binds a socket.
+
+    The check reads each router's own routes rather than the assembled app's,
+    because a mounted router is no longer a list of routes: FastAPI wraps it,
+    and walking the app would quietly inspect nothing at all.
+    """
+    from fastapi.routing import APIRoute
+
+    for router in routers:
+        for route in router.routes:
+            if not isinstance(route, APIRoute):
+                continue
+            writes = (route.methods or set()) - _READ_METHODS
+            if writes:
+                raise LocalModeRefused(
+                    f"local mode serves reads only; {route.path} accepts {sorted(writes)}"
+                )
 
 
 def _build_app(profile: LocalProfile) -> FastAPI:
     from ledgerbridge.config import get_settings
     from ledgerbridge.internal_read_auth import VerifiedInternalReadPrincipalMiddleware
-    from ledgerbridge.internal_read_routes import InternalReadNoStoreMiddleware, router
+    from ledgerbridge.internal_read_routes import InternalReadNoStoreMiddleware
     from ledgerbridge.local_mode import local_verifier
 
     settings = local_settings(profile)
-    principal = local_principal(profile.entity_refs)
+    principal = local_principal(profile.books)
     app = FastAPI(title="LedgerBridge Local", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(InternalReadNoStoreMiddleware)
     app.add_middleware(VerifiedInternalReadPrincipalMiddleware, verifier=local_verifier(principal))
-    app.include_router(router)
+    routers = _read_routers()
+    _refuse_non_read_routes(routers)
+    for router in routers:
+        app.include_router(router)
     app.dependency_overrides[get_settings] = lambda: settings
     return app
 
@@ -179,11 +297,66 @@ def _profile(host: str, port: int) -> LocalProfile:
     artifact_root.mkdir(parents=True, exist_ok=True)
     return LocalProfile(
         database_url=reader_url,
+        api_database_url=_env_value("LEDGERBRIDGE_LOCAL_API_DATABASE_URL"),
         artifact_root=artifact_root,
-        entity_refs=_entity_refs(_env_value("LEDGERBRIDGE_MIGRATION_DATABASE_URL")),
+        books=_books(_env_value("LEDGERBRIDGE_MIGRATION_DATABASE_URL")),
         host=host,
         port=port,
+        evidence_key_file=EVIDENCE_KEY_FILE if EVIDENCE_KEY_FILE.is_file() else None,
     )
+
+
+def command_import(args: argparse.Namespace) -> int:
+    """Import one controlled-review batch into the local database.
+
+    Two steps that production also runs separately, joined here because locally
+    they are one intention: encrypt each evidence file under the machine's key,
+    then write the batch inside one transaction as the owner role.
+
+    The database URL is read out of `.env.local` rather than taken from the
+    environment, so importing never involves pasting a password into a shell.
+    The batch is idempotent by `batch_ref`: running it again re-reads its own
+    receipt and writes nothing, which is how you check a partial run rather
+    than by counting rows.
+
+    Nothing here confirms or posts anything. Candidates arrive PENDING and stay
+    there until a person decides, which is the whole point of importing them.
+    """
+    from sqlalchemy import create_engine
+
+    from ledgerbridge.controlled_import import import_prepared_manifest, prepare_source_manifest
+    from ledgerbridge.file_key_provider import bootstrap_file_key
+
+    source = args.source_manifest.resolve()
+    prepared_path = (
+        args.prepared_manifest.resolve()
+        if args.prepared_manifest is not None
+        else source.with_suffix(".prepared.json")
+    )
+    artifact_root = LOCAL_STATE / "artifacts"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    if not EVIDENCE_KEY_FILE.exists():
+        EVIDENCE_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        bootstrap_file_key(EVIDENCE_KEY_FILE.resolve(), generation="local-single-user-1")
+    prepared = prepare_source_manifest(
+        source,
+        key_file=EVIDENCE_KEY_FILE.resolve(),
+        artifact_root=artifact_root,
+        prepared_manifest_path=prepared_path,
+    )
+    engine = create_engine(_env_value("LEDGERBRIDGE_MIGRATION_DATABASE_URL"), pool_pre_ping=True)
+    try:
+        # Auto-confirmation left at its disabled default: a local import is
+        # still an import, and nothing may reach POSTED without a person.
+        result = import_prepared_manifest(engine, prepared_path)
+    finally:
+        engine.dispose()
+    print(
+        f"LOCAL_IMPORT_OK replayed={str(result.replayed).lower()} "
+        f"evidence={result.evidence_count} candidates={result.candidate_count} "
+        f"batch={prepared.batch_ref} horizon={result.audit_horizon_sequence}"
+    )
+    return 0
 
 
 def command_check(args: argparse.Namespace) -> int:
@@ -203,7 +376,9 @@ def command_check(args: argparse.Namespace) -> int:
                 "transport": settings.internal_read_transport,
                 "gate": settings.internal_read_operational_gate,
                 "bind": f"{profile.host}:{profile.port}",
-                "entities": len(profile.entity_refs),
+                "entities": len(profile.books),
+                "business_units": sum(len(book.business_units) for book in profile.books),
+                "evidence_key": profile.evidence_key_file is not None,
             },
             sort_keys=True,
         )
@@ -224,6 +399,10 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("init", help="write .env.local if absent").set_defaults(func=command_init)
     subparsers.add_parser("migrate", help="alembic upgrade head").set_defaults(func=command_migrate)
+    importer = subparsers.add_parser("import", help="import one controlled-review batch")
+    importer.add_argument("--source-manifest", type=Path, required=True)
+    importer.add_argument("--prepared-manifest", type=Path, default=None)
+    importer.set_defaults(func=command_import)
     for name, function, help_text in (
         ("check", command_check, "assemble the profile and count entities"),
         ("serve", command_serve, "serve the internal read API on loopback"),

@@ -67,14 +67,41 @@ class LocalModeRefused(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class LocalBook:
+    """One entity on this machine, with the business units it owns.
+
+    The business units are carried rather than derived because the read design
+    keeps two independent keys for the same unit - the human-readable ref the
+    HTTP layer authorizes on, and the immutable UUID the scoped SQL functions
+    query - and refuses to resolve one into the other by lookup. A grant naming
+    only the entity sees no assigned fact at all, which on a real book is most
+    of it.
+    """
+
+    entity_ref: UUID
+    business_units: tuple[tuple[str, UUID], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class LocalProfile:
     """Everything one local start needs."""
 
+    #: The reader role: it can execute the internal_read definer functions and
+    #: select from no base table at all. Everything a page displays comes from
+    #: this connection.
     database_url: str
+    #: The api writer role, used for one thing: appending the audit event that
+    #: records an evidence document was opened. Production keeps these two roles
+    #: apart and so does local mode - collapsing them would mean the connection
+    #: that answers questions can also write the record of having answered.
+    api_database_url: str
     artifact_root: Path
-    entity_refs: tuple[UUID, ...]
+    books: tuple[LocalBook, ...]
     host: str = LOCAL_HOST
     port: int = LOCAL_PORT
+    #: Evidence is encrypted at rest locally too. Without the key the pages all
+    #: still render; only "open the original document" fails.
+    evidence_key_file: Path | None = None
 
 
 def _database_host(database_url: str) -> str:
@@ -118,15 +145,16 @@ def guard(settings: Settings, *, host: str = LOCAL_HOST) -> None:
         raise LocalModeRefused(
             "local mode does not enable real ingest; statements are imported explicitly"
         )
-    database_url = settings.reader_database_url or settings.database_url
-    if not database_url:
+    urls = [settings.reader_database_url or settings.database_url, settings.api_database_url]
+    if not all(urls):
         raise LocalModeRefused("local mode needs a local database URL")
-    database_host = _database_host(database_url)
-    if database_host not in LOCAL_DATABASE_HOSTS:
-        raise LocalModeRefused(
-            f"local mode connects to a local database only, got host {database_host!r}; "
-            "a remote database would mean reading production under an unverified identity"
-        )
+    for url in urls:
+        database_host = _database_host(url or "")
+        if database_host not in LOCAL_DATABASE_HOSTS:
+            raise LocalModeRefused(
+                f"local mode connects to a local database only, got host {database_host!r}; "
+                "a remote database would mean reading production under an unverified identity"
+            )
 
 
 def local_settings(profile: LocalProfile) -> Settings:
@@ -140,17 +168,19 @@ def local_settings(profile: LocalProfile) -> Settings:
         env="development",
         runtime_role="api",
         database_url=profile.database_url,
-        # The api role requires an explicit api_database_url. Locally all three
-        # roles are the same database, because there is no reader role to
-        # separate; naming three URLs would only pretend an isolation exists.
-        api_database_url=profile.database_url,
+        api_database_url=profile.api_database_url,
         reader_database_url=profile.database_url,
         artifact_root=profile.artifact_root,
         enable_internal_read_api=True,
+        # Opening an evidence document appends to the same audit hash chain that
+        # production writes. Local mode is one person on one machine, which is
+        # an argument for the record being cheap, not for it being absent.
+        enable_internal_read_persistent_audit=True,
         internal_read_backend="database",
         internal_read_transport="disabled",
         internal_read_operational_gate="closed",
         internal_read_policy_generation=LOCAL_POLICY_GENERATION,
+        internal_read_evidence_key_file=profile.evidence_key_file,
         # Keyset cursors are signed, so the database backend requires a key.
         # Local mode mints one per start and never stores it: a cursor is bound
         # to one read's horizon anyway, so expiring on restart is correct, and a
@@ -161,16 +191,25 @@ def local_settings(profile: LocalProfile) -> Settings:
     return settings
 
 
-def local_principal(entity_refs: Iterable[UUID]) -> WorkloadPrincipal:
+def local_principal(books: Iterable[LocalBook]) -> WorkloadPrincipal:
     """The one identity this machine has.
 
-    Every entity in the local database is granted: the only person here owns the
-    books, and a per-entity list would be one more thing to maintain that
-    protects nobody. Business units are left empty with unassigned facts allowed,
-    which matches the fact that most personal rows carry no business unit at all.
+    Every entity in the local database is granted, together with every business
+    unit it owns: the only person here owns the books, and a narrower list would
+    be one more thing to maintain that protects nobody. Unassigned facts are
+    allowed as well, because most personal rows carry no business unit at all.
     """
-    refs = tuple(entity_refs)
-    if not refs:
+    grants = tuple(
+        EntityGrant(
+            entity_ref=book.entity_ref,
+            business_unit_refs=frozenset(ref for ref, _ in book.business_units),
+            business_unit_ids=frozenset(identifier for _, identifier in book.business_units),
+            business_unit_bindings=book.business_units,
+            allow_unassigned_candidates=True,
+        )
+        for book in books
+    )
+    if not grants:
         raise LocalModeRefused(
             "the local database holds no entity; import a statement before starting local mode"
         )
@@ -179,14 +218,7 @@ def local_principal(entity_refs: Iterable[UUID]) -> WorkloadPrincipal:
         san_uri=LOCAL_SAN_URI,
         policy_generation=LOCAL_POLICY_GENERATION,
         capabilities=READ_CAPABILITIES,
-        grants=tuple(
-            EntityGrant(
-                entity_ref=ref,
-                business_unit_refs=frozenset(),
-                allow_unassigned_candidates=True,
-            )
-            for ref in refs
-        ),
+        grants=grants,
     )
 
 
@@ -218,6 +250,7 @@ __all__ = [
     "LOCAL_HOST",
     "LOCAL_POLICY_GENERATION",
     "LOCAL_PORT",
+    "LocalBook",
     "LocalModeRefused",
     "LocalProfile",
     "guard",
