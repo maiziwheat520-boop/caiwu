@@ -9,6 +9,7 @@ that it refuses when it should, not that it starts on this machine.
 from __future__ import annotations
 
 import argparse
+import tempfile
 from pathlib import Path
 from tempfile import gettempdir
 from uuid import UUID
@@ -253,15 +254,43 @@ def test_a_missing_env_file_says_which_step_was_skipped(
 def test_the_generated_local_url_points_at_loopback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The URL init writes must be one guard() accepts; otherwise step three
-    refuses what step one produced."""
+    """The URL init writes must be one guard() accepts.
+
+    Otherwise step three refuses what step one produced, and the contradiction
+    is between two files rather than anywhere a reader would look.
+    """
     env_file = tmp_path / ".env.local"
     monkeypatch.setattr(local_mode_script, "ENV_FILE", env_file)
     local_mode_script.command_init(argparse.Namespace())
 
-    url = local_mode_script._env_value("LEDGERBRIDGE_LOCAL_DATABASE_URL")
+    url = local_mode_script._env_value("LEDGERBRIDGE_LOCAL_READER_DATABASE_URL")
 
     guard(settings(database_url=url, reader_database_url=url))
+
+
+def test_requests_are_served_through_the_reader_role() -> None:
+    """The served connection must be the reader, not a roomier role.
+
+    The reader can execute the internal_read definer functions and can select
+    from no base table at all. That restriction is what the read design rests
+    on, so serving as ledgerbridge_api or the owner would quietly delete the
+    boundary while every page still rendered. The real database caught this:
+    an api-role connection is refused "permission denied for table entity".
+    """
+    env_file = Path(tempfile.mkdtemp()) / ".env.local"
+    original = local_mode_script.ENV_FILE
+    local_mode_script.ENV_FILE = env_file
+    try:
+        local_mode_script.command_init(argparse.Namespace())
+        served = local_mode_script._env_value("LEDGERBRIDGE_LOCAL_READER_DATABASE_URL")
+        bootstrap = local_mode_script._env_value("LEDGERBRIDGE_MIGRATION_DATABASE_URL")
+    finally:
+        local_mode_script.ENV_FILE = original
+
+    assert "ledgerbridge_reader:" in served
+    # The entity list is a bootstrap question, asked once through the owner role
+    # before the first request, never through the connection that serves them.
+    assert "ledgerbridge_owner:" in bootstrap
 
 
 def test_an_unreachable_database_says_so_instead_of_raising_a_driver_error(

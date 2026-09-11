@@ -49,8 +49,11 @@ LOCAL_STATE = Path.home() / ".ledgerbridge-local"
 DATABASE = "ledgerbridge"
 HOST_PORT = 5433
 
-#: Written to .env.local by `init`. The owner role runs migrations; the api role
-#: is what local mode reads through. Both point at the published loopback port.
+#: Written to .env.local by `init`. Two of these five matter to the launcher:
+#: the owner role runs migrations, and the reader role is what the served API
+#: reads through. The reader can execute the internal_read definer functions and
+#: can read no base table at all, which is the boundary the whole read design
+#: rests on; local mode keeps it rather than logging in as something roomier.
 _ROLES = ("owner", "app", "api", "worker", "reader")
 
 
@@ -80,7 +83,7 @@ def command_init(_args: argparse.Namespace) -> int:
     lines += [f"LEDGERBRIDGE_{role.upper()}_DB_PASSWORD={passwords[role]}" for role in _ROLES[1:]]
     lines += [
         f"LEDGERBRIDGE_MIGRATION_DATABASE_URL={_database_url('owner', passwords['owner'])}",
-        f"LEDGERBRIDGE_LOCAL_DATABASE_URL={_database_url('api', passwords['api'])}",
+        f"LEDGERBRIDGE_LOCAL_READER_DATABASE_URL={_database_url('reader', passwords['reader'])}",
         "",
     ]
     ENV_FILE.write_text("\n".join(lines), encoding="utf-8")
@@ -122,9 +125,16 @@ def command_migrate(_args: argparse.Namespace) -> int:
 def _entity_refs(database_url: str) -> tuple[UUID, ...]:
     """Every entity in the local database, in a stable order.
 
-    Local mode grants all of them (see `local_mode.local_principal`). Reading
-    them here rather than taking them as arguments means a freshly imported
-    company shows up without anyone remembering to widen a list.
+    This is a bootstrap question, not a read-path query, and it deliberately
+    uses a different connection from the one that serves requests. The reader
+    role cannot select from `entity` at all - it reaches facts only through the
+    internal_read definer functions - and that restriction is the point of the
+    read design, so local mode does not widen it to answer "which books live on
+    this machine". It asks the owner role once, before the first request, and
+    then serves everything through the reader.
+
+    Reading the list here rather than taking it as an argument means a freshly
+    imported company appears without anyone remembering to widen a list.
     """
     from sqlalchemy import select
     from sqlalchemy.exc import OperationalError
@@ -164,13 +174,13 @@ def _build_app(profile: LocalProfile) -> FastAPI:
 
 
 def _profile(host: str, port: int) -> LocalProfile:
-    database_url = _env_value("LEDGERBRIDGE_LOCAL_DATABASE_URL")
+    reader_url = _env_value("LEDGERBRIDGE_LOCAL_READER_DATABASE_URL")
     artifact_root = LOCAL_STATE / "artifacts"
     artifact_root.mkdir(parents=True, exist_ok=True)
     return LocalProfile(
-        database_url=database_url,
+        database_url=reader_url,
         artifact_root=artifact_root,
-        entity_refs=_entity_refs(database_url),
+        entity_refs=_entity_refs(_env_value("LEDGERBRIDGE_MIGRATION_DATABASE_URL")),
         host=host,
         port=port,
     )
