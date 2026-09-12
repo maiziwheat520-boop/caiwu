@@ -216,60 +216,97 @@ machine, without weakening the gate or hand-writing an artifact;
 boundary. `docs/operations/LOCAL_IMPORT.md` has the reasoning and the
 corrections it forced.
 
-Seven books admitted and imported from the user's real files:
+All eight books admitted and imported from the user's real files, into the
+database rebuilt on 2026-09-12 (see "The rebuild" below):
 
 | Book | Account | Statements | Facts | finance-desk's own count |
 |---|---|---|---|---|
+| 星汇 | mybank-0688 | 1 | 74 | 74 |
 | 景怡 | abc-9018 | 9 | 106 | 106 |
-| 薇旭 | boc-6492 + mybank-3678 | 35 | 842 | 842 |
+| 薇旭 | boc-6492 + mybank-3678 | 36 | 842 | 842 |
 | 逸豪 | mybank-2083 | 2 | 652 | 652 |
 | 雅朵 | abc-3234 | 5 | 228 | 228 |
-| 雅阁 | mybank-9191 | 2 | 85 | 85 |
+| 雅阁 | mybank-9191 | 3 | 85 | 85 |
 | 青居客 | mybank-2825 | 1 | 89 | 89 |
 | personal | ccb-7564, abc-2061, mybank-7968 | 5 | 480 | 480 (of 9,592) |
 
-Every company count matches finance-desk's row count exactly, computed
-independently: finance-desk's is its own parser's output, this one is Core's.
-All reviews are `PENDING`; nothing is posted.
+62 statements, 2,556 facts, 11 accounts, 8 books. Every company count matches
+finance-desk's row count exactly, computed independently: finance-desk's is its
+own parser's output, this one is Core's. All reviews are `PENDING`; nothing is
+posted.
+
+## The rebuild (2026-09-12, user approved: "重建库")
+
+Open issue 1 below was closed by rebuilding, and nothing was destroyed. The old
+database was renamed rather than dropped — `ledgerbridge` →
+`ledgerbridge_pre_rebuild_20260912`, 22 MB, still present — and the artifact
+root moved aside to `~/.ledgerbridge-local/artifacts-pre-rebuild-20260912` with
+the evidence key left in place. A fresh `ledgerbridge` was created and migrated
+to `20260906_0051`: 59 tables, 0 entities, 0 accounts, 0 facts. The rename is
+reversible.
+
+Every book was then re-admitted and re-imported from the manifests. 星汇 was
+admitted for the first time, which is what the rebuild was for.
+
+### One MYbank account, the same month downloaded three times
+
+星汇's batch was refused with `statement batch contains duplicate identities`.
+Three byte-different `月账单-202608` files carried six rows each, the same six
+facts, over the same period; the batch gate requires
+`(managed_account_ref, period_start, period_end)` to be unique within a batch.
+This is not a fact disagreement — it is the same statement downloaded three
+times — and the gate is right to refuse it: two statements claiming one account
+and one period is not something a ledger should hold, however well they agree.
+
+The manifest generator now drops any file that brings no serial the book does
+not already hold, whether it disagrees or agrees. For 星汇 that left one
+74-row range export carrying all 74 facts; the six dropped files contributed
+nothing. Zero facts were lost.
 
 ## Open issues (awaiting user decision)
 
-1. **星汇 (book 01) cannot be admitted, because of a mistake of mine.** An
-   earlier end-to-end proof registered the suffix alias `mybank`/`SUFFIX`/`0688`
-   under a synthetic entity, and `managed_account_alias` is unique on
-   `(institution_code, alias_kind, normalized_value)` across the whole database.
-   Every registry table is append-only by trigger, so the claim cannot be
-   withdrawn in place. 星汇's 74 facts are the only real data not imported.
-   Two ways out, both the user's call:
-   - Rebuild the local database from the manifests. Everything here is scripted
-     and replayable in minutes, and it would also remove the two synthetic
-     candidate batches and the synthetic entity. Destructive to the current
-     database; recent backups exist. A `DROP DATABASE` was refused by the
-     permission gate, so a fresh database beside the current one is the
-     non-destructive variant.
-   - Register 星汇's account under a different alias kind. Truthful, but it
-     leaves a permanent registry row asserting that account 0688 belongs to a
-     synthetic entity.
-2. **`src/ledgerbridge/account_registry_intake.py` was changed, and this is the
-   approval request AGENTS.md asks for.** Its schema pin was a single revision,
-   `20260904_0044`, so against head (`20260906_0051`) the intake failed as
-   "account intake database owner target is invalid" — the same message a wrong
-   role produces. The pin is now a frozenset through `20260906_0051`, with a
-   separate message naming the real cause. Migrations 0045–0051 were read first:
-   counterparty overlap, candidate readers, reporting items, a payroll read
-   model, reporting-item correction, a POSTED snapshot trigger fix and two
-   parser profiles. None touch registry tables. `mybank_statement_cutover.py`
-   already keeps its supported revisions as a frozenset through the same
-   revision, so this aligns siblings rather than inventing a practice. Not
-   merged to the release line; if the user would rather this stay local, the
-   local branch can carry it alone.
+1. ~~**星汇 (book 01) cannot be admitted, because of a mistake of mine.**~~
+   **Closed 2026-09-12 by the user: "重建库".** An earlier end-to-end proof of
+   mine had registered the suffix alias `mybank`/`SUFFIX`/`0688` under a
+   synthetic entity, and `managed_account_alias` is unique on
+   `(institution_code, alias_kind, normalized_value)` across the whole
+   database; every registry table is append-only by trigger, so the claim could
+   not be withdrawn in place. The database was rebuilt — by rename, not by drop
+   — and 星汇's 74 facts are now in the ledger. See "The rebuild" above.
+
+2. ~~**`src/ledgerbridge/account_registry_intake.py` was changed, and this is
+   the approval request AGENTS.md asks for.**~~ **Approved 2026-09-12 by the
+   user: "批准修改".** Its schema pin was a single revision, `20260904_0044`,
+   so against head (`20260906_0051`) the intake failed as "account intake
+   database owner target is invalid" — the same message a wrong role produces.
+   The pin is now a frozenset through `20260906_0051`, with a separate message
+   naming the real cause. Migrations 0045–0051 were read first: counterparty
+   overlap, candidate readers, reporting items, a payroll read model,
+   reporting-item correction, a POSTED snapshot trigger fix and two parser
+   profiles. None touch registry tables. `mybank_statement_cutover.py` already
+   keeps its supported revisions as a frozenset through the same revision, so
+   this aligns siblings rather than inventing a practice. It stays on this
+   local branch (D-005, and the user's "留着。本地。"), not on the release line.
+
 3. **Two parser gaps, both in what Core admits as an official statement.**
-   - 7 MYbank monthly files are rejected as "company range statement header is
-     invalid". Their header uses half-width `借方金额(收)` where
-     `_COMPANY_RANGE_HEADERS` requires full-width `（收）`. The bank ships both.
-   - 2 ABC personal PDFs are rejected as "statement transaction log number is
-     invalid".
-   Both would be changes to a production parser, so neither was made.
+   The user's "优化解析器" authorised fixing these.
+   - ~~7 MYbank monthly files rejected as "company range statement header is
+     invalid".~~ **Fixed (`bce51e9`).** Their header uses half-width
+     `借方金额(收)` where `_COMPANY_RANGE_HEADERS` required full-width `（收）`;
+     the bank ships both spellings of one label. Header lookup now folds the
+     two parenthesis code points together, so one layout needs one entry rather
+     than a second copy of every tuple. Nothing else about a header is
+     normalised. All 7 files parse; two of them are in the ledger (雅阁 and
+     薇旭 each gained a statement), the rest brought no facts the books did not
+     already hold.
+   - 2 ABC personal PDFs are still rejected as "statement transaction log
+     number is invalid". Two distinct causes were diagnosed: a 17-digit
+     counterparty account overflowing a 16-wide fixed-offset column and
+     stealing a character from the log-number cell, and a genuine `商户` +
+     14-digit merchant reference where a 10-character log number is expected.
+     The second needs a decision before it can be admitted: `log_number` is
+     ascii-encoded into `log_set_sha256` and thence `parser_facts_sha256`, so
+     widening what counts as a log number changes a published digest.
 4. **6 WeChat statements have no Core parser.** `wechat_xlsx_v1` exists only in
    the frozen finance-desk program; roughly 9,112 personal transactions sit
    behind it. That is the whole of the gap between personal's 480 imported facts

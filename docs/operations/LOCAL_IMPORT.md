@@ -248,6 +248,21 @@ nothing is the one to leave out — and the trade-off is worth naming rather tha
 automating, because it is a judgement about which of the bank's own documents
 the book is based on.
 
+### And when they agree
+
+The same month downloaded three times is the other half of this. Three
+byte-different `月账单-202608` files for one MYbank account carried the same six
+facts over the same period, so nothing disagreed — and the batch was still
+refused, with `statement batch contains duplicate identities`. The batch gate
+requires `(managed_account_ref, period_start, period_end)` to be unique within a
+batch, and it is right to: two statements claiming one account and one period is
+not something a ledger should hold, however well they agree.
+
+So the rule for leaving a file out is not "it disagrees and adds nothing" but
+simply "it brings no serial the book does not already hold". A duplicate
+download and a thinner re-export are the same thing to the ledger, and neither
+is worth a second statement row.
+
 ## Views that stay dark locally
 
 Four GET routes are mounted but answer `404 CANDIDATE_COMMAND_DISABLED`:
