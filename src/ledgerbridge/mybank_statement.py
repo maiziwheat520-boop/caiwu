@@ -63,14 +63,37 @@ _COMPANY_HEADERS: Final = (
 )
 _FULLWIDTH_LEFT_PARENTHESIS: Final = "\N{FULLWIDTH LEFT PARENTHESIS}"
 _FULLWIDTH_RIGHT_PARENTHESIS: Final = "\N{FULLWIDTH RIGHT PARENTHESIS}"
+#: MYbank writes the amount columns as 借方金额(收) in its daily and monthly
+#: exports and with full-width parentheses in its multi-day ones - the same
+#: label spelled two ways, and both are the bank's own files. Header lookup
+#: folds the two together rather than carrying a second copy of every layout -
+#: which is how seven monthly statements came to be rejected as "header is
+#: invalid" while the multi-day export of the same account parsed.
+#:
+#: Only these two code points are folded. Nothing else about a header is
+#: normalised: a column named differently is still a different column.
+_PARENTHESES: Final = str.maketrans(
+    {
+        _FULLWIDTH_LEFT_PARENTHESIS: "(",
+        _FULLWIDTH_RIGHT_PARENTHESIS: ")",
+    }
+)
+
+
+def _canonical_headers(values: tuple[str, ...]) -> tuple[str, ...]:
+    """One spelling of a header row, so one layout needs one entry."""
+
+    return tuple(value.translate(_PARENTHESES) for value in values)
+
+
 _COMPANY_RANGE_HEADERS: Final = {
     (
         "账务流水号",
         "提交时间",
         "交易时间",
         "交易名称",
-        f"借方金额{_FULLWIDTH_LEFT_PARENTHESIS}收{_FULLWIDTH_RIGHT_PARENTHESIS}",
-        f"贷方金额{_FULLWIDTH_LEFT_PARENTHESIS}支{_FULLWIDTH_RIGHT_PARENTHESIS}",
+        "借方金额(收)",
+        "贷方金额(支)",
         "余额",
         "对方户名",
         "对方账号",
@@ -93,8 +116,8 @@ _COMPANY_RANGE_HEADERS: Final = {
         "账务流水号",
         "交易时间",
         "交易名称",
-        f"借方金额{_FULLWIDTH_LEFT_PARENTHESIS}收{_FULLWIDTH_RIGHT_PARENTHESIS}",
-        f"贷方金额{_FULLWIDTH_LEFT_PARENTHESIS}支{_FULLWIDTH_RIGHT_PARENTHESIS}",
+        "借方金额(收)",
+        "贷方金额(支)",
         "余额",
         "对方户名",
         "对方机构",
@@ -113,8 +136,8 @@ _COMPANY_RANGE_HEADERS: Final = {
     (
         "账务流水号",
         "交易时间",
-        f"借方金额{_FULLWIDTH_LEFT_PARENTHESIS}收{_FULLWIDTH_RIGHT_PARENTHESIS}",
-        f"贷方金额{_FULLWIDTH_LEFT_PARENTHESIS}支{_FULLWIDTH_RIGHT_PARENTHESIS}",
+        "借方金额(收)",
+        "贷方金额(支)",
         "余额",
         "对方户名",
         "对方账号",
@@ -206,7 +229,7 @@ def parse_mybank_company_range_xlsx(
 
     headers = tuple(rows[4][1])
     try:
-        columns = _COMPANY_RANGE_HEADERS[headers]
+        columns = _COMPANY_RANGE_HEADERS[_canonical_headers(headers)]
     except KeyError:
         raise MyBankStatementError("company range statement header is invalid") from None
 
@@ -383,7 +406,7 @@ def parse_mybank_company_daily_xlsx(
     credit_count, credit_total = _company_summary(
         rows[3][1], count_label="贷方交易笔数", amount_label="贷方交易金额"
     )
-    if headers != _COMPANY_HEADERS:
+    if _canonical_headers(headers) != _COMPANY_HEADERS:
         raise MyBankStatementError("company statement header is invalid")
 
     transactions: list[MyBankTransaction] = []
