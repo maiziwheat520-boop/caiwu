@@ -42,6 +42,28 @@ from ledgerbridge.text import contains_unstorable_text
 ACCOUNT_REGISTRY_INTAKE_PLAN_SCHEMA = "ledgerbridge.account-registry-intake-plan.v1"
 ACCOUNT_REGISTRY_INTAKE_RECEIPT_SCHEMA = "ledgerbridge.account-registry-intake-receipt.v1"
 ACCOUNT_REGISTRY_INTAKE_SCHEMA_REVISION = "20260904_0044"
+#: Revisions this intake has been checked against. It was pinned to the single
+#: revision it was written for, which quietly retired it: the schema moved on
+#: to 20260906_0051 and an intake against head then failed with "database owner
+#: target is invalid", the same message a wrong role produces. None of the
+#: intervening migrations touch entity, business unit, evidence, managed
+#: account, alias, assignment, lifecycle or registry operation - they cover
+#: counterparty overlap, candidate readers, reporting items, the payroll read
+#: model, a POSTED snapshot trigger and two parser profiles. The statement
+#: cutover beside this module already keeps its supported revisions as a set
+#: for exactly this reason; this brings the intake back in line with it.
+ACCOUNT_REGISTRY_INTAKE_SCHEMA_REVISIONS = frozenset(
+    {
+        ACCOUNT_REGISTRY_INTAKE_SCHEMA_REVISION,
+        "20260904_0045",
+        "20260905_0046",
+        "20260905_0047",
+        "20260905_0048",
+        "20260905_0049",
+        "20260906_0050",
+        "20260906_0051",
+    }
+)
 
 _HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
@@ -370,14 +392,19 @@ def _require_database_owner_target(session: Session) -> None:
         .mappings()
         .one()
     )
-    if dict(row) != {
+    observed = dict(row)
+    schema_revision = observed.pop("schema_revision", None)
+    if observed != {
         "current_user": "ledgerbridge_owner",
         "session_user": "ledgerbridge_owner",
         "database_name": "ledgerbridge",
-        "schema_revision": ACCOUNT_REGISTRY_INTAKE_SCHEMA_REVISION,
         "transaction_read_only": "off",
     }:
         raise AccountRegistryIntakeError("account intake database owner target is invalid")
+    if schema_revision not in ACCOUNT_REGISTRY_INTAKE_SCHEMA_REVISIONS:
+        raise AccountRegistryIntakeError(
+            f"account intake has not been checked against schema {schema_revision}"
+        )
 
 
 def _apply_once(
