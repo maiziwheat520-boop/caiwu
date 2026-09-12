@@ -299,18 +299,78 @@ nothing. Zero facts were lost.
      normalised. All 7 files parse; two of them are in the ledger (雅阁 and
      薇旭 each gained a statement), the rest brought no facts the books did not
      already hold.
-   - 2 ABC personal PDFs are still rejected as "statement transaction log
-     number is invalid". Two distinct causes were diagnosed: a 17-digit
-     counterparty account overflowing a 16-wide fixed-offset column and
-     stealing a character from the log-number cell, and a genuine `商户` +
-     14-digit merchant reference where a 10-character log number is expected.
-     The second needs a decision before it can be admitted: `log_number` is
-     ascii-encoded into `log_set_sha256` and thence `parser_facts_sha256`, so
-     widening what counts as a log number changes a published digest.
-4. **6 WeChat statements have no Core parser.** `wechat_xlsx_v1` exists only in
-   the frozen finance-desk program; roughly 9,112 personal transactions sit
-   behind it. That is the whole of the gap between personal's 480 imported facts
-   and finance-desk's 9,592.
+   - ~~2 ABC personal PDFs rejected as "statement transaction log number is
+     invalid".~~ **One fixed (`9ae4028`), one is a decision.**
+
+     The first: ABC prints the counterparty account in a fixed-width column,
+     and a 17-digit account runs into the 16-wide slot, carrying the log
+     number's leading digit with it. The digit is now handed back, but only
+     when the log column is over-long, the stolen part is digits continuing
+     the account, what remains is a whole log number, and the two fields are
+     printed with no gap. A row whose log column already holds a well-formed
+     log number is never reached. Verified independently against the two real
+     ABC personal statements already in the ledger: their
+     `parser_facts_sha256` are byte-identical before and after the change.
+     The unlocked file parses cleanly at 72 rows — but it belongs to ABC
+     personal account `…7177`, a twelfth account that is not admitted and
+     appears in no manifest. Importing it needs that account admitted first,
+     under some book, and which book is the user's call.
+
+     The second file carries `商户` plus 14 digits where a 10-character log
+     number belongs — one row in the whole file, itself overflowing by one
+     character into 交易渠道. Admitting it means widening `_LOG_NUMBER`. The
+     digest worry recorded earlier turns out not to apply: the encode would
+     move from ascii to utf-8, and ascii is a subset of utf-8, so every
+     existing 10-character log number hashes to the same bytes. The real
+     question is semantic — it would mean accepting that the bank sometimes
+     puts a merchant reference in the log-number column, and that value
+     becomes the row's `transaction_serial` and part of its `fact_sha256`.
+     That is a statement about what identifies a fact, so it is left to the
+     user.
+4. **WeChat cannot become a bank-statement profile, and does not need to
+   be.** Assessed 2026-09-12 against the real files.
+
+   The files are 4, of which two are byte-identical copies, so 3 distinct
+   exports totalling 3,228 rows over 2024-08-29…2026-09-04 — two of them
+   covering nearly the same year, 1,016 rows being the same transaction
+   exported twice, 2,212 distinct transaction numbers. (The 9,112 figure
+   recorded earlier does not come from these files.)
+
+   Of the five fields a `BankStatementTransaction` must carry, `occurred_at`,
+   `transaction_serial` and `transaction_name` are present and clean.
+   `amount_minor` is present but 51 rows are 中性交易 — top-ups, withdrawals,
+   card repayments — for which WeChat itself gives no direction, so a sign
+   could only be inferred. `balance_minor` is absent outright: no column, no
+   opening or closing figure in the preamble, and no single account for a
+   balance to belong to — the same export draws on 零钱, 零钱通 and at least
+   six different bank cards.
+
+   The contract has no opt-out: `balance_minor: int` is non-optional
+   (`bank_statement_contract.py:165`), the column is `NOT NULL` in migration
+   `20260830_0021`, and every existing profile uses the balance as its
+   correctness proof (previous balance + amount == this balance). A
+   `wechat_*_v1` profile therefore cannot be built honestly. Two further
+   blockers are independent of the balance: `account_suffix` must match
+   `^[0-9]{4,8}$` and a WeChat export carries only a nickname, and
+   `counterparty_account` must pass `_is_masked_account`.
+
+   The honest path already exists in Core. `wechat_pay_export` is a recognised
+   `source_system` on the controlled-import / candidate path
+   (`controlled_import.py:201`), `ImportCandidate` requires amount, time,
+   source event, evidence and classification but *not* a balance, and
+   `personal_finance_summary.py:41` already classes 微信 as `PLATFORM` rather
+   than `BANK`. What is left is a manifest builder, not a parser.
+
+   Four things for the user to decide: (a) confirm these rows go down the
+   candidate path rather than the statement path; (b) what happens to the 51
+   direction-less rows — quarantined for a human, or excluded, but not signed
+   automatically; (c) the dedupe key across the overlapping exports —
+   transaction number is the sound choice but it also seeds
+   `source_event_ref`, so it should be said out loud; (d) if the statement
+   contract is wanted anyway, that is a contract change (nullable
+   `balance_minor` plus a statement kind exempt from the continuity check) and
+   belongs in its own DECISIONS entry, not inside a parser change.
+
 5. **D-028's repeat-import relaxation is still not implemented for statement
    cutovers, and this is the concrete shape of the gap.** D-028 says a released,
    restore-verified import capability uses a bounded preview, transactional
