@@ -263,6 +263,61 @@ simply "it brings no serial the book does not already hold". A duplicate
 download and a thinner re-export are the same thing to the ledger, and neither
 is worth a second statement row.
 
+## Payment platforms: candidates, not statements
+
+A bank statement and a WeChat bill are different kinds of document, and the two
+import paths are not interchangeable.
+
+A statement is an account's own record. It carries a running balance, and every
+parser here uses it as a continuity proof - previous balance plus amount equals
+this balance - which is how a missing row is caught. A payment bill records
+what was paid to whom. WeChat's carries no balance, and no single account for
+one to belong to: one export draws on 零钱, 零钱通 and several bank cards.
+
+WeChat does keep 零钱 and 零钱通 as proper accounts with per-row balances; they
+are visible in the app and cannot be exported. The bill is missing exactly the
+rows that would chain them - the sweeps from 零钱 into 零钱通, and the daily
+零钱通 interest. So the balance cannot be recovered from this document, and
+computing one from the bill's own rows and then checking it against them would
+be a check that always passes.
+
+Instead the rows enter as **candidates**: real transactions that nobody has
+classified. That path needs no balance, and needs no backup and no restore
+rehearsal either, because nothing it writes is a fact a person has confirmed.
+It already carries the receipted idempotent replay D-028 asks for.
+
+```bash
+uv run python -X utf8 scripts/local_mode.py candidates --manifest <batch.json>
+```
+
+The manifest names the book and the export files, nothing else. What the
+importer checks, and what it refuses to decide:
+
+- **The file's own completeness proof.** The preamble states the record count,
+  and the count and total of income, expenditure and direction-less rows. An
+  export whose rows disagree with any of the four is refused. This is what
+  stands in for the balance chain.
+- **Overlapping exports.** The same transaction appears in several exports.
+  The money must agree - time, direction, amount, type, funding, merchant
+  reference - and a disagreement stops the batch. The description may differ:
+  a counterparty's display name is their profile, and a refunded payment shows
+  a later status, so the newer export wins on those.
+- **Direction.** WeChat gives some rows no direction at all - top-ups,
+  withdrawals, 零钱通 movements, card repayments - and totals them separately,
+  unsigned. They keep the magnitude and land in their own category. Reading a
+  sign out of the transaction type would be inference dressed as a fact.
+- **Classification.** None. Every candidate arrives at zero confidence, which
+  is the honest statement of what an importer knows.
+
+### The manifest must not read the clock
+
+The batch receipt tells a replay from a second import by comparing manifest
+digests. A `generated_at` taken from the clock makes every re-run a different
+batch, and the receipt then refuses the replay it was supposed to recognise.
+The builder derives that timestamp from the newest export instead. Getting this
+wrong is not dangerous - the import fails closed rather than doubling - but it
+costs the batch its replay for good, because every table involved is append-only.
+
 ## Views that stay dark locally
 
 Four GET routes are mounted but answer `404 CANDIDATE_COMMAND_DISABLED`:

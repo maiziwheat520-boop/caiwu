@@ -327,49 +327,57 @@ nothing. Zero facts were lost.
      becomes the row's `transaction_serial` and part of its `fact_sha256`.
      That is a statement about what identifies a fact, so it is left to the
      user.
-4. **WeChat cannot become a bank-statement profile, and does not need to
-   be.** Assessed 2026-09-12 against the real files.
+4. ~~**WeChat cannot become a bank-statement profile.**~~ **Done 2026-09-12
+   (`9e1a258`), by the path Core already had.** 2,212 transactions are in the
+   ledger as PENDING review candidates.
 
-   The files are 4, of which two are byte-identical copies, so 3 distinct
-   exports totalling 3,228 rows over 2024-08-29…2026-09-04 — two of them
-   covering nearly the same year, 1,016 rows being the same transaction
-   exported twice, 2,212 distinct transaction numbers. (The 9,112 figure
-   recorded earlier does not come from these files.)
+   The user's instruction was that WeChat's balance should be treated as a
+   normal account's, and screenshots of 零钱明细 and 零钱通明细 showed that
+   WeChat does exactly that: a per-row running balance, kept properly. The
+   correction is that *this document does not carry it*. Concretely, on
+   2026-09-01 the app shows a transfer in and the immediate sweep into 零钱通;
+   the export holds only the transfer. The daily 零钱通 interest appears in the
+   app every day and in the export not once. So the bill is a payment record,
+   not an account's record, and neither chain can be rebuilt from it. The user
+   confirmed neither 明细 view can be exported.
 
-   Of the five fields a `BankStatementTransaction` must carry, `occurred_at`,
-   `transaction_serial` and `transaction_name` are present and clean.
-   `amount_minor` is present but 51 rows are 中性交易 — top-ups, withdrawals,
-   card repayments — for which WeChat itself gives no direction, so a sign
-   could only be inferred. `balance_minor` is absent outright: no column, no
-   opening or closing figure in the preamble, and no single account for a
-   balance to belong to — the same export draws on 零钱, 零钱通 and at least
-   six different bank cards.
+   Interest is out of scope by the user's decision ("他们的利息收入忽略"). The
+   consequence is worth stating: a balance computed from the ledger will drift
+   below the real 零钱通 balance by roughly a yuan a day.
 
-   The contract has no opt-out: `balance_minor: int` is non-optional
-   (`bank_statement_contract.py:165`), the column is `NOT NULL` in migration
-   `20260830_0021`, and every existing profile uses the balance as its
-   correctness proof (previous balance + amount == this balance). A
-   `wechat_*_v1` profile therefore cannot be built honestly. Two further
-   blockers are independent of the balance: `account_suffix` must match
-   `^[0-9]{4,8}$` and a WeChat export carries only a nickname, and
-   `counterparty_account` must pass `_is_masked_account`.
+   What the export does carry is its own completeness proof - the record count,
+   and the count and total of income, expenditure and direction-less rows. All
+   three exports were checked against it and all three agree. That is what
+   makes a balance-free import trustworthy, and it is enforced in
+   `local_wechat.py` rather than assumed.
 
-   The honest path already exists in Core. `wechat_pay_export` is a recognised
-   `source_system` on the controlled-import / candidate path
-   (`controlled_import.py:201`), `ImportCandidate` requires amount, time,
-   source event, evidence and classification but *not* a balance, and
-   `personal_finance_summary.py:41` already classes 微信 as `PLATFORM` rather
-   than `BANK`. What is left is a manifest builder, not a parser.
+   Five things the build settled, each visible in the code:
+   - 4 files, two byte-identical, so 3 exports; 3,228 rows, 2,212 distinct
+     transactions after the overlap.
+   - Where two exports differ, the money must agree and the description may
+     not: 5 rows differed only in the counterparty's WeChat display name,
+     which is their profile rather than a property of the payment. The newer
+     export wins on description; a disagreement about time, direction, amount,
+     type, funding or merchant reference stops the batch.
+   - Nothing is classified. Every candidate is at zero confidence, 2,179 under
+     `UNCLASSIFIED` and the 33 rows WeChat itself gives no direction under
+     `INTERNAL_TRANSFER`, whose sign is left to review rather than inferred
+     from the transaction type.
+   - The manifest is derived entirely from the files, with no clock reading in
+     it, because the batch receipt compares manifest digests and a timestamp
+     would make every re-run look like a new batch.
+   - 55 rows are funded by 建设银行(7564) and 农业银行(2061), whose statements
+     are already imported. They are in, and unnetted: offsetting them is a
+     ledger relationship, not something an importer should decide.
 
-   Four things for the user to decide: (a) confirm these rows go down the
-   candidate path rather than the statement path; (b) what happens to the 51
-   direction-less rows — quarantined for a human, or excluded, but not signed
-   automatically; (c) the dedupe key across the overlapping exports —
-   transaction number is the sound choice but it also seeds
-   `source_event_ref`, so it should be said out loud; (d) if the statement
-   contract is wanted anyway, that is a contract change (nullable
-   `balance_minor` plus a statement kind exempt from the continuity check) and
-   belongs in its own DECISIONS entry, not inside a parser change.
+   Still open: the first import of this batch was made with a manifest that did
+   carry a clock reading, so its receipt records a digest the builder will
+   never produce again. The data is correct and complete; what is broken is
+   only replay for this one batch, which now fails closed with "batch receipt
+   conflicts with prepared manifest" rather than importing twice. Every table
+   involved is append-only by trigger, so it cannot be cleaned in place. Either
+   it stays as a recorded wart, or the database is rebuilt again - the user's
+   call.
 
 5. **D-028's repeat-import relaxation is still not implemented for statement
    cutovers, and this is the concrete shape of the gap.** D-028 says a released,
