@@ -45,7 +45,7 @@ LEDGERBRIDGE_MODE=local-single-user \
   python deploy/server.py
 ```
 
-`CORE_ENTITY_REF` 和 `CORE_BUSINESS_UNIT_REF` 说明打开哪套账，不是凭据，因此仍然必填。
+`CORE_ENTITY_REF` 和 `CORE_BUSINESS_UNIT_REF` 说明打开哪套账，不是凭据，因此仍然必填。注意两者形式不同：`CORE_ENTITY_REF` 是主体的 UUID，`CORE_BUSINESS_UNIT_REF` 是营业单元的**稳定 ref**（账本准入时的短名，例如 `book-08`），不是 UUID。填成 UUID 时每个读取都会成功并返回空，工作台看起来就像一套没有待办的账——所以启动时会先向 Core 查一次，对不上直接拒绝启动，并列出该主体实际有哪些 ref。
 
 本模式不做任何身份验证，唯一的访问控制是监听地址，所以以下情况直接拒绝启动，而不是降级或告警：
 

@@ -220,6 +220,46 @@ def _build_local_single_user_state(bind_address: str) -> CoreBackedState:
         raise SystemExit("Refusing local-single-user mode: invalid Core settings") from error
 
 
+def _verify_local_scope(state: CoreBackedState) -> None:
+    """Ask Core whether the book this mode was pointed at exists.
+
+    Without this the commonest mistake produces the worst symptom. The entity
+    is a UUID, so CORE_BUSINESS_UNIT_REF looks like it should be one too - but
+    Core scopes candidates by the unit's *stable ref*, the short name the book
+    was admitted under. Give it a UUID and every read succeeds and returns
+    nothing, so the workbench opens on an empty queue that is indistinguishable
+    from a book with nothing left to review. That is the one thing a ledger
+    must never do quietly, and it is why this is a refusal at startup rather
+    than an empty page later.
+
+    The probe doubles as the check that local Core is actually up, which
+    otherwise also surfaces as a blank screen.
+    """
+    try:
+        dimensions = state.accounting_dimensions()
+    except CoreBackendError as error:
+        raise SystemExit(
+            "Refusing local-single-user mode: local Core did not answer "
+            f"(HTTP {error.status}). Start it first: "
+            "python scripts/local_mode.py serve"
+        ) from error
+    units = dimensions.get("business_units")
+    known: list[str] = []
+    if isinstance(units, list):
+        known = [
+            unit["ref"]
+            for unit in units
+            if isinstance(unit, dict) and isinstance(unit.get("ref"), str)
+        ]
+    if state.business_unit_ref not in known:
+        raise SystemExit(
+            "Refusing local-single-user mode: CORE_BUSINESS_UNIT_REF="
+            f"{state.business_unit_ref!r} is not a book of this entity. "
+            "It is the unit's stable ref, not its UUID. "
+            f"This entity has: {', '.join(known) or '(none)'}"
+        )
+
+
 def _build_company_report_client(
     *,
     default_base_url: str,
@@ -2363,6 +2403,7 @@ def run() -> None:
             raise SystemExit("Refusing core-backed mode: invalid Core settings") from error
     elif mode == "local-single-user":
         state = _build_local_single_user_state(bind_address)
+        _verify_local_scope(state)
     else:
         state = SyntheticState(
             cookie_secure=cookie_secure,

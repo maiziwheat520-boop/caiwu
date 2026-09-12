@@ -11,6 +11,7 @@ from unittest.mock import patch
 from server.app import (
     LOCAL_CORE_BASE_URL,
     _build_local_single_user_state,
+    _verify_local_scope,
     create_server,
     run,
 )
@@ -203,6 +204,75 @@ class CoreBackedSessionUnchangedTests(unittest.TestCase):
         with self.assertRaises(CoreBackendError) as caught:
             state.session_payload()
         self.assertEqual(caught.exception.status, 503)
+
+
+class LocalSingleUserScopeTests(unittest.TestCase):
+    """A book that does not exist must be a refusal, never an empty queue."""
+
+    def _state(self, business_unit_ref: str = "unit-local"):
+        env = _local_env(CORE_BUSINESS_UNIT_REF=business_unit_ref)
+        with patch.dict("os.environ", env, clear=True):
+            return _build_local_single_user_state("127.0.0.1")
+
+    @staticmethod
+    def _dimensions(*refs: str) -> dict[str, object]:
+        return {
+            "contract_version": "ledgerbridge.accounting-dimensions.v1",
+            "business_units": [{"ref": ref, "label": ref} for ref in refs],
+            "categories": [],
+        }
+
+    def test_a_book_core_knows_is_accepted(self) -> None:
+        state = self._state()
+        with patch.object(
+            type(state),
+            "accounting_dimensions",
+            return_value=self._dimensions("unit-local", "unit-other"),
+        ):
+            _verify_local_scope(state)
+
+    def test_a_uuid_where_the_stable_ref_belongs_is_refused(self) -> None:
+        # The commonest mistake: CORE_ENTITY_REF is a UUID, so this looks like
+        # one too. Core answers every read and returns nothing, which reads on
+        # screen as a book with nothing left to review.
+        state = self._state("9eaf7bd5-2115-e3b4-d237-c603d265452c")
+        with patch.object(
+            type(state),
+            "accounting_dimensions",
+            return_value=self._dimensions("book-08"),
+        ):
+            with self.assertRaisesRegex(SystemExit, "not a book of this entity"):
+                _verify_local_scope(state)
+
+    def test_the_refusal_names_the_books_that_do_exist(self) -> None:
+        state = self._state("wrong")
+        with patch.object(
+            type(state),
+            "accounting_dimensions",
+            return_value=self._dimensions("book-08", "book-03"),
+        ):
+            with self.assertRaises(SystemExit) as caught:
+                _verify_local_scope(state)
+        self.assertIn("book-08", str(caught.exception))
+        self.assertIn("book-03", str(caught.exception))
+
+    def test_an_entity_with_no_books_is_refused_rather_than_served_empty(self) -> None:
+        state = self._state()
+        with patch.object(
+            type(state), "accounting_dimensions", return_value=self._dimensions()
+        ):
+            with self.assertRaisesRegex(SystemExit, r"\(none\)"):
+                _verify_local_scope(state)
+
+    def test_core_being_down_is_refused_at_startup_not_shown_as_a_blank_page(self) -> None:
+        state = self._state()
+        with patch.object(
+            type(state),
+            "accounting_dimensions",
+            side_effect=CoreBackendError(503, {"status": 503}),
+        ):
+            with self.assertRaisesRegex(SystemExit, "local Core did not answer"):
+                _verify_local_scope(state)
 
 
 if __name__ == "__main__":
