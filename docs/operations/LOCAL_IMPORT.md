@@ -396,21 +396,37 @@ version you want is the one you just started.
 **The BFF serves `/site` unless told otherwise.** Build the front end and point
 `SITE_ROOT` at the result, or it exits on a missing `index.html`.
 
-## Views that stay dark locally
+## The review views inside the command routers
 
-Four GET routes are mounted but answer `404 CANDIDATE_COMMAND_DISABLED`:
-`/internal/v1/candidate-events`,
+Four GET routes live inside routers that also write: `/internal/v1/candidate-events`,
 `/internal/v1/candidate-classification-groups`,
-`/internal/v1/company-transaction-classifications` and its summary. They live
-inside command routers, and Core gates the whole module behind
-`enable_internal_candidate_command_api`, which also needs a command assertion
-key, issuer and audience.
+`/internal/v1/company-transaction-classifications` and
+`/internal/v1/company-transaction-classification-summary`. Core gates both
+routers on `enable_internal_candidate_command_api`, so until 2026-09-12 they
+answered `404 CANDIDATE_COMMAND_DISABLED` and the review screen was missing its
+event history and its classification groups.
 
-Their read routes are mounted anyway, without the commands beside them, so the
-failure says *disabled* rather than *not found* and turning the module on later
-is a settings change rather than a re-assembly. Whether to turn it on is the
-user's call: it means minting an assertion key for a local machine, and saying
-"the command API is enabled" in a profile that deliberately serves no command.
+Local mode now enables the module, with `internal_candidate_command_backend=database`
+so those views read the same books everything else does.
+
+Two things to know about it:
+
+- **The assertion key is minted per start and never stored.** `Settings` wants a
+  key, an issuer and an audience before it accepts the module, because a
+  production command carries a signed assertion. Nothing here serves a command,
+  so nothing presents or verifies one; the key authorizes nothing and dies with
+  the process, like the read cursor key beside it. There is no local secret to
+  rotate, back up or leak.
+- **Nothing writable was mounted.** The routers contribute their GET routes
+  only, and the start still fails if a writer ever appears among them. That is
+  asserted against the assembled app, not against a list someone maintains.
+
+The summary route is a sibling, not a sub-path, and takes `from_date` and
+`to_date_exclusive`:
+
+```bash
+curl "http://127.0.0.1:8661/internal/v1/company-transaction-classification-summary?from_date=2026-01-01&to_date_exclusive=2026-10-01"
+```
 
 ## Open question for the user
 

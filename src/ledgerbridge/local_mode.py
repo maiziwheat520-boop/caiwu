@@ -141,6 +141,11 @@ def guard(settings: Settings, *, host: str = LOCAL_HOST) -> None:
             "local mode requires internal_read_operational_gate=closed, got "
             f"{settings.internal_read_operational_gate!r}"
         )
+    if settings.internal_candidate_command_operational_gate != "closed":
+        raise LocalModeRefused(
+            "local mode requires internal_candidate_command_operational_gate=closed, got "
+            f"{settings.internal_candidate_command_operational_gate!r}"
+        )
     if settings.enable_real_ingest:
         raise LocalModeRefused(
             "local mode does not enable real ingest; statements are imported explicitly"
@@ -186,6 +191,30 @@ def local_settings(profile: LocalProfile) -> Settings:
         # to one read's horizon anyway, so expiring on restart is correct, and a
         # long-lived key on disk would be one more secret to look after.
         internal_read_cursor_key=secrets.token_urlsafe(48),
+        # The review screen's event history and its classification groups are
+        # GET routes that live inside command routers, and Core gates the whole
+        # module on this one flag. Leaving it off costs the local workbench four
+        # views it only reads; turning it on mounts no command, because
+        # `_read_routers` takes the GET routes out of those routers and
+        # `_refuse_non_read_routes` fails the start if a writer ever arrives
+        # among them. Read-only is still a property the process asserts about
+        # itself rather than a setting anyone can flip.
+        enable_internal_candidate_command_api=True,
+        # The same books the reads come from. A synthetic command backend here
+        # would put fixture classification groups beside real candidates, which
+        # is the one thing worse than the views being dark.
+        internal_candidate_command_backend="database",
+        internal_candidate_command_operational_gate="closed",
+        # `Settings` requires an assertion key, issuer and audience before it
+        # will accept the module, because in production a command carries a
+        # signed assertion. No command is served here, so nothing ever presents
+        # one and nothing ever verifies one: these exist to satisfy a validator
+        # that is right to insist. The key is therefore minted per start and
+        # never written down - a secret on disk that authorizes nothing is a
+        # liability with no compensating use.
+        internal_command_assertion_key=secrets.token_urlsafe(48),
+        internal_command_assertion_issuer=LOCAL_PRINCIPAL_REF,
+        internal_command_assertion_audience=LOCAL_PRINCIPAL_REF,
     )
     guard(settings, host=profile.host)
     return settings

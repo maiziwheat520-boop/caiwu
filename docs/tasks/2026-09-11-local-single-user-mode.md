@@ -501,16 +501,47 @@ nothing. Zero facts were lost.
    the candidate path's version of the D-028 gap that open issue 5 describes
    for statements: safe, honest, and not the idempotent replay D-028 asks for.
    Closing it is a change to a released import path in Core.
-9. **Four review views are mounted but disabled.** `candidate-events`,
-   `candidate-classification-groups`, `company-transaction-classifications` and
-   its summary are GET routes living inside command routers; Core gates the
-   whole module behind `enable_internal_candidate_command_api`, which also
-   requires a command assertion key, issuer and audience. Their reads are
-   mounted without the commands beside them, so the failure says
-   `CANDIDATE_COMMAND_DISABLED` rather than "not found" and enabling the module
-   later is a settings change. Whether to enable it locally is a decision: it
-   means minting an assertion key on a single-user machine and declaring the
-   command API enabled in a profile that serves no command.
+9. ~~**Four review views are mounted but disabled.**~~ **Done 2026-09-12 by the
+   user's "开吧".** All four answer 200 against the real books.
+
+   `candidate-events`, `candidate-classification-groups`,
+   `company-transaction-classifications` and
+   `company-transaction-classification-summary` are GET routes living inside
+   command routers, and Core gates both routers on
+   `enable_internal_candidate_command_api`. Local mode now sets it, with the
+   database command backend so the classification groups come from the same
+   books the candidates beside them do - a synthetic backend here would put
+   fixture rows next to the user's own ledger with nothing on screen saying
+   which was which.
+
+   **The assertion key is minted per start and never written down.** `Settings`
+   requires a key, an issuer and an audience before it will accept the module,
+   because in production a command carries a signed assertion. Local mode
+   serves no command, so nothing ever presents one and nothing ever verifies
+   one: the key authorizes nothing, and a secret on disk that authorizes
+   nothing is a liability with no compensating use. It is generated the same
+   way the read cursor key already is, and dies with the process.
+
+   **Read-only did not become a promise.** `_read_routers` still takes only the
+   GET routes out of those routers, and `_refuse_non_read_routes` still fails
+   the start if a writer is ever among them - now with a test that walks the
+   assembled app and asserts no route accepts anything but GET/HEAD/OPTIONS.
+   `guard` also refuses an open `internal_candidate_command_operational_gate`,
+   beside the read gate it already refused.
+
+   Proved against the running local Core:
+
+   ```text
+   candidate-events                            200 {"items":[],...}
+   candidate-classification-groups             200 {"items":[],...}
+   company-transaction-classifications         200 {"items":[],...}
+   company-transaction-classification-summary  200 items for entity 08519631...
+   ```
+
+   The first three are empty because nothing has been decided or grouped yet,
+   which is the correct answer rather than a missing one. Note the summary's
+   path: it is a sibling route, not `.../summary`, and it requires `from_date`
+   and `to_date_exclusive`.
 
 ### Replay, proved 2026-09-12
 

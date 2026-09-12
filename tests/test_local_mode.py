@@ -428,3 +428,96 @@ def test_a_command_router_contributes_its_reads_and_not_its_commands() -> None:
         "/internal/v1/candidate-classification-groups",
     }
     assert all(route in command_router.routes for route in taken.routes)
+
+
+def test_the_four_review_views_are_no_longer_disabled() -> None:
+    """They answered 404 CANDIDATE_COMMAND_DISABLED until the module was on.
+
+    The flag gates two whole routers, commands and reads alike, so the review
+    screen's event history and its classification groups were dark for want of
+    a setting. Turning it on is what the user asked for; this is the assertion
+    that it reaches the routes rather than only the config object.
+
+    The service is overridden because the real one opens the local database,
+    which this test has no business needing: what is under test is whether the
+    module gate lets the request through, and that is decided before any
+    handler runs.
+    """
+    from ledgerbridge.internal_candidate_command_routes import (
+        get_candidate_command_service,
+        get_synthetic_review_service,
+    )
+
+    app = local_mode_script._build_app(profile())
+    app.dependency_overrides[get_candidate_command_service] = get_synthetic_review_service
+
+    with TestClient(app) as client:
+        answers = {
+            path: client.get(path).status_code
+            for path in (
+                "/internal/v1/candidate-events",
+                "/internal/v1/candidate-classification-groups",
+            )
+        }
+
+    assert set(answers.values()) == {200}
+
+
+def test_the_command_module_reads_the_same_books_the_reads_do() -> None:
+    """A synthetic command backend beside real candidates would be a fiction.
+
+    The classification groups and event history would come from the packaged
+    fixture while the candidates beside them came from the user's own ledger,
+    and nothing on screen would say which was which.
+    """
+    built = local_settings(profile())
+
+    assert built.internal_candidate_command_backend == "database"
+    assert built.internal_read_backend == "database"
+
+
+def test_the_command_assertion_key_is_minted_per_start_and_never_reused() -> None:
+    """Nothing here presents an assertion, so nothing should keep a key.
+
+    `Settings` requires one before it will accept the module, because in
+    production a command carries a signed assertion. Local mode serves no
+    command, so the key authorizes nothing - and a secret on disk that
+    authorizes nothing is a liability with no compensating use.
+    """
+    first = local_settings(profile()).internal_command_assertion_key
+    second = local_settings(profile()).internal_command_assertion_key
+
+    assert first is not None and second is not None
+    assert first.get_secret_value() != second.get_secret_value()
+
+
+def test_enabling_the_module_still_mounts_no_command() -> None:
+    """The point of the flag is four GET routes, not a writer on a laptop.
+
+    Read-only stays a property the assembly asserts about itself: the routers
+    contribute their reads, and the start fails if a writer is ever among them.
+    """
+    app = local_mode_script._build_app(profile())
+
+    writers = {
+        (route.path, sorted((route.methods or set()) - {"GET", "HEAD", "OPTIONS"}))
+        for route in app.routes
+        if isinstance(route, APIRoute) and (route.methods or set()) - {"GET", "HEAD", "OPTIONS"}
+    }
+
+    assert writers == set()
+
+
+def test_refuses_an_open_command_operational_gate() -> None:
+    """The command gate is production's, the same as the read gate above it."""
+    with pytest.raises(LocalModeRefused, match="internal_candidate_command_operational_gate"):
+        guard(
+            settings(
+                enable_internal_candidate_command_api=True,
+                internal_candidate_command_backend="database",
+                internal_candidate_command_operational_gate="d1-production-v1",
+                internal_command_assertion_key="k" * 48,
+                internal_command_assertion_issuer="local",
+                internal_command_assertion_audience="local",
+            )
+        )
