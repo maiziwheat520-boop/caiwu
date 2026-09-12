@@ -36,6 +36,7 @@ _ACCOUNT_NUMBER = re.compile(r"^[0-9]{12,30}$")
 _DATE = re.compile(r"^[0-9]{8}$")
 _TIME = re.compile(r"^[0-9]{6}$")
 _LOG_NUMBER = re.compile(r"^[0-9A-Za-z]{10}$")
+_DIGIT_RUN = re.compile(r"^[0-9]+$")
 _MONEY = re.compile(r"^[+-]?(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)\.[0-9]{2}$")
 _COUNTERPARTY_ACCOUNT = re.compile(r"(?<![0-9])[0-9]{8,30}(?![0-9])")
 _OWNER_ACCOUNT_RE = re.compile(
@@ -362,6 +363,7 @@ def _parse_rows(
         if is_transaction:
             if footer_started:
                 raise AbcStatementError("statement transaction appears after footer")
+            cells = _repair_account_overflow(line, starts, cells)
             records.append((first_source_line + offset, list(cells)))
             continue
         populated = tuple(index for index, value in enumerate(cells) if value)
@@ -512,6 +514,40 @@ def _slice_columns(line: str, starts: tuple[int, ...]) -> tuple[str, ...]:
         ).strip()
         for index, start in enumerate(starts)
     )
+
+
+def _repair_account_overflow(
+    line: str,
+    starts: tuple[int, ...],
+    cells: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Hand back the characters a too-wide counterparty account stole.
+
+    ABC prints the counterparty account in a fixed-width column.  An account
+    that is wider than that column runs straight into the log-number column and
+    carries the log number's leading characters with it, so the log number
+    arrives one or more characters too long.  The characters are only handed
+    back when the two fields are printed with no gap between them, the stolen
+    part is digits continuing the account, and what remains is a whole log
+    number.  A row whose log column already holds a well-formed log number is
+    never touched, so no row that parses today changes.
+    """
+
+    counterparty, log_number = cells[5], cells[6]
+    if len(log_number) <= 10 or not counterparty:
+        return cells
+    stolen, tail = log_number[:-10], log_number[-10:]
+    if _DIGIT_RUN.fullmatch(stolen) is None or _LOG_NUMBER.fullmatch(tail) is None:
+        return cells
+    if _DIGIT_RUN.fullmatch(counterparty[-1]) is None:
+        return cells
+    printed_account = line[starts[5] : starts[6]]
+    printed_log = line[starts[6] : starts[7]]
+    if not printed_account or printed_account[-1].isspace():
+        return cells
+    if not printed_log or printed_log[0].isspace():
+        return cells
+    return (*cells[:5], counterparty + stolen, tail, *cells[7:])
 
 
 def _split_counterparty(value: str) -> tuple[str, str]:
