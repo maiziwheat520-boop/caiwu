@@ -18,6 +18,10 @@ from ledgerbridge.abc_statement import AbcStatementError, parse_abc_personal_pdf
 from tests.test_abc_bank_statement import _ACCOUNT, _HEADERS, _SUFFIX, _WIDTHS, _line
 
 _COUNTERPARTY_WIDTH = _WIDTHS[5]
+_LOG_WIDTH = _WIDTHS[6]
+#: What the bank writes when a row carries a merchant's reference instead of a
+#: log number: two characters and fourteen digits, two wider than the column.
+_MERCHANT_REFERENCE = "商户" + "3" * 14
 _FITTING_ACCOUNT = "1" * _COUNTERPARTY_WIDTH
 _OVERFLOWING_ACCOUNT = "2" * (_COUNTERPARTY_WIDTH + 1)
 
@@ -37,7 +41,12 @@ class _Reader:
         self.pages = [_Page(text)]
 
 
-def _page_text(*, counterparty: str, log_number: str = "A000000001") -> str:
+def _page_text(
+    *,
+    counterparty: str,
+    log_number: str = "A000000001",
+    channel: str = "网银",
+) -> str:
     return "\n".join(
         (
             "中国农业银行账户活期交易明细清单",
@@ -55,7 +64,7 @@ def _page_text(*, counterparty: str, log_number: str = "A000000001") -> str:
                     "100.00",
                     counterparty,
                     log_number,
-                    "网银",
+                    channel,
                     "合成附言",
                 )
             ),
@@ -145,4 +154,80 @@ def test_a_name_running_into_the_log_column_is_refused_rather_than_repaired(
             tmp_path,
             monkeypatch,
             _page_text(counterparty="合成商户" + "名" * (_COUNTERPARTY_WIDTH - 3)),
+        )
+
+
+def test_a_merchant_reference_overflowing_its_column_is_made_whole(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ABC sometimes prints a merchant's own reference where the log number goes.
+
+    It is two characters wider than the column, so its last digits are printed
+    where the channel belongs. It is the only identifier that row carries, and
+    it becomes the row's identity, so it is taken back whole rather than
+    truncated to something that merely looks like a log number.
+    """
+
+    statement = _parse(
+        tmp_path,
+        monkeypatch,
+        _page_text(
+            counterparty=_FITTING_ACCOUNT,
+            log_number=_MERCHANT_REFERENCE,
+            channel="",
+        ),
+    )
+
+    other = _parse(
+        tmp_path,
+        monkeypatch,
+        _page_text(
+            counterparty=_FITTING_ACCOUNT,
+            log_number="商户" + "4" * 14,
+            channel="",
+        ),
+    )
+
+    assert len(_MERCHANT_REFERENCE) > _LOG_WIDTH
+    assert len(statement.transactions) == 2
+    # The reference is what identifies the row, so a different one is a
+    # different fact - the digits taken back from the channel column are not
+    # decoration.
+    assert statement.transactions[0].transaction_serial != other.transactions[0].transaction_serial
+
+
+def test_a_channel_carrying_real_text_is_not_eaten_by_the_log_column(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The repair may only take digits that complete a reference, never a channel."""
+
+    with pytest.raises(AbcStatementError, match="log number is invalid"):
+        _parse(
+            tmp_path,
+            monkeypatch,
+            _page_text(
+                counterparty=_FITTING_ACCOUNT,
+                log_number="商户" + "3" * 13,
+                channel="网银",
+            ),
+        )
+
+
+def test_a_reference_of_another_shape_is_still_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the form the bank was seen to write is admitted, not anything non-numeric."""
+
+    with pytest.raises(AbcStatementError, match="log number is invalid"):
+        _parse(
+            tmp_path,
+            monkeypatch,
+            _page_text(
+                counterparty=_FITTING_ACCOUNT,
+                log_number="收款" + "3" * 14,
+                channel="",
+            ),
         )

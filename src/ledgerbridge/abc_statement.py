@@ -36,6 +36,12 @@ _ACCOUNT_NUMBER = re.compile(r"^[0-9]{12,30}$")
 _DATE = re.compile(r"^[0-9]{8}$")
 _TIME = re.compile(r"^[0-9]{6}$")
 _LOG_NUMBER = re.compile(r"^[0-9A-Za-z]{10}$")
+#: ABC sometimes prints a merchant's own reference where the log number
+#: belongs, and it is the only identifier that row carries. Admitting it is
+#: a statement about what identifies a fact, not a parsing convenience, so
+#: the form is pinned to what the bank was actually seen to write rather
+#: than loosened to anything non-numeric.
+_MERCHANT_REFERENCE = re.compile("^商户[0-9]{14}$")
 _DIGIT_RUN = re.compile(r"^[0-9]+$")
 _MONEY = re.compile(r"^[+-]?(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)\.[0-9]{2}$")
 _COUNTERPARTY_ACCOUNT = re.compile(r"(?<![0-9])[0-9]{8,30}(?![0-9])")
@@ -193,7 +199,7 @@ def parse_abc_personal_pdf(
     )
     months = Counter(item.occurred_at.strftime("%Y-%m") for item in transactions)
     log_set_sha256 = _set_digest(
-        f"{item.sequence}:{hashlib.sha256(item.log_number.encode('ascii')).hexdigest()}"
+        f"{item.sequence}:{hashlib.sha256(item.log_number.encode('utf-8')).hexdigest()}"
         for item in transactions
     )
     parser_facts_sha256 = hashlib.sha256(
@@ -364,6 +370,7 @@ def _parse_rows(
             if footer_started:
                 raise AbcStatementError("statement transaction appears after footer")
             cells = _repair_account_overflow(line, starts, cells)
+            cells = _repair_log_overflow(line, starts, cells)
             records.append((first_source_line + offset, list(cells)))
             continue
         populated = tuple(index for index, value in enumerate(cells) if value)
@@ -385,7 +392,7 @@ def _parse_rows(
         balance_minor = _money_minor(record_cells[4], field="balance")
         counterparty_name, counterparty_account = _split_counterparty(record_cells[5])
         log_number = record_cells[6]
-        if _LOG_NUMBER.fullmatch(log_number) is None:
+        if not _is_log_number(log_number):
             raise AbcStatementError("statement transaction log number is invalid")
         channel = _bounded_text(record_cells[7], required=False)
         note = _bounded_text(record_cells[8], required=False)
@@ -514,6 +521,45 @@ def _slice_columns(line: str, starts: tuple[int, ...]) -> tuple[str, ...]:
         ).strip()
         for index, start in enumerate(starts)
     )
+
+
+def _is_log_number(value: str) -> bool:
+    """Either form the bank writes in the log-number column."""
+
+    return (
+        _LOG_NUMBER.fullmatch(value) is not None or _MERCHANT_REFERENCE.fullmatch(value) is not None
+    )
+
+
+def _repair_log_overflow(
+    line: str,
+    starts: tuple[int, ...],
+    cells: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Hand back the digits a too-wide merchant reference left in the next column.
+
+    The same fixed-width problem as `_repair_account_overflow`, one column
+    along: a merchant reference is two characters wider than the log-number
+    column, so its last digits are printed where the channel belongs.  They are
+    only taken back when the log column holds the start of a merchant reference,
+    the channel column holds nothing but the digits that complete it, and the
+    two are printed with no gap between them.  A row whose log column already
+    holds a whole log number is never reached.
+    """
+
+    log_number, channel = cells[6], cells[7]
+    if _is_log_number(log_number) or not channel:
+        return cells
+    joined = log_number + channel
+    if _MERCHANT_REFERENCE.fullmatch(joined) is None:
+        return cells
+    printed_log = line[starts[6] : starts[7]]
+    printed_channel = line[starts[7] : starts[8]]
+    if not printed_log or printed_log[-1].isspace():
+        return cells
+    if not printed_channel or printed_channel[0].isspace():
+        return cells
+    return (*cells[:6], joined, "", *cells[8:])
 
 
 def _repair_account_overflow(
