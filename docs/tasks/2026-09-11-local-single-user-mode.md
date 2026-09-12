@@ -228,12 +228,16 @@ database rebuilt on 2026-09-12 (see "The rebuild" below):
 | 雅朵 | abc-3234 | 5 | 228 | 228 |
 | 雅阁 | mybank-9191 | 3 | 85 | 85 |
 | 青居客 | mybank-2825 | 1 | 89 | 89 |
-| personal | ccb-7564, abc-2061, mybank-7968 | 5 | 480 | 480 (of 9,592) |
+| personal | ccb-7564, abc-2061, abc-7177, mybank-7968 | 7 | 645 | 645 (of 9,592) |
 
-62 statements, 2,556 facts, 11 accounts, 8 books. Every company count matches
+64 statements, 2,721 facts, 14 accounts, 8 books. Every company count matches
 finance-desk's row count exactly, computed independently: finance-desk's is its
 own parser's output, this one is Core's. All reviews are `PENDING`; nothing is
 posted.
+
+Two of those fourteen accounts hold no statement: 零钱 and 零钱通, admitted as
+wallets (see "WeChat's two wallets" below). The other twelve are the eleven
+above plus ABC personal `…7177`, which the merchant-reference decision unlocked.
 
 ## The rebuild (2026-09-12, user approved: "重建库")
 
@@ -311,12 +315,14 @@ nothing. Zero facts were lost.
      log number is never reached. Verified independently against the two real
      ABC personal statements already in the ledger: their
      `parser_facts_sha256` are byte-identical before and after the change.
-     The unlocked file parses cleanly at 72 rows — but it belongs to ABC
-     personal account `…7177`, a twelfth account that is not admitted and
-     appears in no manifest. Importing it needs that account admitted first,
-     under some book, and which book is the user's call.
+     The unlocked file parses cleanly at 72 rows. It belongs to ABC personal
+     account `…7177`, and the book was not a judgement call after all —
+     finance-desk's `personal.sqlite3` files it alongside `ccb-7564`,
+     `abc-2061` and `mybank-7968`. It is admitted and imported: 165 new facts
+     across two statements (164 + 72 rows, 71 of them the same facts seen
+     twice).
 
-     The second file carries `商户` plus 14 digits where a 10-character log
+     ~~The second file carries `商户` plus 14 digits where a 10-character log
      number belongs — one row in the whole file, itself overflowing by one
      character into 交易渠道. Admitting it means widening `_LOG_NUMBER`. The
      digest worry recorded earlier turns out not to apply: the encode would
@@ -326,7 +332,17 @@ nothing. Zero facts were lost.
      puts a merchant reference in the log-number column, and that value
      becomes the row's `transaction_serial` and part of its `fact_sha256`.
      That is a statement about what identifies a fact, so it is left to the
-     user.
+     user.~~ **Decided 2026-09-12 by the user: "算" — count it (`c793ad0`).**
+     `_LOG_NUMBER` did not widen; a second form was named beside it,
+     `_MERCHANT_REFERENCE`, pinned to `商户` plus exactly 14 digits, because
+     the admission is about the shape the bank was actually seen to write
+     rather than about loosening the column. `_repair_log_overflow` takes
+     back the one character it spills into 交易渠道, and only when the two
+     halves join into exactly that shape and the printed boundary shows no
+     whitespace on either side — a channel carrying real text is left alone.
+     Refusing the row was never worth one row: it cost the whole 164-row
+     file. All four real ABC personal PDFs now parse, and the two already in
+     the ledger keep their exact `parser_facts_sha256`.
 4. ~~**WeChat cannot become a bank-statement profile.**~~ **Done 2026-09-12
    (`9e1a258`), by the path Core already had.** 2,212 transactions are in the
    ledger as PENDING review candidates.
@@ -397,7 +413,31 @@ nothing. Zero facts were lost.
 
    Closing it means changing a gate on the path that writes real financial
    facts, so it is recorded rather than done.
-6. **Four review views are mounted but disabled.** `candidate-events`,
+6. **WeChat's two wallets are admitted, and hold nothing.** The user's
+   "建" asked for 零钱 and 零钱通 as proper accounts, and they are:
+   `wechat-lingqian` and `wechat-lingqiantong`, kind `WALLET`, in the
+   personal book. Two rather than the single `wechat-0001` finance-desk
+   models, because the screenshots show two independent running balances and
+   one account cannot hold two. The export's own 支付方式 column agrees: it
+   names 零钱 1,091 times and 零钱通 1,072, on equal footing with the bank
+   cards beside them — among which are 建设银行(7564) and 农业银行(2061),
+   accounts already in this book.
+
+   Two things about the admission are worth stating plainly. WeChat gives
+   these wallets no account number, and the registry requires four digits;
+   `0001`/`0002` are an ordinal of ours, and there is deliberately no
+   `SUFFIX` alias claiming they are a masked account number — the accounts
+   are identified by `account_key`, and the one alias each carries is a
+   `LABEL` holding the wallet's real name. The admission evidence is the
+   newest WeChat export, the same file for both, which is honest: it is the
+   document that names them.
+
+   What they do not have is transactions. The bill export carries no balance
+   chain, so nothing can enter them through the statement path, and the
+   2,212 candidates are not bound to an account. Admitting them makes the
+   book complete and gives review somewhere to put these facts; it does not
+   by itself put anything there.
+7. **Four review views are mounted but disabled.** `candidate-events`,
    `candidate-classification-groups`, `company-transaction-classifications` and
    its summary are GET routes living inside command routers; Core gates the
    whole module behind `enable_internal_candidate_command_api`, which also

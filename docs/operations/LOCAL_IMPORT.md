@@ -226,6 +226,20 @@ Two things about it are easy to get wrong:
   the real account that owns it, permanently: every registry table is
   append-only by trigger, so there is no un-claiming it.
 
+#### An account with no account number
+
+`account_suffix` must be four to eight digits, and a payment wallet has none.
+零钱 and 零钱通 are admitted with `0001` and `0002`, which are an ordinal of
+ours and not a masked account number — so they carry no `SUFFIX` alias, only a
+`LABEL` alias holding the wallet's real name. That matters because a suffix
+alias is a claim, unique across the database, that some account ends in those
+digits; making it up would block whichever real account one day does. The
+account is identified by its `account_key` instead.
+
+The admission evidence can be a document that merely *names* the account. For
+these two it is the WeChat export, the same file for both, whose 支付方式
+column names them on every row they fund.
+
 ### When two exports of the same account disagree
 
 MYbank exports one account in more than one column layout. The daily statement
