@@ -299,7 +299,7 @@ nothing. Zero facts were lost.
 3. **Two parser gaps, both in what Core admits as an official statement.**
    The user's "优化解析器" authorised fixing these.
    - ~~7 MYbank monthly files rejected as "company range statement header is
-     invalid".~~ **Fixed (`bce51e9`).** Their header uses half-width
+     invalid".~~ **Fixed (`3189458`).** Their header uses half-width
      `借方金额(收)` where `_COMPANY_RANGE_HEADERS` required full-width `（收）`;
      the bank ships both spellings of one label. Header lookup now folds the
      two parenthesis code points together, so one layout needs one entry rather
@@ -308,7 +308,7 @@ nothing. Zero facts were lost.
      薇旭 each gained a statement), the rest brought no facts the books did not
      already hold.
    - ~~2 ABC personal PDFs rejected as "statement transaction log number is
-     invalid".~~ **One fixed (`9ae4028`), one is a decision.**
+     invalid".~~ **One fixed (`14c6801`), one is a decision.**
 
      The first: ABC prints the counterparty account in a fixed-width column,
      and a 17-digit account runs into the 16-wide slot, carrying the log
@@ -336,7 +336,7 @@ nothing. Zero facts were lost.
      puts a merchant reference in the log-number column, and that value
      becomes the row's `transaction_serial` and part of its `fact_sha256`.
      That is a statement about what identifies a fact, so it is left to the
-     user.~~ **Decided 2026-09-12 by the user: "算" — count it (`c793ad0`).**
+     user.~~ **Decided 2026-09-12 by the user: "算" — count it (`9853525`).**
      `_LOG_NUMBER` did not widen; a second form was named beside it,
      `_MERCHANT_REFERENCE`, pinned to `商户` plus exactly 14 digits, because
      the admission is about the shape the bank was actually seen to write
@@ -348,7 +348,7 @@ nothing. Zero facts were lost.
      file. All four real ABC personal PDFs now parse, and the two already in
      the ledger keep their exact `parser_facts_sha256`.
 4. ~~**WeChat cannot become a bank-statement profile.**~~ **Done 2026-09-12
-   (`9e1a258`), by the path Core already had.** 2,212 transactions are in the
+   (`8176409`), by the path Core already had.** 2,212 transactions are in the
    ledger as PENDING review candidates.
 
    The user's instruction was that WeChat's balance should be treated as a
@@ -457,7 +457,7 @@ nothing. Zero facts were lost.
    book complete and gives review somewhere to put these facts; it does not
    by itself put anything there.
 7. ~~**Alipay has no path into the ledger.**~~ **Done 2026-09-12 by the
-   user's "入账" (`1a3a62e`).** 6,735 candidates, PENDING, in the personal book.
+   user's "入账" (`61a2963`).** 6,735 candidates, PENDING, in the personal book.
 
    Alipay's export is the same kind of document WeChat's is, so it took the
    same path; what was WeChat-shaped in `local_candidates.py` is now
@@ -527,6 +527,29 @@ LOCAL_STATEMENTS_OK statements=1 created=0 replayed=1 transactions=89 review=PEN
 same five counts are unchanged after three older manifests are re-run and
 refused. This is the task's fourth acceptance test, met for the statement path
 within the bound described in open issue 5.
+
+## The branch carries Claude's identity now (2026-09-12, user: "重写")
+
+Fourteen of this branch's twenty-two commits were authored and committed as
+`Codex <codex@ledgerbridge.local>` while the git identity was misconfigured.
+They are mine, and D-005 puts Claude's work on `ai/claude/*` under Claude's
+name, so the range `668aee5..HEAD` was rewritten with `git filter-branch
+--env-filter`, touching only author and committer.
+
+Three things about it worth keeping:
+
+- **The trees are byte-identical.** `git diff` between the pre-rewrite tip and
+  the new one is empty. Only identities moved.
+- **Nothing else pointed into the range.** No other branch contains these
+  commits, and `878209d` - the one merged in from
+  `ai/claude/boc-company-container-readers`, which has its own worktree - kept
+  its exact hash because nothing about it changed. That branch is untouched.
+- **The old tip is kept** at `refs/backup/local-single-user-mode-before-identity-rewrite`.
+
+Nothing here was ever pushed, so no force-push and no coordination were needed.
+The intake plans in the scratchpad record a `target_revision` of the old
+hashes, and so do the registry rows those runs wrote; the content behind them
+is unchanged and they are left as the historical record they are.
 
 ## A destructive mistake, recorded
 
