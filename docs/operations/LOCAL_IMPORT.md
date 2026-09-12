@@ -375,6 +375,27 @@ with prepared manifest". Fail-closed and safe — nothing double-imports — but
 is a refusal, not the idempotent replay D-028 describes. Closing it means
 changing Core's receipt or its envelope, and neither is done here.
 
+## Opening the workbench on the imported books
+
+Two processes: Core on `127.0.0.1:8661`, then the Web BFF on `127.0.0.1:8080`.
+Three things go wrong here and only one of them announces itself.
+
+**The unit ref is not a UUID.** `CORE_ENTITY_REF` is the entity's UUID, so
+`CORE_BUSINESS_UNIT_REF` looks like it should be one too. It is the unit's
+*stable ref* — the short name the book was admitted under, `book-08`. Given a
+UUID, every request succeeds and returns nothing, and the workbench opens on an
+empty queue that looks exactly like a book with nothing left to review. The BFF
+now refuses at startup and lists the refs the entity actually has, but the
+value is still the operator's to get right.
+
+**A stale Core keeps the port.** A Core left running from an earlier session
+holds 8661 and answers `503 INTERNAL_READ_UNAVAILABLE` out of whatever code it
+was started from. `netstat -ano | grep "127.0.0.1:8661 "` names the PID; the
+version you want is the one you just started.
+
+**The BFF serves `/site` unless told otherwise.** Build the front end and point
+`SITE_ROOT` at the result, or it exits on a missing `index.html`.
+
 ## Views that stay dark locally
 
 Four GET routes are mounted but answer `404 CANDIDATE_COMMAND_DISABLED`:

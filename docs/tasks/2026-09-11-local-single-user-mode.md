@@ -528,6 +528,61 @@ same five counts are unchanged after three older manifests are re-run and
 refused. This is the task's fourth acceptance test, met for the statement path
 within the bound described in open issue 5.
 
+## The whole stack, proved on the real books (2026-09-12)
+
+Core on `127.0.0.1:8661` and the Web BFF on `127.0.0.1:8080`, both from this
+branch, serving the imported books to a browser on this machine. The review
+queue shows **8947 条待处理** with real WeChat and Alipay rows - real dates,
+real amounts, real counterparties - and `本月候选营业单元 1 家 personal`. That is
+the goal in the user's words ("让这个工作台在本地") met end to end, not in tests.
+
+Three things the run taught, in decreasing order of how much they cost.
+
+### `CORE_BUSINESS_UNIT_REF` is the unit's stable ref, not its UUID
+
+`CORE_ENTITY_REF` is a UUID, so the unit ref looks like it should be one too.
+It is not: Core scopes candidates by the short name the book was admitted
+under, `book-08`. Pointed at the UUID, the BFF returned **0 candidates while
+Core returned 100 for the same book**, and every request succeeded. An empty
+queue is indistinguishable from a book with nothing left to review, so the
+screen said the work was done while 8,947 candidates sat in it.
+
+That is the one failure a ledger must never make quietly, so it is now a
+refusal at startup rather than an empty page later: `_verify_local_scope` in
+the Web repo asks Core once whether the ref names a book of this entity and
+refuses with the refs that do exist when it does not. The same probe catches
+local Core being down, which otherwise also arrives as a blank screen.
+Committed on `ai/claude/web-local-single-user-mode` as `b34d780` with five
+tests; that repo's Python suite is 184 passed / 1 skipped.
+
+Two lesser traps from the same run, recorded because both cost time and
+neither is discoverable from an error message: a **stale Core process** from an
+earlier run of this task held 8661 and answered `503
+INTERNAL_READ_UNAVAILABLE` from old code, and the BFF defaults `SITE_ROOT` to
+`/site`, so it must be given the built `dist/` explicitly.
+
+### The Web branch's TypeScript and vitest failures are not ours
+
+8 `tsc` errors and 14 vitest failures, all in
+`src/company-reports/CompanyReportsPage.tsx` and `src/App.test.tsx`. Both were
+checked out at the parent commit `9e64b46` and both fail there identically, so
+they are pre-existing and belong to the Codex web branch that owns those files.
+Recorded rather than fixed: D-028 gives one writer per file.
+
+### What the workbench gets wrong on screen
+
+Observed, not yet diagnosed, and none of it touches stored facts:
+
+- Every candidate is labelled **照片凭证** though its evidence is an XLSX or a
+  CSV. The label is being chosen without consulting the evidence's media type.
+- The header date is the **import time** (`9/12 16:48`), not the transaction
+  time. The correct `accounting_month` renders below it, so the fact is right
+  and the prominent number is wrong - the worse way round.
+- The 公司账单确认 panel shows **LedgerBridge Core request failed / 重试公司流水**.
+  Expected here: that panel reads the company book, and this profile is
+  scoped to one personal book.
+- The category renders untranslated as **Unclassified, pending review**.
+
 ## The branch carries Claude's identity now (2026-09-12, user: "重写")
 
 Fourteen of this branch's twenty-two commits were authored and committed as
