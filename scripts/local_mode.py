@@ -465,6 +465,53 @@ def command_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_candidates(args: argparse.Namespace) -> int:
+    """Import a payment platform's exports into one book as review candidates.
+
+    The difference from `statements` is what the document is. A bank statement
+    is an account's own record and carries the balance that proves it is whole;
+    a payment bill records what was paid to whom and carries no balance at all.
+    Forcing the second into the statement cutover would mean inventing the
+    balance it is missing, so it enters here instead - as candidates, which are
+    facts nobody has classified yet.
+
+    That is also why this needs no backup and no restore rehearsal. Candidates
+    are not confirmed facts, and the controlled import already carries the
+    receipted, idempotent replay that makes re-running a batch a no-op rather
+    than a second import.
+
+    Nothing here confirms or posts anything.
+    """
+    from sqlalchemy import create_engine
+
+    from ledgerbridge.file_key_provider import bootstrap_file_key
+    from ledgerbridge.local_candidates import import_local_candidates, load_candidate_batch
+
+    batch = load_candidate_batch(args.manifest.resolve())
+    print(f"reading {len(batch.sources)} export(s)")
+    artifact_root = LOCAL_STATE / "artifacts"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    if not EVIDENCE_KEY_FILE.exists():
+        EVIDENCE_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        bootstrap_file_key(EVIDENCE_KEY_FILE.resolve(), generation="local-single-user-1")
+    engine = create_engine(_env_value("LEDGERBRIDGE_MIGRATION_DATABASE_URL"), pool_pre_ping=True)
+    try:
+        result = import_local_candidates(
+            engine,
+            batch,
+            key_file=EVIDENCE_KEY_FILE.resolve(),
+            artifact_root=artifact_root,
+        )
+    finally:
+        engine.dispose()
+    print(
+        f"LOCAL_CANDIDATES_OK replayed={str(result.replayed).lower()} "
+        f"evidence={result.evidence_count} candidates={result.candidate_count} "
+        f"batch={result.batch_ref} review=PENDING"
+    )
+    return 0
+
+
 def command_book(args: argparse.Namespace) -> int:
     """Admit one book: its entity, business unit, first evidence and account.
 
@@ -698,6 +745,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     statements.add_argument("--manifest", type=Path, required=True)
     statements.set_defaults(func=command_statements)
+    candidates = subparsers.add_parser(
+        "candidates",
+        help="import a payment platform's exports as review candidates",
+    )
+    candidates.add_argument("--manifest", type=Path, required=True)
+    candidates.set_defaults(func=command_candidates)
     for name, function, help_text in (
         ("check", command_check, "assemble the profile and count entities"),
         ("serve", command_serve, "serve the internal read API on loopback"),
