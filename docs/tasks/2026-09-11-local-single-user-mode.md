@@ -239,6 +239,10 @@ Two of those fourteen accounts hold no statement: 零钱 and 零钱通, admitted
 wallets (see "WeChat's two wallets" below). The other twelve are the eleven
 above plus ABC personal `…7177`, which the merchant-reference decision unlocked.
 
+Beside the statements sit **8,947 review candidates**, all PENDING: 2,212 from
+WeChat and 6,735 from Alipay's two logins. They are payments, not statements,
+and they are counted separately for that reason.
+
 ## The rebuild (2026-09-12, user approved: "重建库")
 
 Open issue 1 below was closed by rebuilding, and nothing was destroyed. The old
@@ -386,14 +390,29 @@ nothing. Zero facts were lost.
      are already imported. They are in, and unnetted: offsetting them is a
      ledger relationship, not something an importer should decide.
 
-   Still open: the first import of this batch was made with a manifest that did
-   carry a clock reading, so its receipt records a digest the builder will
-   never produce again. The data is correct and complete; what is broken is
-   only replay for this one batch, which now fails closed with "batch receipt
-   conflicts with prepared manifest" rather than importing twice. Every table
-   involved is append-only by trigger, so it cannot be cleaned in place. Either
-   it stays as a recorded wart, or the database is rebuilt again - the user's
-   call.
+   **The replay wart, and what it actually was.** The first import of this
+   batch was made with a manifest carrying a clock reading, and I recorded that
+   as the reason its replay is broken. **That was only half right, and the
+   other half is worse.** Building the same batch twice now produces a
+   byte-identical *source* manifest — the clock fix works — but a different
+   *prepared* manifest, because preparing it encrypts the evidence afresh and
+   the envelope is not deterministic. The receipt compares both digests, so a
+   second run of *any* candidate batch conflicts, not just this one. Measured
+   directly on 2026-09-12:
+
+   ```text
+   source manifest    d2e1fe1a94879641 d2e1fe1a94879641 same
+   prepared manifest  1ab9a6d76a6b0b6d 7d7ef31aed77a375 DIFFERENT
+   ```
+
+   So the candidate path is fail-closed on re-run rather than idempotent, and
+   closing it means either comparing only `source_manifest_sha256` or making
+   the envelope reproducible — both changes to a released import path in Core,
+   so they are recorded here rather than made. Nothing is at risk: a re-run
+   refuses, it does not double-import. See open issue 8.
+
+   **Left as it stands, 2026-09-12, by the user: "留着不动".** The database is
+   not being rebuilt for it.
 
 5. **D-028's repeat-import relaxation is still not implemented for statement
    cutovers, and this is the concrete shape of the gap.** D-028 says a released,
@@ -437,7 +456,52 @@ nothing. Zero facts were lost.
    2,212 candidates are not bound to an account. Admitting them makes the
    book complete and gives review somewhere to put these facts; it does not
    by itself put anything there.
-7. **Four review views are mounted but disabled.** `candidate-events`,
+7. ~~**Alipay has no path into the ledger.**~~ **Done 2026-09-12 by the
+   user's "入账" (`1a3a62e`).** 6,735 candidates, PENDING, in the personal book.
+
+   Alipay's export is the same kind of document WeChat's is, so it took the
+   same path; what was WeChat-shaped in `local_candidates.py` is now
+   platform-shaped, with `local_payments.py` holding what a payment bill is and
+   the batch manifest naming which platform wrote the file. No format sniffing:
+   guessing wrong about a financial document is worse than being told.
+
+   Three things the real files settled.
+
+   - **Alipay does not stand behind its own amount totals, and says so.**
+     Footnote 6 of every export: 因统计逻辑不同，明细金额直接累加后，可能会和
+     下方统计金额不一致. Two of the three files bear it out — the expenditure
+     rows exceed the declared total by ¥53,460.29 and ¥105,803.24. Enforcing
+     those totals would refuse every Alipay file for being what it says it is.
+     The *counts* are enforced, on all four figures, and all three files match
+     exactly: that is the loss worth refusing, because a row that went missing
+     changes a count. WeChat's totals reconcile to the cent and stay binding.
+   - **A payment is identified by the account and the order number, not the
+     order number alone.** The two Alipay logins transfer to each other, and 22
+     transfers carry the same order number in both bills — once as money going
+     out, once as money coming in. Those are two facts, one per account. The
+     account is folded into the derived references as a digest, never in the
+     clear: a login is an email address or a phone number. This surfaced as a
+     real collision when the second batch was imported, not as a theory.
+   - **The counterparty's own account is read past and never kept.** Alipay
+     prints it; it is someone else's identifier and the ledger has no use for
+     it.
+
+   Two batches, one per login, because one batch may not mix two accounts —
+   the reader takes the account from the preamble and the builder refuses files
+   that name different ones. 1,856 candidates for `…8757` (two overlapping
+   exports, 860 + 996 rows) and 4,879 for `…5002`.
+
+   The two Alipay logins are **not** admitted as managed accounts. Unlike 零钱
+   and 零钱通 the user did not ask for that, and as with WeChat the candidates
+   bind to no account, so admitting them would add names and nothing else.
+8. **Candidate batches fail closed on re-run rather than replaying.** The
+   receipt compares `prepared_manifest_sha256`, and preparing a manifest
+   encrypts the evidence afresh, so the digest differs every run even when the
+   source manifest is byte-identical. Proved above under open issue 4. This is
+   the candidate path's version of the D-028 gap that open issue 5 describes
+   for statements: safe, honest, and not the idempotent replay D-028 asks for.
+   Closing it is a change to a released import path in Core.
+9. **Four review views are mounted but disabled.** `candidate-events`,
    `candidate-classification-groups`, `company-transaction-classifications` and
    its summary are GET routes living inside command routers; Core gates the
    whole module behind `enable_internal_candidate_command_api`, which also

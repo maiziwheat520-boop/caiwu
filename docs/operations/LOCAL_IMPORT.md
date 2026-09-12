@@ -323,14 +323,57 @@ importer checks, and what it refuses to decide:
 - **Classification.** None. Every candidate arrives at zero confidence, which
   is the honest statement of what an importer knows.
 
+### Two platforms, and which one is named
+
+WeChat and Alipay ship the same kind of document. `local_payments.py` holds
+what a payment bill is — the row, the export, the three directions and the
+preamble check — and each reader produces it. The batch manifest carries a
+`platform` key naming which reader to use; the loader does not sniff. Guessing
+a financial document's format wrong is worse than being told.
+
+Two things differ, and both are the file's own doing rather than ours:
+
+- **Alipay's amount totals do not bind.** Its footnote 6 says summing the
+  detail amounts may not match the totals it prints, and its files bear that
+  out. The counts bind — all four, on every file — because a row that went
+  missing changes one. WeChat states no such caveat and its totals reconcile
+  exactly, so they stay enforced.
+- **Alipay names the account, WeChat does not.** A batch may not mix two
+  accounts, and the builder refuses files whose preambles name different ones.
+  Import each login as its own batch.
+
+### A payment's identity is the account plus the order number
+
+Not the order number alone. Two Alipay logins transferring to each other write
+one order number into both bills — once as money going out, once as money
+coming in — and those are two facts, one per account. The derived references
+therefore carry the account, folded in as a digest: a login is an email address
+or a phone number, and a reference is stored forever.
+
+WeChat's bill names no account, so nothing is added to its references, and they
+are the ones its 2,212 candidates are already in the ledger under.
+
 ### The manifest must not read the clock
 
 The batch receipt tells a replay from a second import by comparing manifest
 digests. A `generated_at` taken from the clock makes every re-run a different
 batch, and the receipt then refuses the replay it was supposed to recognise.
-The builder derives that timestamp from the newest export instead. Getting this
-wrong is not dangerous - the import fails closed rather than doubling - but it
-costs the batch its replay for good, because every table involved is append-only.
+The builder derives that timestamp from the newest export instead, which makes
+the source manifest byte-identical run to run.
+
+That is not enough for a replay, and it is worth knowing why. Preparing the
+manifest encrypts the evidence, and the envelope is not reproducible, so the
+*prepared* digest differs every run:
+
+```text
+source manifest    d2e1fe1a94879641 d2e1fe1a94879641 same
+prepared manifest  1ab9a6d76a6b0b6d 7d7ef31aed77a375 DIFFERENT
+```
+
+So re-running any candidate manifest is refused with "batch receipt conflicts
+with prepared manifest". Fail-closed and safe — nothing double-imports — but it
+is a refusal, not the idempotent replay D-028 describes. Closing it means
+changing Core's receipt or its envelope, and neither is done here.
 
 ## Views that stay dark locally
 
