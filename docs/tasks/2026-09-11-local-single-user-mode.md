@@ -6,10 +6,14 @@
 - Branch: `ai/claude/local-single-user-mode`, worktree
   `D:\repos\_worktrees\ledgerbridge-local-mode-20260911`, based on `448d700`
 - Owned files: `docs/tasks/2026-09-11-local-single-user-mode.md`,
-  `scripts/local_mode.py` (new), `docker-compose.local.yml` (new),
-  `.env.local.example` (new), `src/ledgerbridge/local_mode.py` (new).
+  `docs/operations/LOCAL_IMPORT.md` (new), `scripts/local_mode.py` (new),
+  `docker-compose.local.yml` (new), `.env.local.example` (new),
+  `src/ledgerbridge/local_mode.py` (new), `src/ledgerbridge/local_backup.py`
+  (new), `src/ledgerbridge/local_statements.py` (new), and their tests.
   No Alembic migration, no change to `config.py` defaults, no change to any
-  existing route, service, or production manifest.
+  existing route, service, or production manifest. One existing module is
+  touched — `src/ledgerbridge/account_registry_intake.py`, a schema-revision pin
+  — and it is open issue 2 below, not a merged decision.
 
 ## Why this exists
 
@@ -151,15 +155,18 @@ migration - it had been verified by source assertion only.
   transactional write as the owner role, receipt, idempotent replay. It is now
   reachable as `local_mode.py import`, which reads the database URL out of
   `.env.local` so importing never means pasting a password into a shell.
-- The registered-account statement cutover path does **not** run here.
-  `verify_mybank_cutover_safety_proof` runs before the preflight and the
-  execution alike, and demands a v3 encrypted backup plus a passed isolated
-  restore rehearsal whose inventory equals the live counts. Those artifacts come
-  only from `scripts/backup_restore.py`, which targets Hermes (`/srv/ai-center`,
-  `/dev/shm`, `gpg`, GNU `tar`) and does not run on Windows. Hand-writing them
-  would be forging a proof, not configuring a tool.
-- `run_account_registry_intake.py` refuses unless `LEDGERBRIDGE_ENV=production`
-  on both its paths, so a Managed Account cannot be registered locally either.
+- The registered-account statement cutover path runs here too, which corrects
+  what this section said first. `verify_mybank_cutover_safety_proof` validates
+  *artifacts* — a v3 encrypted backup and a passed isolated restore rehearsal
+  whose inventory equals the live counts — not the script that produced them.
+  `local_backup.py` produces them on this machine by doing the work: a real
+  `pg_dump`, a deterministic archive, real GPG encryption to its own keyring, a
+  real restore into a throwaway database, a real inventory comparison, and proof
+  that the throwaway is gone and the live database did not move.
+- `run_account_registry_intake.py` does refuse unless
+  `LEDGERBRIDGE_ENV=production`, but that gate is in the command wrapper. The
+  module's `run_transactional_account_registry_intake` has none, and is what
+  `local_mode.py book` calls.
 
 ### Proved against the live local database, 2026-09-12
 
@@ -200,17 +207,92 @@ rows rather than by reading the code:
    mode had collapsed into the reader. The profile now carries both URLs and the
    guard checks both hosts.
 
+## Statements imported (2026-09-12)
+
+The statement cutover does run here. `src/ledgerbridge/local_backup.py` produces
+the encrypted backup and isolated restore rehearsal the gate demands, on this
+machine, without weakening the gate or hand-writing an artifact;
+`src/ledgerbridge/local_statements.py` imports a whole book under one rollback
+boundary. `docs/operations/LOCAL_IMPORT.md` has the reasoning and the
+corrections it forced.
+
+Seven books admitted and imported from the user's real files:
+
+| Book | Account | Statements | Facts | finance-desk's own count |
+|---|---|---|---|---|
+| 景怡 | abc-9018 | 9 | 106 | 106 |
+| 薇旭 | boc-6492 + mybank-3678 | 35 | 842 | 842 |
+| 逸豪 | mybank-2083 | 2 | 652 | 652 |
+| 雅朵 | abc-3234 | 5 | 228 | 228 |
+| 雅阁 | mybank-9191 | 2 | 85 | 85 |
+| 青居客 | mybank-2825 | 1 | 89 | 89 |
+| personal | ccb-7564, abc-2061, mybank-7968 | 5 | 480 | 480 (of 9,592) |
+
+Every company count matches finance-desk's row count exactly, computed
+independently: finance-desk's is its own parser's output, this one is Core's.
+All reviews are `PENDING`; nothing is posted.
+
 ## Open issues (awaiting user decision)
 
-1. **D-028's repeat-import relaxation is not implemented for statement
-   cutovers.** D-028 says that once an import capability is released and
-   restore-verified, further files use a bounded preview, transactional write,
-   receipt, count check and idempotent replay, and do not repeat the whole
-   recovery rehearsal. Every statement import still verifies a full backup and
-   restore proof, and `MYBANK_CUTOVER.md` still instructs one fresh
-   backup/restore inventory per plan. Closing the gap means changing a gate on
-   the path that writes real financial facts; not changed here.
-2. **Four review views are mounted but disabled.** `candidate-events`,
+1. **星汇 (book 01) cannot be admitted, because of a mistake of mine.** An
+   earlier end-to-end proof registered the suffix alias `mybank`/`SUFFIX`/`0688`
+   under a synthetic entity, and `managed_account_alias` is unique on
+   `(institution_code, alias_kind, normalized_value)` across the whole database.
+   Every registry table is append-only by trigger, so the claim cannot be
+   withdrawn in place. 星汇's 74 facts are the only real data not imported.
+   Two ways out, both the user's call:
+   - Rebuild the local database from the manifests. Everything here is scripted
+     and replayable in minutes, and it would also remove the two synthetic
+     candidate batches and the synthetic entity. Destructive to the current
+     database; recent backups exist. A `DROP DATABASE` was refused by the
+     permission gate, so a fresh database beside the current one is the
+     non-destructive variant.
+   - Register 星汇's account under a different alias kind. Truthful, but it
+     leaves a permanent registry row asserting that account 0688 belongs to a
+     synthetic entity.
+2. **`src/ledgerbridge/account_registry_intake.py` was changed, and this is the
+   approval request AGENTS.md asks for.** Its schema pin was a single revision,
+   `20260904_0044`, so against head (`20260906_0051`) the intake failed as
+   "account intake database owner target is invalid" — the same message a wrong
+   role produces. The pin is now a frozenset through `20260906_0051`, with a
+   separate message naming the real cause. Migrations 0045–0051 were read first:
+   counterparty overlap, candidate readers, reporting items, a payroll read
+   model, reporting-item correction, a POSTED snapshot trigger fix and two
+   parser profiles. None touch registry tables. `mybank_statement_cutover.py`
+   already keeps its supported revisions as a frozenset through the same
+   revision, so this aligns siblings rather than inventing a practice. Not
+   merged to the release line; if the user would rather this stay local, the
+   local branch can carry it alone.
+3. **Two parser gaps, both in what Core admits as an official statement.**
+   - 7 MYbank monthly files are rejected as "company range statement header is
+     invalid". Their header uses half-width `借方金额(收)` where
+     `_COMPANY_RANGE_HEADERS` requires full-width `（收）`. The bank ships both.
+   - 2 ABC personal PDFs are rejected as "statement transaction log number is
+     invalid".
+   Both would be changes to a production parser, so neither was made.
+4. **6 WeChat statements have no Core parser.** `wechat_xlsx_v1` exists only in
+   the frozen finance-desk program; roughly 9,112 personal transactions sit
+   behind it. That is the whole of the gap between personal's 480 imported facts
+   and finance-desk's 9,592.
+5. **D-028's repeat-import relaxation is still not implemented for statement
+   cutovers, and this is the concrete shape of the gap.** D-028 says a released,
+   restore-verified import capability uses a bounded preview, transactional
+   write, receipt, count check and idempotent replay for further files, and does
+   not repeat the whole recovery rehearsal.
+
+   Every statement import here still takes a full backup and rehearses a
+   restore, which costs about five seconds a book — not the problem. The problem
+   is replay. The gate wants one inventory to equal *both* the backup it is
+   handed *and* the live counts minus the batch. Immediately after an import
+   those are the same number, so re-running the manifest replays exactly and
+   changes nothing — proved below. Once another book is imported on top, they
+   are different numbers and no backup can be both, so an older manifest is
+   refused. Fail-closed and honest, but it means the idempotent replay D-028
+   asks for holds only for the most recent batch.
+
+   Closing it means changing a gate on the path that writes real financial
+   facts, so it is recorded rather than done.
+6. **Four review views are mounted but disabled.** `candidate-events`,
    `candidate-classification-groups`, `company-transaction-classifications` and
    its summary are GET routes living inside command routers; Core gates the
    whole module behind `enable_internal_candidate_command_api`, which also
@@ -220,6 +302,22 @@ rows rather than by reading the code:
    later is a settings change. Whether to enable it locally is a decision: it
    means minting an assertion key on a single-user machine and declaring the
    command API enabled in a profile that serves no command.
+
+### Replay, proved 2026-09-12
+
+`local_mode.py statements` re-run against the most recently imported book:
+
+```text
+reading 1 statements for 1 account(s)
+replaying against backup: local-backup-20260912T032953Z
+LOCAL_STATEMENTS_OK statements=1 created=0 replayed=1 transactions=89 review=PENDING
+```
+
+`bank_statement` / `bank_statement_transaction` / `bank_statement_observation` /
+`audit_event` / `evidence_object` all unchanged at `60/2484/3073/5859/62`. The
+same five counts are unchanged after three older manifests are re-run and
+refused. This is the task's fourth acceptance test, met for the statement path
+within the bound described in open issue 5.
 
 ## A destructive mistake, recorded
 

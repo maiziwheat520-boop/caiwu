@@ -34,15 +34,27 @@ import sys
 from collections.abc import Iterable
 from contextlib import suppress
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from fastapi import APIRouter, FastAPI
+
+if TYPE_CHECKING:  # pragma: no cover - imports for annotations only
+    from sqlalchemy import Engine
+
+    from ledgerbridge.bank_statement_cutover_plan import BankStatementExistingAccountPlan
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from ledgerbridge.local_backup import (  # noqa: E402
+    LocalBackupError,
+    LocalBackupResult,
+    LocalDatabase,
+    existing_backups,
+    run_local_backup,
+)
 from ledgerbridge.local_mode import (  # noqa: E402
     LOCAL_HOST,
     LOCAL_PORT,
@@ -52,6 +64,7 @@ from ledgerbridge.local_mode import (  # noqa: E402
     local_principal,
     local_settings,
 )
+from ledgerbridge.local_statements import LocalStatementError  # noqa: E402
 
 ENV_FILE = REPO_ROOT / ".env.local"
 LOCAL_STATE = Path.home() / ".ledgerbridge-local"
@@ -59,7 +72,15 @@ LOCAL_STATE = Path.home() / ".ledgerbridge-local"
 #: never rotates. It lives outside the repository for the same reason .env.local
 #: does: nothing under the working tree should hold a key by accident.
 EVIDENCE_KEY_FILE = LOCAL_STATE / "keys" / "evidence-key.json"
+#: Backups of the local database, each one a directory holding an encrypted
+#: archive and the report of the restore that was rehearsed from it. The
+#: statement import will not run without a fresh one.
+BACKUP_ROOT = LOCAL_STATE / "backups"
+#: A keyring of its own, so that backing up a laptop ledger never touches the
+#: user's own GnuPG configuration.
+GNUPG_HOME = LOCAL_STATE / "gnupg"
 DATABASE = "ledgerbridge"
+CONTAINER = "ledgerbridge-local-postgres"
 HOST_PORT = 5433
 
 #: Written to .env.local by `init`. Two of these five matter to the launcher:
@@ -306,6 +327,91 @@ def _profile(host: str, port: int) -> LocalProfile:
     )
 
 
+def _revision() -> str:
+    """The commit this backup was taken at, recorded in the proof.
+
+    The cutover gate requires the backup and its rehearsal report to name the
+    same 40-character revision. Production takes it from the deployed release;
+    here it is the working tree's HEAD, which is the honest answer to "what
+    code produced this".
+    """
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    revision = completed.stdout.strip()
+    if completed.returncode != 0 or len(revision) != 40:
+        raise LocalModeRefused("could not read the working tree's HEAD revision")
+    return revision
+
+
+def _postgres_image() -> str:
+    """The exact image the local database runs, digest and all."""
+    completed = subprocess.run(
+        ["docker", "inspect", "--format", "{{index .Config.Image}}", CONTAINER],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    image = completed.stdout.strip()
+    if completed.returncode != 0 or not image:
+        raise LocalModeRefused(
+            f"the local database container {CONTAINER} is not running; "
+            "start it with `docker compose --env-file .env.local "
+            "-f docker-compose.local.yml up -d`"
+        )
+    return image
+
+
+def _local_database() -> LocalDatabase:
+    return LocalDatabase(
+        container=CONTAINER,
+        database=DATABASE,
+        owner_role=f"{DATABASE}_owner",
+        image=_postgres_image(),
+    )
+
+
+def command_backup(_args: argparse.Namespace) -> int:
+    """Back up the local database and rehearse restoring it.
+
+    This is the same proof production requires before a statement import: an
+    encrypted backup, and a restore of it into an isolated database whose
+    inventory matches the live one exactly. It was once assumed unobtainable
+    here because the production tooling is a Linux deployment script. The gate
+    asks for a proof rather than for that script, and this machine can produce
+    one: Docker, pg_dump, pg_restore and gpg are all present, and the ledger
+    restores in seconds.
+
+    The backup is also worth having on its own. A local workbench holding the
+    only copy of a year of statements is an accident waiting to happen.
+    """
+    result = run_local_backup(
+        _local_database(),
+        revision=_revision(),
+        artifact_root=LOCAL_STATE / "artifacts",
+        backup_root=BACKUP_ROOT,
+        gnupg_home=GNUPG_HOME,
+    )
+    inventory = result.inventory
+    counts = inventory["row_counts"]
+    print(
+        "LOCAL_BACKUP_OK "
+        f"backup={result.directory.name} "
+        f"schema={inventory['schema_revision']} "
+        f"statements={counts.get('bank_statement', 0)} "
+        f"transactions={counts.get('bank_statement_transaction', 0)} "
+        f"candidates={inventory['candidate_total']} "
+        f"audit={inventory['audit_events']}"
+    )
+    print(f"  directory: {result.directory}")
+    print(f"  rehearsal: {result.restore_report.name}")
+    return 0
+
+
 def command_import(args: argparse.Namespace) -> int:
     """Import one controlled-review batch into the local database.
 
@@ -359,6 +465,182 @@ def command_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_book(args: argparse.Namespace) -> int:
+    """Admit one book: its entity, business unit, first evidence and account.
+
+    Core already has exactly this operation - `account_registry_intake` creates
+    the entity, the business unit, the admission evidence, the managed account,
+    its aliases and the business-unit assignment inside one transaction, then
+    replays itself and refuses if the replay is not exact. Only the *command
+    wrapper* around it insists on a production environment; the operation
+    itself asks nothing about where it runs. Local mode calls the operation.
+
+    Without a business-unit assignment covering the statement period the
+    statement import refuses with "managed account requires continuous
+    business-unit assignment coverage", so the plan should carry one that
+    starts before the oldest statement.
+    """
+    from sqlalchemy import create_engine
+
+    from ledgerbridge.account_registry_intake import (
+        load_private_account_registry_intake,
+        run_transactional_account_registry_intake,
+    )
+
+    loaded = load_private_account_registry_intake(args.plan.resolve())
+    engine = create_engine(_env_value("LEDGERBRIDGE_MIGRATION_DATABASE_URL"))
+    receipt = run_transactional_account_registry_intake(engine, loaded, commit=True)
+    print(
+        "LOCAL_BOOK_OK "
+        f"entity={loaded.plan.entity.name} "
+        f"account={loaded.plan.account.account_key} "
+        f"created={receipt.created} "
+        f"revision={receipt.registry_revision}"
+    )
+    return 0
+
+
+def command_statements(args: argparse.Namespace) -> int:
+    """Import one book's statements, behind a backup taken for the occasion.
+
+    The backup is not a formality bolted on to satisfy a check. Core refuses a
+    statement import without an encrypted backup and a passed isolated restore
+    whose inventory equals the live counts, and it is right to: this is the
+    only import path that writes transaction facts. Local mode meets that
+    requirement by actually taking the backup and actually rehearsing the
+    restore, immediately before the import, which is also the moment at which a
+    backup is worth the most.
+
+    The backup is taken here rather than left to the operator because the
+    inventory must match the database as it is at import time. Any write in
+    between - registering another account, importing another batch - invalidates
+    it, and the failure would otherwise arrive as an opaque "proof is invalid".
+
+    Re-running a manifest is the exception, and it has to be: the proof asserts
+    what the ledger held *before* the batch, and after the batch has landed a
+    fresh backup can no longer say that truthfully. So a replay presents the
+    backup that was actually taken before it, found by its inventory.
+
+    That works for the most recently imported batch and not for an older one -
+    the gate wants one inventory to equal both the backup and the live counts
+    minus this batch, and a book imported after it makes those two different
+    numbers. An older manifest is therefore refused rather than re-imported.
+    """
+    from sqlalchemy import create_engine
+
+    from ledgerbridge.local_statements import (
+        batch_is_already_imported,
+        build_statement_plans,
+        import_local_statements,
+        load_statement_batch,
+    )
+    from ledgerbridge.mybank_statement_cutover import (
+        MyBankCutoverSafetyProof,
+        MyBankStatementCutoverGates,
+        production_counts_from_cutover_inventory,
+    )
+
+    batch = load_statement_batch(args.manifest.resolve())
+    print(f"reading {len(batch.statements)} statements for {len(batch.accounts)} account(s)")
+    # Every file is parsed before the database is touched at all. This is the
+    # bounded preview: an unreadable file stops the run here, not halfway in.
+    plans = build_statement_plans(batch)
+
+    engine = create_engine(_env_value("LEDGERBRIDGE_MIGRATION_DATABASE_URL"))
+    if batch_is_already_imported(engine, plans):
+        backup = _backup_taken_before(engine, plans)
+        print(f"replaying against backup: {backup.directory.name}")
+    else:
+        backup = run_local_backup(
+            _local_database(),
+            revision=_revision(),
+            artifact_root=LOCAL_STATE / "artifacts",
+            backup_root=BACKUP_ROOT,
+            gnupg_home=GNUPG_HOME,
+        )
+        print(f"backup: {backup.directory.name}")
+
+    schema_revision = str(backup.inventory["schema_revision"])
+    gates = MyBankStatementCutoverGates(
+        schema_revision=schema_revision,
+        backup_verified=True,
+        isolated_restore_verified=True,
+        rollback_ready=True,
+        expected_before=production_counts_from_cutover_inventory(
+            backup.inventory,
+            expected_schema_revision=schema_revision,
+        ),
+    )
+    receipts = import_local_statements(
+        engine,
+        plans,
+        proof=MyBankCutoverSafetyProof(
+            backup_directory=backup.directory,
+            restore_report=backup.restore_report,
+        ),
+        gates=gates,
+        key_file=EVIDENCE_KEY_FILE,
+        artifact_root=LOCAL_STATE / "artifacts",
+    )
+    created = sum(1 for receipt in receipts if receipt.created)
+    transactions = sum(receipt.transaction_count for receipt in receipts)
+    print(
+        "LOCAL_STATEMENTS_OK "
+        f"statements={len(receipts)} "
+        f"created={created} "
+        f"replayed={len(receipts) - created} "
+        f"transactions={transactions} "
+        f"review=PENDING"
+    )
+    return 0
+
+
+def _backup_taken_before(
+    engine: Engine,
+    plans: tuple[BankStatementExistingAccountPlan, ...],
+) -> LocalBackupResult:
+    """Find the backup this batch was imported behind, by its inventory.
+
+    Not by filename and not by time. The batch's own count arithmetic, run
+    backwards from what the ledger holds now, says exactly what the pre-import
+    inventory was; the right backup is the one carrying it. If none does, say so
+    rather than taking a new one - a new one would describe the state after the
+    import, and would be a proof of the wrong thing.
+    """
+    from ledgerbridge.local_statements import LocalStatementError, counts_before_batch
+    from ledgerbridge.mybank_statement_cutover import (
+        MyBankStatementCutoverError,
+        _read_production_counts,
+        production_counts_from_cutover_inventory,
+    )
+
+    with engine.connect() as connection:
+        completed = _read_production_counts(connection)
+    wanted = counts_before_batch(completed, plans)
+
+    for backup in existing_backups(BACKUP_ROOT):
+        revision = str(backup.inventory.get("schema_revision", ""))
+        try:
+            counts = production_counts_from_cutover_inventory(
+                backup.inventory,
+                expected_schema_revision=revision,
+            )
+        except MyBankStatementCutoverError:
+            continue
+        if counts == wanted:
+            return backup
+    raise LocalStatementError(
+        "these statements are already imported, and no backup here describes "
+        "the ledger as it was before them. Replay works for the most recently "
+        "imported batch and stops working once anything is written after it: "
+        "the proof must state what the ledger held beforehand, and the gate "
+        "also compares that to the live counts minus this batch. Once another "
+        "book lands, no single inventory can be both. This is the concrete "
+        "shape of the D-028 gap recorded in the task document; nothing was "
+        "double-imported."
+    )
+
+
 def command_check(args: argparse.Namespace) -> int:
     """Prove the profile assembles and the database answers, then exit.
 
@@ -403,6 +685,19 @@ def main(argv: list[str] | None = None) -> int:
     importer.add_argument("--source-manifest", type=Path, required=True)
     importer.add_argument("--prepared-manifest", type=Path, default=None)
     importer.set_defaults(func=command_import)
+    subparsers.add_parser(
+        "backup",
+        help="back up the local database and rehearse restoring it",
+    ).set_defaults(func=command_backup)
+    book = subparsers.add_parser("book", help="admit one entity, unit and account")
+    book.add_argument("--plan", type=Path, required=True)
+    book.set_defaults(func=command_book)
+    statements = subparsers.add_parser(
+        "statements",
+        help="back up, then import one book's bank statements",
+    )
+    statements.add_argument("--manifest", type=Path, required=True)
+    statements.set_defaults(func=command_statements)
     for name, function, help_text in (
         ("check", command_check, "assemble the profile and count entities"),
         ("serve", command_serve, "serve the internal read API on loopback"),
@@ -414,7 +709,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except LocalModeRefused as refusal:
+    except (LocalModeRefused, LocalBackupError, LocalStatementError) as refusal:
         print(f"local mode refused: {refusal}", file=sys.stderr)
         return 2
 

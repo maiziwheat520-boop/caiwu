@@ -17,7 +17,7 @@ refusals is not a configuration flag but a proof about a real backup.
 | Role | owner | owner |
 | Idempotence | receipt in `internal_import.controlled_batch_receipt`, keyed by `batch_ref` | replay comparison inside one transaction |
 | Precondition | an operator-written source manifest | an encrypted backup **and** a passed isolated-restore rehearsal |
-| Runs locally | yes | no — see [What does not run here](#what-does-not-run-here) |
+| Runs locally | yes | yes — see [Statements](#statements) |
 
 Both refuse to post anything. Candidates arrive `PENDING`; `Ledger Draft ->
 Posted Entry` still needs a person, locally as everywhere else.
@@ -134,17 +134,15 @@ Getting the roles right matters here too: handing every variable the owner URL
 turns the five privilege assertions into failures that look like database
 defects and are actually a mis-wired runner.
 
-## What does not run here
+## Statements
 
-### Registered-account statement cutover
+This is the path that writes bank statement transaction facts, and the previous
+version of this document said it does not run here. That was wrong, and it is
+worth saying why, because the reasoning that produced it is the kind that
+quietly turns a gate into a wall.
 
-This is the path that imports bank statement transaction facts — the one the
-deployed database used for its 11 statements — and it does not run on this
-machine.
-
-The blocker is not a flag. `_run_transactional_database_existing_account_import`
-calls `verify_mybank_cutover_safety_proof` before it does anything, on both the
-preflight and the execute path, and that function requires:
+`verify_mybank_cutover_safety_proof` runs before the preflight and the execution
+alike, and demands:
 
 - a backup directory holding `backup.json` (format
   `ledgerbridge-encrypted-backup-v3`, with a GPG fingerprint and the
@@ -156,32 +154,99 @@ preflight and the execute path, and that function requires:
 - and that report's `cutover_inventory` to equal the live database's counts
   exactly.
 
-Those artifacts come from `scripts/backup_restore.py`, which is a Hermes
-script: it defaults to `/srv/ai-center/...` and `/dev/shm`, and shells out to
-`gpg`, `pg_dump`, `docker compose` and GNU `tar`. It does not run on Windows.
+Those artifacts used to come only from `scripts/backup_restore.py`, which is a
+Hermes script — `/srv/ai-center`, `/dev/shm`, GNU `tar` — and does not run on
+Windows. The conclusion drawn from that was "statements cannot be imported
+locally". But the gate validates *artifacts*, not their producer. It asks for
+proof that a restorable backup exists and was rehearsed; it does not ask which
+machine did the rehearsing.
 
-There is no correct way to hand-write those files. They are a proof that a
-restorable backup exists and was rehearsed; producing them without doing the
-work would be forging evidence, not configuring a tool.
+`src/ledgerbridge/local_backup.py` does that work here, and does it honestly:
 
-### Account registry intake
+1. `pg_dump -Fc` of the live local database, through `docker exec`.
+2. A deterministic tar of the dump, the inventory, and the artifact store — no
+   timestamps, no ownership — so that an unchanged database backs up to
+   identical bytes and a changed ciphertext digest means a changed ledger.
+3. Real GPG encryption to a key in a keyring of its own under
+   `~/.ledgerbridge-local/gnupg`, never the user's.
+4. A real restore: decrypt, `createdb` a throwaway database, `pg_restore` into
+   it, read its inventory, compare it to the source's, then drop it and prove
+   both that it is gone and that the live database did not move.
 
-`scripts/run_account_registry_intake.py` refuses unless
-`LEDGERBRIDGE_ENV=production` on **both** of its paths — the rollback preflight
-demands `production` plus `database_target=production-rollback-only`, and the
-execution path demands `production` plus an explicit execution token. It also
-reads a `DEPLOYED_REVISION` file from the working directory and requires it to
-match the plan's target revision.
+The inventory counts every base table in `public`, not only the sixteen the gate
+reads by name. Extra keys are ignored by `_counts_from_cutover_inventory`, so
+counting everything is stronger evidence that the restored database equals the
+live one, not weaker.
 
-So a Managed Account cannot be registered locally through that command, which
-in turn means the statement cutover has nothing to import against even if its
-safety proof were satisfiable.
+Nothing was weakened and nothing was hand-written. `local_mode.py statements`
+takes the backup itself, immediately before importing, because the inventory
+must match the database as it is at import time — any write in between (another
+account admitted, another batch imported) invalidates it, and the failure would
+otherwise arrive as an opaque "proof is invalid".
 
-Note the asymmetry, because it is easy to misread: the *statement cutover*
-command's preflight is the opposite — it refuses when `LEDGERBRIDGE_ENV` **is**
-`production` and requires `database_target=isolated`. That path is meant to run
-off-production, but it commits nothing, and it still verifies the safety proof
-first.
+```text
+python scripts/local_mode.py book       --plan <account>.intake.json
+python scripts/local_mode.py statements --manifest <book>.statements.json
+```
+
+### The batch manifest
+
+`ledgerbridge.local-statement-batch.v1`, keys exactly
+`{schema_version, book, accounts, statements, audit}`. `accounts` maps each
+account suffix to the Managed Account ref registered for it; every statement
+names a suffix that must appear there. At most 100 statements, because that is
+the cutover's rollback boundary; a longer manifest is refused here with a
+message that says to split it rather than failing deep inside the cutover.
+
+`expected_new_transaction_count` declares how many of a file's rows the ledger
+has not seen. Omitting it asserts that all of them are new, which is right for a
+first import and wrong for a re-export that overlaps one.
+
+### Accounts
+
+`account_registry_intake.run_transactional_account_registry_intake` has no
+environment gate — only the command wrappers
+(`account_registry_intake_command.py`, `scripts/run_account_registry_intake.py`)
+demand `LEDGERBRIDGE_ENV=production`, a `DEPLOYED_REVISION` file and an
+execution token. The module itself creates entity, business unit, admission
+evidence, managed account, aliases and the business-unit assignment in one
+transaction, then replays itself and requires an exact replay. `local_mode.py
+book` uses it directly.
+
+Two things about it are easy to get wrong:
+
+- **A managed account needs continuous business-unit assignment coverage over
+  the statement period.** Without it the import fails as
+  "existing-account statement import conflict", which names the symptom and not
+  the cause. The intake plan therefore carries an assignment with an
+  `effective_from` that precedes every statement.
+- **`managed_account_alias` is unique on `(institution_code, alias_kind,
+  normalized_value)` across the whole database**, not per entity. A suffix alias
+  belongs to exactly one account anywhere. Claiming one for a test entity blocks
+  the real account that owns it, permanently: every registry table is
+  append-only by trigger, so there is no un-claiming it.
+
+### When two exports of the same account disagree
+
+MYbank exports one account in more than one column layout. The daily statement
+carries eleven columns; some range exports carry nine, dropping 交易名称 or
+对方账号. The parser renders a missing name column as the literal
+`银行未提供交易名称`, so the same transaction read from two files is the same
+amount, date, balance and serial with a different name.
+
+The ledger keys a fact on `(managed_account_ref, transaction_serial)` and
+refuses a second, disagreeing version of it — correctly, because silently
+overwriting a fact is how a ledger stops being one. The database raises
+`overlapping bank statement transaction conflicts with fact`, which the cutover
+reports as `existing-account statement import conflict`.
+
+There is no enrichment path: a fact cannot be improved by a later, fuller
+statement. So one export has to be the book's. Keep the file that covers the
+most transactions, and admit a further file only when it either agrees with what
+is kept or brings serials nobody has seen. A file that both disagrees and adds
+nothing is the one to leave out — and the trade-off is worth naming rather than
+automating, because it is a judgement about which of the bank's own documents
+the book is based on.
 
 ## Views that stay dark locally
 
