@@ -1,11 +1,15 @@
 """Bring a payment platform's rows into the ledger as review candidates.
 
-A bank statement and a WeChat bill are different kinds of document, and Core
+A bank statement and a payment bill are different kinds of document, and Core
 already knows that. A statement is an account's own record, carries a balance,
 and enters through the statement cutover. A payment bill records what was paid
 to whom; it has no balance and, in WeChat's case, no single account for one to
 belong to. It enters as *candidates*: facts that are real but not yet
 classified, and that a person still has to decide about.
+
+Two platforms arrive here, WeChat and Alipay, read through different readers
+into one shape. The batch manifest names which, because a financial document's
+format is not something to sniff: guessing wrong is worse than being told.
 
 That difference is why this path is the lighter one. ``import_prepared_manifest``
 needs no environment gate, no encrypted backup and no restore rehearsal,
@@ -25,6 +29,7 @@ import hashlib
 import json
 import shutil
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -43,13 +48,9 @@ from ledgerbridge.controlled_import import (
     import_prepared_manifest,
     prepare_source_manifest,
 )
-from ledgerbridge.local_wechat import (
-    DIRECTIONLESS,
-    WECHAT_SOURCE_SYSTEM,
-    WeChatExport,
-    WeChatRow,
-    read_wechat_export,
-)
+from ledgerbridge.local_alipay import ALIPAY_SOURCE_SYSTEM, read_alipay_export
+from ledgerbridge.local_payments import DIRECTIONLESS, PaymentExport, PaymentRow
+from ledgerbridge.local_wechat import WECHAT_SOURCE_SYSTEM, read_wechat_export
 
 CANDIDATE_BATCH_SCHEMA: Final = "ledgerbridge.local-candidate-batch.v1"
 
@@ -76,7 +77,6 @@ _MAX_MANIFEST_BYTES: Final = 4 * 1024 * 1024
 _MAX_SOURCES: Final = 20
 _MAX_LABEL: Final = 100
 _MAX_SUMMARY: Final = 500
-_MEDIA_TYPE: Final = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 class LocalCandidateError(RuntimeError):
@@ -84,13 +84,58 @@ class LocalCandidateError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class _Platform:
+    """What differs between one payment platform's exports and another's."""
+
+    reader: Callable[[bytes], PaymentExport]
+    source_system: str
+    extension: str
+    media_type: str
+    #: Prefixed to every derived reference, so two platforms cannot mint the
+    #: same one from the same order number. WeChat's is empty and has to stay
+    #: empty: 2,212 of its candidates are already in the ledger under
+    #: unprefixed references, and changing them would import them a second time
+    #: rather than replay them.
+    ref_scope: tuple[str, ...]
+
+
+#: A reference that belongs to the book rather than to one platform's
+#: file is minted without a platform prefix.
+_BOOK_SCOPE: Final[tuple[str, ...]] = ()
+
+_PLATFORMS: Final[dict[str, _Platform]] = {
+    "wechat": _Platform(
+        reader=read_wechat_export,
+        source_system=WECHAT_SOURCE_SYSTEM,
+        extension="xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ref_scope=(),
+    ),
+    "alipay": _Platform(
+        reader=read_alipay_export,
+        source_system=ALIPAY_SOURCE_SYSTEM,
+        extension="csv",
+        media_type="text/csv",
+        ref_scope=(ALIPAY_SOURCE_SYSTEM,),
+    ),
+}
+
+
+@dataclass(frozen=True, slots=True)
 class LocalCandidateBatch:
     """One platform's exports, and the book they belong to."""
 
+    platform: str
     entity_ref: UUID
     business_unit_ref: UUID
     sources: tuple[Path, ...]
     description: str
+
+    @property
+    def spec(self) -> _Platform:
+        """The reader and naming this batch's platform uses."""
+
+        return _PLATFORMS[self.platform]
 
 
 def load_candidate_batch(path: Path) -> LocalCandidateBatch:
@@ -108,10 +153,15 @@ def load_candidate_batch(path: Path) -> LocalCandidateBatch:
         raise LocalCandidateError("candidate manifest is not valid JSON") from None
     if not isinstance(payload, dict) or payload.get("schema_version") != CANDIDATE_BATCH_SCHEMA:
         raise LocalCandidateError(f"candidate manifest must declare {CANDIDATE_BATCH_SCHEMA}")
-    expected = {"schema_version", "book", "sources", "description"}
+    expected = {"schema_version", "platform", "book", "sources", "description"}
     if set(payload) != expected:
         raise LocalCandidateError(f"candidate manifest keys must be exactly {sorted(expected)}")
 
+    platform = payload["platform"]
+    if platform not in _PLATFORMS:
+        raise LocalCandidateError(
+            f"candidate manifest platform must be one of {sorted(_PLATFORMS)}"
+        )
     book = payload["book"]
     if not isinstance(book, dict) or set(book) != {"entity_ref", "business_unit_ref"}:
         raise LocalCandidateError("candidate manifest book is invalid")
@@ -134,6 +184,7 @@ def load_candidate_batch(path: Path) -> LocalCandidateBatch:
     if not isinstance(description, str) or not 1 <= len(description) <= 500:
         raise LocalCandidateError("candidate manifest description is invalid")
     return LocalCandidateBatch(
+        platform=platform,
         entity_ref=_uuid(book["entity_ref"]),
         business_unit_ref=_uuid(book["business_unit_ref"]),
         sources=tuple(sources),
@@ -157,6 +208,7 @@ def build_source_manifest(
     """
 
     entity_name, unit_ref, unit_label = _book_identity(engine, batch)
+    spec = batch.spec
 
     evidence: list[SourceEvidence] = []
     files: dict[UUID, Path] = {}
@@ -164,12 +216,13 @@ def build_source_manifest(
     # the same transaction; one candidate is made for it. The exports are read
     # oldest-first so that where they differ descriptively, the newer one is
     # the one kept - see `_reconcile`.
-    rows: dict[str, tuple[WeChatRow, UUID]] = {}
+    rows: dict[str, tuple[PaymentRow, UUID]] = {}
     exports = _exports_oldest_first(batch)
+    identity = _identity_scope(spec, _one_account(exports))
     for source, raw, export in exports:
         path = source.resolve()
         digest = hashlib.sha256(raw).hexdigest()
-        evidence_ref = _ref("evidence", digest)
+        evidence_ref = _ref(spec.ref_scope, "evidence", digest)
         if evidence_ref in files:
             raise LocalCandidateError("batch names two exports with the same content")
         files[evidence_ref] = path
@@ -179,9 +232,9 @@ def build_source_manifest(
                 # The bank's own filename carries the owner's name and is not
                 # ASCII; the stored name is the digest, which identifies the
                 # bytes without describing whose they are.
-                source_file=f"{digest[:16]}.xlsx",
-                display_name=f"wechat-{digest[:16]}.xlsx",
-                declared_media_type=_MEDIA_TYPE,
+                source_file=f"{digest[:16]}.{spec.extension}",
+                display_name=f"{batch.platform}-{digest[:16]}.{spec.extension}",
+                declared_media_type=spec.media_type,
                 plaintext_sha256=digest,
                 plaintext_size=len(raw),
             )
@@ -191,7 +244,7 @@ def build_source_manifest(
             rows[row.serial] = (row if held is None else _reconcile(held[0], row), evidence_ref)
 
     candidates = tuple(
-        _candidate(row, evidence_ref)
+        _candidate(spec, identity, row, evidence_ref)
         for _, (row, evidence_ref) in sorted(rows.items(), key=lambda item: item[1][0].occurred_at)
     )
     if not candidates:
@@ -199,7 +252,9 @@ def build_source_manifest(
     used = {candidate.category_code for candidate in candidates}
     manifest = SourceManifest(
         schema_version="ledgerbridge.controlled-review-source.v1",
-        batch_ref=_ref("batch", *sorted(item.plaintext_sha256 for item in evidence)),
+        batch_ref=_ref(
+            spec.ref_scope, "batch", *sorted(item.plaintext_sha256 for item in evidence)
+        ),
         # The moment the newest export was taken, not the moment this ran.
         # The batch receipt compares manifest digests to tell a replay from a
         # second import, so a clock reading here would make every re-run look
@@ -214,7 +269,11 @@ def build_source_manifest(
         ),
         categories=tuple(
             ImportCategory(
-                category_ref=_ref("category", str(batch.entity_ref), code),
+                # Unscoped by platform on purpose: a reporting category
+                # belongs to the book, and the database agrees - it is
+                # unique on (entity, code). WeChat and Alipay rows land in
+                # the same UNCLASSIFIED, which is what a review queue wants.
+                category_ref=_ref(_BOOK_SCOPE, "category", str(batch.entity_ref), code),
                 code=code,
                 label=_CATEGORY_LABELS[code],
             )
@@ -264,20 +323,63 @@ def import_local_candidates(
 
 def _exports_oldest_first(
     batch: LocalCandidateBatch,
-) -> list[tuple[Path, bytes, WeChatExport]]:
+) -> list[tuple[Path, bytes, PaymentExport]]:
     """Read every export before anything is written, oldest export first."""
 
-    read: list[tuple[Path, bytes, WeChatExport]] = []
+    reader = batch.spec.reader
+    read: list[tuple[Path, bytes, PaymentExport]] = []
     for source in batch.sources:
         try:
             raw = source.resolve().read_bytes()
         except OSError as error:
             raise LocalCandidateError(f"export is unreadable: {error}") from None
-        read.append((source, raw, read_wechat_export(raw)))
+        read.append((source, raw, reader(raw)))
     return sorted(read, key=lambda item: item[2].exported_at)
 
 
-def _reconcile(held: WeChatRow, found: WeChatRow) -> WeChatRow:
+def _one_account(exports: list[tuple[Path, bytes, PaymentExport]]) -> str:
+    """The account this batch belongs to, refusing files that name two.
+
+    Alipay's export says which login it belongs to. Two logins in one batch
+    would merge two accounts' payments into one set of candidates with nothing
+    recording which was which. WeChat's export names no account, so there is
+    nothing to compare, nothing is claimed, and the empty string comes back.
+    """
+
+    named = {export.account_hint for _, _, export in exports if export.account_hint}
+    if len(named) > 1:
+        raise LocalCandidateError(
+            "the exports in this batch name different accounts, so they are not "
+            "one account's bill. Import each account as its own batch."
+        )
+    return named.pop() if named else ""
+
+
+def _identity_scope(spec: _Platform, account: str) -> tuple[str, ...]:
+    """The namespace a transaction's identity lives in.
+
+    A payment is identified by the account it moved through *and* the order
+    number, not by the order number alone. One Alipay account paying another
+    writes the same order number into both bills - once as money going out and
+    once as money coming in - and those are two facts, one per account, not one
+    fact seen twice. Keying on the order number alone would collapse them.
+
+    Where the file names no account, nothing is added: WeChat's bill names
+    none, and its candidates are already in the ledger under references minted
+    without one.
+
+    The account is folded in as a digest rather than in the clear. A login is
+    an email address or a phone number, and a derived reference is stored
+    forever; it has no business carrying one.
+    """
+
+    if not account:
+        return spec.ref_scope
+    digest = hashlib.sha256(f"{spec.source_system}|{account}".encode()).hexdigest()
+    return (*spec.ref_scope, digest[:16])
+
+
+def _reconcile(held: PaymentRow, found: PaymentRow) -> PaymentRow:
     """Settle two exports' accounts of one transaction.
 
     What the transaction *is* - when it happened, its direction, its amount,
@@ -302,22 +404,27 @@ def _reconcile(held: WeChatRow, found: WeChatRow) -> WeChatRow:
     return found
 
 
-def _candidate(row: WeChatRow, evidence_ref: UUID) -> ImportCandidate:
+def _candidate(
+    spec: _Platform,
+    identity: tuple[str, ...],
+    row: PaymentRow,
+    evidence_ref: UUID,
+) -> ImportCandidate:
     """One row, stated as a candidate and classified as nothing.
 
     The amount keeps the sign the bill states and no more: negative for
-    expenditure, positive for income, and the bare magnitude for a row WeChat
-    itself declines to give a direction. Guessing a sign for those from the
+    expenditure, positive for income, and the bare magnitude for a row the
+    platform itself declines to give a direction. Guessing a sign from the
     transaction type would be inference presented as a fact, and the category
     they land in exists so that a person can do it instead.
     """
 
     return ImportCandidate(
-        candidate_ref=_ref("candidate", row.serial),
-        operation_id=_ref("operation", row.serial),
+        candidate_ref=_ref(identity, "candidate", row.serial),
+        operation_id=_ref(identity, "operation", row.serial),
         ingest_channel="CONTROLLED_UPLOAD",
-        source_system=WECHAT_SOURCE_SYSTEM,
-        source_event_ref=_ref("source-event", WECHAT_SOURCE_SYSTEM, row.serial),
+        source_system=spec.source_system,
+        source_event_ref=_ref(identity, "source-event", spec.source_system, row.serial),
         display_label=_bounded(row.counterparty or row.kind, _MAX_LABEL),
         category_code=INTERNAL_TRANSFER if row.direction == DIRECTIONLESS else UNCLASSIFIED,
         amount_minor=row.signed_amount_minor,
@@ -369,8 +476,8 @@ def _bounded(value: str, limit: int) -> str:
     return text_value[:limit]
 
 
-def _ref(kind: str, *parts: str) -> UUID:
-    return uuid5(_NAMESPACE, "|".join((kind, *parts)))
+def _ref(scope: tuple[str, ...], kind: str, *parts: str) -> UUID:
+    return uuid5(_NAMESPACE, "|".join((*scope, kind, *parts)))
 
 
 def _uuid(value: Any) -> UUID:

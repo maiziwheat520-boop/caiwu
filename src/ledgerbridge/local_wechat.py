@@ -12,9 +12,9 @@ check would then be verifying our own arithmetic against itself.
 What the file does carry is its own proof of completeness. The preamble states
 the record count, and states the count and total of income, expenditure and
 direction-less rows separately. Those are WeChat's assertions, not ours, and a
-file whose rows disagree with its own preamble is refused here. That is the
-role the balance chain plays for a bank statement, filled by a different
-mechanism.
+file whose rows disagree with its own preamble is refused here - by
+``local_payments``, which holds that check because Alipay ships the same kind
+of document and the same kind of proof.
 
 Nothing here decides what a row *means*. A direction-less row keeps the
 unsigned magnitude the preamble itself totals it by, and classification is left
@@ -24,7 +24,6 @@ to review.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Final
@@ -33,6 +32,18 @@ from zoneinfo import ZoneInfo
 # The workbook reader is shared rather than copied. It carries the archive
 # entry-count, compression and size limits that make opening an untrusted XLSX
 # safe, and a second copy of those limits is a second thing to keep right.
+from ledgerbridge.local_payments import (
+    DIRECTIONLESS,
+    EXPENDITURE,
+    INCOME,
+    MAX_ROWS,
+    MAX_TEXT,
+    PaymentBillError,
+    PaymentExport,
+    PaymentRow,
+    agrees_with_itself,
+    money_minor,
+)
 from ledgerbridge.mybank_statement import MyBankStatementError
 from ledgerbridge.mybank_statement import _read_workbook_rows as _read_xlsx_rows
 
@@ -75,63 +86,21 @@ _SUBTOTAL: Final = re.compile(
     rf"\s*(?P<amount>[0-9]+(?:\.[0-9]+)?)元$"
 )
 _SERIAL: Final = re.compile(r"^[0-9]{16,64}$")
-_AMOUNT: Final = re.compile(r"^[0-9]+(?:\.[0-9]{1,2})?$")
 
-#: The direction column as the file spells it. The last of the three is
-#: WeChat's own way of saying that a row has no direction - top-ups,
-#: withdrawals, 零钱通 movements, card repayments - and the preamble totals
-#: those separately, by magnitude.
-INCOME: Final = "收入"
-EXPENDITURE: Final = "支出"
-DIRECTIONLESS: Final = "/"
-
+#: WeChat's own way of writing the direction-less subtotal. The rows it
+#: covers are top-ups, withdrawals, 零钱通 movements and card repayments,
+#: totalled separately and by magnitude.
 _NEUTRAL_LABEL: Final = "中性交易"
 
-_MAX_TEXT: Final = 500
-_MAX_ROWS: Final = 100_000
+_MAX_TEXT: Final = MAX_TEXT
+_MAX_ROWS: Final = MAX_ROWS
 
 
-class LocalWeChatError(RuntimeError):
+class LocalWeChatError(PaymentBillError):
     """A WeChat export could not be read, or disagrees with itself."""
 
 
-@dataclass(frozen=True, slots=True)
-class WeChatRow:
-    """One row, as the file states it. No field here is derived."""
-
-    occurred_at: datetime
-    kind: str
-    counterparty: str
-    product: str
-    direction: str
-    #: Magnitude in cents, always positive. The sign belongs to ``direction``,
-    #: and a direction-less row genuinely has none.
-    amount_minor: int
-    funding: str
-    status: str
-    serial: str
-    merchant_serial: str
-    note: str
-
-    @property
-    def signed_amount_minor(self) -> int:
-        """Signed where the file states a direction, unsigned where it does not."""
-
-        return -self.amount_minor if self.direction == EXPENDITURE else self.amount_minor
-
-
-@dataclass(frozen=True, slots=True)
-class WeChatExport:
-    """One export, checked against the four counts it asserts about itself."""
-
-    period_start: datetime
-    period_end: datetime
-    exported_at: datetime
-    export_kind: str
-    rows: tuple[WeChatRow, ...]
-
-
-def read_wechat_export(raw: bytes) -> WeChatExport:
+def read_wechat_export(raw: bytes) -> PaymentExport:
     """Read one export, refusing a file that disagrees with its own preamble."""
 
     try:
@@ -164,23 +133,34 @@ def read_wechat_export(raw: bytes) -> WeChatExport:
     if len(rows) > _MAX_ROWS:
         raise LocalWeChatError("WeChat export is implausibly large")
 
-    _agrees_with_itself(rows, _declared_total(preamble), _declared_subtotals(preamble))
+    agrees_with_itself(
+        rows,
+        _declared_total(preamble),
+        _declared_subtotals(preamble),
+        neutral_label=_NEUTRAL_LABEL,
+        totals_are_binding=True,
+        error=LocalWeChatError,
+    )
     for row in rows:
         if not period_start <= row.occurred_at <= period_end:
             raise LocalWeChatError("WeChat export holds a row outside its own period")
     if len({row.serial for row in rows}) != len(rows):
         raise LocalWeChatError("WeChat export repeats a transaction serial")
 
-    return WeChatExport(
+    return PaymentExport(
         period_start=period_start,
         period_end=period_end,
         exported_at=_stated_time(_bracketed(preamble, "导出时间")),
         export_kind=_bracketed(preamble, "导出类型"),
+        # WeChat's bill names no account. 零钱 and 零钱通 appear only as one
+        # payment method among the bank cards, so there is nothing here to
+        # check a second file against.
+        account_hint="",
         rows=rows,
     )
 
 
-def _row(values: tuple[str, ...]) -> WeChatRow:
+def _row(values: tuple[str, ...]) -> PaymentRow:
     if len(values) < len(_HEADER):
         raise LocalWeChatError("WeChat transaction row is too narrow")
     if any(len(value) > _MAX_TEXT for value in values):
@@ -204,7 +184,7 @@ def _row(values: tuple[str, ...]) -> WeChatRow:
         raise LocalWeChatError("WeChat transaction is missing a stated field")
     if _SERIAL.fullmatch(serial) is None:
         raise LocalWeChatError("WeChat transaction serial is invalid")
-    return WeChatRow(
+    return PaymentRow(
         occurred_at=_timestamp(occurred),
         kind=kind,
         counterparty=counterparty,
@@ -237,44 +217,7 @@ def _timestamp(value: str) -> datetime:
 
 
 def _money_minor(value: str) -> int:
-    if _AMOUNT.fullmatch(value) is None:
-        raise LocalWeChatError("WeChat transaction amount is invalid")
-    minor = Decimal(value) * 100
-    if minor != minor.to_integral_value():
-        raise LocalWeChatError("WeChat transaction amount is not a whole number of cents")
-    return int(minor)
-
-
-def _agrees_with_itself(
-    rows: tuple[WeChatRow, ...],
-    declared_total: int,
-    declared: dict[str, tuple[int, int]],
-) -> None:
-    """Check the rows against the four statements the preamble makes.
-
-    This is the file's own evidence that nothing was dropped between WeChat and
-    here, and it is why a balance-free export can be trusted at all.
-    """
-
-    if len(rows) != declared_total:
-        raise LocalWeChatError(
-            f"WeChat export declares {declared_total} records but holds {len(rows)}"
-        )
-    for label, direction in (
-        (INCOME, INCOME),
-        (EXPENDITURE, EXPENDITURE),
-        (_NEUTRAL_LABEL, DIRECTIONLESS),
-    ):
-        if label not in declared:
-            raise LocalWeChatError(f"WeChat export does not total its {label} rows")
-        count, amount_minor = declared[label]
-        found = [row for row in rows if row.direction == direction]
-        if len(found) != count:
-            raise LocalWeChatError(
-                f"WeChat export declares {count} {label} rows but holds {len(found)}"
-            )
-        if sum(row.amount_minor for row in found) != amount_minor:
-            raise LocalWeChatError(f"WeChat export {label} rows do not add up to its own total")
+    return money_minor(value, error=LocalWeChatError)
 
 
 def _period(preamble: list[str]) -> tuple[datetime, datetime]:
@@ -322,12 +265,7 @@ def _stated_time(value: str) -> datetime:
 
 
 __all__ = [
-    "DIRECTIONLESS",
-    "EXPENDITURE",
-    "INCOME",
     "WECHAT_SOURCE_SYSTEM",
     "LocalWeChatError",
-    "WeChatExport",
-    "WeChatRow",
     "read_wechat_export",
 ]

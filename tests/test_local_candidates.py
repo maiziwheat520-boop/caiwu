@@ -9,20 +9,38 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from ledgerbridge.local_candidates import (
+    _PLATFORMS,
     CANDIDATE_BATCH_SCHEMA,
     INTERNAL_TRANSFER,
     UNCLASSIFIED,
     LocalCandidateError,
     _candidate,
+    _identity_scope,
+    _one_account,
     _reconcile,
     load_candidate_batch,
 )
-from ledgerbridge.local_wechat import DIRECTIONLESS, WeChatRow
+from ledgerbridge.local_payments import DIRECTIONLESS, PaymentExport, PaymentRow
 
 _ZONE = ZoneInfo("Asia/Shanghai")
+_WECHAT = _PLATFORMS["wechat"]
 
 
-def _row(**changed: object) -> WeChatRow:
+def _export(account_hint: str) -> PaymentExport:
+    """One synthetic export, carrying only what `_one_account` looks at."""
+
+    moment = datetime(2026, 3, 1, tzinfo=_ZONE)
+    return PaymentExport(
+        period_start=moment,
+        period_end=moment,
+        exported_at=moment,
+        export_kind="全部",
+        account_hint=account_hint,
+        rows=(),
+    )
+
+
+def _row(**changed: object) -> PaymentRow:
     """One synthetic row. Nothing here is a real transaction."""
 
     fields: dict[str, object] = {
@@ -39,12 +57,13 @@ def _row(**changed: object) -> WeChatRow:
         "note": "/",
     }
     fields.update(changed)
-    return WeChatRow(**fields)  # type: ignore[arg-type]
+    return PaymentRow(**fields)  # type: ignore[arg-type]
 
 
 def _manifest(tmp_path: Path, **changed: object) -> Path:
     payload: dict[str, object] = {
         "schema_version": CANDIDATE_BATCH_SCHEMA,
+        "platform": "wechat",
         "book": {"entity_ref": str(uuid4()), "business_unit_ref": str(uuid4())},
         "sources": [str(tmp_path / "export.xlsx")],
         "description": "synthetic",
@@ -117,7 +136,7 @@ def test_two_exports_may_not_disagree_about_when_it_happened(tmp_path: Path) -> 
 
 def test_an_expenditure_becomes_a_negative_unclassified_candidate() -> None:
     evidence_ref = uuid4()
-    candidate = _candidate(_row(), evidence_ref)
+    candidate = _candidate(_WECHAT, (), _row(), evidence_ref)
 
     assert candidate.amount_minor == -2600
     assert candidate.category_code == UNCLASSIFIED
@@ -129,6 +148,8 @@ def test_an_expenditure_becomes_a_negative_unclassified_candidate() -> None:
 
 def test_a_directionless_row_keeps_its_magnitude_and_its_own_category() -> None:
     candidate = _candidate(
+        _WECHAT,
+        (),
         _row(direction=DIRECTIONLESS, kind="零钱提现", counterparty="/", status="提现已到账"),
         uuid4(),
     )
@@ -141,9 +162,62 @@ def test_a_directionless_row_keeps_its_magnitude_and_its_own_category() -> None:
 def test_candidate_references_are_derived_from_the_transaction() -> None:
     """Re-running the builder must produce the same manifest, or replay is a fiction."""
 
-    first = _candidate(_row(), UUID(int=1))
-    again = _candidate(_row(counterparty="改了昵称"), UUID(int=1))
+    first = _candidate(_WECHAT, (), _row(), UUID(int=1))
+    again = _candidate(_WECHAT, (), _row(counterparty="改了昵称"), UUID(int=1))
 
     assert first.candidate_ref == again.candidate_ref
     assert first.source_event_ref == again.source_event_ref
     assert first.operation_id == again.operation_id
+
+
+def test_refuses_a_manifest_naming_a_platform_that_is_not_read_here(tmp_path: Path) -> None:
+    with pytest.raises(LocalCandidateError, match="platform must be one of"):
+        load_candidate_batch(_manifest(tmp_path, platform="paypal"))
+
+
+def test_two_platforms_do_not_mint_the_same_reference_from_one_order_number() -> None:
+    """Two order numbers can collide across platforms; two candidates may not."""
+
+    wechat = _candidate(_WECHAT, (), _row(), UUID(int=1))
+    alipay = _PLATFORMS["alipay"]
+    other = _candidate(alipay, alipay.ref_scope, _row(), UUID(int=1))
+
+    assert wechat.candidate_ref != other.candidate_ref
+    assert wechat.source_event_ref != other.source_event_ref
+
+
+def test_refuses_a_batch_whose_exports_name_different_accounts(tmp_path: Path) -> None:
+    """Alipay names its login; two logins in one batch is two books' worth of facts."""
+
+    exports = [
+        (tmp_path / "a.csv", b"", _export("owner-one")),
+        (tmp_path / "b.csv", b"", _export("owner-two")),
+    ]
+
+    with pytest.raises(LocalCandidateError, match="name different accounts"):
+        _one_account(exports)
+
+
+def test_a_batch_of_exports_naming_no_account_is_allowed(tmp_path: Path) -> None:
+    """WeChat's bill names none, so there is nothing to compare and nothing claimed."""
+
+    _one_account([(tmp_path / "a.xlsx", b"", _export("")) for _ in range(2)])
+
+
+def test_one_order_number_in_two_accounts_is_two_facts() -> None:
+    """Alipay writes the same order number into both sides of a transfer."""
+
+    alipay = _PLATFORMS["alipay"]
+    paid = _candidate(alipay, _identity_scope(alipay, "one@example.com"), _row(), UUID(int=1))
+    received = _candidate(alipay, _identity_scope(alipay, "two@example.com"), _row(), UUID(int=1))
+
+    assert paid.candidate_ref != received.candidate_ref
+
+
+def test_an_account_is_not_written_into_the_reference_it_scopes() -> None:
+    """A login is an email or a phone number; a stored reference must not carry it."""
+
+    alipay = _PLATFORMS["alipay"]
+    scope = _identity_scope(alipay, "owner@example.com")
+
+    assert "owner@example.com" not in "".join(scope)
