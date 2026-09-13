@@ -342,6 +342,16 @@ Two things differ, and both are the file's own doing rather than ours:
   accounts, and the builder refuses files whose preambles name different ones.
   Import each login as its own batch.
 
+### Candidates are written in Core's platform shape
+
+Summary `平台 | YYYY-MM-DD | 收入/支出/不计收支 | 交易类型 | 交易对方 | 支付方式 | 交易状态`,
+category `WECHAT_TRANSACTION_REVIEW` or `ALIPAY_TRANSACTION_REVIEW`, source
+systems `wechat_pay_export` and `alipay_export` - the same as
+`scripts/build_platform_review_bundle.py`. This is a contract, not a format:
+`personal_finance_summary` reads the fields by position and `review_risk`
+only looks at those two categories. An empty field is written as `/` so the
+positions hold.
+
 ### A payment's identity is the account plus the order number
 
 Not the order number alone. Two Alipay logins transferring to each other write

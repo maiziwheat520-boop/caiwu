@@ -271,6 +271,52 @@ not already hold, whether it disagrees or agrees. For 星汇 that left one
 74-row range export carrying all 74 facts; the six dropped files contributed
 nothing. Zero facts were lost.
 
+## Second rebuild: candidates in Core's shape (2026-09-13, user: "重建本地 ledgerbridge 库和 artifacts 目录")
+
+The local importer had written WeChat and Alipay candidates in a shape of its
+own - a slash-joined summary without platform, date or direction, categories
+`UNCLASSIFIED`/`INTERNAL_TRANSFER`, Alipay as `alipay_bill_export`. Core reads
+the summary positionally (`personal_finance_summary`) and raises platform
+review risks only for `WECHAT_/ALIPAY_TRANSACTION_REVIEW` (`review_risk`), so
+every local candidate would have dropped out of personal totals once confirmed,
+and none carried a risk. Nothing had been reviewed yet, so it was fixed at the
+source (`2836bfe`, matching `scripts/build_platform_review_bundle.py`) and the
+database rebuilt.
+
+Nothing was destroyed. Backup `local-backup-20260913T094507Z` was taken first;
+the old database is `ledgerbridge_pre_contract_20260913` and its artifacts
+`~/.ledgerbridge-local/artifacts-pre-contract-20260913`. All 14 accounts, 9
+statement batches and 3 candidate batches re-imported without a failure.
+
+```text
+                         statements  txn   obs   accounts entities candidates evidence
+pre_contract_20260913    64          2721  3549  14       8        8947       72
+ledgerbridge (rebuilt)   64          2721  3549  14       8        8947       72
+```
+
+Through the running Core, all 8,947 candidates have the seven-field summary
+(2,212 `wechat_pay_export`, 6,735 `alipay_export`), in 微信交易复核 / 支付宝交易复核,
+and review risks now appear where they belong:
+
+```text
+TRANSFER_REVIEW_REQUIRED    6003
+FUNDING_STATEMENT_REQUIRED   644
+REVERSAL_MATCH_REQUIRED      300
+UNSETTLED_TRANSACTION        103
+no risk                     2142
+```
+
+`personal-finance-summary` reports 8,947 pending and 8,947 excluded, which is
+correct before any decision: only confirmed candidates become entries. That the
+shape is accepted once confirmed is held by the unit tests, not yet by a live
+confirmation - local mode serves no decision command.
+
+The rebuild also retires the WeChat batch's replay wart recorded under open
+issue 4: that batch was first imported from a manifest carrying a clock
+reading, and it has now been imported from the reproducible one. The general
+candidate-replay issue (open issue 8, nondeterministic evidence envelope) is
+unchanged.
+
 ## Open issues (awaiting user decision)
 
 1. ~~**星汇 (book 01) cannot be admitted, because of a mistake of mine.**~~
