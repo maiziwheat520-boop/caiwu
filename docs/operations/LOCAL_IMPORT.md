@@ -422,8 +422,8 @@ hostname of your own.
 Before confirming, know what a confirmation does to the personal summary:
 
 - A confirmed platform row counts as it is; no category correction is needed.
-- **Do not confirm a 不计收支 row - ignore it.** The summary currently books its
-  amount as income (recorded as an open issue in the task document).
+- A confirmed 不计收支 row is counted as no cash flow - neither income nor
+  expense.
 - A book whose business unit is named 公司, 酒店, 宾馆 or 门店 is left out of the
   personal summary entirely.
 

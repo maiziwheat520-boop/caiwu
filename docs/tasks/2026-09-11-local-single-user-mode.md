@@ -207,12 +207,12 @@ listed exclusions instead of asserting the set, stale comments.
 
 Still open:
 
-- **A confirmed 不计收支 row counts as income.** The importer keeps a
-  directionless row's bare magnitude (the bill states no sign), and
-  `personal_finance_summary._cashflow_minor` signs only 收入/支出 and passes
-  anything else through, so a positive magnitude lands in `income_minor`.
-  The fix belongs in that production module (treat 不计收支 as no cash flow)
-  and needs the user's approval. Until then: ignore such rows, do not confirm.
+- ~~**A confirmed 不计收支 row counts as income.**~~ Fixed 2026-09-13 (user:
+  "全部修复"): `personal_finance_summary._cashflow_minor` now books a row the
+  platform calls 不计收支 as no cash flow, and such a row is counted as neither
+  an income nor an expense entry. This is a production module; it changes no
+  production total, because a production neutral row would have been
+  mis-summed the same way.
 - **What counts after CONFIRM.** A confirmed platform candidate enters the
   personal summary as it is; no category correction is needed. A book whose
   unit name says 公司/酒店/宾馆/门店 is excluded. Category shares read

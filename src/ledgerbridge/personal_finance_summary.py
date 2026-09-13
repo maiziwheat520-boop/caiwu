@@ -119,6 +119,12 @@ def _cashflow_minor(candidate: CandidateProjection) -> int:
         return abs(amount)
     if stated == "支出":
         return -abs(amount)
+    if stated == "不计收支":
+        # The platform itself says this row is not income or expense - a
+        # transfer between the user's own balances, a refund hold, a repayment.
+        # Its amount is a magnitude with no sign, and passing it through would
+        # book it as income.
+        return 0
     return amount
 
 
@@ -274,7 +280,7 @@ def build_personal_finance_summary(
         income_minor=income_minor,
         expense_minor=expense_minor,
         net_minor=income_minor - expense_minor,
-        income_entry_count=sum(1 for entry in counted if entry.cashflow_minor >= 0),
+        income_entry_count=sum(1 for entry in counted if entry.cashflow_minor > 0),
         expense_entry_count=sum(1 for entry in counted if entry.cashflow_minor < 0),
         evidence_count=len(evidence_refs),
         excluded_count=excluded_count,

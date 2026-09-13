@@ -91,6 +91,19 @@ def test_the_stated_direction_overrides_the_sign() -> None:
     assert expense.expense_minor == 500 and expense.income_minor == 0
 
 
+def test_a_row_the_platform_calls_directionless_moves_no_money() -> None:
+    summary = build_personal_finance_summary(
+        (
+            _personal(
+                summary="支付宝|2026-08-03|不计收支|转账|本人|余额宝|交易成功", amount_minor=500
+            ),
+        )
+    )
+    assert summary.entry_total == 1
+    assert summary.income_minor == 0 and summary.expense_minor == 0 and summary.net_minor == 0
+    assert summary.income_entry_count == 0 and summary.expense_entry_count == 0
+
+
 def test_a_confirmed_candidate_cannot_have_an_unknown_amount() -> None:
     """Only confirmed candidates become entries, and Core will not confirm one
     that is missing an amount, a category, a month or a business unit.
