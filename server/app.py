@@ -102,12 +102,10 @@ SUPPORTED_MODES = frozenset(
 AUTHENTICATED_MODES = frozenset({"authenticated-preview", "core-backed"})
 #: Core's local profile listens here (``ledgerbridge.local_mode.LOCAL_PORT``).
 LOCAL_CORE_BASE_URL = "http://127.0.0.1:8661"
-#: Local mode still sends the BFF user assertion, because the Core client always
-#: does. Core's local profile installs a fixed principal and reads nothing from
-#: the request, so these values name the caller in the audit trail rather than
-#: authorising it. The key is minted per start and never stored: a credential
-#: kept on disk so a process can authenticate to itself is a liability with no
-#: matching benefit.
+#: Local mode signs nothing: candidate decisions go to Core's local routes with
+#: no user assertion (`CoreBackedState._candidate_command_headers`). The issuer,
+#: audience and key below only satisfy the shared constructor; the principal and
+#: subject still name this machine's one user.
 LOCAL_WORKLOAD_PRINCIPAL = "workload:local-single-user"
 LOCAL_ASSERTION_ISSUER = "ledgerbridge-web-local"
 LOCAL_ASSERTION_AUDIENCE = "ledgerbridge-core-local"
@@ -115,6 +113,12 @@ LOCAL_ASSERTION_AUDIENCE = "ledgerbridge-core-local"
 #: so they are the same string by construction rather than by coincidence.
 LOCAL_USER_SUBJECT = LOCAL_SESSION_PRINCIPAL
 LOCAL_GENERATION = 1
+#: Host names a local-mode request may arrive under. Binding to loopback keeps
+#: other machines out but not other websites: a page served from a name that is
+#: later re-resolved to 127.0.0.1 (DNS rebinding) is same-origin with this server
+#: in the browser's eyes, and could read the session's CSRF token and decide
+#: candidates. What it cannot change is the Host header, which still names it.
+LOCAL_ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})
 #: Settings that only mean something on the deployed path. Local mode refuses
 #: them rather than ignoring them: an operator who set CORE_CERT_FILE believes
 #: the connection is mutually authenticated, and quietly dropping it would leave
@@ -982,6 +986,23 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             return None
         return session_token, session_subject
 
+    def _refuse_foreign_host(self) -> bool:
+        """In local mode, answer only requests addressed to this machine by name."""
+        if self.preview_server.mode != "local-single-user":
+            return False
+        host = self.headers.get("Host", "").strip().lower()
+        if host.startswith("["):
+            name, _, rest = host.partition("]")
+            name, port = f"{name}]", rest.removeprefix(":")
+        else:
+            name, _, port = host.partition(":")
+        expected_port = str(self.server.server_address[1])
+        if name in LOCAL_ALLOWED_HOSTS and port == expected_port:
+            return False
+        self.close_connection = True
+        self._send_json(421, _problem(421, "LOCAL_HOST_REJECTED", "本地模式只接受本机地址访问"))
+        return True
+
     def _require_same_origin(self) -> bool:
         manager = self.preview_server.auth_manager
         if manager is None:
@@ -1563,6 +1584,8 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             self.path = "/index.html"
 
     def do_GET(self) -> None:
+        if self._refuse_foreign_host():
+            return
         split = urlsplit(self.path)
         if split.path == "/healthz":
             payload = b"ok\n"
@@ -1754,6 +1777,8 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         # A rejected POST can leave an unread body. Close the connection so those
         # bytes can never be interpreted as a second HTTP request.
         self.close_connection = True
+        if self._refuse_foreign_host():
+            return
         split = urlsplit(self.path)
         path = split.path
         if self._auth_post(path):
@@ -2111,6 +2136,8 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         self._send_json(status, payload, headers={"Location": location} if location is not None else None)
 
     def do_HEAD(self) -> None:
+        if self._refuse_foreign_host():
+            return
         path = urlsplit(self.path).path
         if path == "/healthz":
             self.send_response(200)

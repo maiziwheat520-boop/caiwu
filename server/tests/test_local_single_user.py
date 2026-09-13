@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 from unittest.mock import patch
@@ -192,6 +193,29 @@ class LocalSingleUserServerTests(unittest.TestCase):
         response = urllib.request.urlopen(f"{self.base_url}/api/v1/session", timeout=2)
         self.assertEqual(response.headers["X-LedgerBridge-Mode"], "local-single-user")
 
+    def _status_with_host(self, method: str, host: str) -> int:
+        request = urllib.request.Request(
+            f"{self.base_url}/api/v1/session", method=method, headers={"Host": host}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=2) as response:
+                return response.status
+        except urllib.error.HTTPError as error:
+            return error.code
+
+    def test_a_rebound_name_is_refused_even_on_loopback(self) -> None:
+        """DNS rebinding: the page's own name, now resolving to 127.0.0.1."""
+        port = self.server.server_port
+        for method in ("GET", "POST"):
+            self.assertEqual(self._status_with_host(method, f"evil.example:{port}"), 421)
+        # The right name on the wrong port is somebody else's origin too.
+        self.assertEqual(self._status_with_host("GET", "127.0.0.1:1"), 421)
+
+    def test_this_machine_by_its_own_names_is_served(self) -> None:
+        port = self.server.server_port
+        for host in (f"127.0.0.1:{port}", f"localhost:{port}", f"LOCALHOST:{port}"):
+            self.assertEqual(self._status_with_host("GET", host), 200)
+
 
 class CoreBackedSessionUnchangedTests(unittest.TestCase):
     def test_core_backed_still_refuses_to_mint_its_own_session(self) -> None:
@@ -273,6 +297,69 @@ class LocalSingleUserScopeTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(SystemExit, "local Core did not answer"):
                 _verify_local_scope(state)
+
+
+class _RecordingClient:
+    """Stands in for Core: records what a decision was sent with."""
+
+    def __init__(self) -> None:
+        self.headers: list[dict[str, str]] = []
+
+    def json(self, method, path, *, body=None, headers=None):  # type: ignore[no-untyped-def]
+        self.headers.append(dict(headers or {}))
+        raise CoreBackendError(409, {"code": "STALE_REVISION"})
+
+
+class LocalDecisionsAreUnsignedTests(unittest.TestCase):
+    """The user dropped the signed assertion locally ("去掉签名", 2026-09-13)."""
+
+    CANDIDATE = "30000000-0000-4000-8000-000000000003"
+    OPERATION = "40000000-0000-4000-8000-000000000001"
+
+    def _state(self):  # type: ignore[no-untyped-def]
+        env = patch.dict("os.environ", _local_env(), clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        state = _build_local_single_user_state("127.0.0.1")
+        state.client = _RecordingClient()
+        return state
+
+    def test_a_local_decision_carries_no_assertion(self) -> None:
+        state = self._state()
+        status, _ = state.append_decision(
+            self.CANDIDATE, self.OPERATION, {"decision": "CONFIRM", "expected_revision": 1}
+        )
+        self.assertEqual(status, 409)
+        (sent,) = state.client.headers
+        self.assertEqual(sent["Idempotency-Key"], self.OPERATION)
+        self.assertNotIn("X-LedgerBridge-User-Assertion", sent)
+
+    def test_a_local_group_decision_carries_no_assertion(self) -> None:
+        state = self._state()
+        other = "30000000-0000-4000-8000-000000000004"
+        status, _ = state.apply_candidate_classification_batch(
+            "cg_" + "0" * 32,
+            self.OPERATION,
+            {
+                "source_candidate_ref": self.CANDIDATE,
+                "members": [
+                    {"candidate_ref": self.CANDIDATE, "expected_revision": 1},
+                    {"candidate_ref": other, "expected_revision": 1},
+                ],
+            },
+        )
+        self.assertEqual(status, 409)
+        (sent,) = state.client.headers
+        self.assertNotIn("X-LedgerBridge-User-Assertion", sent)
+
+    def test_a_deployed_decision_is_still_signed(self) -> None:
+        state = self._state()
+        state.local_session = False
+        state.append_decision(
+            self.CANDIDATE, self.OPERATION, {"decision": "CONFIRM", "expected_revision": 1}
+        )
+        (sent,) = state.client.headers
+        self.assertTrue(sent["X-LedgerBridge-User-Assertion"].startswith("v1."))
 
 
 if __name__ == "__main__":

@@ -34,7 +34,9 @@ python deploy/server.py
 
 ## 本机单用户模式
 
-`LEDGERBRIDGE_MODE=local-single-user` 让 BFF 用明文 HTTP 连接同一台电脑上的 Core 本机档案（默认 `http://127.0.0.1:8661`）。它复用 `core-backed` 的同一个 Core 客户端、同一个适配器和同一批 `/internal/v1` 只读路由，只去掉在一台电脑上无人可验证的部分：没有 mTLS 证书、没有 Passkey、没有受信代理、没有 Secure Cookie（回环上没有 TLS）。
+`LEDGERBRIDGE_MODE=local-single-user` 让 BFF 用明文 HTTP 连接同一台电脑上的 Core 本机档案（默认 `http://127.0.0.1:8661`）。它复用 `core-backed` 的同一个 Core 客户端、同一个适配器和同一批 `/internal/v1` 读取路由，只去掉在一台电脑上无人可验证的部分：没有 mTLS 证书、没有 Passkey、没有受信代理、没有 Secure Cookie（回环上没有 TLS）。
+
+唯一的写入是候选审核：单条确认、忽略、改分类或营业单元，以及按分类组确认。本机的决定请求不带用户断言签名（Core 本机档案对应的两条路由不验签），仍然要求本地会话 Cookie 和 CSRF 令牌。为防 DNS 重绑定，BFF 和 Core 都只接受以本机名字访问的请求（`127.0.0.1` 或 `localhost` 加各自端口），其他 Host 一律返回 `421 LOCAL_HOST_REJECTED`。
 
 ```bash
 npm run build

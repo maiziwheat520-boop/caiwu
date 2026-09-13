@@ -654,7 +654,7 @@ class CoreBackedState:
         expected_revision = int(source_members[0]["expected_revision"])
         path = f"{CLASSIFICATION_GROUPS_CORE_PATH}/{group_ref}/decisions"
         body = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        assertion = self._user_assertion(
+        headers = self._candidate_command_headers(
             path=path,
             body=body,
             candidate_ref=source_candidate_ref,
@@ -662,16 +662,7 @@ class CoreBackedState:
             operation_id=operation_id,
         )
         try:
-            payload = self.client.json(
-                "POST",
-                path,
-                body=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "Idempotency-Key": operation_id,
-                    "X-LedgerBridge-User-Assertion": assertion,
-                },
-            )
+            payload = self.client.json("POST", path, body=body, headers=headers)
         except CoreBackendError as error:
             return error.status, error.payload
         try:
@@ -957,7 +948,7 @@ class CoreBackedState:
                     return 422, _problem(422, "INVALID_CORRECTION_REFERENCE")
                 corrections[legacy] = reference
         body = json.dumps(forwarded_request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        assertion = self._user_assertion(
+        headers = self._candidate_command_headers(
             path=path,
             body=body,
             candidate_ref=candidate_ref,
@@ -965,16 +956,7 @@ class CoreBackedState:
             operation_id=operation_id,
         )
         try:
-            payload = self.client.json(
-                "POST",
-                path,
-                body=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "Idempotency-Key": operation_id,
-                    "X-LedgerBridge-User-Assertion": assertion,
-                },
-            )
+            payload = self.client.json("POST", path, body=body, headers=headers)
         except CoreBackendError as error:
             return error.status, error.payload
         candidate = payload.get("candidate")
@@ -1755,6 +1737,33 @@ class CoreBackedState:
         signed = f"v1.{encoded}".encode("ascii")
         signature = hmac.new(self.assertion_key, signed, hashlib.sha256).digest()
         return f"v1.{encoded}.{_b64url(signature)}"
+
+    def _candidate_command_headers(
+        self,
+        *,
+        path: str,
+        body: bytes,
+        candidate_ref: str,
+        expected_revision: int,
+        operation_id: str,
+    ) -> dict[str, str]:
+        """Headers for a candidate decision or classification group decision.
+
+        Local single-user mode sends no user assertion: Core's local profile
+        serves these two routes without one (the user's "去掉签名", 2026-09-13),
+        because both processes run as the same person on the same machine. The
+        browser session and its CSRF token still stand in front of this call.
+        """
+        headers = {"Content-Type": "application/json", "Idempotency-Key": operation_id}
+        if not self.local_session:
+            headers["X-LedgerBridge-User-Assertion"] = self._user_assertion(
+                path=path,
+                body=body,
+                candidate_ref=candidate_ref,
+                expected_revision=expected_revision,
+                operation_id=operation_id,
+            )
+        return headers
 
     def _user_assertion(
         self,
