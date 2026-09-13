@@ -16,6 +16,9 @@ import type {
   ConnectionStatus,
   EvidenceUnlockResult,
   EvidencePreview,
+  LocalRuleBatchMember,
+  LocalRuleBatchReceipt,
+  LocalRuleSuggestions,
   OriginalReconciliation,
   PasskeyAdditionResult,
   PersonalBankTransactionsResponse,
@@ -93,6 +96,11 @@ const problemCodeMessages: Record<string, string> = {
   COMMAND_REJECTED: 'Core 拒绝了本次操作，没有写入',
   INVALID_TRANSITION: '该事项当前状态不允许此操作，请刷新后查看',
   CANDIDATE_COMMAND_UNAVAILABLE: '审核提交服务暂不可用，请稍后重试',
+  LOCAL_RULES_NOT_CONFIGURED: '本机还没有规则文件，暂无规则建议',
+  LOCAL_RULES_INVALID: '规则文件格式无效，请修正后刷新',
+  LOCAL_RULES_CHANGED: '规则文件已变化，本批没有写入；请刷新后重新确认',
+  LOCAL_CATEGORY_NOT_READY: '该分类尚未写入本机账簿，请先运行 local_mode.py categories',
+  INVALID_LOCAL_RULE_BATCH: '规则批量确认请求无效，没有写入',
 }
 
 function problemMessage(problem: Problem | undefined, status: number): string {
@@ -414,6 +422,30 @@ export const api = {
 
   getAccountingDimensions: () =>
     requestJson<AccountingDimensions>('/api/v1/accounting-dimensions'),
+
+  getLocalRuleSuggestions: () =>
+    requestJson<LocalRuleSuggestions>('/api/v1/local/rule-suggestions'),
+
+  // One chunk of a rule group confirmation. The scope names the chunk, so a
+  // retry of the same chunk after an unknown outcome reuses its key.
+  applyLocalRuleBatchChunk: ({ rulesVersion, groupKey, chunkIndex, reason, members, csrfToken }: {
+    rulesVersion: string
+    groupKey: string
+    chunkIndex: number
+    reason: string
+    members: LocalRuleBatchMember[]
+    csrfToken: string
+  }) => requestDecision<LocalRuleBatchReceipt>(
+    `rule-batch:${groupKey}:${chunkIndex}`,
+    '/api/v1/local/rule-batches/decisions',
+    {
+      rules_version: rulesVersion,
+      group_key: groupKey,
+      reason,
+      members,
+    },
+    csrfToken,
+  ),
 
   listClassificationGroups: () =>
     requestJson<ClassificationGroupPage>('/api/v1/candidate-classification-groups'),

@@ -893,6 +893,31 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
   .statement-item-context { grid-column: 2 / 3; grid-row: 2; margin-top: -10px; }
 }
 
+/* Local rule suggestions */
+.rule-group-list { display: grid; gap: 12px; margin-top: 14px; }
+.rule-group { padding: 0; overflow: hidden; }
+.rule-group-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 18px; }
+.rule-group-toggle { display: flex; flex: 1 1 320px; flex-wrap: wrap; align-items: center; gap: 9px; min-width: 0; padding: 0; border: 0; color: inherit; background: none; cursor: pointer; text-align: left; }
+.rule-group-toggle strong { color: #263b58; font-size: 13px; }
+.rule-caret { transition: transform .15s ease; }
+.rule-caret.open { transform: rotate(90deg); }
+.rule-pattern { min-width: 0; overflow: hidden; color: #41546e; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.rule-group-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.rule-not-ready { color: #9a5b00; font-size: 11px; }
+.rule-sample { display: grid; grid-template-columns: minmax(150px, .6fr) minmax(0, 1.6fr) auto; align-items: center; gap: 15px; padding: 10px 18px; border-top: 1px solid #e9edf3; }
+.rule-sample > span { min-width: 0; }
+.rule-sample > span:first-child strong, .rule-sample > span:first-child small { display: block; }
+.rule-sample > span:first-child small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.rule-sample > span:nth-child(2) { overflow-wrap: anywhere; color: #41546e; font-size: 11px; }
+.rule-sample > strong { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rule-batch-status { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
+.rule-batch-tally { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px; color: #41546e; font-size: 12px; }
+.rule-batch-error { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; color: #b42318; font-size: 12px; }
+
+@media (max-width: 800px) {
+  .rule-sample { grid-template-columns: 1fr; gap: 6px; }
+}
+
 @media (max-width: 800px) {
   .sidebar { display: none; }
   .main-column { width: 100%; margin-left: 0; padding-bottom: calc(74px + env(safe-area-inset-bottom)); }

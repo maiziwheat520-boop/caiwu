@@ -90,6 +90,13 @@ CLASSIFICATION_GROUPS_CORE_PATH = "/internal/v1/candidate-classification-groups"
 PERSONAL_FINANCE_CORE_PATH = "/internal/v1/personal-finance"
 COMPANY_BANK_REVIEW_WORKLOAD_PRINCIPAL = "workload:ledgerbridge-company-bank-review"
 CLASSIFICATION_GROUP_REF = re.compile(r"^cg_[0-9a-f]{32}$")
+LOCAL_RULE_SUGGESTIONS_CORE_PATH = "/internal/v1/local/rule-suggestions"
+LOCAL_RULE_BATCH_DECISIONS_CORE_PATH = "/internal/v1/local/rule-batches/decisions"
+LOCAL_RULE_BATCH_MAX_MEMBERS = 200
+LOCAL_RULE_OUTCOMES = frozenset({"CONFIRMED", "NOT_MATCHED", "NOT_PENDING", "STALE", "REJECTED"})
+CATEGORY_NATURES = frozenset({"INCOME", "EXPENSE", "TRANSFER"})
+_RULES_VERSION = re.compile(r"^[0-9a-f]{16}$")
+_PROBLEM_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 CLASSIFICATION_RISK_CODES = frozenset(
     {
         "FUNDING_STATEMENT_REQUIRED",
@@ -595,14 +602,22 @@ class CoreBackedState:
             values = payload.get(collection)
             if not isinstance(values, list) or len(values) > 1_000:
                 raise invalid_contract()
-            items: list[dict[str, str]] = []
+            items: list[dict[str, str | None]] = []
             references: set[str] = set()
             labels: set[str] = set()
+            # Categories may carry a nature (INCOME/EXPENSE/TRANSFER, or null);
+            # Core added it as an optional field of the same v1 contract.
+            allowed_shapes = (
+                ({reference_field, "label"}, {reference_field, "label", "nature"})
+                if collection == "categories"
+                else ({reference_field, "label"},)
+            )
             for value in values:
-                if not isinstance(value, dict) or set(value) != {reference_field, "label"}:
+                if not isinstance(value, dict) or set(value) not in allowed_shapes:
                     raise invalid_contract()
                 reference = value.get(reference_field)
                 label = value.get("label")
+                nature = value.get("nature")
                 if (
                     not isinstance(reference, str)
                     or not 1 <= len(reference) <= 100
@@ -610,11 +625,15 @@ class CoreBackedState:
                     or not 1 <= len(label) <= 200
                     or reference in references
                     or label in labels
+                    or (nature is not None and nature not in CATEGORY_NATURES)
                 ):
                     raise invalid_contract()
                 references.add(reference)
                 labels.add(label)
-                items.append({reference_field: reference, "label": label})
+                item: dict[str, str | None] = {reference_field: reference, "label": label}
+                if collection == "categories":
+                    item["nature"] = nature
+                items.append(item)
             if [item[reference_field] for item in items] != sorted(references):
                 raise invalid_contract()
             mapped[collection] = items
@@ -692,6 +711,72 @@ class CoreBackedState:
                 accounting_month=request.get("accounting_month"),
                 target=request.get("target"),
                 acknowledged_risk_codes=request.get("acknowledged_risk_codes"),
+                member_refs=member_refs,
+            )
+        except CoreBackendError as error:
+            return error.status, error.payload
+        return 200, mapped
+
+    def local_rule_suggestions(self) -> dict[str, object]:
+        """Rule suggestions for the configured book, from Core's local profile.
+
+        Only local single-user mode serves this. Rules only propose; the batch
+        decision below still decides each candidate through Core's audited
+        decision service.
+        """
+        if not self.local_session:
+            raise CoreBackendError(404, _problem(404, "API_ROUTE_NOT_FOUND"))
+        query = urlencode({"entity_ref": self.entity_ref, "business_unit": self.business_unit_ref})
+        try:
+            payload = self.client.json("GET", f"{LOCAL_RULE_SUGGESTIONS_CORE_PATH}?{query}")
+        except CoreBackendError as error:
+            raise CoreBackendError(*_local_rule_problem(error)) from error
+        return _local_rule_suggestions_from_core(payload, business_unit=self.business_unit_ref)
+
+    def apply_local_rule_batch(
+        self,
+        idempotency_key: str,
+        request: dict[str, object],
+    ) -> tuple[int, dict[str, object]]:
+        """Forward one chunk (at most 200 members) of a rule group confirmation.
+
+        Local mode sends no user assertion, like ``_candidate_command_headers``.
+        """
+        if not self.local_session:
+            return 404, _problem(404, "API_ROUTE_NOT_FOUND")
+        try:
+            operation_id = str(uuid.UUID(idempotency_key))
+        except (TypeError, ValueError):
+            return 400, _problem(400, "INVALID_IDEMPOTENCY_KEY")
+        member_refs = local_rule_batch_member_refs(request)
+        if member_refs is None:
+            return 422, _problem(422, "INVALID_LOCAL_RULE_BATCH")
+        members = request["members"]
+        assert isinstance(members, list)
+        forwarded = {
+            "rules_version": request["rules_version"],
+            "group_key": request["group_key"],
+            "reason": request["reason"],
+            "members": [
+                {"candidate_ref": member["candidate_ref"], "expected_revision": member["expected_revision"]}
+                for member in members
+            ],
+        }
+        path = f"{LOCAL_RULE_BATCH_DECISIONS_CORE_PATH}?{urlencode({'entity_ref': self.entity_ref})}"
+        body = json.dumps(forwarded, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        try:
+            payload = self.client.json(
+                "POST",
+                path,
+                body=body,
+                headers={"Content-Type": "application/json", "Idempotency-Key": operation_id},
+            )
+        except CoreBackendError as error:
+            return _local_rule_problem(error)
+        try:
+            mapped = _local_rule_batch_receipt_from_core(
+                payload,
+                group_key=str(request["group_key"]),
                 member_refs=member_refs,
             )
         except CoreBackendError as error:
@@ -5091,4 +5176,227 @@ def _problem(status: int, code: str) -> dict[str, object]:
         "title": "LedgerBridge Core request failed",
         "status": status,
         "code": code,
+    }
+
+
+def _local_rule_problem(error: CoreBackendError) -> tuple[int, dict[str, object]]:
+    """Pass Core's problem code through without passing its detail through."""
+    status = error.status if 400 <= error.status <= 599 else 503
+    code = error.payload.get("code") if isinstance(error.payload, dict) else None
+    if not isinstance(code, str) or _PROBLEM_CODE.fullmatch(code) is None:
+        code = "LOCAL_RULES_UNAVAILABLE" if status >= 500 else "LOCAL_RULES_REQUEST_FAILED"
+    return status, _problem(status, code)
+
+
+def local_rule_batch_member_refs(request: object) -> list[str] | None:
+    """Canonical member refs of a well-formed rule batch request, or None."""
+    if not isinstance(request, dict) or set(request) != {
+        "rules_version",
+        "group_key",
+        "reason",
+        "members",
+    }:
+        return None
+    rules_version = request.get("rules_version")
+    group_key = request.get("group_key")
+    reason = request.get("reason")
+    members = request.get("members")
+    if (
+        not isinstance(rules_version, str)
+        or _RULES_VERSION.fullmatch(rules_version) is None
+        or not isinstance(group_key, str)
+        or not 3 <= len(group_key) <= 300
+        or ":" not in group_key
+        or not isinstance(reason, str)
+        or not reason.strip()
+        or len(reason) > 500
+        or not isinstance(members, list)
+        or not 1 <= len(members) <= LOCAL_RULE_BATCH_MAX_MEMBERS
+    ):
+        return None
+    refs: list[str] = []
+    for member in members:
+        if not isinstance(member, dict) or set(member) != {"candidate_ref", "expected_revision"}:
+            return None
+        raw_ref = member.get("candidate_ref")
+        revision = member.get("expected_revision")
+        try:
+            candidate_ref = str(uuid.UUID(str(raw_ref)))
+        except (TypeError, ValueError):
+            return None
+        if raw_ref != candidate_ref or type(revision) is not int or revision < 1:
+            return None
+        refs.append(candidate_ref)
+    if len(refs) != len(set(refs)):
+        return None
+    return refs
+
+
+def _local_rule_suggestions_from_core(
+    payload: object,
+    *,
+    business_unit: str,
+) -> dict[str, object]:
+    def invalid() -> CoreBackendError:
+        return CoreBackendError(503, _problem(503, "LOCAL_RULE_SUGGESTIONS_INVALID"))
+
+    if (
+        not isinstance(payload, dict)
+        or payload.get("contract_version") != "ledgerbridge.local-rule-suggestions.v1"
+        or payload.get("business_unit") != business_unit
+    ):
+        raise invalid()
+    rules_version = payload.get("rules_version")
+    pending_total = payload.get("pending_total")
+    unmatched_count = payload.get("unmatched_count")
+    groups = payload.get("groups")
+    if (
+        not isinstance(rules_version, str)
+        or _RULES_VERSION.fullmatch(rules_version) is None
+        or type(pending_total) is not int
+        or pending_total < 0
+        or type(unmatched_count) is not int
+        or unmatched_count < 0
+        or not isinstance(groups, list)
+    ):
+        raise invalid()
+
+    def text(value: object, *, maximum: int, allow_empty: bool = True) -> str:
+        if not isinstance(value, str) or len(value) > maximum or (not allow_empty and not value):
+            raise invalid()
+        return value
+
+    mapped_groups: list[dict[str, object]] = []
+    group_keys: set[str] = set()
+    for group in groups:
+        if not isinstance(group, dict):
+            raise invalid()
+        group_key = text(group.get("group_key"), maximum=300, allow_empty=False)
+        nature = group.get("nature")
+        count = group.get("count")
+        members = group.get("members")
+        samples = group.get("samples")
+        category_ready = group.get("category_ready")
+        if (
+            group_key in group_keys
+            or nature not in CATEGORY_NATURES
+            or type(count) is not int
+            or not isinstance(members, list)
+            or count != len(members)
+            or not isinstance(samples, list)
+            or len(samples) > 5
+            or not isinstance(category_ready, bool)
+        ):
+            raise invalid()
+        group_keys.add(group_key)
+        mapped_members: list[dict[str, object]] = []
+        member_refs: set[str] = set()
+        for member in members:
+            if not isinstance(member, dict):
+                raise invalid()
+            raw_ref = member.get("candidate_ref")
+            revision = member.get("expected_revision")
+            try:
+                candidate_ref = str(uuid.UUID(str(raw_ref)))
+            except (TypeError, ValueError) as error:
+                raise invalid() from error
+            if (
+                raw_ref != candidate_ref
+                or candidate_ref in member_refs
+                or type(revision) is not int
+                or revision < 1
+            ):
+                raise invalid()
+            member_refs.add(candidate_ref)
+            mapped_members.append({"candidate_ref": candidate_ref, "expected_revision": revision})
+        mapped_samples: list[dict[str, object]] = []
+        for sample in samples:
+            if not isinstance(sample, dict):
+                raise invalid()
+            sample_ref = sample.get("candidate_ref")
+            amount = sample.get("amount_minor")
+            if sample_ref not in member_refs or type(amount) is not int:
+                raise invalid()
+            mapped_samples.append(
+                {
+                    "candidate_ref": sample_ref,
+                    "short_id": text(sample.get("short_id"), maximum=64),
+                    "summary": text(sample.get("summary"), maximum=1_000),
+                    "amount_minor": amount,
+                    "current_category_label": text(sample.get("current_category_label"), maximum=200),
+                }
+            )
+        mapped_groups.append(
+            {
+                "group_key": group_key,
+                "category_code": text(group.get("category_code"), maximum=100, allow_empty=False),
+                "category_label": text(group.get("category_label"), maximum=200),
+                "nature": nature,
+                "rule_id": text(group.get("rule_id"), maximum=64, allow_empty=False),
+                "rule_pattern": text(group.get("rule_pattern"), maximum=500, allow_empty=False),
+                "rule_note": text(group.get("rule_note"), maximum=1_000),
+                "category_ready": category_ready,
+                "count": count,
+                "members": mapped_members,
+                "samples": mapped_samples,
+            }
+        )
+    return {
+        "contract_version": "ledgerbridge.local-rule-suggestions.v1",
+        "business_unit": business_unit,
+        "rules_version": rules_version,
+        "pending_total": pending_total,
+        "unmatched_count": unmatched_count,
+        "groups": mapped_groups,
+    }
+
+
+def _local_rule_batch_receipt_from_core(
+    payload: object,
+    *,
+    group_key: str,
+    member_refs: list[str],
+) -> dict[str, object]:
+    def invalid() -> CoreBackendError:
+        return CoreBackendError(503, _problem(503, "LOCAL_RULE_BATCH_INVALID"))
+
+    if (
+        not isinstance(payload, dict)
+        or payload.get("contract_version") != "ledgerbridge.local-rule-batch-decision.v1"
+        or payload.get("group_key") != group_key
+    ):
+        raise invalid()
+    outcomes = payload.get("outcomes")
+    if not isinstance(outcomes, list):
+        raise invalid()
+    mapped: list[dict[str, object]] = []
+    for outcome in outcomes:
+        if not isinstance(outcome, dict):
+            raise invalid()
+        problem_code = outcome.get("problem_code")
+        replayed = outcome.get("replayed")
+        if (
+            outcome.get("outcome") not in LOCAL_RULE_OUTCOMES
+            or not isinstance(outcome.get("candidate_ref"), str)
+            or not isinstance(replayed, bool)
+            or (
+                problem_code is not None
+                and (not isinstance(problem_code, str) or _PROBLEM_CODE.fullmatch(problem_code) is None)
+            )
+        ):
+            raise invalid()
+        mapped.append(
+            {
+                "candidate_ref": outcome["candidate_ref"],
+                "outcome": outcome["outcome"],
+                "problem_code": problem_code,
+                "replayed": replayed,
+            }
+        )
+    if sorted(str(item["candidate_ref"]) for item in mapped) != sorted(member_refs):
+        raise invalid()
+    return {
+        "contract_version": "ledgerbridge.local-rule-batch-decision.v1",
+        "group_key": group_key,
+        "outcomes": mapped,
     }

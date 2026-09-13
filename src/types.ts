@@ -1,4 +1,53 @@
-export type Page = 'overview' | 'personal-finance' | 'review' | 'reconciliation' | 'original-reconciliation' | 'company-reports' | 'payroll' | 'files' | 'audit'
+export type Page = 'overview' | 'personal-finance' | 'review' | 'reconciliation' | 'original-reconciliation' | 'company-reports' | 'payroll' | 'files' | 'audit' | 'rule-suggestions'
+
+export type CategoryNature = 'INCOME' | 'EXPENSE' | 'TRANSFER'
+
+export type LocalRuleBatchMember = {
+  candidate_ref: string
+  expected_revision: number
+}
+
+export type LocalRuleSuggestionGroup = {
+  group_key: string
+  category_code: string
+  category_label: string
+  nature: CategoryNature
+  rule_id: string
+  rule_pattern: string
+  rule_note: string
+  category_ready: boolean
+  count: number
+  members: LocalRuleBatchMember[]
+  samples: Array<{
+    candidate_ref: string
+    short_id: string
+    summary: string
+    amount_minor: number
+    current_category_label: string
+  }>
+}
+
+export type LocalRuleSuggestions = {
+  contract_version: 'ledgerbridge.local-rule-suggestions.v1'
+  business_unit: string
+  rules_version: string
+  pending_total: number
+  unmatched_count: number
+  groups: LocalRuleSuggestionGroup[]
+}
+
+export type LocalRuleOutcome = 'CONFIRMED' | 'NOT_MATCHED' | 'NOT_PENDING' | 'STALE' | 'REJECTED'
+
+export type LocalRuleBatchReceipt = {
+  contract_version: 'ledgerbridge.local-rule-batch-decision.v1'
+  group_key: string
+  outcomes: Array<{
+    candidate_ref: string
+    outcome: LocalRuleOutcome
+    problem_code: string | null
+    replayed: boolean
+  }>
+}
 
 export type CandidateStatus =
   | 'INCOMPLETE'
@@ -166,6 +215,8 @@ export type AccountingDimensions = {
   categories: Array<{
     code: string
     label: string
+    /** Absent from synthetic preview; null until the category is given one. */
+    nature?: CategoryNature | null
   }>
 }
 

@@ -362,8 +362,8 @@ class LocalDecisionsAreUnsignedTests(unittest.TestCase):
         self.assertTrue(sent["X-LedgerBridge-User-Assertion"].startswith("v1."))
 
 
-class LocalDecisionHttpTests(unittest.TestCase):
-    """A decision through the real handler, against a recording Core."""
+class _LocalHttpHarness(unittest.TestCase):
+    """The real local-mode handler in front of a recording Core."""
 
     def setUp(self) -> None:
         from server.tests.test_core_backend import ENTITY_ID, FakeCoreClient
@@ -421,6 +421,10 @@ class LocalDecisionHttpTests(unittest.TestCase):
             body = error.read()
             return error.code, json.loads(body) if body else {}
 
+
+class LocalDecisionHttpTests(_LocalHttpHarness):
+    """A decision through the real handler, against a recording Core."""
+
     def _decision_path(self) -> str:
         from server.tests.test_core_backend import CANDIDATE_ID
 
@@ -475,6 +479,174 @@ class LocalDecisionHttpTests(unittest.TestCase):
             status, _ = self._post(path, {"decision": "CONFIRM"})
             self.assertNotEqual(status, 200, path)
         self.assertEqual([call for call in self.core.calls if call[0] == "POST"], [])
+
+
+class LocalRuleSuggestionHttpTests(_LocalHttpHarness):
+    """Rule suggestions and their batch confirmation, against a recording Core."""
+
+    RULES_VERSION = "0123456789abcdef"
+    GROUP_KEY = "P-demo0001:abcdef012345"
+
+    def _get(self, path: str) -> tuple[int, dict[str, object]]:
+        request = urllib.request.Request(
+            f"{self.base_url}{path}", headers={"Cookie": self.cookie}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as error:
+            body = error.read()
+            return error.code, json.loads(body) if body else {}
+
+    def _batch(self, count: int = 2) -> dict[str, object]:
+        return {
+            "rules_version": self.RULES_VERSION,
+            "group_key": self.GROUP_KEY,
+            "reason": "合成规则确认",
+            "members": [
+                {"candidate_ref": f"30000000-0000-4000-8000-{index:012x}", "expected_revision": 1}
+                for index in range(1, count + 1)
+            ],
+        }
+
+    def test_suggestions_come_from_the_configured_book(self) -> None:
+        from server.tests.test_core_backend import ENTITY_ID
+
+        status, payload = self._get("/api/v1/local/rule-suggestions")
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["rules_version"], self.RULES_VERSION)
+        (group,) = payload["groups"]
+        self.assertEqual(group["nature"], "TRANSFER")
+        self.assertTrue(group["category_ready"])
+        ((method, path, _, _),) = self.core.calls
+        self.assertEqual(method, "GET")
+        self.assertEqual(
+            path,
+            f"/internal/v1/local/rule-suggestions?entity_ref={ENTITY_ID}&business_unit=unit-demo-a",
+        )
+
+    def test_suggestions_refuse_a_browser_scope(self) -> None:
+        status, _ = self._get("/api/v1/local/rule-suggestions?business_unit=other")
+        self.assertEqual(status, 400)
+        self.assertEqual(self.core.calls, [])
+
+    def test_core_problem_codes_pass_through_without_detail(self) -> None:
+        def missing(*args: object, **kwargs: object) -> dict[str, object]:
+            raise CoreBackendError(404, {"code": "LOCAL_RULES_NOT_CONFIGURED", "detail": "C:/secret"})
+
+        self.core.json = missing  # type: ignore[method-assign]
+        status, payload = self._get("/api/v1/local/rule-suggestions")
+        self.assertEqual((status, payload["code"]), (404, "LOCAL_RULES_NOT_CONFIGURED"))
+        self.assertNotIn("secret", json.dumps(payload))
+
+    def test_a_malformed_suggestion_contract_is_refused(self) -> None:
+        self.core.rule_suggestions_payload["groups"][0]["nature"] = "ASSET"  # type: ignore[index]
+        status, payload = self._get("/api/v1/local/rule-suggestions")
+        self.assertEqual((status, payload["code"]), (503, "LOCAL_RULE_SUGGESTIONS_INVALID"))
+
+    def test_a_batch_reaches_core_unsigned_with_its_key(self) -> None:
+        from server.tests.test_core_backend import ENTITY_ID
+
+        status, payload = self._post("/api/v1/local/rule-batches/decisions", self._batch())
+        self.assertEqual(status, 200, payload)
+        self.assertEqual([item["outcome"] for item in payload["outcomes"]], ["CONFIRMED"] * 2)
+        ((method, path, body, headers),) = self.core.calls
+        self.assertEqual(
+            (method, path),
+            ("POST", f"/internal/v1/local/rule-batches/decisions?entity_ref={ENTITY_ID}"),
+        )
+        self.assertEqual(headers["Idempotency-Key"], "40000000-0000-4000-8000-000000000001")
+        self.assertNotIn("X-LedgerBridge-User-Assertion", headers)
+        self.assertEqual(json.loads(body or b"{}"), self._batch())
+
+    def test_a_batch_without_cookie_or_csrf_never_reaches_core(self) -> None:
+        path = "/api/v1/local/rule-batches/decisions"
+        self.assertEqual(self._post(path, self._batch(), csrf=False)[0], 403)
+        self.assertEqual(self._post(path, self._batch(), cookie=False)[0], 401)
+        self.assertEqual(self.core.calls, [])
+
+    def test_malformed_or_oversized_batches_are_refused_before_core(self) -> None:
+        duplicate = self._batch()
+        duplicate["members"] = [duplicate["members"][0]] * 2  # type: ignore[index]
+        for label, batch in (
+            ("too-many", self._batch(201)),
+            ("empty", self._batch(0)),
+            ("duplicate", duplicate),
+            ("bad-version", {**self._batch(), "rules_version": "v1"}),
+            ("no-reason", {**self._batch(), "reason": " "}),
+            ("extra", {**self._batch(), "decision": "POST"}),
+        ):
+            with self.subTest(label=label):
+                status, payload = self._post("/api/v1/local/rule-batches/decisions", batch)
+                self.assertEqual((status, payload.get("code")), (422, "INVALID_LOCAL_RULE_BATCH"))
+        self.assertEqual(self.core.calls, [])
+        self.assertEqual(
+            self._post("/api/v1/local/rule-batches/decisions", self._batch(200))[0], 200
+        )
+
+    def test_a_core_conflict_passes_its_code_through(self) -> None:
+        def changed(*args: object, **kwargs: object) -> dict[str, object]:
+            raise CoreBackendError(409, {"code": "LOCAL_RULES_CHANGED"})
+
+        self.core.json = changed  # type: ignore[method-assign]
+        status, payload = self._post("/api/v1/local/rule-batches/decisions", self._batch())
+        self.assertEqual((status, payload["code"]), (409, "LOCAL_RULES_CHANGED"))
+
+
+class RuleRoutesAreLocalOnlyTests(unittest.TestCase):
+    def test_the_rule_methods_refuse_outside_local_mode(self) -> None:
+        env = patch.dict("os.environ", _local_env(), clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        state = _build_local_single_user_state("127.0.0.1")
+        state.client = _RecordingClient()
+        state.local_session = False
+        with self.assertRaises(CoreBackendError) as raised:
+            state.local_rule_suggestions()
+        self.assertEqual(raised.exception.status, 404)
+        status, _ = state.apply_local_rule_batch(
+            "40000000-0000-4000-8000-000000000001",
+            {
+                "rules_version": "0123456789abcdef",
+                "group_key": "P-x:y",
+                "reason": "合成",
+                "members": [
+                    {"candidate_ref": "30000000-0000-4000-8000-000000000003", "expected_revision": 1}
+                ],
+            },
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(state.client.headers, [])
+
+    def test_synthetic_preview_does_not_serve_the_rule_routes(self) -> None:
+        with tempfile.TemporaryDirectory() as site_root:
+            Path(site_root, "index.html").write_text("<main>x</main>", encoding="utf-8")
+            server = create_server("127.0.0.1", 0, site_root, mode="synthetic-preview")
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_port}"
+                with urllib.request.urlopen(f"{base}/api/v1/session", timeout=2) as response:
+                    cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+                for method in ("GET", "POST"):
+                    path = (
+                        "/api/v1/local/rule-suggestions"
+                        if method == "GET"
+                        else "/api/v1/local/rule-batches/decisions"
+                    )
+                    request = urllib.request.Request(
+                        f"{base}{path}",
+                        method=method,
+                        data=b"{}" if method == "POST" else None,
+                        headers={"Cookie": cookie},
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as raised:
+                        urllib.request.urlopen(request, timeout=2)
+                    self.assertEqual(raised.exception.code, 404)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(2)
 
 
 class LocalSessionRenewalTests(unittest.TestCase):

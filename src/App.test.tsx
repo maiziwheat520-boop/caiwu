@@ -3081,6 +3081,184 @@ describe('local single-user mode', () => {
     expect(idempotencyKey(second)).toBe(idempotencyKey(first))
     expect(String(second[1]?.body)).toBe(String(first[1]?.body))
   })
+
+  const ruleMembers = (count: number) => Array.from({ length: count }, (_, index) => ({
+    candidate_ref: `50000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`,
+    expected_revision: 1,
+  }))
+
+  const ruleSuggestions = (overrides: Partial<import('./types').LocalRuleSuggestionGroup> = {}) => {
+    const members = overrides.members ?? ruleMembers(450)
+    return {
+      contract_version: 'ledgerbridge.local-rule-suggestions.v1',
+      business_unit: 'unit-local',
+      rules_version: '0123456789abcdef',
+      pending_total: members.length + 7,
+      unmatched_count: 7,
+      groups: [{
+        group_key: 'P-demo0001:abcdef012345',
+        category_code: 'P-demo0001',
+        category_label: '合成转账',
+        nature: 'TRANSFER',
+        rule_id: 'abcdef012345',
+        rule_pattern: '合成对方',
+        rule_note: '合成规则说明',
+        category_ready: true,
+        count: members.length,
+        members,
+        samples: [{
+          candidate_ref: members[0].candidate_ref,
+          short_id: 'C-R001',
+          summary: '合成平台 | 2026-08-01 | 支出 | 转账 | 合成对方 | 余额 | 成功',
+          amount_minor: -1200,
+          current_category_label: '其他',
+        }],
+        ...overrides,
+      }],
+    }
+  }
+
+  function withRuleRoutes(
+    fetchMock: ReturnType<typeof installFetch>,
+    options: { suggestions: () => unknown; batch?: (attempt: number) => Response | null },
+  ) {
+    const base = fetchMock.getMockImplementation()!
+    let attempt = 0
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/v1/local/rule-suggestions') return response(options.suggestions())
+      if (url === '/api/v1/local/rule-batches/decisions' && init?.method === 'POST') {
+        attempt += 1
+        const answered = options.batch?.(attempt)
+        if (answered) return answered
+        const body = JSON.parse(String(init.body))
+        return response({
+          contract_version: 'ledgerbridge.local-rule-batch-decision.v1',
+          group_key: body.group_key,
+          outcomes: body.members.map((member: { candidate_ref: string }, index: number) => ({
+            candidate_ref: member.candidate_ref,
+            outcome: index === 0 ? 'STALE' : 'CONFIRMED',
+            problem_code: null,
+            replayed: false,
+          })),
+        })
+      }
+      return base(input, init)
+    })
+  }
+
+  const ruleBatchCalls = (fetchMock: ReturnType<typeof installFetch>) => fetchMock.mock.calls
+    .filter(([input, init]) => String(input) === '/api/v1/local/rule-batches/decisions' && init?.method === 'POST')
+
+  it('shows rule suggestions only in local mode', async () => {
+    installFetch()
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    expect(screen.queryByRole('button', { name: '规则建议' })).not.toBeInTheDocument()
+  })
+
+  it('confirms a rule group in chunks of 200, reusing a chunk key on retry, then refetches', async () => {
+    const fetchMock = installFetch({ runtimeMode: 'local-single-user' })
+    let remaining = true
+    withRuleRoutes(fetchMock, {
+      suggestions: () => (remaining ? ruleSuggestions() : { ...ruleSuggestions(), groups: [], pending_total: 7 }),
+      batch: (attempt) => {
+        if (attempt === 2) return bareProblem(503, 'CORE_UNAVAILABLE')
+        if (attempt === 4) remaining = false
+        return null
+      },
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    const candidateReadsBefore = fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/v1/candidates')).length
+    fireEvent.click(screen.getAllByRole('button', { name: '规则建议' })[0])
+
+    const group = await screen.findByRole('region', { name: '规则建议 合成转账' })
+    expect(within(group).getByText('转账')).toBeInTheDocument()
+    expect(within(group).getByText('规则：合成对方（合成规则说明）')).toBeInTheDocument()
+    fireEvent.click(within(group).getByRole('button', { expanded: false }))
+    expect(within(group).getByText('C-R001')).toBeInTheDocument()
+
+    fireEvent.click(within(group).getByRole('button', { name: '按此规则确认 450 条' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认 450 条' }))
+
+    const progress = await screen.findByRole('status', { name: '规则批量确认进度' })
+    expect(await within(progress).findByText('Core 服务暂不可用，请稍后重试')).toBeInTheDocument()
+    expect(within(progress).getByText('已处理 200/450 条，未完成')).toBeInTheDocument()
+    fireEvent.click(within(progress).getByRole('button', { name: '重试剩余批次' }))
+
+    expect(await within(progress).findByText('已处理 450 条')).toBeInTheDocument()
+    expect(within(progress).getByText('已确认 447')).toBeInTheDocument()
+    expect(within(progress).getByText('已变化 3')).toBeInTheDocument()
+    const calls = ruleBatchCalls(fetchMock)
+    expect(calls.map((call) => JSON.parse(String(call[1]?.body)).members.length)).toEqual([200, 200, 200, 50])
+    expect(idempotencyKey(calls[2])).toBe(idempotencyKey(calls[1]))
+    expect(idempotencyKey(calls[1])).not.toBe(idempotencyKey(calls[0]))
+    expect(idempotencyKey(calls[3])).not.toBe(idempotencyKey(calls[2]))
+    expect(JSON.parse(String(calls[0][1]?.body))).toMatchObject({
+      rules_version: '0123456789abcdef',
+      group_key: 'P-demo0001:abcdef012345',
+      reason: '按规则批量确认',
+    })
+    expect(await screen.findByText('当前没有规则建议')).toBeInTheDocument()
+    await waitFor(() => expect(fetchMock.mock.calls
+      .filter(([input]) => String(input).startsWith('/api/v1/candidates')).length).toBeGreaterThan(candidateReadsBefore))
+  })
+
+  it('disables a group whose category is not ready and says what to run', async () => {
+    const fetchMock = installFetch({ runtimeMode: 'local-single-user' })
+    withRuleRoutes(fetchMock, { suggestions: () => ruleSuggestions({ category_ready: false, members: ruleMembers(3), count: 3 }) })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByRole('button', { name: '规则建议' })[0])
+
+    const group = await screen.findByRole('region', { name: '规则建议 合成转账' })
+    expect(within(group).getByRole('button', { name: '按此规则确认 3 条' })).toBeDisabled()
+    expect(within(group).getByText(/先运行 local_mode.py categories/)).toBeInTheDocument()
+    expect(ruleBatchCalls(fetchMock)).toHaveLength(0)
+  })
+})
+
+describe('personal finance transfers', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('keeps TRANSFER categories out of income, expense, shares and months', async () => {
+    window.history.replaceState({}, '', '/overview')
+    const base = { ...candidates[3], business_unit: '个人', business_unit_ref: 'personal-main', accounting_month: '2026-08' }
+    const items: ApiCandidate[] = [
+      { ...base, id: 'candidate-meal', short_id: 'C-MEAL', amount_minor: 1200, category: '合成餐饮', category_code: 'P-meal',
+        summary: '支付宝 | 2026-08-01 | 支出 | 商户消费 | 合成商户 | 余额 | 交易成功' },
+      { ...base, id: 'candidate-move', short_id: 'C-MOVE', amount_minor: 5000, category: '合成转账', category_code: 'P-move',
+        summary: '支付宝 | 2026-08-02 | 支出 | 转账 | 合成本人 | 余额 | 交易成功' },
+      { ...base, id: 'candidate-back', short_id: 'C-BACK', amount_minor: 800, category: '合成转账', category_code: 'P-move',
+        summary: '支付宝 | 2026-08-03 | 收入 | 转账 | 合成本人 | 余额 | 交易成功' },
+    ]
+    installFetch({
+      items,
+      accountingDimensions: {
+        contract_version: 'ledgerbridge.accounting-dimensions.v1',
+        business_units: [{ ref: 'personal-main', label: '个人' }],
+        categories: [
+          { code: 'P-meal', label: '合成餐饮', nature: 'EXPENSE' },
+          { code: 'P-move', label: '合成转账', nature: 'TRANSFER' },
+        ],
+      },
+    })
+    renderApp()
+    await screen.findByRole('heading', { name: '当前没有待审核事项' })
+    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+
+    const format = (minor: number) => new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY', minimumFractionDigits: 2 }).format(minor / 100)
+    expect(await screen.findByText(`转账 2 笔，转入 ${format(800)}，转出 ${format(5000)}，不计入收支`)).toBeInTheDocument()
+    const metrics = screen.getByRole('region', { name: '个人财务收支概览' })
+    expect(within(metrics).getByText(format(1200))).toBeInTheDocument()
+    expect(within(metrics).getByText(format(-1200))).toBeInTheDocument()
+    expect(screen.queryByRole('progressbar', { name: /合成转账占比/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('progressbar', { name: '合成餐饮占比 100.0%' })).toBeInTheDocument()
+  })
 })
 
 describe('decision Idempotency-Key reuse', () => {

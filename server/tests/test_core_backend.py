@@ -541,6 +541,44 @@ def company_reports_bff() -> dict[str, object]:
     }
 
 
+def core_rule_suggestions() -> dict[str, object]:
+    """Synthetic local rule suggestions: one group of two members."""
+    members = [
+        {"candidate_ref": CANDIDATE_ID, "expected_revision": 1},
+        {"candidate_ref": "30000000-0000-4000-8000-0000000000aa", "expected_revision": 3},
+    ]
+    return {
+        "contract_version": "ledgerbridge.local-rule-suggestions.v1",
+        "business_unit": "unit-demo-a",
+        "rules_version": "0123456789abcdef",
+        "pending_total": 5,
+        "unmatched_count": 3,
+        "groups": [
+            {
+                "group_key": "P-demo0001:abcdef012345",
+                "category_code": "P-demo0001",
+                "category_label": "合成转账",
+                "nature": "TRANSFER",
+                "rule_id": "abcdef012345",
+                "rule_pattern": "合成对方",
+                "rule_note": "合成规则",
+                "category_ready": True,
+                "count": 2,
+                "members": members,
+                "samples": [
+                    {
+                        "candidate_ref": CANDIDATE_ID,
+                        "short_id": "C-0001",
+                        "summary": "合成平台 | 2026-08-01 | 支出 | 转账 | 合成对方 | 余额 | 成功",
+                        "amount_minor": -1200,
+                        "current_category_label": "其他",
+                    }
+                ],
+            }
+        ],
+    }
+
+
 class FakeCoreClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, bytes | None, dict[str, str]]] = []
@@ -555,6 +593,7 @@ class FakeCoreClient:
             for basis in ("CONFIRMED_CANDIDATE", "POSTED_LEDGER")
         }
         self.personal_finance_payload = core_personal_finance()
+        self.rule_suggestions_payload = core_rule_suggestions()
 
     def json(
         self,
@@ -565,6 +604,23 @@ class FakeCoreClient:
         headers: dict[str, str] | None = None,
     ) -> dict[str, object]:
         self.calls.append((method, path, body, dict(headers or {})))
+        if method == "POST" and path.startswith("/internal/v1/local/rule-batches/decisions?"):
+            request = json.loads(body or b"{}")
+            return {
+                "contract_version": "ledgerbridge.local-rule-batch-decision.v1",
+                "group_key": request["group_key"],
+                "outcomes": [
+                    {
+                        "candidate_ref": member["candidate_ref"],
+                        "outcome": "CONFIRMED",
+                        "problem_code": None,
+                        "replayed": False,
+                    }
+                    for member in request["members"]
+                ],
+            }
+        if path.startswith("/internal/v1/local/rule-suggestions?"):
+            return deepcopy(self.rule_suggestions_payload)
         if method == "POST" and path.startswith("/internal/v1/bank-statements/"):
             return {
                 "contract_version": "ledgerbridge.bank-statement-review.v1",
@@ -1242,7 +1298,46 @@ class CoreBackedAdapterTests(unittest.TestCase):
             f"/internal/v1/accounting-dimensions?entity_ref={ENTITY_ID}",
         )
         self.assertEqual(options["business_units"][1], {"ref": "unit-demo-b", "label": "机场门店"})
-        self.assertEqual(options["categories"][0], {"code": "OTHER", "label": "其他"})
+        self.assertEqual(
+            options["categories"][0], {"code": "OTHER", "label": "其他", "nature": None}
+        )
+
+    def test_accounting_dimensions_pass_a_category_nature_through(self) -> None:
+        for nature in ("INCOME", "EXPENSE", "TRANSFER", None):
+            with self.subTest(nature=nature):
+                client = FakeCoreClient()
+                original_json = client.json
+
+                def with_nature(*args: object, **kwargs: object) -> dict[str, object]:
+                    payload = original_json(*args, **kwargs)  # type: ignore[arg-type]
+                    if str(args[1]).startswith("/internal/v1/accounting-dimensions?"):
+                        payload["categories"][1]["nature"] = nature  # type: ignore[index]
+                    return payload
+
+                client.json = with_nature  # type: ignore[method-assign]
+                options = build_state(client).accounting_dimensions()
+                self.assertEqual(options["categories"][1]["nature"], nature)
+                self.assertEqual(options["business_units"][0], {"ref": "unit-demo-a", "label": "演示门店"})
+
+    def test_accounting_dimensions_reject_an_unknown_nature_or_a_unit_nature(self) -> None:
+        for mutation in ("unknown-nature", "unit-nature"):
+            with self.subTest(mutation=mutation):
+                client = FakeCoreClient()
+                original_json = client.json
+
+                def invalid(*args: object, **kwargs: object) -> dict[str, object]:
+                    payload = original_json(*args, **kwargs)  # type: ignore[arg-type]
+                    if str(args[1]).startswith("/internal/v1/accounting-dimensions?"):
+                        if mutation == "unknown-nature":
+                            payload["categories"][0]["nature"] = "ASSET"  # type: ignore[index]
+                        else:
+                            payload["business_units"][0]["nature"] = None  # type: ignore[index]
+                    return payload
+
+                client.json = invalid  # type: ignore[method-assign]
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(client).accounting_dimensions()
+                self.assertEqual(raised.exception.payload["code"], "ACCOUNTING_DIMENSIONS_INVALID")
 
     def test_accounting_dimensions_reject_a_mismatched_entity_contract(self) -> None:
         client = FakeCoreClient()

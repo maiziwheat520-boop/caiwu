@@ -27,6 +27,7 @@ from .core_backend import (
     CoreBackedState,
     CoreBackendError,
     CoreHttpClient,
+    local_rule_batch_member_refs,
     sqlite_contains_business_facts,
 )
 from .evidence_preview import EvidencePreviewError, build_evidence_preview
@@ -66,6 +67,9 @@ RECONCILIATION_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)$")
 ORIGINAL_RECONCILIATION_PATH = re.compile(r"^/api/v1/original-reconciliations/([^/]+)$")
 CASH_RECONCILIATION_PATH = re.compile(r"^/api/v1/cash-reconciliations/([^/]+)$")
 DRAFT_CREATE_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)/drafts$")
+#: Local single-user mode only: rule suggestions and their batch confirmation.
+LOCAL_RULE_SUGGESTIONS_PATH = "/api/v1/local/rule-suggestions"
+LOCAL_RULE_BATCH_DECISIONS_PATH = "/api/v1/local/rule-batches/decisions"
 DRAFT_PATH = re.compile(rf"^/api/v1/workbook-drafts/({UUID_SEGMENT})$")
 EVIDENCE_PATH = re.compile(rf"^/api/v1/evidence/({UUID_SEGMENT})/content$")
 EVIDENCE_PREVIEW_PATH = re.compile(rf"^/api/v1/evidence/({UUID_SEGMENT})/preview$")
@@ -1365,6 +1369,20 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 return
             self._send_json(200, state.accounting_dimensions())
             return
+        if path == LOCAL_RULE_SUGGESTIONS_PATH:
+            if self.preview_server.mode != "local-single-user" or not hasattr(
+                state, "local_rule_suggestions"
+            ):
+                self._send_json(404, _problem(404, "API_ROUTE_NOT_FOUND", "API 路径不存在"))
+                return
+            if query:
+                self._send_json(
+                    400,
+                    _problem(400, "INVALID_LOCAL_RULE_QUERY", "规则建议范围由本机配置决定"),
+                )
+                return
+            self._send_json(200, state.local_rule_suggestions())
+            return
         if path == "/api/v1/candidate-classification-groups":
             if query:
                 self._send_json(
@@ -1796,8 +1814,14 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         payroll_test_organize = PAYROLL_TEST_MATERIAL_ORGANIZE_PATH.fullmatch(path)
         payroll_test_validate = path == PAYROLL_TEST_VALIDATE_PATH
         payroll_legacy_command = path == PAYROLL_LEGACY_COMMAND_PATH
+        local_rule_batch = (
+            path == LOCAL_RULE_BATCH_DECISIONS_PATH
+            and self.preview_server.mode == "local-single-user"
+            and hasattr(self.preview_server.state, "apply_local_rule_batch")
+        )
         if (
             decision_match is None
+            and not local_rule_batch
             and bank_statement_review is None
             and company_bank_statement_review is None
             and classification_batch_match is None
@@ -1812,6 +1836,9 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             return
         if evidence_unlock and split.query:
             self._send_json(400, _problem(400, "INVALID_EVIDENCE_UNLOCK_REQUEST", "解锁请求不接受查询参数"))
+            return
+        if local_rule_batch and split.query:
+            self._send_json(400, _problem(400, "INVALID_LOCAL_RULE_QUERY", "规则批量确认不接受查询参数"))
             return
         if classification_batch_match is not None and split.query:
             self._send_json(
@@ -2060,6 +2087,23 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 if "password" in request:
                     request["password"] = ""
                 password = ""
+            self._send_json(status, payload)
+            return
+        if local_rule_batch:
+            if local_rule_batch_member_refs(request) is None:
+                self._send_json(
+                    422,
+                    _problem(
+                        422,
+                        "INVALID_LOCAL_RULE_BATCH",
+                        "规则批量确认需要规则版本、分组、理由和 1 到 200 个不重复的候选",
+                    ),
+                )
+                return
+            status, payload = self.preview_server.state.apply_local_rule_batch(
+                idempotency_key.lower(),
+                request,
+            )
             self._send_json(status, payload)
             return
         if classification_batch_match is not None:

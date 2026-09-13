@@ -73,6 +73,7 @@ import type {
 import { ErrorState, LoadingState, Metric, PageHeader } from './shared/PagePrimitives'
 import { PersonalBankTransactionsPanel } from './personal-finance/PersonalBankTransactionsPanel'
 import { CompanyBankStatementReviewPanel } from './company-reports/CompanyBankStatementReviewPanel'
+import { RuleSuggestionsPage } from './RuleSuggestions'
 
 const CompanyReportsPage = lazy(() => import('./company-reports/CompanyReportsPage')
   .then((module) => ({ default: module.CompanyReportsPage })))
@@ -88,6 +89,7 @@ const navigation: Array<{ id: Page; label: string; icon: typeof House }> = [
   { id: 'overview', label: '概览', icon: House },
   { id: 'payroll', label: '工资与发放验证', icon: FileXls },
   { id: 'personal-finance', label: '完整个人财务对账', icon: Bank },
+  { id: 'rule-suggestions', label: '规则建议', icon: ListChecks },
   { id: 'reconciliation', label: '月度对账', icon: Table },
   { id: 'company-reports', label: '各公司报表', icon: Database },
 ]
@@ -102,6 +104,7 @@ const pagePaths: Record<Page, string> = {
   payroll: '/payroll',
   files: '/files',
   audit: '/audit',
+  'rule-suggestions': '/rule-suggestions',
 }
 
 function pageFromPath(pathname: string): Page {
@@ -554,6 +557,13 @@ function App() {
   }, [authStatus?.authenticated, authStatus?.recovery_setup_required, page, payrollSessionChecked, session])
 
   useEffect(() => {
+    // Rule suggestions are served only by local Core; elsewhere the link leads nowhere.
+    if (page !== 'rule-suggestions' || !session || session.runtime_mode === 'local-single-user') return
+    const redirectTimer = window.setTimeout(() => navigate('overview', true), 0)
+    return () => window.clearTimeout(redirectTimer)
+  }, [navigate, page, session])
+
+  useEffect(() => {
     if (page !== 'payroll' || session?.runtime_mode !== 'local-single-user') return
     const redirectTimer = window.setTimeout(() => navigate('overview', true), 0)
     return () => window.clearTimeout(redirectTimer)
@@ -938,6 +948,11 @@ function App() {
     if (page === 'personal-finance') {
       return <PersonalFinanceOverview candidates={candidates} onNavigate={navigate} onOpenCandidate={openCandidate} csrfToken={session?.csrf_token ?? ''} />
     }
+    if (page === 'rule-suggestions') {
+      return session?.runtime_mode === 'local-single-user'
+        ? <RuleSuggestionsPage csrfToken={session.csrf_token} onDecided={loadData} />
+        : null
+    }
     if (page === 'reconciliation') {
       return (
         <>
@@ -998,9 +1013,10 @@ function App() {
   // what a number on screen is worth.
   const isCoreBacked = session?.runtime_mode === 'core-backed' || isLocalSingleUser
   // Local mode serves no payroll read, so the entry would only lead to 401s.
+  // Rule suggestions exist only in local mode, so the entry is shown only there.
   const visibleNavigation = isLocalSingleUser
     ? navigation.filter((item) => item.id !== 'payroll')
-    : navigation
+    : navigation.filter((item) => item.id !== 'rule-suggestions')
 
   return (
     <div className="app-shell">
@@ -1703,6 +1719,17 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate, csrf
   onOpenCandidate: (candidate: Candidate) => void
   csrfToken: string
 }) {
+  const [categoryNatures, setCategoryNatures] = useState<Map<string, string>>(() => new Map())
+  useEffect(() => {
+    let active = true
+    // Without dimensions no category is known to be a transfer; totals then
+    // read as before rather than failing the page.
+    api.getAccountingDimensions().then((dimensions) => {
+      if (!active) return
+      setCategoryNatures(new Map(dimensions.categories.flatMap((item) => (item.nature ? [[item.code, item.nature] as const] : []))))
+    }, () => undefined)
+    return () => { active = false }
+  }, [candidates])
   const pending = candidates.filter((candidate) => ['PENDING', 'INCOMPLETE', 'CONFLICTED'].includes(candidate.status))
   const personalSelection = selectPersonalFinanceEntries(candidates)
   const financialEntries = personalSelection.entries
@@ -1710,12 +1737,19 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate, csrf
   const testEntries = [...financialEntries, ...unassignedEntries]
   const confirmedPendingPostingCount = testEntries.length
   const financialCandidates = testEntries.map((entry) => entry.candidate)
-  const incomeMinor = testEntries.reduce((total, entry) => total + Math.max(entry.cashflowMinor, 0), 0)
-  const expenseMinor = testEntries.reduce((total, entry) => total + Math.abs(Math.min(entry.cashflowMinor, 0)), 0)
+  // Mirrors Core build_personal_finance_summary: an entry whose category nature
+  // is TRANSFER moves money between the person's own accounts, so it stays out
+  // of income, expense, net, category shares and months, and is shown apart.
+  const transferEntries = testEntries.filter((entry) => categoryNatures.get(entry.candidate.categoryCode) === 'TRANSFER')
+  const flowEntries = testEntries.filter((entry) => categoryNatures.get(entry.candidate.categoryCode) !== 'TRANSFER')
+  const transferInMinor = transferEntries.reduce((total, entry) => total + Math.max(entry.cashflowMinor, 0), 0)
+  const transferOutMinor = transferEntries.reduce((total, entry) => total + Math.abs(Math.min(entry.cashflowMinor, 0)), 0)
+  const incomeMinor = flowEntries.reduce((total, entry) => total + Math.max(entry.cashflowMinor, 0), 0)
+  const expenseMinor = flowEntries.reduce((total, entry) => total + Math.abs(Math.min(entry.cashflowMinor, 0)), 0)
   const netMinor = incomeMinor - expenseMinor
   const evidenceCount = new Set(financialCandidates.flatMap((candidate) => candidate.evidence.map((evidence) => evidence.id))).size
 
-  const categoryTotals = testEntries.reduce((totals, entry) => {
+  const categoryTotals = flowEntries.reduce((totals, entry) => {
     const amountMinor = Math.abs(entry.cashflowMinor)
     if (amountMinor === 0) return totals
     const category = entry.candidate.category.trim() || '待分类'
@@ -1731,7 +1765,7 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate, csrf
     }))
     .sort((left, right) => right.amountMinor - left.amountMinor || left.category.localeCompare(right.category, 'zh-CN'))
 
-  const monthlyTotals = testEntries.reduce((totals, entry) => {
+  const monthlyTotals = flowEntries.reduce((totals, entry) => {
     if (!entry.candidate.accountingMonth) return totals
     const current = totals.get(entry.candidate.accountingMonth) ?? { incomeMinor: 0, expenseMinor: 0 }
     if (entry.cashflowMinor > 0) current.incomeMinor += entry.cashflowMinor
@@ -1782,8 +1816,8 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate, csrf
       </section>
 
       <section className="metric-grid personal-finance-metrics" aria-label="个人财务收支概览">
-        <Metric primary label="测试收入" value={currency.format(minorToMajor(incomeMinor))} detail={`${testEntries.filter((entry) => entry.cashflowMinor > 0).length} 条已确认收入，含归属待校准`} icon={<CloudArrowUp size={20} />} />
-        <Metric label="测试支出" value={currency.format(minorToMajor(expenseMinor))} detail={`${testEntries.filter((entry) => entry.cashflowMinor < 0).length} 条已确认支出，含归属待校准`} icon={<Bank size={20} />} />
+        <Metric primary label="测试收入" value={currency.format(minorToMajor(incomeMinor))} detail={`${flowEntries.filter((entry) => entry.cashflowMinor > 0).length} 条已确认收入，含归属待校准`} icon={<CloudArrowUp size={20} />} />
+        <Metric label="测试支出" value={currency.format(minorToMajor(expenseMinor))} detail={`${flowEntries.filter((entry) => entry.cashflowMinor < 0).length} 条已确认支出，含归属待校准`} icon={<Bank size={20} />} />
         <Metric label="测试净额" value={currency.format(minorToMajor(netMinor))} detail="全量测试试算，尚未过账" icon={<ArrowsClockwise size={20} />} />
         <Metric label="原始材料" value={`${evidenceCount} 份`} detail="只计入本次汇总所依据的材料" icon={<FolderOpen size={20} />} />
       </section>
@@ -1792,6 +1826,9 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate, csrf
         <span>{personalSelection.excludedCount} 条不属于个人范围或状态未确认，未计入汇总</span>
         <span>{unassignedEntries.length} 条已确认记录归属待校准，单独列示</span>
         <span>{personalSelection.deduplicatedCount} 条跨来源重复记录已合并</span>
+        {transferEntries.length > 0 ? (
+          <span>转账 {transferEntries.length} 笔，转入 {currency.format(minorToMajor(transferInMinor))}，转出 {currency.format(minorToMajor(transferOutMinor))}，不计入收支</span>
+        ) : null}
       </div>
 
       {unassignedEntries.length > 0 ? (
