@@ -24,18 +24,21 @@ an unverified transport.
 from __future__ import annotations
 
 import secrets
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 from urllib.parse import urlsplit
 from uuid import UUID
+
+from pydantic import SecretStr
 
 from ledgerbridge.config import Settings
 from ledgerbridge.internal_read_auth import VerifiedMtlsPrincipal
 from ledgerbridge.internal_read_contract import (
     READ_CAPABILITIES,
+    Capability,
     EntityGrant,
     WorkloadPrincipal,
 )
@@ -58,6 +61,12 @@ LOCAL_POLICY_GENERATION: Final = 1
 
 LOCAL_PRINCIPAL_REF: Final = "workload:local-single-user"
 LOCAL_SAN_URI: Final = "spiffe://ledgerbridge.local/single-user"
+
+#: What the person at this keyboard may do beyond reading: decide candidates -
+#: confirm, ignore, correct the category or business unit, one at a time or as
+#: a classification group. Nothing here posts, pays, unlocks evidence, supersedes
+#: a candidate or touches the account registry; those stay production's.
+LOCAL_COMMAND_CAPABILITIES: Final = frozenset({Capability.CANDIDATE_DECIDE})
 
 _LOOPBACK_BINDS: Final = frozenset({LOCAL_HOST, "::1", "localhost"})
 
@@ -90,8 +99,8 @@ class LocalProfile:
     #: select from no base table at all. Everything a page displays comes from
     #: this connection.
     database_url: str
-    #: The api writer role, used for one thing: appending the audit event that
-    #: records an evidence document was opened. Production keeps these two roles
+    #: The api writer role: it records candidate decisions and appends the
+    #: audit event that records an evidence document was opened. Production keeps these two roles
     #: apart and so does local mode - collapsing them would mean the connection
     #: that answers questions can also write the record of having answered.
     api_database_url: str
@@ -191,30 +200,22 @@ def local_settings(profile: LocalProfile) -> Settings:
         # to one read's horizon anyway, so expiring on restart is correct, and a
         # long-lived key on disk would be one more secret to look after.
         internal_read_cursor_key=secrets.token_urlsafe(48),
-        # The review screen's event history and its classification groups are
-        # GET routes that live inside command routers, and Core gates the whole
-        # module on this one flag. Leaving it off costs the local workbench four
-        # views it only reads; turning it on mounts no command, because
-        # `_read_routers` takes the GET routes out of those routers and
-        # `_refuse_non_read_routes` fails the start if a writer ever arrives
-        # among them. Read-only is still a property the process asserts about
-        # itself rather than a setting anyone can flip.
+        # Candidate decisions are served locally (the user's "开审核",
+        # 2026-09-13). They live in the same module as the review screen's
+        # reads, and Core gates both on this flag. What local mode will *not*
+        # serve is enforced by the launcher against the assembled routes, not by
+        # this setting: see `LOCAL_COMMAND_ROUTES` in scripts/local_mode.py.
         enable_internal_candidate_command_api=True,
         # The same books the reads come from. A synthetic command backend here
-        # would put fixture classification groups beside real candidates, which
-        # is the one thing worse than the views being dark.
+        # would record decisions against fixture candidates.
         internal_candidate_command_backend="database",
         internal_candidate_command_operational_gate="closed",
-        # `Settings` requires an assertion key, issuer and audience before it
-        # will accept the module, because in production a command carries a
-        # signed assertion. No command is served here, so nothing ever presents
-        # one and nothing ever verifies one: these exist to satisfy a validator
-        # that is right to insist. The key is therefore minted per start and
-        # never written down - a secret on disk that authorizes nothing is a
-        # liability with no compensating use.
-        internal_command_assertion_key=secrets.token_urlsafe(48),
-        internal_command_assertion_issuer=LOCAL_PRINCIPAL_REF,
-        internal_command_assertion_audience=LOCAL_PRINCIPAL_REF,
+        # Local decisions carry no user assertion (`ledgerbridge.local_commands`).
+        # Settings still insist on a verifier whenever the command module is on,
+        # so it gets one that nothing signs for and no route consults.
+        internal_command_assertion_key=SecretStr(secrets.token_urlsafe(48)),
+        internal_command_assertion_issuer="ledgerbridge-local-unsigned",
+        internal_command_assertion_audience="ledgerbridge-local-unsigned",
     )
     guard(settings, host=profile.host)
     return settings
@@ -246,7 +247,7 @@ def local_principal(books: Iterable[LocalBook]) -> WorkloadPrincipal:
         principal_ref=LOCAL_PRINCIPAL_REF,
         san_uri=LOCAL_SAN_URI,
         policy_generation=LOCAL_POLICY_GENERATION,
-        capabilities=READ_CAPABILITIES,
+        capabilities=READ_CAPABILITIES | LOCAL_COMMAND_CAPABILITIES,
         grants=grants,
     )
 
@@ -274,7 +275,63 @@ def local_verifier(
     return verify
 
 
+#: Names a request to local Core may carry in its Host header.
+LOCAL_ALLOWED_HOSTS: Final = frozenset({"127.0.0.1", "localhost"})
+
+_Scope = MutableMapping[str, Any]
+_Receive = Callable[[], Awaitable[MutableMapping[str, Any]]]
+_Send = Callable[[MutableMapping[str, Any]], Awaitable[None]]
+_Asgi = Callable[[_Scope, _Receive, _Send], Awaitable[None]]
+
+
+class LoopbackOnlyMiddleware:
+    """Answer only requests addressed to this machine, and never a browser page.
+
+    Binding to loopback keeps other machines out but not other websites. A page
+    whose own name is re-resolved to 127.0.0.1 (DNS rebinding) is same-origin
+    with this port in the browser, and local decisions carry no signature, so it
+    could read candidates and decide them. Two things it cannot forge: the Host
+    header still names its site, and a browser always sends Origin on anything
+    but a simple GET. The only legitimate caller, the Web BFF, sends neither a
+    foreign Host nor an Origin.
+    """
+
+    def __init__(self, app: _Asgi, *, port: int) -> None:
+        self.app = app
+        self.port = port
+
+    async def __call__(self, scope: _Scope, receive: _Receive, send: _Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {
+            name.decode("latin-1").lower(): value.decode("latin-1")
+            for name, value in scope.get("headers", [])
+        }
+        name, _, port = headers.get("host", "").strip().lower().partition(":")
+        foreign_host = name not in LOCAL_ALLOWED_HOSTS or port != str(self.port)
+        browser_write = scope.get("method") not in {"GET", "HEAD"} and "origin" in headers
+        if foreign_host or browser_write:
+            body = b'{"status":421,"code":"LOCAL_HOST_REJECTED"}'
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 421,
+                    "headers": [
+                        (b"content-type", b"application/problem+json"),
+                        (b"content-length", str(len(body)).encode("ascii")),
+                        (b"cache-control", b"no-store"),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
+            return
+        await self.app(scope, receive, send)
+
+
 __all__ = [
+    "LOCAL_ALLOWED_HOSTS",
+    "LOCAL_COMMAND_CAPABILITIES",
     "LOCAL_DATABASE_HOSTS",
     "LOCAL_HOST",
     "LOCAL_POLICY_GENERATION",
@@ -282,6 +339,7 @@ __all__ = [
     "LocalBook",
     "LocalModeRefused",
     "LocalProfile",
+    "LoopbackOnlyMiddleware",
     "guard",
     "local_principal",
     "local_settings",

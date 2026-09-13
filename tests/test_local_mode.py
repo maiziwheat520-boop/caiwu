@@ -9,10 +9,11 @@ that it refuses when it should, not that it starts on this machine.
 from __future__ import annotations
 
 import argparse
+import json
 import tempfile
 from pathlib import Path
 from tempfile import gettempdir
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.routing import APIRoute
@@ -23,6 +24,7 @@ from sqlalchemy.exc import OperationalError
 import ledgerbridge.db
 import scripts.local_mode as local_mode_script
 from ledgerbridge.config import Settings
+from ledgerbridge.internal_read_contract import READ_CAPABILITIES, Capability
 from ledgerbridge.local_mode import (
     LOCAL_POLICY_GENERATION,
     LocalBook,
@@ -41,6 +43,8 @@ ARTIFACT_ROOT = Path(gettempdir()) / "ledgerbridge-local-mode-test"
 ENTITY = UUID("10000000-0000-4000-8000-000000000001")
 UNIT = UUID("10000000-0000-4000-8000-000000000002")
 BOOK = LocalBook(entity_ref=ENTITY, business_units=(("household", UNIT),))
+#: Local Core answers only when addressed as this machine.
+LOCAL_BASE_URL = "http://127.0.0.1:8661"
 
 
 def _password_of(written: str, key: str) -> str:
@@ -364,7 +368,7 @@ def test_the_local_app_answers_on_the_capabilities_route() -> None:
     """
     app = local_mode_script._build_app(profile())
 
-    with TestClient(app) as client:
+    with TestClient(app, base_url=LOCAL_BASE_URL) as client:
         response = client.get("/internal/v1/capabilities")
 
     assert response.status_code == 200
@@ -379,7 +383,7 @@ def test_the_local_app_serves_the_routes_the_ui_asks_for() -> None:
     """
     paths = {
         route.path
-        for router in local_mode_script._read_routers()
+        for router in local_mode_script._routers()
         for route in router.routes
         if isinstance(route, APIRoute)
     }
@@ -393,41 +397,200 @@ def test_the_local_app_serves_the_routes_the_ui_asks_for() -> None:
     } <= paths
 
 
-def test_the_local_app_refuses_to_serve_a_writing_route() -> None:
-    """Read-only has to be a property of the assembly, not of a curated list.
+def test_the_local_app_refuses_a_writing_route_it_did_not_list() -> None:
+    """What local mode may write has to be a property of the assembly.
 
     Otherwise it holds only for as long as everyone adding a router remembers,
     and the failure is silent: a POST that works locally and is refused in
     production is the wrong way round.
     """
-    from ledgerbridge.internal_candidate_command_routes import router as command_router
+    from ledgerbridge.company_transaction_classification_routes import (
+        router as classification_router,
+    )
 
-    routers = local_mode_script._read_routers()
+    routers = local_mode_script._routers()
     # The check must see something, or "no writer found" is vacuously true.
-    assert sum(len(router.routes) for router in routers) > 5  # not vacuously true
-    local_mode_script._refuse_non_read_routes(routers)
+    assert sum(len(router.routes) for router in routers) > 5
+    local_mode_script._refuse_unlisted_writes(routers)
 
-    with pytest.raises(LocalModeRefused, match="reads only"):
-        local_mode_script._refuse_non_read_routes((*routers, command_router))
+    with pytest.raises(LocalModeRefused, match="candidate decisions only"):
+        local_mode_script._refuse_unlisted_writes((*routers, classification_router))
 
 
-def test_a_command_router_contributes_its_reads_and_not_its_commands() -> None:
-    """Two review views live inside a router that also writes decisions.
+def test_the_company_classification_router_contributes_its_reads_only() -> None:
+    """Reviewing a company transaction's classification was not what was opened.
 
     Taking the route objects across rather than re-declaring them is what keeps
     each one's own dependencies - including the module gate its source router
-    applies - instead of growing a second copy of somebody else's
-    authorization that drifts quietly.
+    applies - instead of growing a second copy of somebody else's authorization.
     """
-    from ledgerbridge.internal_candidate_command_routes import router as command_router
+    from ledgerbridge.company_transaction_classification_routes import (
+        router as classification_router,
+    )
 
-    taken = local_mode_script._reads_of(command_router)
+    taken = local_mode_script._reads_of(classification_router)
 
     assert {route.path for route in taken.routes if isinstance(route, APIRoute)} == {
-        "/internal/v1/candidate-events",
-        "/internal/v1/candidate-classification-groups",
+        "/internal/v1/company-transaction-classifications",
+        "/internal/v1/company-transaction-classification-summary",
     }
-    assert all(route in command_router.routes for route in taken.routes)
+    assert all(route in classification_router.routes for route in taken.routes)
+
+
+def test_the_assembled_app_writes_exactly_the_two_candidate_decisions() -> None:
+    """The user opened review: confirm, ignore, correct - and nothing beside it.
+
+    Walked over the routers exactly as mounted. Not over `app.routes`: FastAPI
+    wraps an included router, so walking the app finds no route at all - an
+    earlier version of this test did that and passed by seeing nothing.
+    """
+    from ledgerbridge.local_commands import router as local_commands
+
+    writers = [
+        (method, route)
+        for router in local_mode_script._routers()
+        for route in router.routes
+        if isinstance(route, APIRoute)
+        for method in (route.methods or set()) - {"GET", "HEAD", "OPTIONS"}
+    ]
+
+    # A list, not a set: the signed production route and the local one share a
+    # path, and a set would not notice both being mounted.
+    assert sorted((method, route.path) for method, route in writers) == sorted(
+        local_mode_script.LOCAL_COMMAND_ROUTES
+    )
+    assert all(route in local_commands.routes for _, route in writers)
+
+
+def test_a_rebound_name_or_a_browser_write_is_refused() -> None:
+    """DNS rebinding: a website whose own name now resolves to 127.0.0.1.
+
+    Local decisions carry no signature, so the loopback bind alone would let such
+    a page decide candidates. It cannot change the Host header, and a browser
+    sends Origin on every POST.
+    """
+    app = local_mode_script._build_app(profile())
+    path = f"/internal/v1/candidates/{uuid4()}/decisions"
+    body = {"decision": "CONFIRM", "expected_revision": 1}
+    idempotency = {"Idempotency-Key": str(uuid4())}
+
+    with TestClient(app, base_url="http://evil.example:8661") as rebound:
+        assert rebound.get("/internal/v1/capabilities").status_code == 421
+        assert rebound.post(path, json=body, headers=idempotency).status_code == 421
+    with TestClient(app, base_url="http://127.0.0.1:1") as wrong_port:
+        assert wrong_port.get("/internal/v1/capabilities").status_code == 421
+    with TestClient(app, base_url=LOCAL_BASE_URL) as local:
+        browser = {**idempotency, "Origin": "http://evil.example:8661"}
+        assert local.post(path, json=body, headers=browser).status_code == 421
+    with TestClient(app, base_url="http://localhost:8661") as by_name:
+        assert by_name.get("/internal/v1/capabilities").status_code == 200
+
+
+def test_the_unsigned_decisions_refuse_a_deployed_configuration() -> None:
+    """Mounted in the deployed app by mistake, they must still not answer."""
+    from ledgerbridge.internal_candidate_command_routes import InternalCandidateCommandProblem
+    from ledgerbridge.local_commands import require_local_profile
+
+    require_local_profile(local_settings(profile()))
+    deployed_like = (
+        local_settings(profile()).model_copy(update={"env": "production"}),
+        local_settings(profile()).model_copy(update={"internal_read_transport": "unix-mtls-proxy"}),
+        local_settings(profile()).model_copy(
+            update={"internal_candidate_command_operational_gate": "d1-production-v1"}
+        ),
+    )
+    for built in deployed_like:
+        with pytest.raises(InternalCandidateCommandProblem):
+            require_local_profile(built)
+
+
+def test_the_deployed_app_never_mounts_the_unsigned_decisions() -> None:
+    from ledgerbridge.main import app
+
+    def endpoints(routes: object) -> list[str]:
+        found: list[str] = []
+        for route in routes:  # type: ignore[attr-defined]
+            endpoint = getattr(route, "endpoint", None)
+            if endpoint is not None:
+                found.append(endpoint.__module__)
+            # FastAPI wraps an included router; its routes sit on the original.
+            inner = getattr(route, "original_router", route)
+            found.extend(endpoints(getattr(inner, "routes", ())))
+        return found
+
+    modules = endpoints(app.router.routes)
+    assert "ledgerbridge.internal_candidate_command_routes" in modules
+    assert "ledgerbridge.local_commands" not in modules
+
+
+def test_the_signed_decision_router_cannot_be_mounted_beside_the_local_one() -> None:
+    from ledgerbridge.internal_candidate_command_routes import router as signed
+
+    routers = local_mode_script._routers()
+    with pytest.raises(LocalModeRefused, match=r"must come from ledgerbridge.local_commands"):
+        local_mode_script._refuse_unlisted_writes((signed, *routers))
+
+
+def test_the_local_identity_may_decide_candidates_and_nothing_else() -> None:
+    principal = local_principal((BOOK,))
+
+    assert Capability.CANDIDATE_DECIDE in principal.capabilities
+    assert principal.capabilities == READ_CAPABILITIES | {Capability.CANDIDATE_DECIDE}
+    for withheld in (
+        Capability.CANDIDATE_CREATE,
+        Capability.CANDIDATE_SUPERSEDE,
+        Capability.EVIDENCE_UNLOCK,
+        Capability.ACCOUNT_REGISTRY_WRITE,
+        Capability.BANK_STATEMENT_REVIEW_DECIDE,
+        Capability.PAYROLL_COMMAND,
+    ):
+        assert withheld not in principal.capabilities
+
+
+def test_a_decision_needs_no_signature_and_a_retry_replays() -> None:
+    """The user dropped the signed assertion locally ("去掉签名").
+
+    The service is the synthetic one, so no database is touched. What is under
+    test is the assembly: a decision with no assertion header is accepted, a
+    retry of the same operation replays rather than conflicting on the derived
+    assertion id, and a stale revision is still refused - the checks below the
+    envelope are all still there.
+    """
+    from ledgerbridge.internal_candidate_command import SyntheticInternalReviewService
+    from ledgerbridge.internal_candidate_command_routes import get_candidate_command_service
+
+    candidate = UUID("30000000-0000-4000-8000-000000000003")
+    service = SyntheticInternalReviewService()
+    # The synthetic candidates sit in these two units of the synthetic entity.
+    synthetic_book = LocalBook(
+        entity_ref=ENTITY,
+        business_units=(
+            ("unit-demo-a", UUID("10000000-0000-4000-8000-00000000000a")),
+            ("unit-reviewed", UUID("10000000-0000-4000-8000-00000000000b")),
+        ),
+    )
+    app = local_mode_script._build_app(profile(books=(synthetic_book,)))
+    app.dependency_overrides[get_candidate_command_service] = lambda: service
+
+    def post(revision: int, operation: UUID) -> tuple[int, dict[str, object]]:
+        response = client.post(
+            f"/internal/v1/candidates/{candidate}/decisions",
+            content=json.dumps(
+                {"decision": "CONFIRM", "expected_revision": revision, "reason": "synthetic"}
+            ),
+            headers={"Content-Type": "application/json", "Idempotency-Key": str(operation)},
+        )
+        return response.status_code, response.json()
+
+    with TestClient(app, base_url=LOCAL_BASE_URL) as client:
+        stale_status, stale = post(99, uuid4())
+        operation = uuid4()
+        first_status, first = post(1, operation)
+        again_status, again = post(1, operation)
+
+    assert (stale_status, stale["code"]) == (409, "STALE_REVISION")
+    assert first_status == 200 and first["replayed"] is False
+    assert again_status == 200 and again["replayed"] is True
 
 
 def test_the_four_review_views_are_no_longer_disabled() -> None:
@@ -451,7 +614,7 @@ def test_the_four_review_views_are_no_longer_disabled() -> None:
     app = local_mode_script._build_app(profile())
     app.dependency_overrides[get_candidate_command_service] = get_synthetic_review_service
 
-    with TestClient(app) as client:
+    with TestClient(app, base_url=LOCAL_BASE_URL) as client:
         answers = {
             path: client.get(path).status_code
             for path in (
@@ -474,38 +637,6 @@ def test_the_command_module_reads_the_same_books_the_reads_do() -> None:
 
     assert built.internal_candidate_command_backend == "database"
     assert built.internal_read_backend == "database"
-
-
-def test_the_command_assertion_key_is_minted_per_start_and_never_reused() -> None:
-    """Nothing here presents an assertion, so nothing should keep a key.
-
-    `Settings` requires one before it will accept the module, because in
-    production a command carries a signed assertion. Local mode serves no
-    command, so the key authorizes nothing - and a secret on disk that
-    authorizes nothing is a liability with no compensating use.
-    """
-    first = local_settings(profile()).internal_command_assertion_key
-    second = local_settings(profile()).internal_command_assertion_key
-
-    assert first is not None and second is not None
-    assert first.get_secret_value() != second.get_secret_value()
-
-
-def test_enabling_the_module_still_mounts_no_command() -> None:
-    """The point of the flag is four GET routes, not a writer on a laptop.
-
-    Read-only stays a property the assembly asserts about itself: the routers
-    contribute their reads, and the start fails if a writer is ever among them.
-    """
-    app = local_mode_script._build_app(profile())
-
-    writers = {
-        (route.path, sorted((route.methods or set()) - {"GET", "HEAD", "OPTIONS"}))
-        for route in app.routes
-        if isinstance(route, APIRoute) and (route.methods or set()) - {"GET", "HEAD", "OPTIONS"}
-    }
-
-    assert writers == set()
 
 
 def test_refuses_an_open_command_operational_gate() -> None:

@@ -146,6 +146,94 @@ migration - it had been verified by source assertion only.
 5. The BOC company CSV and PDF readers stay on a local branch. They are merged
    into this branch for local use and do not enter the production release line.
 
+## Local review opened (2026-09-13, user: "开审核", then "去掉签名")
+
+This changes a frozen invariant, with the user's approval: local mode was
+"read-only over facts", and it now **writes candidate decisions**. Decision 4
+above is superseded - the write buttons are no longer dead ends. Nothing else
+about the invariants moves: no importer, rule or model posts; no posting, no
+payment, no evidence unlock, no candidate supersede, no registry change, no
+bank-statement review and no company classification review is served.
+
+It was first built with the production user assertion: the BFF signed each
+decision with a key Core minted per start and left in a per-run file. The user
+then asked for the signature to go ("去掉签名"): both processes run as the same
+person on the same machine, so it proved nothing already true, and it cost a
+key file, a start order and a failure mode. What stands now:
+
+- **Two routes, from one module.** `ledgerbridge.local_commands` serves
+  `POST /internal/v1/candidates/{candidate_ref}/decisions` and
+  `POST /internal/v1/candidate-classification-groups/{group_ref}/decisions`
+  with no `X-LedgerBridge-User-Assertion`. The production routes in
+  `internal_candidate_command_routes` are untouched and still verify it; local
+  mode mounts only their GET routes. `_refuse_unlisted_writes` fails the start
+  on any other writing route, and on these two paths served by any module but
+  `local_commands` - otherwise the signed and unsigned copies could both be
+  mounted and whichever came first would win.
+- **Below the envelope, nothing changed.** Each decision goes through the same
+  service and the same `internal_command` database functions under the api
+  role: capability, entity and business-unit scope, revision check, idempotency
+  receipt, append-only audit chain. The database wants an assertion id; locally
+  it is `uuid5(namespace, operation_id)`, so a retry of the same operation
+  replays. The actor is `local-single-user`, the BFF session's principal.
+- **The unsigned router refuses a deployed configuration.**
+  `require_local_profile` answers 404 unless env is not production, the read
+  transport is disabled and both operational gates are closed, and a test
+  asserts `ledgerbridge.main.app` never mounts it.
+- **One capability.** The local identity is exactly
+  `READ_CAPABILITIES | {candidate:decide}`.
+- **DNS rebinding is refused on both sides.** Without a signature, the loopback
+  bind alone would let a website whose own name re-resolves to 127.0.0.1 read
+  candidates and decide them - through the BFF (same-origin, so it could read
+  the CSRF token) or straight at Core. Core's `LoopbackOnlyMiddleware` answers
+  `421 LOCAL_HOST_REJECTED` to any Host but `127.0.0.1:8661`/`localhost:8661`
+  and to any non-GET carrying an `Origin`; the BFF refuses any Host but this
+  machine's names on its own port. Found by the review below.
+- **Kept on the Web side:** the local session cookie and its CSRF token.
+
+Proved live on the rebuilt books, writing nothing (2026-09-13, after the
+change): through the BFF a CONFIRM without the CSRF token got `403`; with it,
+unsigned and with a deliberately stale revision, `409 STALE_REVISION` from the
+database function. A rebound Host got `421` from Core (GET and POST) and from
+the BFF; a POST to Core carrying an `Origin` got `421`; `localhost` got `200`.
+`candidate-events` for the probed candidate stayed at 0 throughout. The first
+real decision is the user's to make.
+
+### Review of the whole flow (2026-09-13, two read-only reviewers)
+
+Fixed in this change: the rebinding hole (above), the router's missing guard
+against production, the path-only startup check, the capability test that
+listed exclusions instead of asserting the set, stale comments.
+
+Still open:
+
+- **A confirmed 不计收支 row counts as income.** The importer keeps a
+  directionless row's bare magnitude (the bill states no sign), and
+  `personal_finance_summary._cashflow_minor` signs only 收入/支出 and passes
+  anything else through, so a positive magnitude lands in `income_minor`.
+  The fix belongs in that production module (treat 不计收支 as no cash flow)
+  and needs the user's approval. Until then: ignore such rows, do not confirm.
+- **What counts after CONFIRM.** A confirmed platform candidate enters the
+  personal summary as it is; no category correction is needed. A book whose
+  unit name says 公司/酒店/宾馆/门店 is excluded. Category shares read
+  微信交易复核/支付宝交易复核 until corrected, and a correction can only pick a
+  category that already exists for the entity.
+- **Web UI, local mode:** "添加这台设备" and "安全退出" answer 404; the evidence
+  unlock dialog asks for a password that can never be used; the payroll nav
+  item answers 401; a 409 on a single decision does not re-read the candidate,
+  so retries keep failing until a reload; a timed-out decision that did commit
+  is retried under a new idempotency key and gets 409; the local session
+  expires 12 hours after the BFF starts and is never renewed.
+- **Tests not yet written:** HTTP-level BFF decision POSTs (cookie, CSRF,
+  validators, success mapping), group/IGNORE/CORRECT through the local app,
+  database-backed replay with the derived assertion id.
+
+A correction: the test added on 2026-09-12 to show enabling the module
+"mounts no command" walked `app.routes`, where FastAPI keeps included routers
+wrapped - it found no routes at all and passed by seeing nothing. The startup
+check itself was never affected (it walks the routers); the replacement test
+walks them too.
+
 ## Import chain (2026-09-12)
 
 `docs/operations/LOCAL_IMPORT.md` is the runbook. Summary of what it settles:
@@ -567,6 +655,10 @@ unchanged.
    one: the key authorizes nothing, and a secret on disk that authorizes
    nothing is a liability with no compensating use. It is generated the same
    way the read cursor key already is, and dies with the process.
+
+   *(Superseded 2026-09-13: local mode now serves two unsigned candidate
+   decisions; see "Local review opened". The two paragraphs below record
+   what was true on 2026-09-12.)*
 
    **Read-only did not become a promise.** `_read_routers` still takes only the
    GET routes out of those routers, and `_refuse_non_read_routes` still fails

@@ -212,15 +212,32 @@ def _books(database_url: str) -> tuple[LocalBook, ...]:
 
 _READ_METHODS: Final = frozenset({"GET", "HEAD", "OPTIONS"})
 
+#: The only routes local mode serves that change anything: a decision on one
+#: candidate, and a decision applied to a classification group. Both append a
+#: candidate revision and its audit event and nothing else - no posting, no
+#: payment, no registry change, no evidence unlock. Every other writing route is
+#: refused at startup, including ones that arrive later in a router this list
+#: already takes from.
+LOCAL_COMMAND_ROUTES: Final = frozenset(
+    {
+        ("POST", "/internal/v1/candidates/{candidate_ref}/decisions"),
+        ("POST", "/internal/v1/candidate-classification-groups/{group_ref}/decisions"),
+    }
+)
 
-def _read_routers() -> tuple[APIRouter, ...]:
-    """The routers `main.py` mounts that answer questions rather than change facts.
 
-    Local mode is read-only over facts, so the command routers - candidate
-    decisions, statement reviews, evidence unlock, payroll - are left off. That
-    is also why the list is written out here instead of importing `main.app`:
-    reusing the deployed app would mount every writer by default, and the next
-    writer added there would arrive locally without anyone choosing it.
+def _routers() -> tuple[APIRouter, ...]:
+    """The routers local mode mounts.
+
+    The list is written out here instead of importing `main.app`: reusing the
+    deployed app would mount every writer by default, and the next writer added
+    there would arrive locally without anyone choosing it.
+
+    The candidate command router contributes its reads; the two decisions come
+    from `ledgerbridge.local_commands`, which serves them without the signed
+    user assertion. The company classification router contributes only its
+    reads: reviewing a company transaction's classification was not what the
+    user opened.
     """
     from ledgerbridge.cash_reconciliation_routes import router as cash_reconciliation
     from ledgerbridge.company_bank_statement_routes import router as company_bank_statement
@@ -228,6 +245,7 @@ def _read_routers() -> tuple[APIRouter, ...]:
     from ledgerbridge.company_transaction_classification_routes import router as classification
     from ledgerbridge.internal_candidate_command_routes import router as candidate_command
     from ledgerbridge.internal_read_routes import router as internal_read
+    from ledgerbridge.local_commands import router as local_commands
     from ledgerbridge.original_reconciliation_routes import router as original_reconciliation
     from ledgerbridge.personal_finance_routes import router as personal_finance
 
@@ -238,12 +256,8 @@ def _read_routers() -> tuple[APIRouter, ...]:
         personal_finance,
         original_reconciliation,
         cash_reconciliation,
-        # These two are command routers that also answer questions: the review
-        # screen's event history and its classification groups live beside the
-        # decisions that write. Dropping the whole router would cost the local
-        # UI two views it only reads, so the reads are taken and the commands
-        # left behind.
         _reads_of(candidate_command),
+        local_commands,
         _reads_of(classification),
     )
 
@@ -253,9 +267,9 @@ def _reads_of(router: APIRouter) -> APIRouter:
 
     The route objects are moved across as they are, not re-declared, so each one
     keeps the dependencies and route class its own module gave it - including
-    the internal-read-API gate the source router applies to everything it
-    carries. Re-declaring them here would be a second, quietly diverging copy of
-    somebody else's authorization.
+    the module gate its source router applies to everything it carries.
+    Re-declaring them here would be a second, quietly diverging copy of somebody
+    else's authorization.
     """
     from fastapi.routing import APIRoute
 
@@ -268,13 +282,13 @@ def _reads_of(router: APIRouter) -> APIRouter:
     return taken
 
 
-def _refuse_non_read_routes(routers: Iterable[APIRouter]) -> None:
-    """Make "local mode is read-only" true of the assembly, not just the list.
+def _refuse_unlisted_writes(routers: Iterable[APIRouter]) -> None:
+    """Make "local mode writes only candidate decisions" true of the assembly.
 
-    Choosing read-only routers is a judgement that has to be re-made every time
-    one is added, and a router that grows a POST later would bring it here
-    silently. This turns the property into something the process asserts about
-    itself before it binds a socket.
+    Choosing routers is a judgement that has to be re-made every time one is
+    added, and a router that grows a POST later would bring it here silently.
+    This turns the property into something the process asserts about itself
+    before it binds a socket.
 
     The check reads each router's own routes rather than the assembled app's,
     because a mounted router is no longer a list of routes: FastAPI wraps it,
@@ -286,29 +300,38 @@ def _refuse_non_read_routes(routers: Iterable[APIRouter]) -> None:
         for route in router.routes:
             if not isinstance(route, APIRoute):
                 continue
-            writes = (route.methods or set()) - _READ_METHODS
-            if writes:
-                raise LocalModeRefused(
-                    f"local mode serves reads only; {route.path} accepts {sorted(writes)}"
-                )
+            for method in sorted((route.methods or set()) - _READ_METHODS):
+                if (method, route.path) not in LOCAL_COMMAND_ROUTES:
+                    raise LocalModeRefused(
+                        f"local mode writes candidate decisions only; {route.path} accepts {method}"
+                    )
+                # The same path is also served, signed, by the production module.
+                # Only the local one may be mounted, or whichever came first wins.
+                if route.endpoint.__module__ != "ledgerbridge.local_commands":
+                    raise LocalModeRefused(
+                        f"{route.path} must come from ledgerbridge.local_commands, "
+                        f"not {route.endpoint.__module__}"
+                    )
 
 
 def _build_app(profile: LocalProfile) -> FastAPI:
     from ledgerbridge.config import get_settings
     from ledgerbridge.internal_read_auth import VerifiedInternalReadPrincipalMiddleware
     from ledgerbridge.internal_read_routes import InternalReadNoStoreMiddleware
-    from ledgerbridge.local_mode import local_verifier
+    from ledgerbridge.local_mode import LoopbackOnlyMiddleware, local_verifier
 
     settings = local_settings(profile)
     principal = local_principal(profile.books)
     app = FastAPI(title="LedgerBridge Local", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(InternalReadNoStoreMiddleware)
     app.add_middleware(VerifiedInternalReadPrincipalMiddleware, verifier=local_verifier(principal))
-    routers = _read_routers()
-    _refuse_non_read_routes(routers)
+    routers = _routers()
+    _refuse_unlisted_writes(routers)
     for router in routers:
         app.include_router(router)
     app.dependency_overrides[get_settings] = lambda: settings
+    # Added last, so it runs first: nothing else sees a rebound request.
+    app.add_middleware(LoopbackOnlyMiddleware, port=profile.port)
     return app
 
 
@@ -753,7 +776,7 @@ def main(argv: list[str] | None = None) -> int:
     candidates.set_defaults(func=command_candidates)
     for name, function, help_text in (
         ("check", command_check, "assemble the profile and count entities"),
-        ("serve", command_serve, "serve the internal read API on loopback"),
+        ("serve", command_serve, "serve the read API and candidate decisions on loopback"),
     ):
         subparser = subparsers.add_parser(name, help=help_text)
         subparser.add_argument("--host", default=LOCAL_HOST)

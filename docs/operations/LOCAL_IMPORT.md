@@ -406,6 +406,27 @@ version you want is the one you just started.
 **The BFF serves `/site` unless told otherwise.** Build the front end and point
 `SITE_ROOT` at the result, or it exits on a missing `index.html`.
 
+## Reviewing candidates locally
+
+Confirm, ignore and correct (category, business unit), one candidate or a
+classification group, work in the local workbench. Nothing else writes:
+posting, evidence unlock, bank-statement review and company classification
+review are not served.
+
+Local decisions carry no signed user assertion. The browser session and its
+CSRF token still guard the BFF, and both processes refuse a request addressed
+by any name but this machine's (`421 LOCAL_HOST_REJECTED`) - so open the
+workbench at `http://127.0.0.1:8080` or `http://localhost:8080`, not through a
+hostname of your own.
+
+Before confirming, know what a confirmation does to the personal summary:
+
+- A confirmed platform row counts as it is; no category correction is needed.
+- **Do not confirm a 不计收支 row - ignore it.** The summary currently books its
+  amount as income (recorded as an open issue in the task document).
+- A book whose business unit is named 公司, 酒店, 宾馆 or 门店 is left out of the
+  personal summary entirely.
+
 ## The review views inside the command routers
 
 Four GET routes live inside routers that also write: `/internal/v1/candidate-events`,
@@ -421,15 +442,13 @@ so those views read the same books everything else does.
 
 Two things to know about it:
 
-- **The assertion key is minted per start and never stored.** `Settings` wants a
-  key, an issuer and an audience before it accepts the module, because a
-  production command carries a signed assertion. Nothing here serves a command,
-  so nothing presents or verifies one; the key authorizes nothing and dies with
-  the process, like the read cursor key beside it. There is no local secret to
-  rotate, back up or leak.
-- **Nothing writable was mounted.** The routers contribute their GET routes
-  only, and the start still fails if a writer ever appears among them. That is
-  asserted against the assembled app, not against a list someone maintains.
+- **The assertion key is a placeholder.** `Settings` wants a key, an issuer and
+  an audience before it accepts the module. The local decision routes read none
+  of them; the key is minted per start and dies with the process. There is no
+  local secret to rotate, back up or leak.
+- **Only the two local decisions write.** These routers contribute their GET
+  routes only; the decisions come from `ledgerbridge.local_commands`, and the
+  start fails if any other writer appears.
 
 The summary route is a sibling, not a sub-path, and takes `from_date` and
 `to_date_exclusive`:
