@@ -152,9 +152,14 @@ class BusinessUnitDimension(_FrozenModel):
     label: str = Field(min_length=1, max_length=200)
 
 
+ReportingCategoryNature = Literal["INCOME", "EXPENSE", "TRANSFER"]
+
+
 class ReportingCategoryDimension(_FrozenModel):
     code: str = Field(min_length=1, max_length=100)
     label: str = Field(min_length=1, max_length=200)
+    # Additive to accounting-dimensions v1: None until the owner assigns one.
+    nature: ReportingCategoryNature | None = None
 
 
 class AccountingDimensions(_FrozenModel):

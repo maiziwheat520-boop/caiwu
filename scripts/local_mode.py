@@ -31,8 +31,9 @@ import os
 import secrets
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
@@ -63,6 +64,13 @@ from ledgerbridge.local_mode import (  # noqa: E402
     LocalProfile,
     local_principal,
     local_settings,
+)
+from ledgerbridge.local_rules import (  # noqa: E402
+    LocalRulesInvalid,
+    LocalRulesNotConfigured,
+    RuleCategory,
+    load_rules,
+    rules_path,
 )
 from ledgerbridge.local_statements import LocalStatementError  # noqa: E402
 
@@ -213,15 +221,17 @@ def _books(database_url: str) -> tuple[LocalBook, ...]:
 _READ_METHODS: Final = frozenset({"GET", "HEAD", "OPTIONS"})
 
 #: The only routes local mode serves that change anything: a decision on one
-#: candidate, and a decision applied to a classification group. Both append a
-#: candidate revision and its audit event and nothing else - no posting, no
-#: payment, no registry change, no evidence unlock. Every other writing route is
-#: refused at startup, including ones that arrive later in a router this list
-#: already takes from.
+#: candidate, a decision applied to a classification group, and a sampled rule
+#: group confirmed one candidate decision at a time. All three append candidate
+#: revisions and their audit events and nothing else - no posting, no payment,
+#: no registry change, no evidence unlock. Every other writing route is refused
+#: at startup, including ones that arrive later in a router this list already
+#: takes from.
 LOCAL_COMMAND_ROUTES: Final = frozenset(
     {
         ("POST", "/internal/v1/candidates/{candidate_ref}/decisions"),
         ("POST", "/internal/v1/candidate-classification-groups/{group_ref}/decisions"),
+        ("POST", "/internal/v1/local/rule-batches/decisions"),
     }
 )
 
@@ -233,9 +243,10 @@ def _routers() -> tuple[APIRouter, ...]:
     deployed app would mount every writer by default, and the next writer added
     there would arrive locally without anyone choosing it.
 
-    The candidate command router contributes its reads; the two decisions come
-    from `ledgerbridge.local_commands`, which serves them without the signed
-    user assertion. The company classification router contributes only its
+    The candidate command router contributes its reads; the decisions, and the
+    rule suggestions and rule batches built on them, come from
+    `ledgerbridge.local_commands`, which serves them without the signed user
+    assertion. The company classification router contributes only its
     reads: reviewing a company transaction's classification was not what the
     user opened.
     """
@@ -711,6 +722,118 @@ def _backup_taken_before(
     )
 
 
+_CATEGORY_ROWS_SQL: Final = """
+SELECT code, label, nature, retired_at IS NOT NULL AS retired
+FROM public.reporting_category
+WHERE entity_id = :entity
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class CategoryPlan:
+    """What `categories` would do, decided before anything is written."""
+
+    insert: tuple[RuleCategory, ...]
+    set_nature: tuple[RuleCategory, ...]
+    unchanged: int
+
+
+def plan_categories(
+    wanted: Iterable[RuleCategory],
+    existing: Iterable[Mapping[str, object]],
+) -> CategoryPlan:
+    """Compare the rules file's categories with the entity's, refusing any disagreement.
+
+    A category that exists with another label or another nature is refused
+    rather than overwritten: the label is what confirmed candidates already
+    display, and a nature once set decides which totals a row counts in. The
+    whole run stops, so a partly applied file never exists.
+    """
+    rows = {str(row["code"]): row for row in existing}
+    labels = {str(row["label"]): str(row["code"]) for row in rows.values()}
+    insert: list[RuleCategory] = []
+    set_nature: list[RuleCategory] = []
+    unchanged = 0
+    for category in wanted:
+        row = rows.get(category.code)
+        if row is None:
+            if labels.get(category.label, category.code) != category.code:
+                raise LocalModeRefused(
+                    f"category {category.code} has a label another category already uses"
+                )
+            insert.append(category)
+            continue
+        if row["retired"]:
+            raise LocalModeRefused(f"category {category.code} is retired in this book")
+        if row["label"] != category.label:
+            raise LocalModeRefused(f"category {category.code} exists with a different label")
+        if row["nature"] is None:
+            set_nature.append(category)
+        elif row["nature"] != category.nature:
+            raise LocalModeRefused(f"category {category.code} exists with a different nature")
+        else:
+            unchanged += 1
+    return CategoryPlan(insert=tuple(insert), set_nature=tuple(set_nature), unchanged=unchanged)
+
+
+def command_categories(args: argparse.Namespace) -> int:
+    """Create the rules file's reporting categories in one book, as the owner role.
+
+    Rule suggestions can be confirmed only into a category the book already
+    has, because a decision names an existing reporting category. This makes
+    them exist: missing categories are inserted with label and nature, an
+    existing category without a nature gets one, and anything else is refused.
+    It writes categories only - no candidate, no posting - and prints counts,
+    never labels, since those name the user's own spending.
+    """
+    from sqlalchemy import create_engine, text
+
+    ruleset = load_rules(args.rules if args.rules is not None else rules_path())
+    engine = create_engine(_env_value("LEDGERBRIDGE_MIGRATION_DATABASE_URL"))
+    try:
+        with engine.connect() as connection, connection.begin() as transaction:
+            found = connection.execute(
+                text("SELECT 1 FROM public.entity WHERE id = :entity"), {"entity": args.entity}
+            ).first()
+            if found is None:
+                raise LocalModeRefused("no such entity in the local database")
+            existing = connection.execute(
+                text(_CATEGORY_ROWS_SQL), {"entity": args.entity}
+            ).mappings()
+            plan = plan_categories(ruleset.categories.values(), [dict(row) for row in existing])
+            for category in plan.insert:
+                connection.execute(
+                    text(
+                        "INSERT INTO public.reporting_category(entity_id, code, label, nature) "
+                        "VALUES (:entity, :code, :label, :nature)"
+                    ),
+                    {
+                        "entity": args.entity,
+                        "code": category.code,
+                        "label": category.label,
+                        "nature": category.nature,
+                    },
+                )
+            for category in plan.set_nature:
+                connection.execute(
+                    text(
+                        "UPDATE public.reporting_category SET nature = :nature "
+                        "WHERE entity_id = :entity AND code = :code AND nature IS NULL"
+                    ),
+                    {"entity": args.entity, "code": category.code, "nature": category.nature},
+                )
+            if args.dry_run:
+                transaction.rollback()
+    finally:
+        engine.dispose()
+    print(
+        f"LOCAL_CATEGORIES_{'DRY_RUN' if args.dry_run else 'OK'} "
+        f"inserted={len(plan.insert)} nature_set={len(plan.set_nature)} "
+        f"unchanged={plan.unchanged} rules_version={ruleset.rules_version}"
+    )
+    return 0
+
+
 def command_check(args: argparse.Namespace) -> int:
     """Prove the profile assembles and the database answers, then exit.
 
@@ -774,6 +897,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     candidates.add_argument("--manifest", type=Path, required=True)
     candidates.set_defaults(func=command_candidates)
+    categories = subparsers.add_parser(
+        "categories",
+        help="create the rules file's reporting categories in one book",
+    )
+    categories.add_argument("--entity", type=UUID, required=True)
+    categories.add_argument("--rules", type=Path, default=None)
+    categories.add_argument("--dry-run", action="store_true")
+    categories.set_defaults(func=command_categories)
     for name, function, help_text in (
         ("check", command_check, "assemble the profile and count entities"),
         ("serve", command_serve, "serve the read API and candidate decisions on loopback"),
@@ -785,7 +916,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (LocalModeRefused, LocalBackupError, LocalStatementError) as refusal:
+    except (
+        LocalModeRefused,
+        LocalBackupError,
+        LocalStatementError,
+        LocalRulesInvalid,
+        LocalRulesNotConfigured,
+    ) as refusal:
         print(f"local mode refused: {refusal}", file=sys.stderr)
         return 2
 

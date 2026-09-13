@@ -266,8 +266,8 @@ def test_accounting_dimensions_require_decide_and_hide_cross_company_catalogs() 
         "entity_ref": str(ENTITY_A),
         "business_units": [{"ref": "unit-demo-a", "label": "Demo unit A"}],
         "categories": [
-            {"code": "SUPPLIES", "label": "Synthetic supplies"},
-            {"code": "TRAVEL", "label": "Reviewed travel"},
+            {"code": "SUPPLIES", "label": "Synthetic supplies", "nature": None},
+            {"code": "TRAVEL", "label": "Reviewed travel", "nature": None},
         ],
     }
     read_only = _client(principal=_principal(READ_CAPABILITIES, entity_b=False))

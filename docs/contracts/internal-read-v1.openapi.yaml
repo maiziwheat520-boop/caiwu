@@ -431,6 +431,10 @@ components:
           type: string
           minLength: 1
           maxLength: 200
+        nature:
+          type: [string, "null"]
+          enum: [INCOME, EXPENSE, TRANSFER, null]
+          description: Additive field; null until the owner assigns a nature.
     CandidateProjection:
       type: object
       additionalProperties: false

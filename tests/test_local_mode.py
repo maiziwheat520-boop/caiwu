@@ -437,8 +437,11 @@ def test_the_company_classification_router_contributes_its_reads_only() -> None:
     assert all(route in classification_router.routes for route in taken.routes)
 
 
-def test_the_assembled_app_writes_exactly_the_two_candidate_decisions() -> None:
-    """The user opened review: confirm, ignore, correct - and nothing beside it.
+def test_the_assembled_app_writes_exactly_the_candidate_decisions() -> None:
+    """The user opened review: confirm, ignore, correct, a rule group - nothing else.
+
+    A rule group is confirmed one ordinary candidate decision at a time; its
+    route is the only write the rules carry-over adds.
 
     Walked over the routers exactly as mounted. Not over `app.routes`: FastAPI
     wraps an included router, so walking the app finds no route at all - an
@@ -460,6 +463,17 @@ def test_the_assembled_app_writes_exactly_the_two_candidate_decisions() -> None:
         local_mode_script.LOCAL_COMMAND_ROUTES
     )
     assert all(route in local_commands.routes for _, route in writers)
+    assert {
+        ("POST", "/internal/v1/candidates/{candidate_ref}/decisions"),
+        ("POST", "/internal/v1/candidate-classification-groups/{group_ref}/decisions"),
+        ("POST", "/internal/v1/local/rule-batches/decisions"),
+    } == local_mode_script.LOCAL_COMMAND_ROUTES
+    readers = {
+        route.path
+        for route in local_commands.routes
+        if isinstance(route, APIRoute) and route.methods == {"GET"}
+    }
+    assert readers == {"/internal/v1/local/rule-suggestions"}
 
 
 def test_a_rebound_name_or_a_browser_write_is_refused() -> None:

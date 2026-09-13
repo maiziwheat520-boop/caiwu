@@ -4298,3 +4298,114 @@ def test_r1_fact_hardening_identity_history_and_write_acl_invariants(
                 "WHERE schemaname = 'public' AND indexname LIKE '%primary%')"
             )
         ).scalar_one()
+
+
+def test_reporting_category_nature_is_assigned_once_and_exposed_to_readers(
+    isolated_r1_database: str,
+) -> None:
+    engine = create_engine(isolated_r1_database)
+    entity_id = uuid4()
+    unassigned_id = uuid4()
+    assigned_id = uuid4()
+    with engine.begin() as connection:
+        signature = "'internal_read.get_accounting_dimensions(uuid,uuid[],varchar[])'::regprocedure"
+        before = connection.execute(
+            text(
+                f"SELECT prosecdef, proconfig, pg_get_userbyid(proowner), proacl::text "
+                f"FROM pg_proc WHERE oid = {signature}"
+            )
+        ).one()
+        connection.execute(
+            text(
+                "INSERT INTO public.entity (id, entity_type, name) "
+                "VALUES (:id, 'PERSON', 'Synthetic nature entity')"
+            ),
+            {"id": entity_id},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO public.reporting_category (id, entity_id, code, label) VALUES "
+                "(:unassigned, :entity, 'cat-open', 'Open category'), "
+                "(:assigned, :entity, 'cat-own', 'Own transfer')"
+            ),
+            {"unassigned": unassigned_id, "assigned": assigned_id, "entity": entity_id},
+        )
+        assert (
+            connection.execute(
+                text("SELECT nature FROM public.reporting_category WHERE id = :id"),
+                {"id": unassigned_id},
+            ).scalar_one()
+            is None
+        )
+        # The owner may assign a nature exactly once.
+        connection.execute(
+            text("UPDATE public.reporting_category SET nature = 'TRANSFER' WHERE id = :id"),
+            {"id": assigned_id},
+        )
+        after = connection.execute(
+            text(
+                f"SELECT prosecdef, proconfig, pg_get_userbyid(proowner), proacl::text "
+                f"FROM pg_proc WHERE oid = {signature}"
+            )
+        ).one()
+        assert tuple(after) == tuple(before)
+        assert after[0] is True
+
+    for statement, parameters, sqlstate, message in (
+        (
+            "UPDATE public.reporting_category SET nature = 'EXPENSE' WHERE id = :id",
+            {"id": assigned_id},
+            "23000",
+            "reporting_category is append-only",
+        ),
+        (
+            "UPDATE public.reporting_category SET nature = NULL WHERE id = :id",
+            {"id": assigned_id},
+            "23000",
+            "reporting_category is append-only",
+        ),
+        (
+            "UPDATE public.reporting_category SET nature = 'INCOME', label = 'Renamed' "
+            "WHERE id = :id",
+            {"id": unassigned_id},
+            "23000",
+            "reporting_category is append-only",
+        ),
+        (
+            "UPDATE public.reporting_category SET label = 'Renamed' WHERE id = :id",
+            {"id": unassigned_id},
+            "23000",
+            "reporting_category is append-only",
+        ),
+        (
+            "DELETE FROM public.reporting_category WHERE id = :id",
+            {"id": unassigned_id},
+            "23000",
+            "reporting_category is append-only",
+        ),
+        (
+            "UPDATE public.reporting_category SET nature = 'REFUND' WHERE id = :id",
+            {"id": unassigned_id},
+            "23514",
+            "reporting_category_nature_allowed",
+        ),
+    ):
+        _assert_db_rejection(engine, [(statement, parameters)], sqlstate=sqlstate, message=message)
+
+    with (
+        _temporarily_runtime_membership(isolated_r1_database, "ledgerbridge_reader"),
+        engine.begin() as connection,
+    ):
+        connection.execute(text("SET LOCAL ROLE ledgerbridge_reader"))
+        dimensions = connection.execute(
+            text(
+                "SELECT internal_read.get_accounting_dimensions("
+                "CAST(:entity AS uuid), CAST(:ids AS uuid[]), CAST(:refs AS varchar[]))"
+            ),
+            {"entity": entity_id, "ids": [], "refs": []},
+        ).scalar_one()
+    assert dimensions["categories"] == [
+        {"code": "cat-open", "label": "Open category", "nature": None},
+        {"code": "cat-own", "label": "Own transfer", "nature": "TRANSFER"},
+    ]
+    engine.dispose()

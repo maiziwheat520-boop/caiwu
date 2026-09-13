@@ -62,6 +62,7 @@ ACCOUNT_REGISTRY_INTAKE_SCHEMA_REVISIONS = frozenset(
         "20260905_0049",
         "20260906_0050",
         "20260906_0051",
+        "20260913_0052",
     }
 )
 

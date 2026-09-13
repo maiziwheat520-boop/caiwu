@@ -51,6 +51,7 @@ class _Session:
         self.sequence = 7
         self.hash = b"h" * 32
         self.candidate_queries = 0
+        self.categories: list[dict[str, Any]] = []
 
     def __enter__(self) -> _Session:
         return self
@@ -73,6 +74,23 @@ class _Session:
                 item["entity_ref"] = params["entity_id"]
                 scoped.append(item)
             return _Result(scoped)
+        if "get_accounting_dimensions" in sql:
+            assert params is not None
+            return _Result(
+                [
+                    {
+                        "dimensions": {
+                            "contract_version": "ledgerbridge.accounting-dimensions.v1",
+                            "entity_ref": str(params["entity_ref"]),
+                            "business_units": [
+                                {"ref": ref, "label": f"Unit {ref}"}
+                                for ref in params["business_unit_refs"]
+                            ],
+                            "categories": self.categories,
+                        }
+                    }
+                ]
+            )
         if "list_candidate_evidence_satisfactions" in sql:
             return _Result([])
         if "list_candidate_counterparty_facts" in sql:
@@ -176,3 +194,22 @@ def test_a_horizon_that_moves_during_the_walk_is_not_cached() -> None:
     service.personal_finance_summary(principal)
 
     assert session.candidate_queries > walked, "a straddled summary must never be cached"
+
+
+def test_an_assigned_category_nature_invalidates_the_cached_summary() -> None:
+    session = _Session(_rows())
+    service = _service(session)
+    principal = _principal()
+    code = _rows()[0]["category_code"]
+    label = _rows()[0]["category_label"]
+    session.categories = [{"code": code, "label": label, "nature": None}]
+
+    service.personal_finance_summary(principal)
+    walked = session.candidate_queries
+
+    # The owner assigns a nature without writing an audit event, so the
+    # horizon does not move; the summary must still be rebuilt.
+    session.categories = [{"code": code, "label": label, "nature": "TRANSFER"}]
+    service.personal_finance_summary(principal)
+
+    assert session.candidate_queries > walked, "a nature change must be rebuilt"

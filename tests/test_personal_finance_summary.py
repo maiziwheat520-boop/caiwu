@@ -27,6 +27,7 @@ def _candidate(
     business_unit_ref: str | None = "review-2026-05",
     business_unit_label: str | None = "待校准账户",
     category_label: str | None = "餐饮",
+    category_code: str | None = None,
     accounting_month: str | None = "2026-08",
     index: int = 1,
 ) -> CandidateProjection:
@@ -54,7 +55,7 @@ def _candidate(
         business_unit_ref=business_unit_ref,
         business_unit_label=business_unit_label,
         category_label=category_label,
-        category_code="MISC" if category_label else None,
+        category_code=category_code or ("MISC" if category_label else None),
         accounting_month=accounting_month,
         created_at=moment,
         updated_at=moment,
@@ -200,3 +201,55 @@ def test_an_explicitly_personal_scope_is_counted_but_not_listed() -> None:
     )
     assert summary.entry_total == 1
     assert summary.unassigned_entries == ()
+
+
+def _transfer_rows() -> tuple[CandidateProjection, ...]:
+    return (
+        _personal(
+            summary="支付宝|2026-08-03|支出|付款|商户甲|余额宝|交易成功",
+            amount_minor=1_000,
+            category_label="餐饮",
+            category_code="P-FOOD",
+            index=21,
+        ),
+        _personal(
+            summary="支付宝|2026-08-04|收入|转账|本人|余额宝|交易成功",
+            amount_minor=700,
+            category_label="自有账户互转",
+            category_code="P-SELF",
+            index=22,
+        ),
+        _personal(
+            summary="微信|2026-08-05|支出|转账|本人|零钱|交易成功",
+            amount_minor=400,
+            category_label="自有账户互转",
+            category_code="P-SELF",
+            index=23,
+        ),
+    )
+
+
+def test_a_transfer_category_is_neither_income_nor_expense() -> None:
+    summary = build_personal_finance_summary(
+        _transfer_rows(), {"P-FOOD": "EXPENSE", "P-SELF": "TRANSFER"}
+    )
+
+    assert summary.entry_total == 3
+    assert (summary.income_minor, summary.expense_minor, summary.net_minor) == (0, 1_000, -1_000)
+    assert (summary.income_entry_count, summary.expense_entry_count) == (0, 1)
+    assert [share.category for share in summary.category_shares] == ["餐饮"]
+    assert [(m.month, m.income_minor, m.expense_minor) for m in summary.monthly_totals] == [
+        ("2026-08", 0, 1_000)
+    ]
+    assert summary.transfer_entry_count == 2
+    assert (summary.transfer_in_minor, summary.transfer_out_minor) == (700, 400)
+    # Transfers are still entries backed by evidence.
+    assert summary.evidence_count == build_personal_finance_summary(_transfer_rows()).evidence_count
+
+
+def test_without_natures_every_entry_still_counts_as_before() -> None:
+    for natures in (None, {}, {"P-SELF": "EXPENSE"}):
+        summary = build_personal_finance_summary(_transfer_rows(), natures)
+        assert summary.transfer_entry_count == 0
+        assert (summary.transfer_in_minor, summary.transfer_out_minor) == (0, 0)
+        assert (summary.income_minor, summary.expense_minor) == (700, 1_400)

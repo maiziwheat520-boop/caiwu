@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from collections.abc import Mapping
 from typing import Literal
 
 from pydantic import Field
@@ -104,6 +105,12 @@ class PersonalFinanceSummary(_FrozenModel):
     unassigned_entries: tuple[PersonalEntry, ...] = Field(max_length=1000)
     category_shares: tuple[CategoryShare, ...] = Field(max_length=200)
     monthly_totals: tuple[MonthlyTotal, ...] = Field(max_length=200)
+    # Entries whose category nature is TRANSFER. They are movement between the
+    # user's own balances, so they count as entries but never as income or
+    # expense; the amounts are magnitudes split by cashflow sign.
+    transfer_entry_count: int = 0
+    transfer_in_minor: int = 0
+    transfer_out_minor: int = 0
 
 
 def _summary_fields(candidate: CandidateProjection) -> list[str]:
@@ -213,7 +220,21 @@ def _pending_candidate(candidate: CandidateProjection) -> PendingCandidate:
 
 def build_personal_finance_summary(
     candidates: tuple[CandidateProjection, ...],
+    category_natures: Mapping[str, str] | None = None,
 ) -> PersonalFinanceSummary:
+    """Total personal cash movement.
+
+    ``category_natures`` maps a reporting category code to its nature. An entry
+    whose category is a TRANSFER still counts as an entry and toward evidence,
+    but is kept out of income, expense, net, category shares and months.
+    """
+    natures: Mapping[str, str] = category_natures or {}
+    transfer_refs = {
+        str(candidate.candidate_ref)
+        for candidate in candidates
+        if candidate.category_code is not None
+        and natures.get(candidate.category_code) == "TRANSFER"
+    }
     eligible = [entry for entry in map(_personal_entry, candidates) if entry is not None]
     excluded_count = len(candidates) - len(eligible)
     deduplicated, deduplicated_count = _deduplicate(eligible)
@@ -221,9 +242,11 @@ def build_personal_finance_summary(
     entries = [entry for entry in deduplicated if entry.scope_status == "PERSONAL"]
     unassigned = [entry for entry in deduplicated if entry.scope_status == "UNASSIGNED"]
     counted = entries + unassigned
+    transfers = [entry for entry in counted if entry.candidate_ref in transfer_refs]
+    flows = [entry for entry in counted if entry.candidate_ref not in transfer_refs]
 
-    income_minor = sum(max(entry.cashflow_minor, 0) for entry in counted)
-    expense_minor = sum(abs(min(entry.cashflow_minor, 0)) for entry in counted)
+    income_minor = sum(max(entry.cashflow_minor, 0) for entry in flows)
+    expense_minor = sum(abs(min(entry.cashflow_minor, 0)) for entry in flows)
 
     by_ref = {str(candidate.candidate_ref): candidate for candidate in candidates}
     evidence_refs = {
@@ -233,7 +256,7 @@ def build_personal_finance_summary(
     }
 
     category_totals: dict[str, int] = defaultdict(int)
-    for entry in counted:
+    for entry in flows:
         amount = abs(entry.cashflow_minor)
         if amount == 0:
             continue
@@ -253,7 +276,7 @@ def build_personal_finance_summary(
     )
 
     monthly: dict[str, list[int]] = defaultdict(lambda: [0, 0])
-    for entry in counted:
+    for entry in flows:
         if entry.accounting_month is None:
             continue
         if entry.cashflow_minor >= 0:
@@ -280,12 +303,15 @@ def build_personal_finance_summary(
         income_minor=income_minor,
         expense_minor=expense_minor,
         net_minor=income_minor - expense_minor,
-        income_entry_count=sum(1 for entry in counted if entry.cashflow_minor > 0),
-        expense_entry_count=sum(1 for entry in counted if entry.cashflow_minor < 0),
+        income_entry_count=sum(1 for entry in flows if entry.cashflow_minor > 0),
+        expense_entry_count=sum(1 for entry in flows if entry.cashflow_minor < 0),
         evidence_count=len(evidence_refs),
         excluded_count=excluded_count,
         deduplicated_count=deduplicated_count,
         unassigned_entries=tuple(unassigned),
         category_shares=category_shares,
         monthly_totals=monthly_totals,
+        transfer_entry_count=len(transfers),
+        transfer_in_minor=sum(max(entry.cashflow_minor, 0) for entry in transfers),
+        transfer_out_minor=sum(abs(min(entry.cashflow_minor, 0)) for entry in transfers),
     )

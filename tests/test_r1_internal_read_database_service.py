@@ -295,6 +295,42 @@ def test_database_accounting_dimensions_reject_unbound_returned_ref() -> None:
         _service(session).get_accounting_dimensions(_principal(), entity_ref=ENTITY)
 
 
+def test_database_accounting_dimensions_carry_category_nature() -> None:
+    candidate = SyntheticInternalReadService()._fixture.candidates[1]
+
+    def dimensions(categories: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "contract_version": "ledgerbridge.accounting-dimensions.v1",
+            "entity_ref": str(ENTITY),
+            "business_units": [{"ref": "unit-demo-a", "label": "Demo unit A"}],
+            "categories": categories,
+        }
+
+    session = _Session(
+        candidate.model_dump(),
+        accounting_dimensions=dimensions(
+            [
+                {"code": "A-OWN", "label": "Own transfer", "nature": "TRANSFER"},
+                {"code": "B-NEW", "label": "Unassigned", "nature": None},
+                {"code": "C-OLD", "label": "Pre-0052 shape"},
+            ]
+        ),
+    )
+    result = _service(session).get_accounting_dimensions(_principal(), entity_ref=ENTITY)
+    assert [(item.code, item.nature) for item in result.categories] == [
+        ("A-OWN", "TRANSFER"),
+        ("B-NEW", None),
+        ("C-OLD", None),
+    ]
+
+    invalid = _Session(
+        candidate.model_dump(),
+        accounting_dimensions=dimensions([{"code": "A", "label": "A", "nature": "REFUND"}]),
+    )
+    with pytest.raises(InternalReadBackendUnavailable):
+        _service(invalid).get_accounting_dimensions(_principal(), entity_ref=ENTITY)
+
+
 def test_database_accounting_dimensions_surface_duplicate_active_labels_for_governance() -> None:
     session = _Session({}, failure=_SqlStateError("LB005"))
 

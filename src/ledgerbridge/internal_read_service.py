@@ -572,7 +572,11 @@ class DatabaseInternalReadService:
         matching = [grant for grant in principal.grants if grant.entity_ref == entity_ref]
         if len(matching) != 1:
             raise ResourceNotVisible("resource was not found")
-        grant = matching[0]
+        return self._read_accounting_dimensions(matching[0])
+
+    def _read_accounting_dimensions(self, grant: EntityGrant) -> AccountingDimensions:
+        """Read one grant's dimensions; the caller has already authorized it."""
+        entity_ref = grant.entity_ref
         if (grant.business_unit_refs or grant.business_unit_ids) and not (
             grant.business_unit_bindings
         ):
@@ -881,7 +885,16 @@ class DatabaseInternalReadService:
         the workbench instead of one per page.
         """
         authorize_collection_read(principal, Capability.CANDIDATE_READ)
-        key = horizon_cache_key(principal)
+        category_natures = self._category_natures(principal)
+        # A nature is assigned by the owner outside the audited command path,
+        # so the audit horizon alone would not notice it. The natures are part
+        # of the key for that reason.
+        natures_digest = hashlib.sha256(
+            "\x1e".join(
+                f"{code}\x1f{nature}" for code, nature in sorted(category_natures.items())
+            ).encode()
+        ).hexdigest()
+        key = f"{horizon_cache_key(principal)}|{natures_digest}"
         with self._session_factory() as session:
             sequence, horizon_hash = self._audit_horizon(session)
         cached = _PERSONAL_FINANCE_SUMMARY_CACHE.get(key, sequence, horizon_hash)
@@ -902,7 +915,7 @@ class DatabaseInternalReadService:
                 raise InternalReadBackendUnavailable("personal finance cursor repeated")
             seen.add(page.next_cursor)
             cursor = page.next_cursor
-        summary = build_personal_finance_summary(tuple(candidates))
+        summary = build_personal_finance_summary(tuple(candidates), category_natures)
 
         # The walk is not atomic with the horizon read above; a summary that
         # straddled a write is returned but never stored.
@@ -911,6 +924,26 @@ class DatabaseInternalReadService:
         if after_sequence == sequence and after_hash == horizon_hash:
             _PERSONAL_FINANCE_SUMMARY_CACHE.store(key, sequence, horizon_hash, summary)
         return summary
+
+    def _category_natures(self, principal: WorkloadPrincipal) -> dict[str, str]:
+        """Every assigned category nature across the principal's entities.
+
+        Reading a category's nature is part of reading the candidates it
+        classifies, so this uses the grant scope already authorized for the
+        summary rather than the decide capability the dimensions route needs.
+        Category codes are entity-scoped; two visible entities assigning one
+        code different natures cannot be summarised by code and fail closed.
+        """
+        natures: dict[str, str] = {}
+        for grant in principal.grants:
+            for category in self._read_accounting_dimensions(grant).categories:
+                if category.nature is None:
+                    continue
+                if natures.setdefault(category.code, category.nature) != category.nature:
+                    raise InternalReadBackendUnavailable(
+                        "reporting category natures conflict across entities"
+                    )
+        return natures
 
     def get_candidate(
         self,

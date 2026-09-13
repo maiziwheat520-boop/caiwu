@@ -40,6 +40,23 @@
               "minLength": 1,
               "title": "Label",
               "type": "string"
+            },
+            "nature": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "INCOME",
+                    "EXPENSE",
+                    "TRANSFER"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Nature"
             }
           },
           "required": [
@@ -4554,6 +4571,21 @@
         },
         "pending_total": {
           "title": "Pending Total",
+          "type": "integer"
+        },
+        "transfer_entry_count": {
+          "default": 0,
+          "title": "Transfer Entry Count",
+          "type": "integer"
+        },
+        "transfer_in_minor": {
+          "default": 0,
+          "title": "Transfer In Minor",
+          "type": "integer"
+        },
+        "transfer_out_minor": {
+          "default": 0,
+          "title": "Transfer Out Minor",
           "type": "integer"
         },
         "unassigned_entries": {
