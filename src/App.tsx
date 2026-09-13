@@ -138,6 +138,11 @@ const sourceLabels: Record<ApiCandidate['source_channel'], Candidate['source']> 
   synthetic: '合成数据',
 }
 
+// Systems whose candidates come from a platform's exported bill. Their created
+// time is when the file was imported, which says nothing about when the payment
+// happened - that date lives in the summary.
+const billExportSystems = new Set(['wechat_pay_export', 'alipay_export', 'alipay_bill_export'])
+
 function toCandidate(candidate: ApiCandidate | CandidateDetail): Candidate {
   const blockerCodes = new Set(candidate.blockers.map((blocker) => blocker.code))
   const reviewRisks = candidate.review_risks ?? []
@@ -152,7 +157,7 @@ function toCandidate(candidate: ApiCandidate | CandidateDetail): Candidate {
     revision: candidate.revision,
     source,
     sourceChannel: candidate.source_channel,
-    receivedAt: new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(candidate.received_at)),
+    receivedAt: `${candidate.source_system && billExportSystems.has(candidate.source_system) ? '导入 ' : ''}${new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(candidate.received_at))}`,
     businessUnit: candidate.business_unit,
     businessUnitRef: candidate.business_unit_ref ?? '',
     category: candidate.category,
@@ -863,7 +868,12 @@ function App() {
             />
           </section>
           <section className="overview-section" id="review" aria-label="待审核">
-            <CompanyBankStatementReviewPanel csrfToken={session?.csrf_token ?? ''} />
+            {/* Confirming a company statement is a command, and local mode
+                serves none and maps no company statement - so here the panel
+                could only ever show a request failure. */}
+            {session?.runtime_mode === 'local-single-user'
+              ? null
+              : <CompanyBankStatementReviewPanel csrfToken={session?.csrf_token ?? ''} />}
             <ReviewQueue
               candidates={pendingCandidates}
               bankStatements={pendingBankStatements}
