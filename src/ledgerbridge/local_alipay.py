@@ -36,7 +36,9 @@ from ledgerbridge.local_payments import (
     money_minor,
 )
 
-ALIPAY_SOURCE_SYSTEM: Final = "alipay_bill_export"
+#: The name Core's released Alipay import already uses. A second name for the
+#: same kind of file would split one platform's rows across two source systems.
+ALIPAY_SOURCE_SYSTEM: Final = "alipay_export"
 
 #: Alipay writes its exports in the mainland Windows code page. GB18030 is a
 #: superset of GBK, so it reads every file GBK does and does not fail on the

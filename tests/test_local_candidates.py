@@ -10,9 +10,9 @@ import pytest
 
 from ledgerbridge.local_candidates import (
     _PLATFORMS,
+    ALIPAY_TRANSACTION_REVIEW,
     CANDIDATE_BATCH_SCHEMA,
-    INTERNAL_TRANSFER,
-    UNCLASSIFIED,
+    WECHAT_TRANSACTION_REVIEW,
     LocalCandidateError,
     _candidate,
     _identity_scope,
@@ -21,6 +21,7 @@ from ledgerbridge.local_candidates import (
     load_candidate_batch,
 )
 from ledgerbridge.local_payments import DIRECTIONLESS, PaymentExport, PaymentRow
+from ledgerbridge.review_risk import derive_review_risks
 
 _ZONE = ZoneInfo("Asia/Shanghai")
 _WECHAT = _PLATFORMS["wechat"]
@@ -134,29 +135,69 @@ def test_two_exports_may_not_disagree_about_when_it_happened(tmp_path: Path) -> 
         _reconcile(_row(), _row(occurred_at=datetime(2026, 3, 2, 9, 0, tzinfo=_ZONE)))
 
 
-def test_an_expenditure_becomes_a_negative_unclassified_candidate() -> None:
+def test_an_expenditure_is_stated_in_the_platform_import_shape() -> None:
+    """The shape Core's released platform import writes, field for field."""
+
     evidence_ref = uuid4()
     candidate = _candidate(_WECHAT, (), _row(), evidence_ref)
 
     assert candidate.amount_minor == -2600
-    assert candidate.category_code == UNCLASSIFIED
+    assert candidate.category_code == WECHAT_TRANSACTION_REVIEW
+    assert candidate.source_system == "wechat_pay_export"
     assert candidate.accounting_month == "2026-03"
     assert candidate.evidence_refs == (evidence_ref,)
-    # Nothing looked at what this was for, and the queue should say so.
-    assert candidate.confidence_basis_points == 0
+    assert candidate.summary == "微信 | 2026-03-01 | 支出 | 商户消费 | 合成商户 | 零钱通 | 支付成功"
+    assert candidate.confidence_basis_points == 9900
 
 
-def test_a_directionless_row_keeps_its_magnitude_and_its_own_category() -> None:
+def test_alipay_uses_the_name_and_category_the_released_import_uses() -> None:
+    candidate = _candidate(_PLATFORMS["alipay"], (), _row(), uuid4())
+
+    assert candidate.source_system == "alipay_export"
+    assert candidate.category_code == ALIPAY_TRANSACTION_REVIEW
+    assert candidate.summary.startswith("支付宝 | 2026-03-01 | 支出 | ")
+
+
+def test_a_directionless_row_keeps_its_magnitude_and_says_so() -> None:
     candidate = _candidate(
         _WECHAT,
         (),
-        _row(direction=DIRECTIONLESS, kind="零钱提现", counterparty="/", status="提现已到账"),
+        _row(direction=DIRECTIONLESS, kind="零钱提现", counterparty="", status="提现已到账"),
         uuid4(),
     )
 
     assert candidate.amount_minor == 2600
-    assert candidate.category_code == INTERNAL_TRANSFER
-    assert "零钱提现" in candidate.summary
+    assert candidate.category_code == WECHAT_TRANSACTION_REVIEW
+    assert candidate.summary == "微信 | 2026-03-01 | 不计收支 | 零钱提现 | / | 零钱通 | 提现已到账"
+
+
+def test_a_field_cannot_shift_the_fields_after_it() -> None:
+    """The contract is positional, so a separator inside a name must not split it."""
+
+    candidate = _candidate(_WECHAT, (), _row(counterparty="甲 | 乙", funding=""), uuid4())
+
+    fields = [part.strip() for part in candidate.summary.split("|")]
+    assert len(fields) == 7
+    assert fields[4] == "甲 / 乙"
+    assert fields[5] == "/"
+
+
+def test_review_risks_are_raised_on_what_the_importer_writes() -> None:
+    """The reason the shape matters: a local candidate is no longer exempt.
+
+    A payment funded from a bank card has to be matched to that card's
+    statement before it is confirmed. Written the old way, Core raised nothing.
+    """
+
+    candidate = _candidate(_WECHAT, (), _row(funding="中国银行储蓄卡(0000)"), uuid4())
+
+    risks = derive_review_risks(
+        source_system=candidate.source_system,
+        category_code=candidate.category_code,
+        summary=candidate.summary,
+    )
+
+    assert "FUNDING_STATEMENT_REQUIRED" in {risk.code for risk in risks}
 
 
 def test_candidate_references_are_derived_from_the_transaction() -> None:

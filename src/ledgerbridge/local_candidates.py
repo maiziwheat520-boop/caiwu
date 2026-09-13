@@ -58,20 +58,28 @@ CANDIDATE_BATCH_SCHEMA: Final = "ledgerbridge.local-candidate-batch.v1"
 #: the builder produces the same manifest and the receipt recognises it.
 _NAMESPACE: Final = UUID("6f2d7b64-4b5f-5a3e-9c81-2f0f6d9a1c47")
 
-#: What an importer is entitled to say about a row it has not classified.
-UNCLASSIFIED: Final = "UNCLASSIFIED"
-
-#: WeChat's own direction-less rows: top-ups, withdrawals, 零钱通 movements and
-#: card repayments. They are movements between the owner's own accounts rather
-#: than income or expenditure, and the bill totals them separately and
-#: unsigned. Keeping them in their own category means they neither disappear
-#: nor get counted as spending before anyone has looked at them.
-INTERNAL_TRANSFER: Final = "INTERNAL_TRANSFER"
+#: The review categories Core's released platform import assigns
+#: (`scripts/build_platform_review_bundle.py`). They are not labels of
+#: convenience: `review_risk` raises its platform risks - bank-funded payments,
+#: refunds, unsettled rows, transfers - only for these two codes, and
+#: classification groups are keyed on them. A local candidate in any other
+#: category is silently exempt from every one of those checks.
+WECHAT_TRANSACTION_REVIEW: Final = "WECHAT_TRANSACTION_REVIEW"
+ALIPAY_TRANSACTION_REVIEW: Final = "ALIPAY_TRANSACTION_REVIEW"
 
 _CATEGORY_LABELS: Final = {
-    UNCLASSIFIED: "Unclassified, pending review",
-    INTERNAL_TRANSFER: "Movement between the owner's own accounts, pending review",
+    WECHAT_TRANSACTION_REVIEW: "微信交易复核",
+    ALIPAY_TRANSACTION_REVIEW: "支付宝交易复核",
 }
+
+#: The stated direction of a row the platform gives none, as the summary
+#: contract spells it.
+_DIRECTIONLESS_TEXT: Final = "不计收支"
+
+#: What stands in for an empty summary field. The contract is positional -
+#: `personal_finance_summary` reads the date from field 1 and the counterparty
+#: from field 4 - so an empty part must hold its place, not be dropped.
+_EMPTY_FIELD: Final = "/"
 
 _MAX_MANIFEST_BYTES: Final = 4 * 1024 * 1024
 _MAX_SOURCES: Final = 20
@@ -89,6 +97,9 @@ class _Platform:
 
     reader: Callable[[bytes], PaymentExport]
     source_system: str
+    #: How the summary contract names the platform: its first field.
+    display_name: str
+    category_code: str
     extension: str
     media_type: str
     #: Prefixed to every derived reference, so two platforms cannot mint the
@@ -107,6 +118,8 @@ _PLATFORMS: Final[dict[str, _Platform]] = {
     "wechat": _Platform(
         reader=read_wechat_export,
         source_system=WECHAT_SOURCE_SYSTEM,
+        display_name="微信",
+        category_code=WECHAT_TRANSACTION_REVIEW,
         extension="xlsx",
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ref_scope=(),
@@ -114,6 +127,8 @@ _PLATFORMS: Final[dict[str, _Platform]] = {
     "alipay": _Platform(
         reader=read_alipay_export,
         source_system=ALIPAY_SOURCE_SYSTEM,
+        display_name="支付宝",
+        category_code=ALIPAY_TRANSACTION_REVIEW,
         extension="csv",
         media_type="text/csv",
         ref_scope=(ALIPAY_SOURCE_SYSTEM,),
@@ -272,7 +287,7 @@ def build_source_manifest(
                 # Unscoped by platform on purpose: a reporting category
                 # belongs to the book, and the database agrees - it is
                 # unique on (entity, code). WeChat and Alipay rows land in
-                # the same UNCLASSIFIED, which is what a review queue wants.
+                # one category per platform, as the released import has it.
                 category_ref=_ref(_BOOK_SCOPE, "category", str(batch.entity_ref), code),
                 code=code,
                 label=_CATEGORY_LABELS[code],
@@ -410,40 +425,63 @@ def _candidate(
     row: PaymentRow,
     evidence_ref: UUID,
 ) -> ImportCandidate:
-    """One row, stated as a candidate and classified as nothing.
+    """One row, stated as a candidate in the shape Core's platform import uses.
+
+    The summary is not prose. Core reads it positionally -
+    `平台 | 日期 | 收支 | 交易类型 | 交易对方 | 支付方式 | 交易状态` - to total
+    personal cash flow, to pair a payment seen through both a bank and a
+    platform, and to raise review risks. A candidate that departs from it is
+    not merely displayed oddly: once confirmed it is excluded from every
+    personal total, and before that no risk is ever raised on it.
 
     The amount keeps the sign the bill states and no more: negative for
     expenditure, positive for income, and the bare magnitude for a row the
     platform itself declines to give a direction. Guessing a sign from the
-    transaction type would be inference presented as a fact, and the category
-    they land in exists so that a person can do it instead.
+    transaction type would be inference presented as a fact.
     """
 
+    direction = _DIRECTIONLESS_TEXT if row.direction == DIRECTIONLESS else row.direction
+    fields = (
+        spec.display_name,
+        f"{row.occurred_at:%Y-%m-%d}",
+        direction,
+        row.kind,
+        row.counterparty,
+        row.funding,
+        row.status,
+    )
+    summary = " | ".join(_summary_field(field) for field in fields)
     return ImportCandidate(
         candidate_ref=_ref(identity, "candidate", row.serial),
         operation_id=_ref(identity, "operation", row.serial),
         ingest_channel="CONTROLLED_UPLOAD",
         source_system=spec.source_system,
         source_event_ref=_ref(identity, "source-event", spec.source_system, row.serial),
-        display_label=_bounded(row.counterparty or row.kind, _MAX_LABEL),
-        category_code=INTERNAL_TRANSFER if row.direction == DIRECTIONLESS else UNCLASSIFIED,
+        display_label=_bounded(
+            f"{spec.display_name} {row.occurred_at:%Y-%m-%d} {row.kind}", _MAX_LABEL
+        ),
+        category_code=spec.category_code,
         amount_minor=row.signed_amount_minor,
         accounting_month=f"{row.occurred_at:%Y-%m}",
-        summary=_bounded(
-            " / ".join(
-                part
-                for part in (row.kind, row.product, row.funding, row.status, row.note)
-                if part and part != "/"
-            )
-            or row.kind,
-            _MAX_SUMMARY,
-        ),
-        # Nothing here looked at what the transaction was for, and saying so is
-        # the point: a review queue sorted by confidence should not put an
-        # importer's silence above a person's judgement.
-        confidence_basis_points=0,
+        summary=_bounded(summary, _MAX_SUMMARY),
+        # Confidence is how reliably the fields were read, not whether the row
+        # is safe to confirm - review risks answer that. Every field here comes
+        # from a column of the platform's own export, reconciled against its
+        # preamble, so this states what the released platform import states.
+        confidence_basis_points=9900,
         evidence_refs=(evidence_ref,),
     )
+
+
+def _summary_field(value: str) -> str:
+    """One summary field that cannot break the positional contract.
+
+    A literal separator inside a field would shift every field after it, so it
+    is replaced; an empty field keeps its place.
+    """
+
+    cleaned = " ".join(value.replace("|", "/").split())
+    return cleaned or _EMPTY_FIELD
 
 
 def _book_identity(engine: Engine, batch: LocalCandidateBatch) -> tuple[str, str, str]:
@@ -490,9 +528,9 @@ def _uuid(value: Any) -> UUID:
 
 
 __all__ = [
+    "ALIPAY_TRANSACTION_REVIEW",
     "CANDIDATE_BATCH_SCHEMA",
-    "INTERNAL_TRANSFER",
-    "UNCLASSIFIED",
+    "WECHAT_TRANSACTION_REVIEW",
     "LocalCandidateBatch",
     "LocalCandidateError",
     "build_source_manifest",
