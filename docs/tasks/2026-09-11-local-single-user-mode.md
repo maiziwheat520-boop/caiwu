@@ -795,3 +795,42 @@ the same rows.
 ## Review findings
 
 -
+
+## Rules carry-over (2026-09-14, user: "分类加「性质」" and "按规则分类整批确认")
+
+What stands:
+
+- `reporting_category.nature` (INCOME / EXPENSE / TRANSFER), migration
+  `20260913_0052`. It can be set once from NULL; any other update is still
+  refused by the append-only trigger. `get_accounting_dimensions` returns it.
+- The personal summary (Core and the Web page) leaves TRANSFER categories out
+  of income, expense, net, shares and monthly totals and reports transfers on
+  their own line.
+- The rules file lives only at `~/.ledgerbridge-local/rules/personal.json`,
+  exported once from finance-desk's personal rules outside the repository.
+  `local_mode.py categories --entity <uuid>` creates its categories.
+- `GET /internal/v1/local/rule-suggestions` groups pending candidates by
+  (category, rule). `POST /internal/v1/local/rule-batches/decisions` takes at
+  most 200 members, re-matches each one against the current file and decides it
+  through the existing audited decision path, with the rule id in the reason.
+  The Web page 规则建议 confirms a group only after the user opens it and clicks.
+
+Proof on the real books, with nothing decided:
+
+- Backup `local-backup-20260913T191315Z` and its restore rehearsal passed first.
+  Then the migration ran, and `categories` inserted 43 rows; a second dry run
+  reported 0 to insert.
+- Suggestions: 8,947 pending, 68 groups (7,526 transfer, 1,226 expense), 195
+  unmatched. This matches the earlier coverage count.
+- Batch probes through Core and through the BFF: a stale revision gave `STALE`,
+  a changed rules version gave 409, and no CSRF token gave 403. The probed
+  candidate stayed PENDING at revision 1.
+- The Core suite, including PostgreSQL tests on a throwaway CI-shaped database,
+  passed: 2988 passed, and the 72 skips are POSIX-only.
+
+Still open:
+
+- 195 unmatched candidates (mostly Alipay 收入) need individual review or new
+  rules.
+- The company rules (finance-desk COMPANY) are not carried over.
+- The two old placeholder categories (`*_TRANSACTION_REVIEW`) have no nature.
