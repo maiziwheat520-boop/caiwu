@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Theme } from '@radix-ui/themes'
 import App from './App'
+import { api, ApiError } from './api'
 import type { AccountingDimensions, ApiCandidate, AuthStatus, ClassificationGroup, EvidencePreview, OriginalReconciliation, ReviewEvent } from './types'
 import { originalReconciliationFixture } from './test-fixtures/original-reconciliation'
 
@@ -476,7 +477,7 @@ function installFetch(options: {
   candidatePages?: Array<{ items: ApiCandidate[]; next_cursor: string | null }>
   reviewEventPages?: Array<{ items: ReviewEvent[]; next_cursor: string | null }>
   failReviewEvents?: boolean
-  runtimeMode?: 'synthetic-preview' | 'authenticated-preview' | 'core-backed'
+  runtimeMode?: 'synthetic-preview' | 'authenticated-preview' | 'core-backed' | 'local-single-user'
   evidencePreview?: EvidencePreview
   unlockFailure?: boolean
   unlockGate?: Promise<void>
@@ -2278,6 +2279,28 @@ describe('LedgerBridge Web API client', () => {
     expect(within(categoryPanel!).queryByText('待审核')).not.toBeInTheDocument()
   })
 
+  it('counts a platform row marked 不计收支 as neither income nor expense', async () => {
+    const personalCandidates: ApiCandidate[] = [
+      { ...candidates[3], id: 'candidate-neutral-income', short_id: 'C-NT01', business_unit: '个人', business_unit_ref: 'personal-main', amount_minor: 10000, accounting_month: '2026-08', category: '工资', category_code: 'SALARY', summary: '支付宝 | 2026-08-01 | 收入 | 工资 | 公司 | 余额 | 交易成功' },
+      { ...candidates[3], id: 'candidate-neutral-expense', short_id: 'C-NT02', business_unit: '个人', business_unit_ref: 'personal-main', amount_minor: 2500, accounting_month: '2026-08', category: '餐饮', category_code: 'DINING', summary: '微信 | 2026-08-02 | 支出 | 商户消费 | 餐厅 | 零钱 | 支付成功' },
+      { ...candidates[3], id: 'candidate-neutral-move', short_id: 'C-NT03', business_unit: '个人', business_unit_ref: 'personal-main', amount_minor: 700000, accounting_month: '2026-08', category: '余额宝转入', category_code: 'INTERNAL_MOVE', summary: '支付宝 | 2026-08-03 | 不计收支 | 投资理财 | 余额宝 | 账户余额 | 交易成功' },
+    ]
+    installFetch({ items: personalCandidates })
+    renderApp()
+    await screen.findByRole('region', { name: '概览摘要' })
+    fireEvent.click(screen.getAllByRole('button', { name: /完整个人财务对账/ })[0])
+
+    const summary = screen.getByRole('region', { name: '个人财务收支概览' })
+    expect(within(summary).getByText('¥100.00')).toBeInTheDocument()
+    expect(within(summary).getByText('¥25.00')).toBeInTheDocument()
+    expect(within(summary).getByText('¥75.00')).toBeInTheDocument()
+    expect(within(summary).getByText('1 条已确认收入，含归属待校准')).toBeInTheDocument()
+    expect(within(summary).getByText('1 条已确认支出，含归属待校准')).toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent('¥7,000.00')
+    const categoryPanel = screen.getByRole('heading', { name: '测试分类占比' }).closest('section')
+    expect(within(categoryPanel!).queryByText('余额宝转入')).not.toBeInTheDocument()
+  })
+
   it('keeps same-source repeats and removes only one lower-priority cross-source copy per match', async () => {
     const personalCandidates: ApiCandidate[] = [
       ...['candidate-platform-spend-1', 'candidate-platform-spend-2'].map((id, index): ApiCandidate => ({
@@ -2928,5 +2951,194 @@ describe('LedgerBridge Web API client', () => {
     expect(screen.queryByText(/验证成功/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /付款|发薪|银行提交/ })).not.toBeInTheDocument()
     expect(document.body).not.toHaveTextContent(/demo|payable|payment_submission/i)
+  })
+})
+
+describe('local single-user mode', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    window.history.replaceState({}, '', '/overview')
+    Object.defineProperty(navigator, 'credentials', { configurable: true, value: undefined })
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const bareProblem = (status: number, code: string) => response({
+    type: 'about:blank', title: 'LedgerBridge Core request failed', status, code,
+  }, status)
+
+  function withDecisionResponses(
+    fetchMock: ReturnType<typeof installFetch>,
+    answer: (attempt: number) => Response | null,
+  ) {
+    const base = fetchMock.getMockImplementation()!
+    let attempt = 0
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input).endsWith('/decisions') && init?.method === 'POST') {
+        attempt += 1
+        const answered = answer(attempt)
+        if (answered) return answered
+      }
+      return base(input, init)
+    })
+  }
+
+  const decisionCalls = (fetchMock: ReturnType<typeof installFetch>) => fetchMock.mock.calls
+    .filter(([input, init]) => String(input).endsWith('/decisions') && init?.method === 'POST')
+
+  const idempotencyKey = (call: unknown[]) => ((call[1] as RequestInit | undefined)?.headers as Record<string, string>)['Idempotency-Key']
+
+  it('hides the Passkey and logout menu items that have no local route', async () => {
+    installFetch({ runtimeMode: 'local-single-user' })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.pointerDown(screen.getByRole('button', { name: /财务管理员/ }), { button: 0, ctrlKey: false })
+
+    expect(await screen.findByRole('menuitem', { name: /操作记录/ })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /添加这台设备/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /安全退出/ })).not.toBeInTheDocument()
+  })
+
+  it('hides payroll and sends a direct payroll link back to the overview without payroll reads', async () => {
+    window.history.replaceState({}, '', '/payroll')
+    const fetchMock = installFetch({ runtimeMode: 'local-single-user' })
+    renderApp()
+
+    expect(await screen.findByText('早上好，今天有几项需要确认')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/overview')
+    expect(screen.queryByRole('button', { name: '工资与发放验证' })).not.toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith('/api/v1/payroll/'))).toBe(false)
+  })
+
+  it('never asks for a bank password for encrypted evidence and explains why', async () => {
+    const lockedEvidence = {
+      id: '23000000-0000-4000-8000-000000000002',
+      kind: 'attachment' as const,
+      media_type: 'application/zip',
+      sha256: '2'.repeat(64),
+      original_filename: 'local-encrypted-statement.zip',
+      unlock_status: 'PASSWORD_REQUIRED' as const,
+      source_ref: '23000000-0000-4000-8000-000000000001',
+    }
+    const fetchMock = installFetch({
+      runtimeMode: 'local-single-user',
+      items: [{ ...candidates[0], id: 'candidate-local-locked', short_id: 'C-LL01', evidence: [lockedEvidence] }],
+    })
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('文件与连接')[0])
+
+    expect(within(filesWorkspace()).getByText('加密原件在本机模式下无法解锁')).toBeInTheDocument()
+    expect(screen.queryByLabelText('解压密码')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '输入解压密码' })).not.toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/v1/evidence/unlocks')).toBe(false)
+  })
+
+  it('re-reads a candidate after a stale-revision 409 so the next submit carries the current revision', async () => {
+    const candidateDetails: Record<string, ApiCandidate> = {}
+    const fetchMock = installFetch({ runtimeMode: 'local-single-user', candidateDetails })
+    withDecisionResponses(fetchMock, (attempt) => (attempt === 1 ? bareProblem(409, 'STALE_REVISION') : null))
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(within(reviewWorkspace()).getByText(candidates[0].summary))
+    const dialog = await screen.findByRole('dialog')
+    const submit = within(dialog).getByRole('button', { name: '保存更正并确认' })
+    await waitFor(() => expect(submit).toBeEnabled())
+
+    candidateDetails['candidate-1'] = { ...candidates[0], revision: 4 }
+    fireEvent.click(submit)
+
+    expect(await screen.findByText('C-8F21 已被其他操作更改，本次没有写入；已刷新为最新版本，请核对后重新提交')).toBeInTheDocument()
+    expect(screen.queryByText('LedgerBridge Core request failed')).not.toBeInTheDocument()
+    const refreshedDialog = await screen.findByRole('dialog')
+    const retry = within(refreshedDialog).getByRole('button', { name: '保存更正并确认' })
+    await waitFor(() => expect(retry).toBeEnabled())
+    fireEvent.click(retry)
+
+    await waitFor(() => expect(decisionCalls(fetchMock)).toHaveLength(2))
+    const [first, second] = decisionCalls(fetchMock)
+    expect(JSON.parse(String(first[1]?.body)).expected_revision).toBe(3)
+    expect(JSON.parse(String(second[1]?.body)).expected_revision).toBe(4)
+    expect(idempotencyKey(second)).not.toBe(idempotencyKey(first))
+  })
+
+  it('retries a decision whose outcome is unknown under the same Idempotency-Key and shows a Chinese reason', async () => {
+    const fetchMock = installFetch({ runtimeMode: 'local-single-user' })
+    withDecisionResponses(fetchMock, (attempt) => (attempt === 1 ? bareProblem(503, 'CORE_UNAVAILABLE') : null))
+    renderApp()
+    await screen.findByText('早上好，今天有几项需要确认')
+    fireEvent.click(screen.getAllByText('待审核')[0])
+    fireEvent.click(screen.getAllByRole('button', { name: '确认' })[0])
+
+    expect(await screen.findByText('Core 服务暂不可用，请稍后重试')).toBeInTheDocument()
+    expect(screen.queryByText('LedgerBridge Core request failed')).not.toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('button', { name: '确认' })[0])
+
+    expect(await screen.findByText(/C-8F21 已确认/)).toBeInTheDocument()
+    const [first, second] = decisionCalls(fetchMock)
+    expect(idempotencyKey(first)).toMatch(/^[0-9a-f-]{36}$/)
+    expect(idempotencyKey(second)).toBe(idempotencyKey(first))
+    expect(String(second[1]?.body)).toBe(String(first[1]?.body))
+  })
+})
+
+describe('decision Idempotency-Key reuse', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const keysOf = (calls: unknown[][]) => calls
+    .map((call) => ((call[1] as RequestInit | undefined)?.headers as Record<string, string>)['Idempotency-Key'])
+
+  it('keeps the key only while the same payload has an unknown outcome', async () => {
+    const outcomes: Array<() => Response> = [
+      () => { throw new TypeError('Failed to fetch') },
+      () => response({ title: 'x', status: 504, code: 'CORE_UNAVAILABLE' }, 504),
+      () => response({ title: 'x', status: 409, code: 'IDEMPOTENCY_CONFLICT' }, 409),
+      () => response({ title: 'x', status: 503, code: 'CORE_UNAVAILABLE' }, 503),
+      () => response({ title: 'x', status: 503, code: 'CORE_UNAVAILABLE' }, 503),
+      () => response({ candidate: candidates[0], event: reviewEvents[0] }),
+      () => response({ candidate: candidates[0], event: reviewEvents[0] }),
+    ]
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => outcomes.shift()!())
+    const candidate = { ...candidates[0], id: 'candidate-key-reuse' }
+    const decide = (reason: string) => api.appendDecision({ candidate, decision: 'CONFIRM', reason, csrfToken: session.csrf_token })
+
+    await expect(decide('same')).rejects.toThrow('Failed to fetch')
+    await expect(decide('same')).rejects.toMatchObject({ status: 504 })
+    await expect(decide('same')).rejects.toMatchObject({ status: 409, message: '同一操作编号已用于不同的请求，本次没有写入；请刷新后重试' })
+    await expect(decide('same')).rejects.toBeInstanceOf(ApiError)
+    await expect(decide('changed')).rejects.toMatchObject({ status: 503 })
+    await decide('changed')
+    await decide('changed')
+
+    const keys = keysOf(fetchMock.mock.calls)
+    expect(keys[1]).toBe(keys[0])
+    expect(keys[2]).toBe(keys[0])
+    expect(keys[3]).not.toBe(keys[2])
+    expect(keys[4]).not.toBe(keys[3])
+    expect(keys[5]).toBe(keys[4])
+    expect(keys[6]).not.toBe(keys[5])
+  })
+
+  it('reuses the key for the same similar-group payload after a network failure only', async () => {
+    const { source, group } = similarClassificationFixture()
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(async () => { throw new TypeError('Failed to fetch') })
+      .mockImplementationOnce(async () => response({ title: 'x', status: 422, code: 'COMMAND_REJECTED' }, 422))
+      .mockImplementationOnce(async () => response({ title: 'x', status: 422, code: 'COMMAND_REJECTED' }, 422))
+    const target = { business_unit_ref: 'unit-south', category_code: 'LINEN' }
+    const apply = () => api.applyClassificationBatch({
+      group: { ...group, group_ref: `cg_${'b'.repeat(32)}` }, sourceCandidate: source, target, reason: 'group', csrfToken: session.csrf_token,
+    })
+
+    await expect(apply()).rejects.toThrow('Failed to fetch')
+    await expect(apply()).rejects.toMatchObject({ status: 422, message: 'Core 拒绝了本次操作，没有写入' })
+    await expect(apply()).rejects.toMatchObject({ status: 422 })
+
+    const keys = keysOf(fetchMock.mock.calls)
+    expect(keys[1]).toBe(keys[0])
+    expect(keys[2]).not.toBe(keys[1])
   })
 })

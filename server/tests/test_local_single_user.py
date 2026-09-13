@@ -362,5 +362,144 @@ class LocalDecisionsAreUnsignedTests(unittest.TestCase):
         self.assertTrue(sent["X-LedgerBridge-User-Assertion"].startswith("v1."))
 
 
+class LocalDecisionHttpTests(unittest.TestCase):
+    """A decision through the real handler, against a recording Core."""
+
+    def setUp(self) -> None:
+        from server.tests.test_core_backend import ENTITY_ID, FakeCoreClient
+
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        Path(self.temp_dir.name, "index.html").write_text("<main>local</main>", encoding="utf-8")
+        env = patch.dict(
+            "os.environ",
+            _local_env(CORE_ENTITY_REF=ENTITY_ID, CORE_BUSINESS_UNIT_REF="unit-demo-a"),
+            clear=True,
+        )
+        env.start()
+        self.addCleanup(env.stop)
+        self.state = _build_local_single_user_state("127.0.0.1")
+        self.core = FakeCoreClient()
+        self.state.client = self.core
+        self.server = create_server(
+            "127.0.0.1", 0, self.temp_dir.name, state=self.state, mode="local-single-user"
+        )
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+        with urllib.request.urlopen(f"{self.base_url}/api/v1/session", timeout=2) as response:
+            self.cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+            self.csrf = json.load(response)["csrf_token"]
+        self.core.calls.clear()
+
+    def _post(
+        self, path: str, payload: object, *, cookie: bool = True, csrf: bool = True
+    ) -> tuple[int, dict[str, object]]:
+        headers = {
+            "Content-Type": "application/json",
+            "Idempotency-Key": "40000000-0000-4000-8000-000000000001",
+            "Origin": self.base_url,
+            "Sec-Fetch-Site": "same-origin",
+        }
+        if cookie:
+            headers["Cookie"] = self.cookie
+        if csrf:
+            headers["X-CSRF-Token"] = self.csrf
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            method="POST",
+            headers=headers,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as error:
+            body = error.read()
+            return error.code, json.loads(body) if body else {}
+
+    def _decision_path(self) -> str:
+        from server.tests.test_core_backend import CANDIDATE_ID
+
+        return f"/api/v1/candidates/{CANDIDATE_ID}/decisions"
+
+    def test_a_decision_reaches_core_unsigned_and_maps_its_corrections(self) -> None:
+        status, payload = self._post(
+            self._decision_path(),
+            {
+                "decision": "CORRECT_AND_CONFIRM",
+                "expected_revision": 1,
+                "reason": "合成审核",
+                "corrections": {"category_code": "OTHER"},
+            },
+        )
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["candidate"]["status"], "CONFIRMED")
+        ((method, path, body, headers),) = self.core.calls
+        self.assertEqual((method, path), ("POST", f"/internal/v1{self._decision_path()[7:]}"))
+        self.assertNotIn("X-LedgerBridge-User-Assertion", headers)
+        self.assertEqual(json.loads(body or b"{}")["corrections"], {"category": "OTHER"})
+
+    def test_without_the_csrf_token_or_the_cookie_nothing_reaches_core(self) -> None:
+        decision = {"decision": "CONFIRM", "expected_revision": 1, "reason": "合成审核"}
+        self.assertEqual(self._post(self._decision_path(), decision, csrf=False)[0], 403)
+        self.assertEqual(self._post(self._decision_path(), decision, cookie=False)[0], 401)
+        self.assertEqual(self.core.calls, [])
+
+    def test_an_invalid_decision_is_refused_before_core(self) -> None:
+        status, _ = self._post(self._decision_path(), {"decision": "POST", "expected_revision": 1})
+        self.assertEqual(status, 422)
+        self.assertEqual(self.core.calls, [])
+
+    def test_a_reference_of_dashes_is_not_found_rather_than_a_dropped_connection(self) -> None:
+        status, _ = self._post(
+            f"/api/v1/candidates/{'-' * 36}/decisions",
+            {"decision": "CONFIRM", "expected_revision": 1, "reason": "合成审核"},
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(self.core.calls, [])
+
+    def test_commands_local_core_does_not_serve_never_reach_it(self) -> None:
+        reference = "70000000-0000-4000-8000-000000000007"
+        for path in (
+            f"/api/v1/personal-finance/bank-statements/{reference}/reviews",
+            f"/api/v1/company-bank-statements/{reference}/reviews",
+            "/api/v1/evidence/unlocks",
+            "/api/v1/reconciliations/2026-08/drafts",
+            "/api/v1/payroll/test-workspace/validate",
+            "/api/v1/payroll/legacy-workspace/commands",
+        ):
+            status, _ = self._post(path, {"decision": "CONFIRM"})
+            self.assertNotEqual(status, 200, path)
+        self.assertEqual([call for call in self.core.calls if call[0] == "POST"], [])
+
+
+class LocalSessionRenewalTests(unittest.TestCase):
+    def setUp(self) -> None:
+        env = patch.dict("os.environ", _local_env(), clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        self.state = _build_local_single_user_state("127.0.0.1")
+
+    def test_use_renews_the_session_instead_of_a_fixed_deadline(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        soon = datetime.now(timezone.utc) + timedelta(minutes=1)
+        self.state.session_expires_at = soon
+        self.assertTrue(self.state.session_active())
+        self.assertGreater(self.state.session_expires_at, soon + timedelta(hours=11))
+
+    def test_an_expired_session_is_renewed_by_opening_the_workbench(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        self.state.session_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        self.assertFalse(self.state.session_active())
+        self.state.session_payload()
+        self.assertTrue(self.state.session_active())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -79,6 +79,29 @@ export function createOperationId(): string {
   ].join('-')
 }
 
+// The BFF often answers with a bare problem (code and an English title, no
+// detail). A reader should see what happened in their own language, so known
+// codes win over the generic title.
+const problemCodeMessages: Record<string, string> = {
+  CORE_UNAVAILABLE: 'Core 服务暂不可用，请稍后重试',
+  CORE_CONTRACT_INVALID: 'Core 返回的数据格式不符合约定，本次未采用',
+  STALE_REVISION: '该事项已被更改，本次没有写入；请刷新后重试',
+  IDEMPOTENCY_CONFLICT: '同一操作编号已用于不同的请求，本次没有写入；请刷新后重试',
+  LOCAL_HOST_REJECTED: '请使用 127.0.0.1 或 localhost 打开本机工作台',
+  CSRF_VALIDATION_FAILED: '页面安全令牌已失效，请刷新页面后重试',
+  AUTH_REQUIRED: '登录状态已失效，请重新登录',
+  COMMAND_REJECTED: 'Core 拒绝了本次操作，没有写入',
+  INVALID_TRANSITION: '该事项当前状态不允许此操作，请刷新后查看',
+  CANDIDATE_COMMAND_UNAVAILABLE: '审核提交服务暂不可用，请稍后重试',
+}
+
+function problemMessage(problem: Problem | undefined, status: number): string {
+  return (problem?.code ? problemCodeMessages[problem.code] : undefined)
+    || problem?.detail
+    || problem?.title
+    || `请求失败（${status}）`
+}
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: 'same-origin',
@@ -96,10 +119,48 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       problem = undefined
     }
-    throw new ApiError(problem?.detail || problem?.title || `请求失败（${response.status}）`, response.status, problem?.code)
+    throw new ApiError(problemMessage(problem, response.status), response.status, problem?.code)
   }
 
   return response.json() as Promise<T>
+}
+
+// A decision whose outcome is unknown (network failure, timeout, Core
+// unavailable) may still have been written. Retrying the same payload under
+// the same Idempotency-Key lets Core replay the stored answer instead of
+// rejecting a second operation; any other payload, or any settled outcome,
+// starts over with a fresh key.
+const pendingDecisionKeys = new Map<string, { body: string; key: string }>()
+
+function outcomeUnknown(error: unknown): boolean {
+  if (error instanceof ApiError) return error.status === 502 || error.status === 503 || error.status === 504
+  return true
+}
+
+async function requestDecision<T>(scope: string, path: string, body: unknown, csrfToken: string): Promise<T> {
+  const serialized = JSON.stringify(body)
+  const previous = pendingDecisionKeys.get(scope)
+  const key = previous?.body === serialized ? previous.key : createOperationId()
+  pendingDecisionKeys.set(scope, { body: serialized, key })
+  const settle = () => {
+    if (pendingDecisionKeys.get(scope)?.key === key) pendingDecisionKeys.delete(scope)
+  }
+  try {
+    const result = await requestJson<T>(path, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': key,
+        'X-CSRF-Token': csrfToken,
+      },
+      body: serialized,
+    })
+    settle()
+    return result
+  } catch (error) {
+    if (!outcomeUnknown(error)) settle()
+    throw error
+  }
 }
 
 async function requestVoid(path: string, init: RequestInit): Promise<void> {
@@ -115,7 +176,7 @@ async function requestVoid(path: string, init: RequestInit): Promise<void> {
     } catch {
       problem = undefined
     }
-    throw new ApiError(problem?.detail || problem?.title || `请求失败（${response.status}）`, response.status, problem?.code)
+    throw new ApiError(problemMessage(problem, response.status), response.status, problem?.code)
   }
 }
 
@@ -363,28 +424,22 @@ export const api = {
     target: ClassificationTarget
     reason: string
     csrfToken: string
-  }) => requestJson<ClassificationBatchReceipt>(
+  }) => requestDecision<ClassificationBatchReceipt>(
+    `group:${group.group_ref}`,
     `/api/v1/candidate-classification-groups/${encodeURIComponent(group.group_ref)}/decisions`,
     {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Idempotency-Key': createOperationId(),
-        'X-CSRF-Token': csrfToken,
-      },
-      body: JSON.stringify({
-        source_candidate_ref: sourceCandidate.id,
-        accounting_month: group.accounting_month,
-        target,
-        members: eligibleClassificationBatchMembers(group)
-          .map((member) => ({
-            candidate_ref: member.candidate_ref,
-            expected_revision: member.revision,
-          })),
-        reason,
-        acknowledged_risk_codes: group.conditions.risk_signature,
-      }),
+      source_candidate_ref: sourceCandidate.id,
+      accounting_month: group.accounting_month,
+      target,
+      members: eligibleClassificationBatchMembers(group)
+        .map((member) => ({
+          candidate_ref: member.candidate_ref,
+          expected_revision: member.revision,
+        })),
+      reason,
+      acknowledged_risk_codes: group.conditions.risk_signature,
     },
+    csrfToken,
   ),
 
   getEvidencePreview: (evidenceId: string, reference: string) => {
@@ -419,23 +474,17 @@ export const api = {
     corrections?: CandidateCorrections
     conflictResolution?: string
     csrfToken: string
-  }) => requestJson<{ candidate: ApiCandidate; event: ReviewEvent }>(
+  }) => requestDecision<{ candidate: ApiCandidate; event: ReviewEvent }>(
+    `candidate:${candidate.id}`,
     `/api/v1/candidates/${encodeURIComponent(candidate.id)}/decisions`,
     {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Idempotency-Key': createOperationId(),
-        'X-CSRF-Token': csrfToken,
-      },
-      body: JSON.stringify({
-        decision,
-        expected_revision: candidate.revision,
-        reason,
-        ...(corrections ? { corrections } : {}),
-        ...(conflictResolution ? { conflict_resolution: conflictResolution } : {}),
-      }),
+      decision,
+      expected_revision: candidate.revision,
+      reason,
+      ...(corrections ? { corrections } : {}),
+      ...(conflictResolution ? { conflict_resolution: conflictResolution } : {}),
     },
+    csrfToken,
   ),
 
   getReconciliation: (accountingMonth: string) =>

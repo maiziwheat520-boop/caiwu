@@ -33,6 +33,8 @@ JSON_SAFE_INTEGER = 9_007_199_254_740_991
 SAFE_HEADER_VALUE = re.compile(r"^[\x21-\x7e]+$")
 EVIDENCE_UNLOCK_CORE_PATH = "/internal/v1/evidence/unlocks"
 LOCAL_SESSION_PRINCIPAL = "local-single-user"
+#: How long a local session lives after its last use.
+LOCAL_SESSION_LIFETIME = timedelta(hours=12)
 EVIDENCE_UNLOCK_STATUSES = {"NOT_REQUIRED", "PASSWORD_REQUIRED", "UNLOCKED"}
 PAYROLL_STATUS_CORE_PATH = "/internal/v1/payroll/status"
 PAYROLL_TEST_WORKSPACES_CORE_PATH = "/internal/v1/payroll/test-workspaces"
@@ -431,14 +433,30 @@ class CoreBackedState:
         self.local_session = local_session
         self.session_id = secrets.token_urlsafe(32) if local_session else ""
         self.csrf_token = secrets.token_urlsafe(32) if local_session else ""
-        self.session_expires_at = datetime.now(timezone.utc) + timedelta(hours=12)
+        self.session_expires_at = datetime.now(timezone.utc) + LOCAL_SESSION_LIFETIME
 
     def session_active(self) -> bool:
-        return self.local_session and datetime.now(timezone.utc) < self.session_expires_at
+        """Whether the local session is live, renewing it when it is.
+
+        It used to expire twelve hours after the BFF started, whatever the user
+        was doing, and nothing renewed it: the page then failed every call until
+        the process was restarted. The limit now counts from the last use.
+        """
+        if not self.local_session:
+            return False
+        now = datetime.now(timezone.utc)
+        if now >= self.session_expires_at:
+            return False
+        self.session_expires_at = now + LOCAL_SESSION_LIFETIME
+        return True
 
     def session_payload(self) -> dict[str, str]:
         if not self.local_session:
             raise CoreBackendError(503, _problem(503, "AUTH_BACKEND_REQUIRED"))
+        # Opening the workbench is a use of it. The session is minted by this
+        # loopback process for its one user, so asking for it again simply
+        # renews it rather than stranding a page left open overnight.
+        self.session_expires_at = datetime.now(timezone.utc) + LOCAL_SESSION_LIFETIME
         return {
             "principal": LOCAL_SESSION_PRINCIPAL,
             "csrf_token": self.csrf_token,

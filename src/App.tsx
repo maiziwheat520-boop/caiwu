@@ -205,6 +205,9 @@ function summaryFields(candidate: Candidate): string[] {
 
 function candidateCashflowMinor(candidate: Candidate): number {
   const statedDirection = summaryFields(candidate)[2]
+  // Mirrors Core personal_finance_summary._cashflow_minor: a row the platform
+  // itself marks as outside income and expense moves no cash.
+  if (statedDirection === '不计收支') return 0
   if (statedDirection === '收入') return Math.abs(candidate.amountMinor)
   if (statedDirection === '支出') return -Math.abs(candidate.amountMinor)
   return candidate.amountMinor
@@ -540,6 +543,22 @@ function App() {
     return () => window.clearTimeout(loadTimer)
   }, [authStatus?.authenticated, authStatus?.recovery_setup_required, loadData, page])
 
+  // Payroll skips the business load, so a direct link to it would otherwise
+  // never learn the runtime mode. Local mode serves no payroll read at all,
+  // so the page must not render there.
+  const [payrollSessionChecked, setPayrollSessionChecked] = useState(false)
+  useEffect(() => {
+    if (!authStatus?.authenticated || authStatus.recovery_setup_required) return
+    if (page !== 'payroll' || session || payrollSessionChecked) return
+    void api.getSession().then(setSession, () => undefined).finally(() => setPayrollSessionChecked(true))
+  }, [authStatus?.authenticated, authStatus?.recovery_setup_required, page, payrollSessionChecked, session])
+
+  useEffect(() => {
+    if (page !== 'payroll' || session?.runtime_mode !== 'local-single-user') return
+    const redirectTimer = window.setTimeout(() => navigate('overview', true), 0)
+    return () => window.clearTimeout(redirectTimer)
+  }, [navigate, page, session?.runtime_mode])
+
   useEffect(() => {
     if (!authStatus?.authenticated || authStatus.recovery_setup_required || loading || page !== 'audit') return
     const loadTimer = window.setTimeout(() => void loadReviewEvents(undefined, true), 0)
@@ -639,6 +658,24 @@ function App() {
         })
       }
     } catch (error) {
+      if (error instanceof ApiError && error.status === 409 && error.code === 'STALE_REVISION') {
+        // Someone else moved this candidate on. Nothing was written, so hold
+        // the current revision instead of letting every retry hit the same 409.
+        try {
+          const reread = await api.getCandidate(candidate.id)
+          const refreshed = toCandidate(reread)
+          setCandidates((items) => items.map((item) => (item.id === refreshed.id ? refreshed : item)))
+          setReviewEvents((items) => [
+            ...reread.review_events.filter((event) => !items.some((item) => item.id === event.id)),
+            ...items,
+          ])
+          setSelectedCandidate((current) => (current?.id === refreshed.id ? refreshed : current))
+          setNotice({ tone: 'error', message: `${candidate.shortId} 已被其他操作更改，本次没有写入；已刷新为最新版本，请核对后重新提交` })
+        } catch {
+          setNotice({ tone: 'error', message: `${candidate.shortId} 已被其他操作更改，本次没有写入；刷新最新版本失败，请刷新页面后重试` })
+        }
+        return
+      }
       setNotice({ tone: 'error', message: error instanceof Error ? error.message : '提交审核决定失败，请重试' })
     } finally {
       setDecisionBusyId(null)
@@ -893,7 +930,7 @@ function App() {
             />
           </section>
           <section className="overview-section" id="files" aria-label="文件与连接">
-            <FilesAndConnections candidates={candidates} connections={connections} csrfToken={session?.csrf_token ?? null} onOpenCandidate={openCandidate} onRefresh={loadData} onNotice={setNotice} />
+            <FilesAndConnections candidates={candidates} connections={connections} csrfToken={session?.csrf_token ?? null} localSingleUser={session?.runtime_mode === 'local-single-user'} onOpenCandidate={openCandidate} onRefresh={loadData} onNotice={setNotice} />
           </section>
         </>
       )
@@ -960,13 +997,17 @@ function App() {
   // can reach it. A reader who cannot tell which one they are in cannot judge
   // what a number on screen is worth.
   const isCoreBacked = session?.runtime_mode === 'core-backed' || isLocalSingleUser
+  // Local mode serves no payroll read, so the entry would only lead to 401s.
+  const visibleNavigation = isLocalSingleUser
+    ? navigation.filter((item) => item.id !== 'payroll')
+    : navigation
 
   return (
     <div className="app-shell">
       <aside className="sidebar" aria-label="主导航">
         <Brand />
         <nav className="side-nav">
-          {navigation.map((item) => {
+          {visibleNavigation.map((item) => {
             const Icon = item.icon
             return (
               <button
@@ -1019,10 +1060,15 @@ function App() {
               </Button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Content align="end">
-              <DropdownMenu.Item onSelect={() => { setPasskeyError(null); setPasskeyDialogOpen(true) }}><Fingerprint size={15} />添加这台设备</DropdownMenu.Item>
+              {/* Local mode has no Passkey and no logout route: both would only 404. */}
+              {isLocalSingleUser ? null : <DropdownMenu.Item onSelect={() => { setPasskeyError(null); setPasskeyDialogOpen(true) }}><Fingerprint size={15} />添加这台设备</DropdownMenu.Item>}
               <DropdownMenu.Item onSelect={() => navigate('audit')}><ClockCounterClockwise size={15} />操作记录</DropdownMenu.Item>
-              <DropdownMenu.Separator />
-              <DropdownMenu.Item color="red" disabled={logoutBusy} onSelect={() => void logout()}><SignOut size={15} />{logoutBusy ? '正在退出' : '安全退出'}</DropdownMenu.Item>
+              {isLocalSingleUser ? null : (
+                <>
+                  <DropdownMenu.Separator />
+                  <DropdownMenu.Item color="red" disabled={logoutBusy} onSelect={() => void logout()}><SignOut size={15} />{logoutBusy ? '正在退出' : '安全退出'}</DropdownMenu.Item>
+                </>
+              )}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
         </header>
@@ -1038,7 +1084,7 @@ function App() {
         <main className="content">
           <Suspense fallback={<LoadingState title="正在加载功能模块" description="只加载当前打开的功能区。" />}>
             {page === 'payroll'
-              ? renderPage()
+              ? (session || payrollSessionChecked) && !isLocalSingleUser ? renderPage() : <LoadingState />
               : loading
                 ? <LoadingState />
                 : loadError
@@ -1049,7 +1095,7 @@ function App() {
       </div>
 
       <nav className="bottom-nav" aria-label="移动端主导航">
-        {navigation.map((item) => {
+        {visibleNavigation.map((item) => {
           const Icon = item.icon
           return (
             <button
@@ -1688,8 +1734,8 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate, csrf
   const monthlyTotals = testEntries.reduce((totals, entry) => {
     if (!entry.candidate.accountingMonth) return totals
     const current = totals.get(entry.candidate.accountingMonth) ?? { incomeMinor: 0, expenseMinor: 0 }
-    if (entry.cashflowMinor >= 0) current.incomeMinor += entry.cashflowMinor
-    else current.expenseMinor += Math.abs(entry.cashflowMinor)
+    if (entry.cashflowMinor > 0) current.incomeMinor += entry.cashflowMinor
+    else if (entry.cashflowMinor < 0) current.expenseMinor += Math.abs(entry.cashflowMinor)
     totals.set(entry.candidate.accountingMonth, current)
     return totals
   }, new Map<string, { incomeMinor: number; expenseMinor: number }>())
@@ -1736,7 +1782,7 @@ function PersonalFinanceOverview({ candidates, onNavigate, onOpenCandidate, csrf
       </section>
 
       <section className="metric-grid personal-finance-metrics" aria-label="个人财务收支概览">
-        <Metric primary label="测试收入" value={currency.format(minorToMajor(incomeMinor))} detail={`${testEntries.filter((entry) => entry.cashflowMinor >= 0).length} 条已确认收入，含归属待校准`} icon={<CloudArrowUp size={20} />} />
+        <Metric primary label="测试收入" value={currency.format(minorToMajor(incomeMinor))} detail={`${testEntries.filter((entry) => entry.cashflowMinor > 0).length} 条已确认收入，含归属待校准`} icon={<CloudArrowUp size={20} />} />
         <Metric label="测试支出" value={currency.format(minorToMajor(expenseMinor))} detail={`${testEntries.filter((entry) => entry.cashflowMinor < 0).length} 条已确认支出，含归属待校准`} icon={<Bank size={20} />} />
         <Metric label="测试净额" value={currency.format(minorToMajor(netMinor))} detail="全量测试试算，尚未过账" icon={<ArrowsClockwise size={20} />} />
         <Metric label="原始材料" value={`${evidenceCount} 份`} detail="只计入本次汇总所依据的材料" icon={<FolderOpen size={20} />} />
@@ -2798,10 +2844,13 @@ function EvidenceUnlockDialog({ evidence, csrfToken, onClose, onUnlocked }: {
   )
 }
 
-function FilesAndConnections({ candidates, connections, csrfToken, onOpenCandidate, onRefresh, onNotice }: {
+function FilesAndConnections({ candidates, connections, csrfToken, localSingleUser = false, onOpenCandidate, onRefresh, onNotice }: {
   candidates: Candidate[]
   connections: ConnectionStatus[]
   csrfToken: string | null
+  // Local mode cannot unlock an encrypted original (the BFF answers 503), so
+  // it must not ask for a bank password it can never use.
+  localSingleUser?: boolean
   onOpenCandidate: (candidate: Candidate) => void
   onRefresh: () => Promise<boolean>
   onNotice: (notice: Notice) => void
@@ -2829,7 +2878,7 @@ function FilesAndConnections({ candidates, connections, csrfToken, onOpenCandida
     }
     return items
   }, new Map<string, { evidence: EvidenceReference; candidates: Candidate[]; sources: Set<string>; periods: Set<string> }>()).values()]
-  const automaticUnlockEvidence = csrfToken
+  const automaticUnlockEvidence = csrfToken && !localSingleUser
     ? evidenceLibrary.find(({ evidence }) => (
         evidence.unlock_status === 'PASSWORD_REQUIRED'
         && Boolean(evidence.source_ref)
@@ -2882,7 +2931,9 @@ function FilesAndConnections({ candidates, connections, csrfToken, onOpenCandida
                 <article className="evidence-library-item" key={item.evidence.id}>
                   <div className="evidence-library-title"><FileText size={20} /><div><strong>{item.evidence.original_filename ?? (item.evidence.kind === 'message' ? '消息原文' : '原始文件')}</strong><span>{[...item.sources].join('、')}</span></div><Badge color={hasPending ? 'amber' : allConfirmed ? 'green' : 'gray'}>{status}</Badge></div>
                   <div className="evidence-library-meta"><span>{[...item.periods].map(accountingMonthLabel).join('、') || '期间待确认'}</span><span>证据 {item.evidence.id}</span></div>
-                  {item.evidence.unlock_status === 'PASSWORD_REQUIRED' ? (
+                  {item.evidence.unlock_status === 'PASSWORD_REQUIRED' && localSingleUser ? (
+                    <p className="evidence-unlock-note">加密原件在本机模式下无法解锁</p>
+                  ) : item.evidence.unlock_status === 'PASSWORD_REQUIRED' ? (
                     <Button className="evidence-unlock-button" size="1" variant="soft" color="amber" disabled={!csrfToken || !item.evidence.source_ref} onClick={() => setSelectedUnlockEvidence(item.evidence)}>输入解压密码</Button>
                   ) : null}
                   <details>
@@ -2938,7 +2989,7 @@ function FilesAndConnections({ candidates, connections, csrfToken, onOpenCandida
         <div className="empty-state compact-empty"><FolderOpen size={34} weight="light" /><h2>尚未连接文件来源</h2><p>连接后，系统会显示可用于月度对账的工作簿副本。</p></div>
       </section>
 
-      {unlockEvidence && csrfToken ? (
+      {unlockEvidence && csrfToken && !localSingleUser ? (
         <EvidenceUnlockDialog
           evidence={unlockEvidence}
           csrfToken={csrfToken}

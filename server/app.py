@@ -48,13 +48,16 @@ from .synthetic_data import (
 COOKIE_NAME = "__Host-ledgerbridge_session"
 FLOW_COOKIE_NAME = "__Host-ledgerbridge_auth_flow"
 MONTH_PATTERN = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
-CANDIDATE_PATH = re.compile(r"^/api/v1/candidates/([0-9a-f-]{36})$")
-DECISION_PATH = re.compile(r"^/api/v1/candidates/([0-9a-f-]{36})/decisions$")
+#: A canonical lowercase UUID. `[0-9a-f-]{36}` also matched 36 dashes, which
+#: then raised inside the handler and dropped the connection.
+UUID_SEGMENT = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+CANDIDATE_PATH = re.compile(rf"^/api/v1/candidates/({UUID_SEGMENT})$")
+DECISION_PATH = re.compile(rf"^/api/v1/candidates/({UUID_SEGMENT})/decisions$")
 BANK_STATEMENT_REVIEW_PATH = re.compile(
-    r"^/api/v1/personal-finance/bank-statements/([0-9a-f-]{36})/reviews$"
+    rf"^/api/v1/personal-finance/bank-statements/({UUID_SEGMENT})/reviews$"
 )
 COMPANY_BANK_STATEMENT_REVIEW_PATH = re.compile(
-    r"^/api/v1/company-bank-statements/([0-9a-f-]{36})/reviews$"
+    rf"^/api/v1/company-bank-statements/({UUID_SEGMENT})/reviews$"
 )
 CLASSIFICATION_BATCH_PATH = re.compile(
     r"^/api/v1/candidate-classification-groups/(cg_[0-9a-f]{32})/decisions$"
@@ -63,9 +66,9 @@ RECONCILIATION_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)$")
 ORIGINAL_RECONCILIATION_PATH = re.compile(r"^/api/v1/original-reconciliations/([^/]+)$")
 CASH_RECONCILIATION_PATH = re.compile(r"^/api/v1/cash-reconciliations/([^/]+)$")
 DRAFT_CREATE_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)/drafts$")
-DRAFT_PATH = re.compile(r"^/api/v1/workbook-drafts/([0-9a-f-]{36})$")
-EVIDENCE_PATH = re.compile(r"^/api/v1/evidence/([0-9a-f-]{36})/content$")
-EVIDENCE_PREVIEW_PATH = re.compile(r"^/api/v1/evidence/([0-9a-f-]{36})/preview$")
+DRAFT_PATH = re.compile(rf"^/api/v1/workbook-drafts/({UUID_SEGMENT})$")
+EVIDENCE_PATH = re.compile(rf"^/api/v1/evidence/({UUID_SEGMENT})/content$")
+EVIDENCE_PREVIEW_PATH = re.compile(rf"^/api/v1/evidence/({UUID_SEGMENT})/preview$")
 EVIDENCE_UNLOCK_PATH = "/api/v1/evidence/unlocks"
 PAYROLL_BATCH_COMMAND_PATH = re.compile(
     r"^/api/v1/payroll/batches/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/verify-receipts$"
