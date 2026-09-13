@@ -218,15 +218,18 @@ Still open:
   unit name says 公司/酒店/宾馆/门店 is excluded. Category shares read
   微信交易复核/支付宝交易复核 until corrected, and a correction can only pick a
   category that already exists for the entity.
-- **Web UI, local mode:** "添加这台设备" and "安全退出" answer 404; the evidence
-  unlock dialog asks for a password that can never be used; the payroll nav
-  item answers 401; a 409 on a single decision does not re-read the candidate,
-  so retries keep failing until a reload; a timed-out decision that did commit
-  is retried under a new idempotency key and gets 409; the local session
-  expires 12 hours after the BFF starts and is never renewed.
-- **Tests not yet written:** HTTP-level BFF decision POSTs (cookie, CSRF,
-  validators, success mapping), group/IGNORE/CORRECT through the local app,
-  database-backed replay with the derived assertion id.
+- ~~**Web UI, local mode.**~~ Fixed 2026-09-13 (Web branch, "全部修复"): the
+  Passkey and logout menu items, the evidence unlock dialog and the payroll
+  entry are hidden locally; a 409 on a single decision re-reads the candidate;
+  a decision retried after a network error or 502/503/504 reuses its
+  idempotency key and replays; BFF problem codes show Chinese messages; the
+  local session renews on use and on reopening the page; a path reference
+  must be a canonical UUID. HTTP-level BFF decision tests were added.
+- **Category corrections can only pick an existing category.** Local books
+  hold only the two platform review categories. Real categories arrive with the
+  finance-desk rules carry-over, the next step.
+- **Not yet written:** group/IGNORE/CORRECT through the local Core app, and a
+  database-backed replay test for the derived assertion id.
 
 A correction: the test added on 2026-09-12 to show enabling the module
 "mounts no command" walked `app.routes`, where FastAPI keeps included routers
