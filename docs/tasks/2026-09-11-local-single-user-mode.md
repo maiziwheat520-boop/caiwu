@@ -834,3 +834,7 @@ Still open:
   rules.
 - The company rules (finance-desk COMPANY) are not carried over.
 - The two old placeholder categories (`*_TRANSACTION_REVIEW`) have no nature.
+
+Changed by the user on 2026-09-14 ("放进drive", then option 1): the rules file
+may also be kept in the user's Google Drive, outside the `AI` workspace, so
+work can continue on another computer. It still never enters the repository.
