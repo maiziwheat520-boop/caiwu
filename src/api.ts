@@ -31,6 +31,7 @@ import type {
   PayrollBatchListData,
   PayrollCommandResult,
   PayrollDashboardData,
+  PayrollDatabaseWorkbench,
   PayrollDisbursementRecordPage,
   PayrollMaterialListData,
   PayrollReadResponse,
@@ -541,6 +542,11 @@ export const api = {
 
   getPayrollStatus: () =>
     requestJson<PayrollReadResponse<PayrollStatusData>>('/api/v1/payroll/status'),
+
+  getPayrollDatabaseWorkbench: (payPeriod: string) =>
+    requestJson<PayrollDatabaseWorkbench>(
+      `/api/v1/payroll/workbench/${encodeURIComponent(payPeriod)}`,
+    ),
 
   getPayrollTestWorkspace: () =>
     requestJson<PayrollTestWorkspaceReadResponse>('/api/v1/payroll/test-workspace'),

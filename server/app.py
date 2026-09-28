@@ -87,6 +87,9 @@ PAYROLL_LEGACY_COMMAND_PATH = "/api/v1/payroll/legacy-workspace/commands"
 PAYROLL_DISBURSEMENT_RECORDS_PATH = re.compile(
     r"^/api/v1/payroll/disbursement-records/([0-9]{4}-(0[1-9]|1[0-2]))$"
 )
+PAYROLL_WORKBENCH_PATH = re.compile(
+    r"^/api/v1/payroll/workbench/([0-9]{4}-(0[1-9]|1[0-2]))$"
+)
 PAYROLL_LEGACY_ACTIONS = {
     "FILL_MAIN",
     "GENERATE_MONTHLY_PAYROLL",
@@ -1299,6 +1302,23 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                     session_subject,
                     payroll_disbursement_records.group(1),
                 ),
+            )
+            return
+        payroll_workbench = PAYROLL_WORKBENCH_PATH.fullmatch(path)
+        if payroll_workbench is not None:
+            if query:
+                self._send_json(400, _problem(400, "INVALID_PAYROLL_QUERY", "工资接口不接受浏览器作用域参数"))
+                return
+            identity = self._payroll_session_identity()
+            if identity is None:
+                return
+            if not hasattr(state, "payroll_workbench"):
+                self._send_json(503, _problem(503, "PAYROLL_INTEGRATION_UNAVAILABLE", "数据库工资工作台尚未配置"))
+                return
+            session_token, session_subject = identity
+            self._send_json(
+                200,
+                state.payroll_workbench(session_token, session_subject, payroll_workbench.group(1)),
             )
             return
         payroll_preview = PAYROLL_TEST_MATERIAL_PREVIEW_PATH.fullmatch(path)

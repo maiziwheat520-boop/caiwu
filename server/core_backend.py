@@ -1721,6 +1721,76 @@ class CoreBackedState:
             resource_ref=f"payroll-disbursement-records:{pay_period}",
         )
 
+    def payroll_workbench(
+        self,
+        session_token: str,
+        session_subject: str,
+        pay_period: str,
+    ) -> dict[str, object]:
+        if PAYROLL_PERIOD.fullmatch(pay_period) is None:
+            raise CoreBackendError(400, _problem(400, "INVALID_PAYROLL_PERIOD"))
+        path = f"/internal/v1/payroll/workbench/{self.entity_ref}/{pay_period}"
+        assertion = self._payroll_user_assertion(
+            session_token=session_token,
+            session_subject=session_subject,
+            action="payroll.workbench.read",
+            method="GET",
+            path=path,
+            body=b"",
+            resource_ref=pay_period,
+        )
+        payload = self.client.json(
+            "GET", path, headers={"X-LedgerBridge-User-Assertion": assertion}
+        )
+        expected_keys = {
+            "contract_version", "entity_ref", "batch_ref", "batch_version_ref",
+            "pay_period", "reconciliation_month", "revision", "status",
+            "rules_version", "content_sha256", "line_count", "net_amount_minor",
+            "cash_amount_minor", "supplemental_amount_minor", "bank_amount_minor",
+            "lines", "issues",
+        }
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != expected_keys
+            or payload.get("contract_version") != "ledgerbridge.payroll-workbench.v1"
+            or payload.get("entity_ref") != self.entity_ref
+            or payload.get("pay_period") != pay_period
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        lines = payload.get("lines")
+        if not isinstance(lines, list) or len(lines) > 10_000:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        line_keys = {
+            "line_ref", "employee_ref", "employee_name", "employee_type", "location",
+            "job_group", "attendance_days", "payment_channel", "payee_name",
+            "account_masked", "memo", "net_amount_minor", "cash_amount_minor",
+            "supplemental_amount_minor", "bank_amount_minor",
+        }
+        for line in lines:
+            if not isinstance(line, dict) or set(line) != line_keys:
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+            net, cash, supplemental, bank = (
+                line[key] for key in (
+                    "net_amount_minor", "cash_amount_minor", "supplemental_amount_minor",
+                    "bank_amount_minor",
+                )
+            )
+            if (
+                not all(type(value) is int and value >= 0 for value in (net, cash, supplemental, bank))
+                or cash + bank != net
+                or supplemental > bank
+            ):
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        if payload.get("line_count") != len(lines) or any(
+            payload.get(key) != sum(line[key] for line in lines)
+            for key in (
+                "net_amount_minor", "cash_amount_minor", "supplemental_amount_minor",
+                "bank_amount_minor",
+            )
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        return payload
+
     def payroll_batch_command(
         self,
         *,

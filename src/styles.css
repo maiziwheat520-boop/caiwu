@@ -1141,3 +1141,28 @@ tfoot td { border-top: 2px solid #cfd8e5; border-bottom: 0; color: #2f4058; back
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+.payroll-database-table-wrap {
+  max-height: 32rem;
+  overflow: auto;
+}
+
+.payroll-database-table {
+  width: 100%;
+  min-width: 50rem;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.payroll-database-table th,
+.payroll-database-table td {
+  padding: .6rem .75rem;
+  border-bottom: 1px solid var(--gray-5);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.payroll-database-table th {
+  position: sticky;
+  top: 0;
+  background: var(--color-panel-solid);
+}

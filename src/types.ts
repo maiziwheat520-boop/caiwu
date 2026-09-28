@@ -780,6 +780,42 @@ export type Notice = {
   message: string
 }
 
+export type PayrollDatabaseWorkbench = {
+  contract_version: 'ledgerbridge.payroll-workbench.v1'
+  entity_ref: string
+  batch_ref: string
+  batch_version_ref: string
+  pay_period: string
+  reconciliation_month: string
+  revision: number
+  status: 'DRAFT' | 'LOCKED' | 'SUPERSEDED'
+  rules_version: string
+  content_sha256: string | null
+  line_count: number
+  net_amount_minor: number
+  cash_amount_minor: number
+  supplemental_amount_minor: number
+  bank_amount_minor: number
+  lines: {
+    line_ref: string
+    employee_ref: string
+    employee_name: string
+    employee_type: 'REGULAR' | 'TEMPORARY'
+    location: string
+    job_group: string | null
+    attendance_days: string | null
+    payment_channel: 'MYBANK' | 'BOC' | 'WECHAT' | 'CASH'
+    payee_name: string | null
+    account_masked: string | null
+    memo: string
+    net_amount_minor: number
+    cash_amount_minor: number
+    supplemental_amount_minor: number
+    bank_amount_minor: number
+  }[]
+  issues: { issue_code: string; message: string; line_ref: string | null; resolved: boolean }[]
+}
+
 export type PayrollReadResponse<T> = {
   contract_version: 'ledgerbridge.payroll-read.v1'
   entity_ref: string

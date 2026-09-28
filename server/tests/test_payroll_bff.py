@@ -86,6 +86,7 @@ class FakePayrollCoreClient:
         self.test_workspace_command_data_updates: dict[str, object] = {}
         self.test_material_preview_updates: dict[str, object] = {}
         self.legacy_workspace_updates: dict[str, object] = {}
+        self.workbench_updates: dict[str, object] = {}
 
     def test_workspace_projection(self) -> dict[str, object]:
         data: dict[str, object] = {
@@ -505,6 +506,44 @@ class FakePayrollCoreClient:
                     "company_id": "company_live_hotel",
                     "data": data,
                 }
+            if path == f"/internal/v1/payroll/workbench/{ENTITY_ID}/2026-08":
+                payload: dict[str, object] = {
+                    "contract_version": "ledgerbridge.payroll-workbench.v1",
+                    "entity_ref": self.response_entity_ref,
+                    "batch_ref": "20000000-0000-4000-8000-000000000001",
+                    "batch_version_ref": "30000000-0000-4000-8000-000000000001",
+                    "pay_period": "2026-08",
+                    "reconciliation_month": "2026-08",
+                    "revision": 1,
+                    "status": "LOCKED",
+                    "rules_version": "legacy-parity-v1",
+                    "content_sha256": "a" * 64,
+                    "line_count": 1,
+                    "net_amount_minor": 600000,
+                    "cash_amount_minor": 100000,
+                    "supplemental_amount_minor": 15000,
+                    "bank_amount_minor": 500000,
+                    "lines": [{
+                        "line_ref": "40000000-0000-4000-8000-000000000001",
+                        "employee_ref": "50000000-0000-4000-8000-000000000001",
+                        "employee_name": "测试员工",
+                        "employee_type": "REGULAR",
+                        "location": "星汇",
+                        "job_group": "前台",
+                        "attendance_days": "31",
+                        "payment_channel": "MYBANK",
+                        "payee_name": "测试收款人",
+                        "account_masked": "****1234",
+                        "memo": "工资",
+                        "net_amount_minor": 600000,
+                        "cash_amount_minor": 100000,
+                        "supplemental_amount_minor": 15000,
+                        "bank_amount_minor": 500000,
+                    }],
+                    "issues": [],
+                }
+                payload.update(self.workbench_updates)
+                return payload
             if path == f"/internal/v1/payroll/test-workspaces/{TEST_BATCH_ID}/legacy-features":
                 return {
                     "contract_version": "ledgerbridge.payroll-legacy-feature-read.v1",
@@ -1520,6 +1559,38 @@ class PayrollBffTests(unittest.TestCase):
                             for evidence in VERIFICATION_EVIDENCE
                         ],
                     )
+
+    def test_database_payroll_workbench_requires_session_bound_assertion(self) -> None:
+        public_path = "/api/v1/payroll/workbench/2026-08"
+        core_path = f"/internal/v1/payroll/workbench/{ENTITY_ID}/2026-08"
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.server.server_port}{public_path}",
+            headers={"Cookie": f"{COOKIE_NAME}=session-token"},
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            payload = json.load(response)
+        self.assertEqual(payload["contract_version"], "ledgerbridge.payroll-workbench.v1")
+        self.assertEqual(payload["lines"][0]["account_masked"], "****1234")
+        self.assertNotIn("account_number", payload["lines"][0])
+        method, actual_path, body, headers = self.client.calls[-1]
+        self.assertEqual((method, actual_path, body), ("GET", core_path, None))
+        _, encoded, _ = headers["X-LedgerBridge-User-Assertion"].split(".")
+        claims = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        self.assertEqual(claims["action"], "payroll.workbench.read")
+        self.assertEqual(claims["resource_ref"], "2026-08")
+
+    def test_database_payroll_workbench_rejects_raw_account_and_inconsistent_split(self) -> None:
+        state = build_state(self.client)
+        for update in (
+            {"lines": [{"account_number": "6222000012345678"}]},
+            {"line_count": 2},
+        ):
+            with self.subTest(update=update):
+                self.client.workbench_updates = update
+                with self.assertRaises(CoreBackendError) as raised:
+                    state.payroll_workbench("session-token", "ledgerbridge-owner", "2026-08")
+                self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+        self.client.workbench_updates = {}
 
     def test_reads_persisted_payroll_disbursement_projection_without_query_input(self) -> None:
         public_path = "/api/v1/payroll/disbursement-records/2026-07"

@@ -18,6 +18,7 @@ import { PeriodSelect } from '../shared/TemporalControls'
 import { formatMonthLabel } from '../shared/temporal-format'
 import { PayrollLegacyWorkbench } from './PayrollLegacyWorkbench'
 import { PayrollHistorySummary } from './PayrollHistorySummary'
+import { PayrollDatabaseWorkbench } from './PayrollDatabaseWorkbench'
 import {
   PayrollTestWorkspaceActionsPanel,
   type PayrollConfirmedMaterials,
@@ -248,6 +249,7 @@ export function PayrollWorkspacePage() {
   return (
     <>
       <PageHeader eyebrow="工资工作台" title="工资核对" description="核对工资资料、计算结果与发放凭证。" />
+      <PayrollDatabaseWorkbench />
       {loading ? <LoadingState /> : error ? <ErrorState message={error} onRetry={loadPayroll} /> : null}
 
       {!loading && !error && testWorkspace ? (
