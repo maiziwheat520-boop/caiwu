@@ -115,3 +115,17 @@ workbook.
 - Focused tests: 39 passed. A live PostgreSQL migration/restore test, write/upload/lock/export
   API, Web workbench, full historical reconciliation import, and production deployment remain
   incomplete. Do not retire the old service or import formal data yet.
+
+## 2026-09-28 PostgreSQL 15 isolated probe
+
+- On VM103, a temporary `postgres:15-alpine` container was run with no network, no exposed ports,
+  and memory-backed data storage. It used synthetic prerequisite roles and references; it did not
+  connect to or modify the production database or encrypted volume. The 0051 upgrade SQL applied
+  successfully.
+- `tests/sql/payroll_migration_contract.psql` passed: a synthetic version locks, the database
+  rejects locked-line and payee-account changes, the API role cannot read raw payroll accounts,
+  the masked view is readable, and a locked export receipt inserts. The probe rolled back its
+  synthetic transaction. The temporary container and transfer files were removed.
+- This is a migration-level probe, not an end-to-end release gate. A full Alembic chain,
+  database-backed service test, encrypted backup/isolated restore, complete browser write path,
+  and production verification remain required before release.
