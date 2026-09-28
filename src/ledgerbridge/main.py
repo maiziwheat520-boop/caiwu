@@ -66,6 +66,7 @@ from ledgerbridge.models import DispatchState, ImportJobStatus, ReviewItemKind
 from ledgerbridge.original_reconciliation_routes import (
     router as original_reconciliation_router,
 )
+from ledgerbridge.payroll_workbench_routes import router as payroll_workbench_router
 from ledgerbridge.personal_finance_routes import router as personal_finance_router
 from ledgerbridge.production_mtls import verify_configured_mtls_principal
 from ledgerbridge.review_service import ReviewConflict, ReviewNotFound, ReviewService
@@ -106,6 +107,7 @@ app.include_router(internal_evidence_unlock_router)
 app.include_router(internal_payroll_router)
 app.include_router(original_reconciliation_router)
 app.include_router(cash_reconciliation_router)
+app.include_router(payroll_workbench_router)
 
 
 class UploadReadTimeoutError(TimeoutError):

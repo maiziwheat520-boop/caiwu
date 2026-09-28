@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     enable_review_api: bool = False
     enable_real_ingest: bool = False
     enable_payroll_integration: bool = False
+    enable_payroll_workbench: bool = False
     payroll_base_url: str | None = Field(default=None, min_length=1, max_length=2048)
     payroll_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     payroll_company_mapping: dict[str, UUID] = Field(default_factory=dict)
@@ -311,6 +312,8 @@ class Settings(BaseSettings):
                 )
         if self.mail_provider == "microsoft_graph" and not self.mailbox_id:
             raise ValueError("mailbox_id is required when mail_provider=microsoft_graph")
+        if self.enable_payroll_workbench and not self.enable_internal_read_api:
+            raise ValueError("payroll workbench requires the internal read API")
         if self.enable_payroll_integration:
             if not self.enable_internal_read_api:
                 raise ValueError("payroll integration requires the internal read API")

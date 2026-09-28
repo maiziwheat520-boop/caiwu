@@ -19,6 +19,7 @@ PAYROLL = "20260905_0048"
 CORRECTION = "20260905_0049"
 # 0050 only replaces a trigger function body; it registers no new object.
 SNAPSHOT_TRIGGER_REPAIR = "20260906_0050"
+WORKBENCH = "20260928_0051"
 CORRECTION_FUNCTION = ("internal_import", "correct_company_transaction_reporting_item")
 STAGES = (PRODUCTION, FEE, PAYROLL, CORRECTION, SNAPSHOT_TRIGGER_REPAIR)
 OWNER = "ledgerbridge_owner"
@@ -139,10 +140,10 @@ def test_finance_release_has_one_unambiguous_migration_path() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
         revisions = list(scripts.walk_revisions())
-        assert scripts.get_heads() == [SNAPSHOT_TRIGGER_REPAIR]
+        assert scripts.get_heads() == [WORKBENCH]
     assert len({item.revision for item in revisions}) == len(revisions)
-    release_path = list(scripts.iterate_revisions(SNAPSHOT_TRIGGER_REPAIR, "20260904_0045"))
-    assert [item.revision for item in release_path] == list(reversed(STAGES))
+    release_path = list(scripts.iterate_revisions(WORKBENCH, "20260904_0045"))
+    assert [item.revision for item in release_path] == [WORKBENCH, *reversed(STAGES)]
     assert all(item.dependencies is None for item in release_path)
 
 
