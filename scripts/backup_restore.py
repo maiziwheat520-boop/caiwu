@@ -2543,6 +2543,116 @@ POSTED_SNAPSHOT_TRIGGER_REPAIR_REVISION = "20260906_0050"
 BOC_COMPANY_CSV_PDF_PROFILE_REVISION = "20260906_0051"
 REPORTING_CATEGORY_NATURE_REVISION = "20260913_0052"
 PAYROLL_WORKBENCH_REVISION = "20260929_0053"
+LEGACY_RECONCILIATION_ARCHIVE_REVISION = "20260929_0054"
+
+_NEW_SCHEMA_TABLES = {
+    "payroll": (
+        "employee", "payee_account", "batch", "batch_version",
+        "fixed_remittance_snapshot", "line", "component", "blocking_issue",
+        "export_receipt", "command_receipt",
+    ),
+    "reconciliation_legacy": ("source", "sheet"),
+}
+_NEW_SCHEMA_VIEWS = {
+    "payroll": ("workbench_line", "fixed_remittance_masked"),
+    "reconciliation_legacy": ("month_read",),
+}
+_NEW_SCHEMA_TRIGGERS = {
+    "payroll": (
+        "payroll_version_state_guard", "payroll_batch_append_only",
+        "payroll_payee_account_append_only", "payroll_line_version_guard",
+        "payroll_line_scope_guard", "payroll_component_version_guard",
+        "payroll_fixed_version_guard", "payroll_issue_version_guard",
+        "payroll_export_receipt_append_only", "payroll_export_receipt_locked",
+        "payroll_command_receipt_append_only",
+    ),
+    "reconciliation_legacy": ("legacy_source_immutable", "legacy_sheet_immutable"),
+}
+_NEW_SCHEMA_FUNCTIONS = {
+    "payroll": (
+        "reject_append_only_change", "guard_version_mutation", "guard_version_state",
+        "validate_line_scope", "require_locked_export",
+    ),
+    "reconciliation_legacy": ("reject_mutation",),
+}
+
+
+def _new_schema_inventory_sql(schema: str) -> str:
+    """Observe all new objects, row counts, sensitive digests and effective ACLs."""
+    if schema not in _NEW_SCHEMA_TABLES:
+        raise ValueError("unsupported backup schema")
+    counts = ", ".join(
+        f"'{table}', (SELECT count(*) FROM {schema}.{table})"
+        for table in _NEW_SCHEMA_TABLES[schema]
+    )
+    if schema == "payroll":
+        integrity = "0"
+        content_hash = (
+            "(SELECT encode(digest(coalesce(string_agg(to_jsonb(p)::text, E'\\n' "
+            "ORDER BY p.payee_account_ref), ''), 'sha256'), 'hex') "
+            "FROM payroll.payee_account p)"
+        )
+    else:
+        integrity = (
+            "((SELECT count(*) FROM reconciliation_legacy.source s "
+            "WHERE digest(s.source_bytes, 'sha256') <> s.source_sha256 "
+            "OR s.sheet_count <> (SELECT count(*) FROM reconciliation_legacy.sheet sh "
+            "WHERE sh.source_ref = s.source_ref)) + "
+            "(SELECT count(*) FROM reconciliation_legacy.sheet "
+            "WHERE cell_count <> jsonb_array_length(cells)))"
+        )
+        content_hash = (
+            "(SELECT encode(digest(coalesce(string_agg("
+            "encode(digest(s.source_bytes, 'sha256'), 'hex') || ':' || "
+            "encode(s.source_sha256, 'hex'), E'\\n' ORDER BY s.source_ref), ''), "
+            "'sha256'), 'hex') FROM reconciliation_legacy.source s)"
+        )
+    return f"""
+SELECT jsonb_build_object(
+ 'row_counts', jsonb_build_object({counts}),
+ 'integrity_issues', {integrity},
+ 'content_hash', {content_hash},
+ 'schema', (SELECT jsonb_build_object('owner', pg_get_userbyid(nspowner),
+    'acl', nspacl::text) FROM pg_namespace WHERE nspname = '{schema}'),
+ 'relations', (SELECT coalesce(jsonb_agg(jsonb_build_object(
+    'name', c.relname, 'kind', c.relkind, 'owner', pg_get_userbyid(c.relowner),
+    'rls', c.relrowsecurity, 'acl', c.relacl::text, 'options', c.reloptions,
+    'columns', (SELECT coalesce(jsonb_agg(a.attname ORDER BY a.attnum), '[]'::jsonb)
+      FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0
+      AND NOT a.attisdropped)) ORDER BY c.relname), '[]'::jsonb)
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = '{schema}' AND c.relkind IN ('r', 'v')),
+ 'triggers', (SELECT coalesce(jsonb_agg(jsonb_build_object(
+    'name', t.tgname, 'enabled', t.tgenabled,
+    'definition', pg_get_triggerdef(t.oid, true)) ORDER BY t.tgname), '[]'::jsonb)
+    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = '{schema}' AND NOT t.tgisinternal),
+ 'functions', (SELECT coalesce(jsonb_agg(jsonb_build_object(
+    'name', p.proname, 'owner', pg_get_userbyid(p.proowner),
+    'security_definer', p.prosecdef, 'config', p.proconfig, 'acl', p.proacl::text)
+    ORDER BY p.proname), '[]'::jsonb)
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = '{schema}'),
+ 'schema_privileges', (SELECT coalesce(jsonb_agg(jsonb_build_object(
+    'role', r.name, 'usage', has_schema_privilege(r.name, n.oid, 'USAGE'),
+    'create', has_schema_privilege(r.name, n.oid, 'CREATE')) ORDER BY r.name), '[]'::jsonb)
+    FROM pg_namespace n CROSS JOIN (VALUES ('ledgerbridge_app'), ('ledgerbridge_api'),
+    ('ledgerbridge_worker'), ('ledgerbridge_reader')) r(name)
+    WHERE n.nspname = '{schema}'),
+ 'table_privileges', (SELECT coalesce(jsonb_agg(jsonb_build_object(
+    'role', r.name, 'name', c.relname,
+    'select', has_table_privilege(r.name, c.oid, 'SELECT'),
+    'insert', has_table_privilege(r.name, c.oid, 'INSERT'),
+    'update', has_table_privilege(r.name, c.oid, 'UPDATE'),
+    'delete', has_table_privilege(r.name, c.oid, 'DELETE'))
+    ORDER BY r.name, c.relname), '[]'::jsonb)
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    CROSS JOIN (VALUES ('ledgerbridge_app'), ('ledgerbridge_api'),
+    ('ledgerbridge_worker'), ('ledgerbridge_reader')) r(name)
+    WHERE n.nspname = '{schema}' AND c.relkind IN ('r', 'v'))
+)::text
+"""
 COMPANY_TRANSACTION_CLASSIFICATION_TABLE = "company_transaction_classification"
 COMPANY_TRANSACTION_CLASSIFICATION_FUNCTION_SIGNATURES = {
     ("public", "r1_validate_company_transaction_classification"): "",
@@ -3067,6 +3177,7 @@ MYBANK_CUTOVER_SCHEMA_REVISIONS = frozenset(
         BOC_COMPANY_CSV_PDF_PROFILE_REVISION,
         REPORTING_CATEGORY_NATURE_REVISION,
         PAYROLL_WORKBENCH_REVISION,
+        LEGACY_RECONCILIATION_ARCHIVE_REVISION,
     }
 )
 COMPANY_REPORTING_SCHEMA = "company_reporting_read"
@@ -3246,13 +3357,13 @@ present_roles(role_name) AS (
  SELECT s.schema_name,
   CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
   a.privilege_type privilege,a.is_grantable grantable
- FROM observed_schema s CROSS JOIN LATERAL aclexplode(COALESCE(s.acl,'{}'::aclitem[])) a
+ FROM observed_schema s CROSS JOIN LATERAL aclexplode(s.acl) a
 ), function_acls AS (
  SELECT f.schema_name,f.function_name,f.identity_arguments,
   CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END grantee,
   a.privilege_type privilege,a.is_grantable grantable
  FROM observed_functions f
- CROSS JOIN LATERAL aclexplode(COALESCE(f.acl,'{}'::aclitem[])) a
+ CROSS JOIN LATERAL aclexplode(f.acl) a
 ), schema_privileges AS (
  SELECT r.role_name role,s.schema_name,
   has_schema_privilege(r.role_name,s.oid,'USAGE') can_use,
@@ -3379,7 +3490,7 @@ WITH expected_roles(role_name) AS (
         'grantable', a.is_grantable
     ) ORDER BY a.grantee, a.privilege_type), '[]'::json) AS value
       FROM pg_database AS d
-      CROSS JOIN LATERAL aclexplode(COALESCE(d.datacl, '{}'::aclitem[])) AS a
+      CROSS JOIN LATERAL aclexplode(d.datacl) AS a
      WHERE d.datname = current_database()
 ), schema_acl AS (
     SELECT COALESCE(json_agg(json_build_object(
@@ -3389,7 +3500,7 @@ WITH expected_roles(role_name) AS (
         'grantable', a.is_grantable
     ) ORDER BY n.nspname, a.grantee, a.privilege_type), '[]'::json) AS value
       FROM pg_namespace AS n
-      CROSS JOIN LATERAL aclexplode(COALESCE(n.nspacl, '{}'::aclitem[])) AS a
+      CROSS JOIN LATERAL aclexplode(n.nspacl) AS a
      WHERE n.nspname IN ('public', 'internal_read')
 ), default_acl AS (
     SELECT COALESCE(json_agg(json_build_object(
@@ -3402,7 +3513,7 @@ WITH expected_roles(role_name) AS (
     ) ORDER BY d.defaclrole, d.defaclobjtype, n.nspname, a.grantee, a.privilege_type), '[]'::json) AS value
       FROM pg_default_acl AS d
       LEFT JOIN pg_namespace AS n ON n.oid = d.defaclnamespace
-      CROSS JOIN LATERAL aclexplode(COALESCE(d.defaclacl, '{}'::aclitem[])) AS a
+      CROSS JOIN LATERAL aclexplode(d.defaclacl) AS a
      WHERE d.defaclnamespace = 0
         OR n.nspname IN ('public', 'internal_read', 'internal_import', 'internal_command')
 ), r1_constraints AS (
@@ -4150,6 +4261,16 @@ def _database_metadata(
     if not isinstance(revision, str) or re.fullmatch(r"[0-9]{8}_[0-9]{4}", revision) is None:
         raise BackupError("database metadata has an invalid Alembic revision")
     tables = list(PHASE_1_TABLES)
+    if revision >= PAYROLL_WORKBENCH_REVISION:
+        payroll_inventory = query(_new_schema_inventory_sql("payroll"))
+        if not isinstance(payroll_inventory, dict):
+            raise BackupError("payroll restore inventory is invalid")
+        metadata["payroll_restore_inventory"] = payroll_inventory
+    if revision >= LEGACY_RECONCILIATION_ARCHIVE_REVISION:
+        legacy_inventory = query(_new_schema_inventory_sql("reconciliation_legacy"))
+        if not isinstance(legacy_inventory, dict):
+            raise BackupError("historical reconciliation restore inventory is invalid")
+        metadata["legacy_reconciliation_restore_inventory"] = legacy_inventory
     if revision >= "20260821_0003":
         tables.extend(PHASE_2_TABLES)
     if revision >= "20260822_0004":
@@ -7405,6 +7526,118 @@ def _validate_company_transaction_classification_security(
             )
 
 
+def _validate_new_schema_inventory(value: object, schema: str) -> None:
+    if schema not in _NEW_SCHEMA_TABLES or not isinstance(value, dict):
+        raise BackupError("new-schema restore inventory is missing")
+    required = {
+        "row_counts", "integrity_issues", "content_hash", "schema", "relations",
+        "triggers", "functions", "schema_privileges", "table_privileges",
+    }
+    if set(value) != required:
+        raise BackupError(f"{schema} restore inventory is incomplete")
+    counts = value["row_counts"]
+    if (not isinstance(counts, dict) or set(counts) != set(_NEW_SCHEMA_TABLES[schema])
+            or any(type(count) is not int or count < 0 for count in counts.values())):
+        raise BackupError(f"{schema} row counts are invalid")
+    if value["integrity_issues"] != 0:
+        raise BackupError(f"{schema} archive integrity check failed")
+    digest = value["content_hash"]
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise BackupError(f"{schema} sensitive content digest is invalid")
+    namespace = value["schema"]
+    if not isinstance(namespace, dict) or namespace.get("owner") != "ledgerbridge_owner":
+        raise BackupError(f"{schema} schema ownership is invalid")
+    relations = value["relations"]
+    if not isinstance(relations, list) or any(not isinstance(row, dict) for row in relations):
+        raise BackupError(f"{schema} relations are invalid")
+    expected_relations = {
+        **{name: "r" for name in _NEW_SCHEMA_TABLES[schema]},
+        **{name: "v" for name in _NEW_SCHEMA_VIEWS[schema]},
+    }
+    if {row.get("name"): row.get("kind") for row in relations} != expected_relations:
+        raise BackupError(f"{schema} relation set differs from the migration")
+    for row in relations:
+        if row.get("owner") != "ledgerbridge_owner" or row.get("rls") is not False:
+            raise BackupError(f"{schema} relation ownership or RLS is invalid")
+        if row["kind"] == "v":
+            columns = row.get("columns")
+            if not isinstance(columns, list) or "account_number" in columns or "source_bytes" in columns:
+                raise BackupError(f"{schema} view exposes raw source data")
+            if schema == "payroll" and "security_barrier=true" not in (row.get("options") or []):
+                raise BackupError("payroll read view lacks its security barrier")
+    triggers = value["triggers"]
+    if not isinstance(triggers, list) or any(not isinstance(row, dict) for row in triggers):
+        raise BackupError(f"{schema} triggers are invalid")
+    if {row.get("name") for row in triggers} != set(_NEW_SCHEMA_TRIGGERS[schema]):
+        raise BackupError(f"{schema} mutation guards are incomplete")
+    if any(row.get("enabled") != "O" or not isinstance(row.get("definition"), str)
+           for row in triggers):
+        raise BackupError(f"{schema} mutation guard is disabled")
+    functions = value["functions"]
+    if not isinstance(functions, list) or any(not isinstance(row, dict) for row in functions):
+        raise BackupError(f"{schema} functions are invalid")
+    if {row.get("name") for row in functions} != set(_NEW_SCHEMA_FUNCTIONS[schema]):
+        raise BackupError(f"{schema} function set differs from the migration")
+    for row in functions:
+        if row.get("owner") != "ledgerbridge_owner":
+            raise BackupError(f"{schema} function owner is invalid")
+        if schema == "payroll" and (
+            row.get("security_definer") is not True
+            or "search_path=pg_catalog" not in (row.get("config") or [])
+        ):
+            raise BackupError("payroll security function is not pinned")
+
+    privileges = value["schema_privileges"]
+    expected_roles = {"ledgerbridge_app", "ledgerbridge_api", "ledgerbridge_worker", "ledgerbridge_reader"}
+    if (not isinstance(privileges, list)
+            or any(not isinstance(row, dict) for row in privileges)
+            or {row.get("role") for row in privileges} != expected_roles):
+        raise BackupError(f"{schema} schema grants are invalid")
+    for row in privileges:
+        expected_usage = row["role"] in {"ledgerbridge_api", "ledgerbridge_worker"}
+        if row.get("usage") is not expected_usage or row.get("create") is not False:
+            raise BackupError(f"{schema} schema scope is too broad")
+
+    if schema == "payroll":
+        api_select = {
+            "batch", "batch_version", "component", "blocking_issue", "export_receipt",
+            "workbench_line", "fixed_remittance_masked",
+        }
+        worker_select = set(_NEW_SCHEMA_TABLES[schema]) | set(_NEW_SCHEMA_VIEWS[schema])
+        worker_insert = set(_NEW_SCHEMA_TABLES[schema])
+        worker_update = {
+            "employee", "batch_version", "line", "component", "blocking_issue",
+            "fixed_remittance_snapshot",
+        }
+    else:
+        api_select = {"month_read"}
+        worker_select = {"source", "sheet"}
+        worker_insert = {"source", "sheet"}
+        worker_update = set()
+    table_privileges = value["table_privileges"]
+    if not isinstance(table_privileges, list) or len(table_privileges) != 4 * len(expected_relations):
+        raise BackupError(f"{schema} table grant matrix is incomplete")
+    seen: set[tuple[str, str]] = set()
+    for row in table_privileges:
+        if not isinstance(row, dict):
+            raise BackupError(f"{schema} table grant matrix is invalid")
+        role, name = row.get("role"), row.get("name")
+        if not isinstance(role, str) or not isinstance(name, str):
+            raise BackupError(f"{schema} table grant matrix is invalid")
+        key = (role, name)
+        if role not in expected_roles or name not in expected_relations or key in seen:
+            raise BackupError(f"{schema} table grant matrix is invalid")
+        seen.add(key)
+        expected_select = name in (api_select if role == "ledgerbridge_api" else worker_select) if role in {"ledgerbridge_api", "ledgerbridge_worker"} else False
+        expected_insert = role == "ledgerbridge_worker" and name in worker_insert
+        expected_update = role == "ledgerbridge_worker" and name in worker_update
+        if (row.get("select") is not expected_select
+                or row.get("insert") is not expected_insert
+                or row.get("update") is not expected_update
+                or row.get("delete") is not False):
+            raise BackupError(f"{schema} table access is broader or narrower than approved")
+
+
 def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
     if metadata.get("metadata_version") != 2:
         raise BackupError("restored database lacks v2 metadata observations")
@@ -7428,6 +7661,12 @@ def _validate_rich_database_security(metadata: dict[str, Any]) -> None:
         _validate_classification_batch_security(metadata)
     if revision >= COMPANY_TRANSACTION_CLASSIFICATION_REVISION:
         _validate_company_transaction_classification_security(metadata, revision)
+    if revision >= PAYROLL_WORKBENCH_REVISION:
+        _validate_new_schema_inventory(metadata.get("payroll_restore_inventory"), "payroll")
+    if revision >= LEGACY_RECONCILIATION_ARCHIVE_REVISION:
+        _validate_new_schema_inventory(
+            metadata.get("legacy_reconciliation_restore_inventory"), "reconciliation_legacy"
+        )
     if metadata.get("database_temp_denied") is not True:
         raise BackupError("restored database TEMP privilege invariant failed")
     functions = metadata.get("security_functions")

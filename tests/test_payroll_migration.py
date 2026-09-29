@@ -30,9 +30,9 @@ def test_payroll_workbench_remains_in_the_single_migration_chain() -> None:
     assert scripts.get_heads() == ["20260929_0054"]
     assert scripts.get_revision("20260929_0054").down_revision == REVISION
     assert REVISION in MYBANK_CUTOVER_SCHEMA_REVISIONS
-    # The archive is intentionally not releasable until its restore inventory
-    # and isolated recovery gate cover source bytes, cells and access controls.
-    assert "20260929_0054" not in MYBANK_CUTOVER_SCHEMA_REVISIONS
+    # Both new schemas now have source-content, row, object and ACL observations
+    # in the isolated backup/restore inventory.
+    assert "20260929_0054" in MYBANK_CUTOVER_SCHEMA_REVISIONS
 
 
 def test_payroll_schema_keeps_locked_versions_and_receipts_immutable() -> None:
