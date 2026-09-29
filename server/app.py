@@ -31,6 +31,7 @@ from .core_backend import (
     sqlite_contains_business_facts,
 )
 from .evidence_preview import EvidencePreviewError, build_evidence_preview
+from .monthly_review import MonthlyReviewUnavailable, load_monthly_review
 from .persistence import (
     IdempotencyConflictError,
     IdempotencyRecord,
@@ -60,12 +61,18 @@ BANK_STATEMENT_REVIEW_PATH = re.compile(
 COMPANY_BANK_STATEMENT_REVIEW_PATH = re.compile(
     rf"^/api/v1/company-bank-statements/({UUID_SEGMENT})/reviews$"
 )
+COMPANY_TRANSACTION_CLASSIFICATION_REVIEW_PATH = re.compile(
+    r"^/api/v1/company-transaction-classifications/([0-9a-f-]{36})/reviews$"
+)
 CLASSIFICATION_BATCH_PATH = re.compile(
     r"^/api/v1/candidate-classification-groups/(cg_[0-9a-f]{32})/decisions$"
 )
 RECONCILIATION_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)$")
 ORIGINAL_RECONCILIATION_PATH = re.compile(r"^/api/v1/original-reconciliations/([^/]+)$")
 CASH_RECONCILIATION_PATH = re.compile(r"^/api/v1/cash-reconciliations/([^/]+)$")
+LEGACY_RECONCILIATION_MONTH_PATH = re.compile(
+    r"^/api/v1/reconciliation-legacy/([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})/([0-9]{4}-(?:0[1-9]|1[0-2]))$"
+)
 DRAFT_CREATE_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)/drafts$")
 #: Local single-user mode only: rule suggestions and their batch confirmation.
 LOCAL_RULE_SUGGESTIONS_PATH = "/api/v1/local/rule-suggestions"
@@ -88,6 +95,12 @@ PAYROLL_TEST_MATERIAL_PREVIEW_PATH = re.compile(
 PAYROLL_TEST_VALIDATE_PATH = "/api/v1/payroll/test-workspace/validate"
 PAYROLL_LEGACY_WORKSPACE_PATH = "/api/v1/payroll/legacy-workspace"
 PAYROLL_LEGACY_COMMAND_PATH = "/api/v1/payroll/legacy-workspace/commands"
+PAYROLL_DISBURSEMENT_RECORDS_PATH = re.compile(
+    r"^/api/v1/payroll/disbursement-records/([0-9]{4}-(0[1-9]|1[0-2]))$"
+)
+PAYROLL_WORKBENCH_PATH = re.compile(
+    r"^/api/v1/payroll/workbench/([0-9]{4}-(0[1-9]|1[0-2]))$"
+)
 PAYROLL_LEGACY_ACTIONS = {
     "FILL_MAIN",
     "GENERATE_MONTHLY_PAYROLL",
@@ -101,6 +114,10 @@ PAYROLL_LEGACY_ACTIONS = {
     "CHECK_PREVIOUS_PENDING",
 }
 MAX_REQUEST_BYTES = 64 * 1024
+MAX_CURSOR_LENGTH = 512
+# A multi-unit Core cursor wraps one bounded Core cursor in a small JSON envelope
+# and base64url-encodes it.  Keep a separate closed bound for that BFF envelope.
+MAX_WRAPPED_CURSOR_LENGTH = 1024
 JSON_SAFE_INTEGER = 9_007_199_254_740_991
 STATUSES = {"INCOMPLETE", "PENDING", "CONFLICTED", "CONFIRMED", "IGNORED", "SUPERSEDED"}
 SUPPORTED_MODES = frozenset(
@@ -139,6 +156,32 @@ LOCAL_MODE_FORBIDDEN_ENV = (
     "CORE_POLICY_GENERATION",
     "TRUSTED_PROXY_CIDRS",
 )
+COMPANY_TRANSACTION_CATEGORIES = {
+    "PLATFORM_ROOM_REVENUE",
+    "RELATED_PARTY_CURRENT",
+    "PAYROLL",
+    "FINANCING",
+    "BOTTLED_WATER",
+    "INTERNAL_TRANSFER",
+    "RENT",
+    "RENTAL_INCOME",
+    "BANK_INTEREST",
+    "LINEN_LAUNDRY",
+    "OPERATING_FEE",
+}
+COMPANY_OPERATING_FEE_REPORTING_ITEMS = {
+    "BANK_FEES",
+    "TAX",
+    "INSURANCE",
+    "DISINFECTION",
+    "ELEVATOR",
+    "FIRE_SAFETY",
+    "FRESH_FOOD",
+    "MOONCAKE",
+    "HOTEL_TECH",
+    "HOTEL_SUPPLIES",
+    "OPERATING_FEE",
+}
 
 
 def _utc_timestamp() -> str:
@@ -299,6 +342,38 @@ def _build_company_report_client(
         return None
 
 
+def _build_cash_reconciliation_client(
+    *,
+    default_ca_file: str,
+    timeout_seconds: float,
+) -> CoreHttpClient | None:
+    certificate_file = os.environ.get(
+        "CORE_CASH_RECONCILIATION_CERT_FILE", ""
+    ).strip()
+    private_key_file = os.environ.get(
+        "CORE_CASH_RECONCILIATION_KEY_FILE", ""
+    ).strip()
+    if not certificate_file or not private_key_file:
+        return None
+    try:
+        return CoreHttpClient(
+            base_url=os.environ.get(
+                "CORE_CASH_RECONCILIATION_BASE_URL",
+                "https://internal-ingress:8446",
+            ).strip()
+            or "https://internal-ingress:8446",
+            ca_file=os.environ.get(
+                "CORE_CASH_RECONCILIATION_CA_FILE", default_ca_file
+            ).strip()
+            or default_ca_file,
+            certificate_file=certificate_file,
+            private_key_file=private_key_file,
+            timeout_seconds=timeout_seconds,
+        )
+    except (OSError, ValueError):
+        return None
+
+
 def _build_company_bank_review_client(
     *,
     default_ca_file: str,
@@ -342,7 +417,7 @@ def _company_bank_statement_mappings() -> tuple[tuple[str, str, str], ...]:
         return ()
     try:
         parsed = json.loads(raw)
-        if not isinstance(parsed, list) or len(parsed) != 6:
+        if not isinstance(parsed, list) or not 1 <= len(parsed) <= 32:
             raise ValueError
         result: list[tuple[str, str, str]] = []
         for index, item in enumerate(parsed, start=1):
@@ -487,6 +562,46 @@ class SyntheticState:
 
     def connections(self) -> list[dict[str, str]]:
         return deepcopy(SYNTHETIC_CONNECTIONS)
+
+    def personal_finance_summary(self) -> dict[str, object]:
+        # The rules that build this summary live in Core, next to the facts
+        # they read. Recomputing them here would be a second implementation
+        # free to drift from the authoritative one, which is exactly what
+        # moving them out of the browser was meant to end.
+        raise CoreBackendError(
+            503,
+            _problem(
+                503,
+                "PERSONAL_FINANCE_SUMMARY_UNAVAILABLE",
+                "合成预览不计算个人财务汇总",
+            ),
+        )
+
+    def company_bank_statements(self) -> dict[str, object]:
+        # Synthetic preview has no company bank review backend, and inventing
+        # company statements here would put invented financial rows in front of
+        # anyone running the offline preview. Report the same unavailability the
+        # core-backed adapter reports when its client is absent, so the route
+        # answers with a structured problem instead of crashing on a missing
+        # attribute.
+        raise CoreBackendError(
+            503,
+            _problem(
+                503,
+                "COMPANY_BANK_REVIEW_UNAVAILABLE",
+                "合成预览未连接公司账单复核后端",
+            ),
+        )
+
+    def company_transaction_classifications(self) -> dict[str, object]:
+        raise CoreBackendError(
+            503,
+            _problem(
+                503,
+                "COMPANY_CLASSIFICATION_REVIEW_UNAVAILABLE",
+                "合成预览未连接公司流水分类后端",
+            ),
+        )
 
     def candidate_detail(self, candidate_id: str) -> dict[str, object] | None:
         with self.lock:
@@ -1306,6 +1421,29 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             return
         if not self._require_session():
             return
+        review_match = re.fullmatch(r"/api/v1/monthly-reconciliation-reviews/([^/]+)", path)
+        if review_match:
+            month = review_match.group(1)
+            if query or not MONTH_PATTERN.fullmatch(month):
+                self._send_json(400, _problem(400, "INVALID_MONTHLY_REVIEW_QUERY", "仅接受对账月份，不接受文件或主体参数"))
+                return
+            manager = self.preview_server.auth_manager
+            token = self._session_token()
+            subject = manager.payroll_session_subject(token) if manager and token else None
+            owner = getattr(state, "user_subject", None)
+            if not isinstance(subject, str) or not isinstance(owner, str) or not hmac.compare_digest(
+                subject.encode("utf-8"), owner.encode("utf-8")
+            ):
+                self._send_json(403, _problem(403, "MONTHLY_REVIEW_SCOPE_MISMATCH", "审核附件仅向已绑定的完整认证主体开放"))
+                return
+            try:
+                package_path = Path(os.environ.get("MONTHLY_RECONCILIATION_REVIEW_FILE", "/config/monthly-reconciliation-review.json"))
+                result = load_monthly_review(package_path, month)
+            except MonthlyReviewUnavailable:
+                self._send_json(503, _problem(503, "MONTHLY_REVIEW_UNAVAILABLE", "已确认审核附件暂不可用"))
+                return
+            self._send_json(200, result)
+            return
         payroll_reads = {
             "/api/v1/payroll/status": "payroll_status",
             "/api/v1/payroll/test-workspace": "payroll_test_workspace",
@@ -1328,6 +1466,50 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 self._send_json(503, _problem(503, "PAYROLL_INTEGRATION_UNAVAILABLE", "工资服务尚未配置"))
                 return
             self._send_json(200, getattr(state, payroll_method)(session_token, session_subject))
+            return
+        payroll_disbursement_records = PAYROLL_DISBURSEMENT_RECORDS_PATH.fullmatch(path)
+        if payroll_disbursement_records is not None:
+            if query:
+                self._send_json(
+                    400,
+                    _problem(400, "INVALID_PAYROLL_QUERY", "工资发放记录不接受浏览器作用域参数"),
+                )
+                return
+            identity = self._payroll_session_identity()
+            if identity is None:
+                return
+            if not hasattr(state, "payroll_disbursement_records"):
+                self._send_json(
+                    503,
+                    _problem(503, "PAYROLL_INTEGRATION_UNAVAILABLE", "工资发放记录尚未配置"),
+                )
+                return
+            session_token, session_subject = identity
+            self._send_json(
+                200,
+                state.payroll_disbursement_records(
+                    session_token,
+                    session_subject,
+                    payroll_disbursement_records.group(1),
+                ),
+            )
+            return
+        payroll_workbench = PAYROLL_WORKBENCH_PATH.fullmatch(path)
+        if payroll_workbench is not None:
+            if query:
+                self._send_json(400, _problem(400, "INVALID_PAYROLL_QUERY", "工资接口不接受浏览器作用域参数"))
+                return
+            identity = self._payroll_session_identity()
+            if identity is None:
+                return
+            if not hasattr(state, "payroll_workbench"):
+                self._send_json(503, _problem(503, "PAYROLL_INTEGRATION_UNAVAILABLE", "数据库工资工作台尚未配置"))
+                return
+            session_token, session_subject = identity
+            self._send_json(
+                200,
+                state.payroll_workbench(session_token, session_subject, payroll_workbench.group(1)),
+            )
             return
         payroll_preview = PAYROLL_TEST_MATERIAL_PREVIEW_PATH.fullmatch(path)
         if payroll_preview:
@@ -1396,6 +1578,19 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 return
             self._send_json(200, state.candidate_classification_groups())
             return
+        if path == "/api/v1/personal-finance/summary":
+            if query:
+                self._send_json(
+                    400,
+                    _problem(
+                        400,
+                        "INVALID_PERSONAL_SUMMARY_QUERY",
+                        "个人财务汇总范围由服务端授权决定",
+                    ),
+                )
+                return
+            self._send_json(200, state.personal_finance_summary())
+            return
         if path == "/api/v1/personal-finance/bank-transactions":
             if query:
                 self._send_json(
@@ -1421,6 +1616,19 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 )
                 return
             self._send_json(200, state.company_bank_statements())
+            return
+        if path == "/api/v1/company-transaction-classifications":
+            if query:
+                self._send_json(
+                    400,
+                    _problem(
+                        400,
+                        "INVALID_COMPANY_CLASSIFICATION_QUERY",
+                        "公司流水分类范围由服务端专用授权决定",
+                    ),
+                )
+                return
+            self._send_json(200, state.company_transaction_classifications())
             return
         if path == "/api/v1/company-reports":
             params = parse_qs(query, keep_blank_values=True)
@@ -1471,8 +1679,11 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 self._send_json(400, _problem(400, "INVALID_ACCOUNTING_MONTH", "归属月份格式无效"))
                 return
             opaque_cursors = bool(getattr(state, "opaque_cursors", False))
+            cursor_length_limit = (
+                MAX_WRAPPED_CURSOR_LENGTH if opaque_cursors else MAX_CURSOR_LENGTH
+            )
             if cursor is not None and (
-                len(cursor) > 512
+                len(cursor) > cursor_length_limit
                 or not cursor.isascii()
                 or (not opaque_cursors and not cursor.isdigit())
                 or (opaque_cursors and re.fullmatch(r"[A-Za-z0-9._-]+", cursor) is None)
@@ -1484,7 +1695,11 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         if path == "/api/v1/review-events":
             params = parse_qs(query, keep_blank_values=True)
             cursor = params.get("cursor", [None])[0]
-            if cursor is not None and (len(cursor) > 512 or not cursor.isascii() or not cursor.isdigit()):
+            if cursor is not None and (
+                len(cursor) > MAX_CURSOR_LENGTH
+                or not cursor.isascii()
+                or not cursor.isdigit()
+            ):
                 self._send_json(400, _problem(400, "INVALID_CURSOR", "分页游标无效"))
                 return
             self._send_json(200, state.list_review_events(cursor=cursor))
@@ -1568,6 +1783,27 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 self._send_json(503, _problem(503, "CASH_RECONCILIATION_UNAVAILABLE", "流水自动生成尚未连接"))
                 return
             self._send_json(200, read_projection(month), headers={"Cache-Control": "no-store"})
+            return
+        if path == "/api/v1/reconciliation-legacy/sources":
+            if query:
+                self._send_json(400, _problem(400, "INVALID_LEGACY_RECONCILIATION_QUERY", "历史对账来源查询参数无效"))
+                return
+            read_sources = getattr(state, "legacy_reconciliation_sources", None)
+            if read_sources is None:
+                self._send_json(503, _problem(503, "LEGACY_RECONCILIATION_UNAVAILABLE", "历史对账来源尚未连接"))
+                return
+            self._send_json(200, read_sources(), headers={"Cache-Control": "no-store"})
+            return
+        match = LEGACY_RECONCILIATION_MONTH_PATH.fullmatch(path)
+        if match:
+            if query:
+                self._send_json(400, _problem(400, "INVALID_LEGACY_RECONCILIATION_QUERY", "历史对账月份查询参数无效"))
+                return
+            read_month = getattr(state, "legacy_reconciliation_month", None)
+            if read_month is None:
+                self._send_json(503, _problem(503, "LEGACY_RECONCILIATION_UNAVAILABLE", "历史对账月份尚未连接"))
+                return
+            self._send_json(200, read_month(match.group(1), match.group(2)), headers={"Cache-Control": "no-store"})
             return
         match = DRAFT_PATH.fullmatch(path)
         if match:
@@ -1807,6 +2043,9 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         decision_match = DECISION_PATH.fullmatch(path)
         bank_statement_review = BANK_STATEMENT_REVIEW_PATH.fullmatch(path)
         company_bank_statement_review = COMPANY_BANK_STATEMENT_REVIEW_PATH.fullmatch(path)
+        company_transaction_review = (
+            COMPANY_TRANSACTION_CLASSIFICATION_REVIEW_PATH.fullmatch(path)
+        )
         classification_batch_match = CLASSIFICATION_BATCH_PATH.fullmatch(path)
         draft_match = DRAFT_CREATE_PATH.fullmatch(path)
         evidence_unlock = path == EVIDENCE_UNLOCK_PATH
@@ -1824,6 +2063,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             and not local_rule_batch
             and bank_statement_review is None
             and company_bank_statement_review is None
+            and company_transaction_review is None
             and classification_batch_match is None
             and draft_match is None
             and not evidence_unlock
@@ -1847,6 +2087,16 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                     400,
                     "INVALID_CLASSIFICATION_BATCH_QUERY",
                     "相似交易批量请求不接受查询参数",
+                ),
+            )
+            return
+        if company_transaction_review is not None and split.query:
+            self._send_json(
+                400,
+                _problem(
+                    400,
+                    "INVALID_COMPANY_CLASSIFICATION_QUERY",
+                    "公司流水分类审批不接受查询参数",
                 ),
             )
             return
@@ -2166,6 +2416,64 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             )
             self._send_json(status, payload)
             return
+        if company_transaction_review is not None:
+            if set(request) != {
+                "entity_ref",
+                "expected_revision",
+                "category_code",
+                "reporting_item_code",
+                "reason",
+            }:
+                self._send_json(
+                    422,
+                    _problem(
+                        422,
+                        "INVALID_COMPANY_CLASSIFICATION_REVIEW",
+                        "公司流水分类审批字段无效",
+                    ),
+                )
+                return
+            revision = request.get("expected_revision")
+            category_code = request.get("category_code")
+            reporting_item_code = request.get("reporting_item_code")
+            reason = request.get("reason")
+            try:
+                entity_ref = str(uuid.UUID(str(request.get("entity_ref"))))
+            except (TypeError, ValueError):
+                entity_ref = ""
+            if (
+                request.get("entity_ref") != entity_ref
+                or isinstance(revision, bool)
+                or not isinstance(revision, int)
+                or revision < 1
+                or category_code not in COMPANY_TRANSACTION_CATEGORIES
+                or (
+                    category_code == "OPERATING_FEE"
+                    and reporting_item_code not in COMPANY_OPERATING_FEE_REPORTING_ITEMS
+                )
+                or (category_code != "OPERATING_FEE" and reporting_item_code is not None)
+                or not isinstance(reason, str)
+                or not 1 <= len(reason.strip()) <= 1000
+            ):
+                self._send_json(
+                    422,
+                    _problem(
+                        422,
+                        "INVALID_COMPANY_CLASSIFICATION_REVIEW",
+                        "公司流水分类审批内容无效",
+                    ),
+                )
+                return
+            request["reason"] = reason.strip()
+            status, payload = (
+                self.preview_server.state.review_company_transaction_classification(
+                    company_transaction_review.group(1),
+                    idempotency_key.lower(),
+                    request,
+                )
+            )
+            self._send_json(status, payload)
+            return
         month = draft_match.group(1)
         if not MONTH_PATTERN.fullmatch(month):
             self._send_json(400, _problem(400, "INVALID_ACCOUNTING_MONTH", "归属月份格式无效"))
@@ -2435,6 +2743,10 @@ def run() -> None:
                 default_ca_file=required["CORE_CA_FILE"],
                 timeout_seconds=timeout_seconds,
             )
+            cash_reconciliation_client = _build_cash_reconciliation_client(
+                default_ca_file=required["CORE_CA_FILE"],
+                timeout_seconds=timeout_seconds,
+            )
             company_bank_review_client = _build_company_bank_review_client(
                 default_ca_file=required["CORE_CA_FILE"],
                 timeout_seconds=timeout_seconds,
@@ -2442,6 +2754,7 @@ def run() -> None:
             state = CoreBackedState(
                 client,
                 company_report_client=company_report_client,
+                cash_reconciliation_client=cash_reconciliation_client,
                 company_bank_review_client=company_bank_review_client,
                 company_bank_statement_mappings=_company_bank_statement_mappings(),
                 assertion_key=required["CORE_USER_ASSERTION_KEY"].encode("utf-8"),

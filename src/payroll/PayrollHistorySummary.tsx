@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { CSSProperties } from 'react'
+import { DownloadSimple } from '@phosphor-icons/react'
 
 import { api } from '../api'
+import { PeriodSelect } from '../shared/TemporalControls'
+import { formatMonthLabel } from '../shared/temporal-format'
+import { previousBusinessMonth } from '../shared/monthPolicy'
 import type {
   PayrollSummaryAuthoritativePreviewResponse,
   PayrollTestWorkspaceReadResponse,
@@ -33,7 +38,7 @@ export function PayrollHistorySummary({ workspace }: Props) {
   )
   const [summaries, setSummaries] = useState<PayrollSummaryAuthoritativePreviewResponse[]>([])
   const [selectedMaterialId, setSelectedMaterialId] = useState('')
-  const [selectedPeriod, setSelectedPeriod] = useState('')
+  const [selectedPeriod, setSelectedPeriod] = useState(previousBusinessMonth)
   const [loading, setLoading] = useState(summaryMaterialIds.length > 0)
   const [failed, setFailed] = useState(false)
   const noSummaryMaterials = summaryMaterialIds.length === 0
@@ -58,7 +63,6 @@ export function PayrollHistorySummary({ workspace }: Props) {
       const preferred = valid[0]
       if (preferred) {
         setSelectedMaterialId(preferred.material_id)
-        setSelectedPeriod(preferred.data.latest_period)
       }
       setLoading(false)
     })
@@ -70,55 +74,67 @@ export function PayrollHistorySummary({ workspace }: Props) {
   ) ?? summaries[0]
   const selectedMonth = selectedSummary?.data.periods.find(
     (item) => item.period === selectedPeriod,
-  ) ?? selectedSummary?.data.periods[0]
+  )
+  const comparisonPeriods = (selectedSummary?.data.periods ?? [])
+    .filter((item) => item.period <= selectedPeriod)
+    .sort((left, right) => right.period.localeCompare(left.period)).slice(0, 4)
+  const previousPeriod = previousBusinessMonth(new Date(`${selectedPeriod}-15T00:00:00Z`))
+  const previousSummary = selectedSummary?.data.periods.find((item) => item.period === previousPeriod)
+  const storeNames = Array.from(new Set(
+    comparisonPeriods.flatMap((period) => period.stores.map((store) => store.store_name)),
+  ))
 
-  const selectSummary = (materialId: string) => {
-    setSelectedMaterialId(materialId)
-    const selected = summaries.find((summary) => summary.material_id === materialId)
-    setSelectedPeriod(selected?.data.latest_period ?? '')
+  const exportSummary = () => {
+    if (!selectedSummary) return
+    const headings = ['门店', ...comparisonPeriods.map((period) => `${period.period} 工资总额`)]
+    const rows = storeNames.map((storeName) => [
+      storeName,
+      ...comparisonPeriods.map((period) => {
+        const amount = period.stores.find((store) => store.store_name === storeName)?.net_pay_cents
+        return amount === undefined ? '' : String(amount / 100)
+      }),
+    ])
+    const csv = [headings, ...rows].map((row) => row.join(',')).join('\n')
+    const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `工资历史汇总-${selectedMonth?.period ?? '全部'}.csv`
+    link.click()
+    URL.revokeObjectURL(url)
   }
+  const storeTrend = (storeName: string) => {
+    const current = selectedMonth?.stores.find((store) => store.store_name === storeName)?.net_pay_cents
+    const previous = previousSummary?.stores.find((store) => store.store_name === storeName)?.net_pay_cents
+    if (current === undefined || previous === undefined || previous === 0) return null
+    return ((current - previous) / previous) * 100
+  }
+  const totalTrend = selectedMonth && previousSummary && previousSummary.total_net_pay_cents !== 0
+    ? ((selectedMonth.total_net_pay_cents - previousSummary.total_net_pay_cents)
+      / previousSummary.total_net_pay_cents) * 100
+    : null
 
   return (
     <section className="panel payroll-history-summary" aria-labelledby="payroll-history-summary-heading">
       <header>
         <div>
-          <span>工资统计总表 · 历史权威口径</span>
-          <h2 id="payroll-history-summary-heading">各店工资与总汇总</h2>
-          <p>按月份直接读取原工资统计总表；历史金额不再从员工明细或实验素材重新计算。</p>
+          <h2 id="payroll-history-summary-heading">各店历史工资汇总 <small>（仅展示已生成的期间）</small></h2>
         </div>
-        {selectedSummary ? (
-          <div className="payroll-history-summary-controls">
-            {summaries.length > 1 ? (
-              <label>
-                汇总表版本
-                <select
-                  aria-label="汇总表版本"
-                  value={selectedSummary.material_id}
-                  onChange={(event) => selectSummary(event.target.value)}
-                >
-                  {summaries.map((summary, index) => (
-                    <option key={summary.material_id} value={summary.material_id}>
-                      版本 {index + 1} · 至 {summary.data.latest_period} · {summary.data.period_count} 个月
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-            <label>
-              对账月份
-              <select
-                aria-label="对账月份"
-                value={selectedMonth?.period ?? ''}
-                onChange={(event) => setSelectedPeriod(event.target.value)}
-              >
-                {selectedSummary.data.periods.map((item) => (
-                  <option key={item.period} value={item.period}>{item.period}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-        ) : null}
       </header>
+
+      {selectedSummary ? (
+        <aside className="payroll-history-summary-controls" aria-label="账期与版本">
+          <div className="payroll-history-control-fields">
+            <label>汇总维度<select aria-label="汇总维度" value="门店" disabled><option>门店</option></select></label>
+            <PeriodSelect label="对账月份" value={selectedPeriod} onChange={(event) => setSelectedPeriod(event.target.value)}>
+                {!selectedMonth ? <option value={selectedPeriod}>{formatMonthLabel(selectedPeriod)}（尚无本期汇总）</option> : null}
+                {selectedSummary.data.periods.map((item) => (
+                  <option key={item.period} value={item.period}>{formatMonthLabel(item.period)}</option>
+                ))}
+            </PeriodSelect>
+          </div>
+          <button type="button" className="payroll-summary-export" onClick={exportSummary}><DownloadSimple size={16} />导出明细</button>
+        </aside>
+      ) : null}
 
       {loading ? <p className="payroll-summary-state">正在读取工资统计总表…</p> : null}
       {!loading && (failed || noSummaryMaterials) ? (
@@ -127,6 +143,8 @@ export function PayrollHistorySummary({ workspace }: Props) {
           <span>七、八月实验素材仍保留；它们不会被删除，也不会临时替代历史汇总金额。</span>
         </div>
       ) : null}
+
+      {!loading && selectedSummary && !selectedMonth ? <p role="status">{formatMonthLabel(selectedPeriod)}尚无工资汇总，请明确选择历史月份；不会用最新旧期替代。</p> : null}
 
       {selectedMonth ? (
         <div className="payroll-history-summary-results">
@@ -146,20 +164,45 @@ export function PayrollHistorySummary({ workspace }: Props) {
               总计行与各店相加不一致；本页保留显示总表“总计”行，需人工对账。
             </p>
           ) : null}
-          <div className="payroll-summary-store-table" role="table" aria-label="各店当月工资汇总">
+          <div
+            className="payroll-summary-store-table payroll-summary-comparison-table"
+            role="table"
+            aria-label="各店当月工资汇总"
+            style={{ '--payroll-period-count': comparisonPeriods.length } as CSSProperties}
+          >
             <div className="payroll-summary-store-row header" role="row">
               <span role="columnheader">门店</span>
-              <span role="columnheader">当月工资</span>
+              <span role="columnheader">员工数</span>
+              {comparisonPeriods.map((period) => (
+                <span role="columnheader" className={period.period === selectedMonth.period ? 'selected' : ''} key={period.period}>{period.period} 工资总额</span>
+              ))}
+              <span role="columnheader">本期环比（{previousPeriod} → {selectedPeriod}）</span>
+              <span role="columnheader">状态</span>
             </div>
-            {selectedMonth.stores.map((store) => (
-              <div className="payroll-summary-store-row" role="row" key={store.store_name}>
-                <strong role="cell">{store.store_name}</strong>
-                <span role="cell">{formatMoney(store.net_pay_cents)}</span>
+            {storeNames.map((storeName) => {
+              const trend = storeTrend(storeName)
+              return <div className="payroll-summary-store-row" role="row" key={storeName}>
+                <strong role="cell">{storeName}</strong>
+                <span role="cell">—</span>
+                {comparisonPeriods.map((period) => (
+                  <span role="cell" className={period.period === selectedMonth.period ? 'selected' : ''} key={period.period}>
+                    {period.stores.some((store) => store.store_name === storeName)
+                      ? formatMoney(period.stores.find((store) => store.store_name === storeName)!.net_pay_cents)
+                      : '—'}
+                  </span>
+                ))}
+                <span role="cell" className={trend !== null && trend >= 0 ? 'trend-positive' : 'trend-negative'}>{trend === null ? '—' : `${trend >= 0 ? '+' : ''}${trend.toFixed(2)}%`}</span>
+                <span role="cell"><b className="payroll-generated-badge">已生成</b></span>
               </div>
-            ))}
+            })}
             <div className="payroll-summary-store-row total" role="row">
-              <strong role="cell">总计</strong>
-              <strong role="cell">{formatMoney(selectedMonth.total_net_pay_cents)}</strong>
+              <strong role="cell">总计（{selectedMonth.store_count} 个门店）</strong>
+              <strong role="cell">—</strong>
+              {comparisonPeriods.map((period) => (
+                <strong role="cell" className={period.period === selectedMonth.period ? 'selected' : ''} key={period.period}>{formatMoney(period.total_net_pay_cents)}</strong>
+              ))}
+              <strong role="cell" className={totalTrend !== null && totalTrend >= 0 ? 'trend-positive' : 'trend-negative'}>{totalTrend === null ? '—' : `${totalTrend >= 0 ? '+' : ''}${totalTrend.toFixed(2)}%`}</strong>
+              <strong role="cell">—</strong>
             </div>
           </div>
           <footer>

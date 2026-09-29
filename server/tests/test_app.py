@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from server.app import SyntheticState, create_server, run
+from server.core_backend import CoreBackendError
 
 
 class SyntheticBffTests(unittest.TestCase):
@@ -258,6 +259,36 @@ class SyntheticBffTests(unittest.TestCase):
                 for basis in ("CONFIRMED_CANDIDATE", "POSTED_LEDGER")
             ],
         )
+
+    def test_company_operating_fee_review_requires_a_known_detail(self) -> None:
+        path = (
+            "/api/v1/company-transaction-classifications/"
+            "90000000-0000-4000-8000-000000000009/reviews"
+        )
+        base: dict[str, object] = {
+            "entity_ref": "10000000-0000-4000-8000-000000000001",
+            "expected_revision": 1,
+            "category_code": "OPERATING_FEE",
+            "reason": "人工核对营运费",
+        }
+
+        for body in (
+            base,
+            {**base, "reporting_item_code": "UNKNOWN"},
+            {
+                **base,
+                "category_code": "RENT",
+                "reporting_item_code": "TAX",
+            },
+        ):
+            status, problem, _ = self.request(
+                path,
+                method="POST",
+                body=body,
+                headers=self.decision_headers(),
+            )
+            self.assertEqual(status, 422)
+            self.assertEqual(problem["code"], "INVALID_COMPANY_CLASSIFICATION_REVIEW")
 
         status, filtered, _ = self.request(
             "/api/v1/company-reports?from_month=2026-03&to_month=2026-08"
@@ -681,3 +712,27 @@ class SyntheticBffTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SyntheticCompanyEndpointTests(unittest.TestCase):
+    """Synthetic preview has no company review backend and must say so.
+
+    Both routes previously called through to a method SyntheticState did not
+    define, so the offline preview answered these two paths with an
+    AttributeError traceback instead of a response.
+    """
+
+    def test_company_endpoints_report_unavailable_rather_than_crashing(self) -> None:
+        state = SyntheticState()
+        for read, expected in (
+            (state.company_bank_statements, "COMPANY_BANK_REVIEW_UNAVAILABLE"),
+            (
+                state.company_transaction_classifications,
+                "COMPANY_CLASSIFICATION_REVIEW_UNAVAILABLE",
+            ),
+        ):
+            with self.subTest(expected=expected):
+                with self.assertRaises(CoreBackendError) as raised:
+                    read()
+                self.assertEqual(raised.exception.status, 503)
+                self.assertEqual(raised.exception.payload["code"], expected)

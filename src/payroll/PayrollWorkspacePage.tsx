@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { previousBusinessMonth } from '../shared/monthPolicy'
+import { defaultPayrollBatch } from './defaultPayrollBatch'
 import { Badge, Button } from '@radix-ui/themes'
 import { CheckCircle, Database, Info, ShieldCheck, Warning } from '@phosphor-icons/react'
 import { api, ApiError, minorToMajor } from '../api'
@@ -12,8 +14,11 @@ import type {
   PayrollVerificationListData,
 } from '../types'
 import { ErrorState, LoadingState, PageHeader } from '../shared/PagePrimitives'
+import { PeriodSelect } from '../shared/TemporalControls'
+import { formatMonthLabel } from '../shared/temporal-format'
 import { PayrollLegacyWorkbench } from './PayrollLegacyWorkbench'
 import { PayrollHistorySummary } from './PayrollHistorySummary'
+import { PayrollDatabaseWorkbench } from './PayrollDatabaseWorkbench'
 import {
   PayrollTestWorkspaceActionsPanel,
   type PayrollConfirmedMaterials,
@@ -172,7 +177,7 @@ export function PayrollWorkspacePage() {
     (evidence) => evidence.status === 'READY_FOR_MATCHING' && evidence.period === batch.pay_period,
   ))
   const selectedBatch = eligibleBatches.find((batch) => batch.batch_id === selectedBatchId)
-    ?? (eligibleBatches.length === 1 ? eligibleBatches[0] : null)
+    ?? (selectedBatchId === '' ? defaultPayrollBatch(eligibleBatches) : null)
   const evidenceForBatch = selectedBatch
     ? verification?.available_evidence.filter((evidence) => evidence.period === selectedBatch.pay_period) ?? []
     : []
@@ -243,25 +248,30 @@ export function PayrollWorkspacePage() {
 
   return (
     <>
-      <PageHeader
-        eyebrow="工资模块"
-        title="工资与发放验证"
-        description="读取当前公司经过服务端隔离和脱敏的工资材料、批次与发放验证投影。"
-      />
-
+      <PageHeader eyebrow="工资工作台" title="工资核对" description="核对工资资料、计算结果与发放凭证。" />
+      <PayrollDatabaseWorkbench />
       {loading ? <LoadingState /> : error ? <ErrorState message={error} onRetry={loadPayroll} /> : null}
 
       {!loading && !error && testWorkspace ? (
-        <PayrollHistorySummary key={testWorkspace.data.workspace_revision} workspace={testWorkspace} />
-      ) : null}
-
-      {!loading && !error && testWorkspace && csrfToken ? (
-        <PayrollLegacyWorkbench
-          key={confirmedMaterials?.period ?? 'payroll-unconfirmed'}
-          testWorkspace={testWorkspace}
-          csrfToken={csrfToken}
-          confirmedMaterials={confirmedMaterials}
-        />
+        <div className="payroll-command-center">
+          {csrfToken ? (
+            <PayrollLegacyWorkbench
+              key={confirmedMaterials?.period ?? 'payroll-unconfirmed'}
+              testWorkspace={testWorkspace}
+              csrfToken={csrfToken}
+              confirmedMaterials={confirmedMaterials}
+              materialsPanel={(
+                <PayrollTestWorkspaceActionsPanel
+                  workspace={testWorkspace}
+                  csrfToken={csrfToken}
+                  onWorkspaceChange={setTestWorkspace}
+                  onConfirmedMaterials={setConfirmedMaterials}
+                />
+              )}
+            />
+          ) : null}
+          <PayrollHistorySummary key={testWorkspace.data.workspace_revision} workspace={testWorkspace} />
+        </div>
       ) : null}
 
       {!loading && !error && status && !status.data.live_data_ready ? (
@@ -274,14 +284,6 @@ export function PayrollWorkspacePage() {
             </div>
             <Badge color={testWorkspace ? 'blue' : 'amber'}>{testWorkspaceReady ? '七八月测试账本' : testWorkspace ? '暂无七八月素材' : '待接通'}</Badge>
           </div>
-          {testWorkspace && csrfToken ? (
-            <PayrollTestWorkspaceActionsPanel
-              workspace={testWorkspace}
-              csrfToken={csrfToken}
-              onWorkspaceChange={setTestWorkspace}
-              onConfirmedMaterials={setConfirmedMaterials}
-            />
-          ) : null}
           {status.data.setup_summary?.provider_connected ? (
             <section className="panel payroll-setup-progress" aria-label="工资材料接入进度">
               <Database size={28} weight="light" />
@@ -307,17 +309,6 @@ export function PayrollWorkspacePage() {
             </article>
           </section>
         </>
-      ) : null}
-
-      {!loading && !error && status?.data.live_data_ready && testWorkspace ? (
-        csrfToken ? (
-          <PayrollTestWorkspaceActionsPanel
-            workspace={testWorkspace}
-            csrfToken={csrfToken}
-            onWorkspaceChange={setTestWorkspace}
-            onConfirmedMaterials={setConfirmedMaterials}
-          />
-        ) : null
       ) : null}
 
       {!loading && !error && dashboard && verification ? (
@@ -405,19 +396,16 @@ export function PayrollWorkspacePage() {
                 <p className="payroll-evidence-required">请先导入发放回单/流水</p>
               ) : canVerifyReceipts ? (
                 <div className="payroll-evidence-command">
-                  {eligibleBatches.length > 1 ? (
-                    <label>
-                      <span>选择工资批次</span>
-                      <select value={selectedBatchId} onChange={(event) => { setSelectedBatchId(event.target.value); setSelectedEvidence([]) }}>
-                        <option value="">请选择</option>
-                        {eligibleBatches.map((batch) => <option key={batch.batch_id} value={batch.batch_id}>{batch.pay_period}</option>)}
-                      </select>
-                    </label>
+                  {eligibleBatches.length > 0 ? (
+                    <PeriodSelect label="选择工资批次" value={selectedBatch?.batch_id ?? ''} onChange={(event) => { setSelectedBatchId(event.target.value); setSelectedEvidence([]) }}>
+                        <option value="">{formatMonthLabel(previousBusinessMonth())}无唯一可核验批次，请明确选择</option>
+                        {eligibleBatches.map((batch) => <option key={batch.batch_id} value={batch.batch_id}>{formatMonthLabel(batch.pay_period)}</option>)}
+                    </PeriodSelect>
                   ) : null}
                   <div className="payroll-evidence-options">
                     <div className="payroll-evidence-completeness">
                       <strong>本月应收 7 份账单</strong>
-                      <span>工资表理论总额：{currency.format(minorToMajor(selectedBatch?.lines.reduce((sum, line) => sum + line.net_pay_minor, 0) ?? 0))}</span>
+                      <span>工资表理论总额：{selectedBatch ? currency.format(minorToMajor(selectedBatch.lines.reduce((sum, line) => sum + line.net_pay_minor, 0))) : '未选择批次'}</span>
                       <ul>
                         {verificationEvidenceRequirements.map((requirement) => {
                           const received = evidenceForBatch.filter(

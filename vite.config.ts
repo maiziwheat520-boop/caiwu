@@ -9,5 +9,8 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: './src/test-setup.ts',
+    // The visual baselines are Playwright specs driving a real browser; vitest
+    // would otherwise collect them and fail on an import it cannot resolve.
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
   },
 })

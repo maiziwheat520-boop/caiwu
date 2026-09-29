@@ -11,30 +11,49 @@ import type {
   CompanyReportLayer,
   CompanyReportMonth,
   CompanyReportsResponse,
+  CompanyTransactionClassificationSummary,
+  CompanyTransactionCategorySummary,
 } from '../types'
 import { ErrorState, LoadingState, PageHeader } from '../shared/PagePrimitives'
-import { CompanyBankStatementReviewPanel } from './CompanyBankStatementReviewPanel'
+import { MonthInput } from '../shared/TemporalControls'
+import { previousBusinessMonth } from '../shared/monthPolicy'
+import { companyTabLabel } from './companyLabels'
 
 const ALL_COMPANIES = '__all_companies__'
 
-export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
+function basisDescription(basis: CompanyReportLayer['basis']) {
+  if (basis === 'ACCOUNT_STATEMENT') return '正式银行流水：按已确认的正式账单统计现金流，不等同于会计收入、费用或利润。'
+  if (basis === 'CONFIRMED_CANDIDATE') return '已确认事项：按已审核的业务事项金额正负统计，尚未生成会计过账分录。'
+  return '会计账簿：仅统计已过账分录。'
+}
+
+export function CompanyReportsPage() {
   const [reports, setReports] = useState<CompanyReportsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedCompanyRef, setSelectedCompanyRef] = useState('')
   const [basis, setBasis] = useState<CompanyReportLayer['basis']>('CONFIRMED_CANDIDATE')
-  const [fromMonth, setFromMonth] = useState('')
-  const [toMonth, setToMonth] = useState('')
-  const [appliedRange, setAppliedRange] = useState<{ fromMonth: string; toMonth: string } | null>(null)
+  const [fromMonth, setFromMonth] = useState(previousBusinessMonth)
+  const [toMonth, setToMonth] = useState(previousBusinessMonth)
+  const [appliedRange, setAppliedRange] = useState(() => {
+    const month = previousBusinessMonth()
+    return { fromMonth: month, toMonth: month }
+  })
 
   const loadReports = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.getCompanyReports(appliedRange ?? {})
+      const response = await api.getCompanyReports(appliedRange)
+      if (response.from_month !== appliedRange.fromMonth || response.to_month !== appliedRange.toMonth) {
+        throw new Error('返回期间与选定业务月份不一致，不以其他月份代替')
+      }
       setReports(response)
       const statementLayer = response.layers.find((layer) => layer.basis === 'ACCOUNT_STATEMENT')
-      setBasis(statementLayer?.items.some((item) => (
+      const hasClassifiedTransactions = response.transaction_classifications?.items.some(
+        (item) => item.confirmed_count > 0 || item.pending_count > 0,
+      )
+      setBasis(hasClassifiedTransactions || statementLayer?.items.some((item) => (
         item.metrics.basis === 'ACCOUNT_STATEMENT'
         && item.metrics.confirmed_transaction_count > 0
       )) ? 'ACCOUNT_STATEMENT' : 'CONFIRMED_CANDIDATE')
@@ -57,15 +76,21 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
   const header = (
     <PageHeader
       eyebrow="经营驾驶舱"
-      title="各公司报表"
+      title="公司报表"
       description="先看经营现金流，再下钻到分类、账单审核和逐月事实。"
     />
   )
 
   if (loading) {
-    return <>{header}<CompanyBankStatementReviewPanel csrfToken={csrfToken} /><LoadingState title="正在读取公司报表" description="正在分别读取已确认来源、账户流水与正式入账投影。" /></>
+    return <>{header}<LoadingState title="正在读取公司报表" description="正在分别读取已确认来源、账户流水与正式入账投影。" /></>
   }
-  if (error) return <>{header}<CompanyBankStatementReviewPanel csrfToken={csrfToken} /><ErrorState message={error} onRetry={() => void loadReports()} /></>
+  if (error) return <>{header}<ErrorState message={error} onRetry={() => void loadReports()} />
+    <section aria-label="重新选择报表期间" className="company-report-range">
+      <MonthInput label="开始月份" value={fromMonth} onChange={(event) => setFromMonth(event.target.value)} />
+      <MonthInput label="结束月份" value={toMonth} onChange={(event) => setToMonth(event.target.value)} />
+      <button type="button" disabled={!isReportMonth(fromMonth) || !isReportMonth(toMonth) || fromMonth > toMonth || monthDistance(fromMonth, toMonth) >= 24} onClick={() => setAppliedRange({ fromMonth, toMonth })}>应用期间</button>
+    </section>
+  </>
   if (!reports) return null
 
   const companyIndex = new Map<string, { name: string; currencyCode: string }>()
@@ -92,11 +117,18 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
   const activeReport = showAllCompanies ? undefined : companyFor(layerFor(reports.layers, basis), activeCompanyRef)
   const dashboard = showAllCompanies
     ? allCompaniesDashboard(reports, basis, companies.map(([companyRef]) => companyRef))
-    : dashboardSummary(basis, activeReport, activeComposition)
+    : dashboardSummary(
+      basis,
+      activeReport,
+      activeComposition,
+      classificationFor(reports, activeCompanyRef),
+    )
   const rangeInvalid = !isReportMonth(fromMonth)
     || !isReportMonth(toMonth)
     || fromMonth > toMonth
     || monthDistance(fromMonth, toMonth) >= 24
+  const activeRange = appliedRange
+  const rangeDirty = fromMonth !== activeRange.fromMonth || toMonth !== activeRange.toMonth
 
   const toolbar = (
     <section className="company-report-toolbar" aria-label="报表筛选">
@@ -123,11 +155,10 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
       <>
         {header}
         {toolbar}
-        <CompanyBankStatementReviewPanel csrfToken={csrfToken} />
         <section className="empty-state company-report-empty">
           <Database size={34} weight="light" />
           <h2>当前期间没有可展示的公司报表</h2>
-          <p>未按名称、摘要或银行信息猜测公司归属；待 Core 提供权威公司事实后自动显示。</p>
+          <p>切换月份，或检查公司账单是否已导入并完成归属。</p>
         </section>
       </>
     )
@@ -139,13 +170,6 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
     <>
       {header}
       {toolbar}
-      <section className="company-report-basis-note" aria-label="公司报表口径说明">
-        <Info size={18} />
-        <div>
-          <strong>正式数据的不同处理阶段分开展示</strong>
-          <span>银行账单和其流水是正式业务数据；已确认事项与会计已过账结果分开计算。</span>
-        </div>
-      </section>
       {genericCompanyOnly ? (
         <section className="company-attribution-warning" role="alert">
           <Warning size={20} />
@@ -187,9 +211,9 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
           </div>
         </header>
         <div className="company-dashboard-totals">
-          <ReportTotal label="总收入" value={dashboard.available ? reportMoney(dashboard.incomeMinor, activeCurrencyCode) : '待接正式账簿'} />
-          <ReportTotal label="总支出" value={dashboard.available ? reportMoney(dashboard.expenseMinor, activeCurrencyCode) : '待接正式账簿'} />
-          <ReportTotal label="净额" value={dashboard.available ? reportMoney(dashboard.netMinor, activeCurrencyCode) : '待接正式账簿'} emphasis />
+          <ReportTotal label={basis === 'ACCOUNT_STATEMENT' ? '经营流入' : '总收入'} value={dashboard.available ? reportMoney(dashboard.incomeMinor, activeCurrencyCode) : '待接正式账簿'} />
+          <ReportTotal label={basis === 'ACCOUNT_STATEMENT' ? '经营流出' : '总支出'} value={dashboard.available ? reportMoney(dashboard.expenseMinor, activeCurrencyCode) : '待接正式账簿'} />
+          <ReportTotal label={basis === 'ACCOUNT_STATEMENT' ? '经营净现金流' : '净额'} value={dashboard.available ? reportMoney(dashboard.netMinor, activeCurrencyCode) : '待接正式账簿'} emphasis />
         </div>
         {basis === 'ACCOUNT_STATEMENT' && dashboard.confirmedCount !== undefined ? (
           <p className="company-classification-coverage">
@@ -206,8 +230,6 @@ export function CompanyReportsPage({ csrfToken }: { csrfToken: string }) {
           </aside>
         </div>
       </section>
-      <CompanyBankStatementReviewPanel csrfToken={csrfToken} />
-      <CompanyTransactionClassificationPanel csrfToken={csrfToken} />
       <details className="company-report-detail-drawer">
         <summary>查看三层事实与逐月明细</summary>
         <div className="company-report-list">
@@ -286,6 +308,7 @@ function dashboardSummary(
   basis: CompanyReportLayer['basis'],
   report: CompanyReportAggregate | undefined,
   composition: CompanyReportCompositionItem | undefined,
+  classification?: CompanyTransactionClassificationSummary,
 ) {
   if (basis === 'CONFIRMED_CANDIDATE') {
     const metrics = confirmedMetrics(report)
@@ -296,10 +319,14 @@ function dashboardSummary(
       netMinor: metrics?.confirmed_net_minor ?? 0,
       incomeComposition: composition?.basis === basis ? composition.positive : undefined,
       expenseComposition: composition?.basis === basis ? composition.negative : undefined,
+      nonOperatingCategories: undefined,
+      confirmedCount: undefined,
+      pendingCount: undefined,
     }
   }
   if (basis === 'ACCOUNT_STATEMENT') {
     const metrics = statementMetrics(report)
+    if (classification) return classificationDashboard(classification)
     return {
       available: metrics !== null,
       incomeMinor: metrics?.cash_inflow_minor ?? 0,
@@ -307,6 +334,9 @@ function dashboardSummary(
       netMinor: metrics?.net_cash_flow_minor ?? 0,
       incomeComposition: undefined,
       expenseComposition: undefined,
+      nonOperatingCategories: undefined,
+      confirmedCount: undefined,
+      pendingCount: undefined,
     }
   }
   const metrics = postedMetrics(report)
@@ -317,6 +347,9 @@ function dashboardSummary(
     netMinor: metrics?.profit_minor ?? 0,
     incomeComposition: composition?.basis === basis ? composition.revenue : undefined,
     expenseComposition: composition?.basis === basis ? composition.expense : undefined,
+    nonOperatingCategories: undefined,
+    confirmedCount: undefined,
+    pendingCount: undefined,
   }
 }
 
@@ -330,7 +363,9 @@ function allCompaniesDashboard(
     basis,
     companyFor(layer, companyRef),
     compositionFor(reports, basis, companyRef),
+    classificationFor(reports, companyRef),
   ))
+  const hasClassifications = summaries.some((summary) => summary.confirmedCount !== undefined)
   return {
     available: summaries.some((summary) => summary.available),
     incomeMinor: summaries.reduce((total, summary) => total + summary.incomeMinor, 0),
@@ -338,7 +373,95 @@ function allCompaniesDashboard(
     netMinor: summaries.reduce((total, summary) => total + summary.netMinor, 0),
     incomeComposition: mergeCategoryCompositions(summaries.map((summary) => summary.incomeComposition)),
     expenseComposition: mergeCategoryCompositions(summaries.map((summary) => summary.expenseComposition)),
+    nonOperatingCategories: mergeClassificationCategories(
+      summaries.map((summary) => summary.nonOperatingCategories),
+    ),
+    confirmedCount: hasClassifications ? summaries.reduce(
+      (total, summary) => total + (summary.confirmedCount ?? 0),
+      0,
+    ) : undefined,
+    pendingCount: hasClassifications ? summaries.reduce(
+      (total, summary) => total + (summary.pendingCount ?? 0),
+      0,
+    ) : undefined,
   }
+}
+
+function classificationFor(reports: CompanyReportsResponse, companyRef: string) {
+  return reports.transaction_classifications?.items.find(
+    (item) => item.entity_ref === companyRef,
+  )
+}
+
+function classificationDashboard(summary: CompanyTransactionClassificationSummary) {
+  const incomeCategories = summary.categories.filter(
+    (item) => item.cashflow_role === 'OPERATING_INCOME'
+      && item.inflow_minor > item.outflow_minor,
+  )
+  const expenseCategories = summary.categories.filter(
+    (item) => item.cashflow_role === 'OPERATING_EXPENSE'
+      && item.outflow_minor > item.inflow_minor,
+  )
+  const incomeMinor = incomeCategories.reduce(
+    (total, item) => total + item.inflow_minor - item.outflow_minor,
+    0,
+  )
+  const expenseMinor = expenseCategories.reduce(
+    (total, item) => total + item.outflow_minor - item.inflow_minor,
+    0,
+  )
+  return {
+    available: true,
+    incomeMinor,
+    expenseMinor,
+    netMinor: incomeMinor - expenseMinor,
+    incomeComposition: classificationComposition(incomeCategories, 'OPERATING_INCOME'),
+    expenseComposition: classificationComposition(expenseCategories, 'OPERATING_EXPENSE'),
+    nonOperatingCategories: summary.categories.filter(
+      (item) => item.cashflow_role === 'NON_OPERATING',
+    ),
+    confirmedCount: summary.confirmed_count,
+    pendingCount: summary.pending_count,
+  }
+}
+
+function classificationComposition(
+  categories: CompanyTransactionCategorySummary[],
+  role: 'OPERATING_INCOME' | 'OPERATING_EXPENSE',
+): CompanyReportCategoryComposition {
+  const amount = (item: CompanyTransactionCategorySummary) => role === 'OPERATING_INCOME'
+    ? item.inflow_minor - item.outflow_minor
+    : item.outflow_minor - item.inflow_minor
+  return {
+    total_minor: categories.reduce((total, item) => total + amount(item), 0),
+    fact_count: categories.reduce((total, item) => total + item.transaction_count, 0),
+    items: categories.map((item) => ({
+      category_code: item.reporting_item_code ?? item.category_code,
+      category_label: item.reporting_item_label ?? classificationLabel(item.category_code),
+      amount_minor: amount(item),
+      fact_count: item.transaction_count,
+    })).sort((left, right) => right.amount_minor - left.amount_minor),
+  }
+}
+
+function mergeClassificationCategories(
+  groups: Array<CompanyTransactionCategorySummary[] | undefined>,
+) {
+  const merged = new Map<string, CompanyTransactionCategorySummary>()
+  groups.flatMap((group) => group ?? []).forEach((item) => {
+    const current = merged.get(item.category_code)
+    merged.set(item.category_code, {
+      ...item,
+      transaction_count: (current?.transaction_count ?? 0) + item.transaction_count,
+      inflow_minor: (current?.inflow_minor ?? 0) + item.inflow_minor,
+      outflow_minor: (current?.outflow_minor ?? 0) + item.outflow_minor,
+      net_minor: (current?.net_minor ?? 0) + item.net_minor,
+      gross_minor: (current?.gross_minor ?? 0) + item.gross_minor,
+      transaction_share_ppm: 0,
+      gross_share_ppm: 0,
+    })
+  })
+  return [...merged.values()].sort((left, right) => right.gross_minor - left.gross_minor)
 }
 
 function mergeCategoryCompositions(
@@ -378,10 +501,46 @@ function visibleCategorySlices(composition: CompanyReportCategoryComposition) {
   ]
 }
 
-function basisDescription(basis: CompanyReportLayer['basis']) {
-  if (basis === 'ACCOUNT_STATEMENT') return '正式银行流水：按已确认的正式账单统计现金流，不等同于会计收入、费用或利润。'
-  if (basis === 'CONFIRMED_CANDIDATE') return '已确认事项：按已审核的业务事项金额正负统计，尚未生成会计过账分录。'
-  return '会计账簿：仅统计已过账分录。'
+function NonOperatingCashflow({ categories, currencyCode }: {
+  categories: CompanyTransactionCategorySummary[] | undefined
+  currencyCode: string
+}) {
+  return (
+    <section className="company-non-operating" aria-label="往来及其他非经营现金流">
+      <header><h3>往来及其他非经营现金流</h3><span>不计入经营收入或经营费用</span></header>
+      {!categories || categories.length === 0 ? (
+        <p>当前期间没有已分类的往来、融资或内部划转。</p>
+      ) : (
+        <div className="company-non-operating-list">
+          {categories.map((item) => (
+            <div key={item.category_code}>
+              <strong>{classificationLabel(item.category_code)}</strong>
+              <span>流入 {reportMoney(item.inflow_minor, currencyCode)}</span>
+              <span>流出 {reportMoney(item.outflow_minor, currencyCode)}</span>
+              <span>净额 {reportMoney(item.net_minor, currencyCode)}</span>
+              <small>{item.transaction_count} 条</small>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function classificationLabel(code: CompanyTransactionCategorySummary['category_code']) {
+  return {
+    PLATFORM_ROOM_REVENUE: '平台房费收入',
+    RELATED_PARTY_CURRENT: '往来款',
+    PAYROLL: '工资',
+    FINANCING: '融资及还款',
+    BOTTLED_WATER: '瓶装水',
+    INTERNAL_TRANSFER: '公司内部划转',
+    RENT: '房租',
+    RENTAL_INCOME: '经营租赁收入',
+    BANK_INTEREST: '银行利息',
+    LINEN_LAUNDRY: '布草洗涤',
+    OPERATING_FEE: '营运费',
+  }[code]
 }
 
 function CategoryShareChart({ title, composition, currencyCode, tone, unavailable, emptyMessage }: {
@@ -475,6 +634,8 @@ function reportMonthLabel(month: string) {
   return `${year} 年 ${Number(value)} 月`
 }
 
+// Retained as an internal diagnostic renderer; it is intentionally not mounted in the report UI.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function CompanyReportCard({ companyRef, companyName, currencyCode, postedLedgerStatus, layers }: {
   companyRef: string
   companyName: string
@@ -546,7 +707,7 @@ function CompanyReportCard({ companyRef, companyName, currencyCode, postedLedger
         </section>
       ) : null}
 
-      <section className="company-report-layers" aria-label={`${companyName} 三层事实`}>
+      <section className="company-report-layers" aria-label={`${companyName} 数据处理阶段`}>
         <div>
           <span>已确认来源</span>
           <strong>已确认来源 {candidateData?.confirmed_count ?? 0} 条</strong>

@@ -2,23 +2,22 @@
 
 ## 模块边界
 
-`/original-reconciliation` 是独立的业务事项补录与审核入口，不是 Excel 预览器，也不替代以下模块：
+`/reconciliation` 是统一的月度对账入口；旧路径 `/original-reconciliation` 只做兼容跳转。它不是 Excel 预览器，也不替代以下模块：
 
-- `/reconciliation`：现有月度对账草稿和工作簿生成流程。
 - `/personal-finance`：完整个人财务材料与审核概览。
 - `/company-reports`：按公司主体汇总的报表入口。
 - `/payroll`：工资发布契约与连接状态。
 
-Web 不在本地重算旧表业务规则。Core 的 `ledgerbridge.original-reconciliation.v1` 投影负责月度合计和缺口，来源系统精确等于 `original_reconciliation_xlsx` 的 Candidate 只负责已由受控导入计划映射的旧表逐项工作流。旧表栏位映射和经济分类仍由 Core 的私有复核计划管理。Web 只把这两类 Core 事实转换为以下业务窗口：
+Web 不在本地重算旧表业务规则。Core 的 `ledgerbridge.cash-reconciliation.v2` 是收入、支出、往来款金额和冲突/缺口的权威投影；`ledgerbridge.original-reconciliation.v1` 只补充旧表待办。来源系统精确等于 `original_reconciliation_xlsx` 的 Candidate 仍只负责受控导入计划映射的逐项工作流。Web 只把这些 Core 事实转换为以下业务窗口：
 
 - 当月收入、支出和利润合计；
 - 已导入的业务事项，可返回原始材料；
 - 待补录、待归属和待审核清单；
-- 跳转到文件、待审核和月度对账的操作入口。
+- 可按完整事实标识定位的冲突/缺口，以及文件和待审核入口。
 
 逐项卡片按 Candidate 的稳定 `source_system` 做 fail-closed 准入：只接受 `original_reconciliation_xlsx`，其他银行、平台、采购、实际报销和工资 Candidate 即使摘要或金额相似也不显示。卡片业务性质只读取 Core 复核后的类别代码；摘要文案、银行正负号、风险提示和附件文件名都不能改写分类。无法由稳定类别代码确定的项目进入“待归类”，不进入收入、支出或往来款合计。
 
-银行与平台导出账单只是旧表已有项目的取数和复核证据，不是本页的全量交易源。旧表以外的普通收入、采购、实际报销及其他完整收支仍归独立的财务对账模块。旧截图与历史表格提交入口继续暂停。
+正式银行流水和已确认微信 Candidate 是本页的规则匹配事实源。银行按 Asia/Shanghai 的实际交易日归属自然月；微信 Candidate 当前只有月粒度，因此按 Core 已确认的 `accounting_month` 归属，不能声称具备日级实际收付款时间。旧截图与历史表格提交入口继续暂停。
 
 点击“打开事项”进入现有 Candidate 详情、证据和更正/审核表单。提交决定后，Web 必须再次读取同一 Candidate，并核对 ID、revision 和 status；重读失败时只能提示“已保存、需刷新确认”，不能声称闭环成功。
 

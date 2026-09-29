@@ -4,6 +4,8 @@ import { Bank, CheckCircle, Warning } from '@phosphor-icons/react'
 import { api } from '../api'
 import type { CompanyBankStatement, CompanyBankStatementsResponse } from '../types'
 
+const COMPANY_BANK_READ_ERROR = '8 份公司账单中至少 1 份暂时无法读取，请重试；本次未修改任何账单。'
+
 function statusLabel(status: CompanyBankStatement['review_status']) {
   if (status === 'CONFIRMED') return { label: '已确认', color: 'green' as const }
   if (status === 'REJECTED') return { label: '已退回', color: 'red' as const }
@@ -22,13 +24,13 @@ export function CompanyBankStatementReviewPanel({ csrfToken }: { csrfToken: stri
     setError(null)
     try {
       const result = await api.getCompanyBankStatements()
-      if (result.statements.length !== 6 || new Set(result.statements.map((item) => item.statement_ref)).size !== 6) {
+      if (result.statements.length !== 8 || new Set(result.statements.map((item) => item.statement_ref)).size !== 8) {
         throw new Error('公司账单清单不完整')
       }
       setData(result)
-    } catch (loadError) {
+    } catch {
       setData(null)
-      setError(loadError instanceof Error ? loadError.message : '公司账单暂不可用')
+      setError(COMPANY_BANK_READ_ERROR)
     } finally {
       setLoading(false)
     }
@@ -62,7 +64,7 @@ export function CompanyBankStatementReviewPanel({ csrfToken }: { csrfToken: stri
   return (
     <section className="panel company-bank-review" aria-label="公司账单确认">
       <div className="panel-heading">
-        <div><h2>公司账单确认</h2><p>6 份正式账单逐项确认；公司归属由服务端固定，不接受页面传入。</p></div>
+        <div><h2>公司账单确认</h2><p>7 家公司、8 份正式账单逐项确认；公司归属由服务端固定，不接受页面传入。</p></div>
         <div className="company-bank-review-actions">
           <Badge color={pending > 0 ? 'amber' : 'green'}>{pending > 0 ? `待确认 ${pending}` : '全部已确认'}</Badge>
           {data && pending === 0 ? (

@@ -26,9 +26,16 @@ import type {
   PersonalBankStatementReviewReceipt,
   CompanyBankStatement,
   CompanyBankStatementsResponse,
+  CompanyTransactionCategory,
+  CompanyTransactionClassification,
+  CompanyTransactionClassificationReviewReceipt,
+  CompanyTransactionClassificationsResponse,
+  CompanyOperatingFeeReportingItem,
   PayrollBatchListData,
   PayrollCommandResult,
   PayrollDashboardData,
+  PayrollDatabaseWorkbench,
+  PayrollDisbursementRecordPage,
   PayrollMaterialListData,
   PayrollReadResponse,
   PayrollStatusData,
@@ -50,6 +57,7 @@ import type {
   ReviewEventListResponse,
   Session,
   RegistrationOptionsJson,
+  PersonalFinanceSummary,
   WorkbookDraft,
 } from './types'
 
@@ -111,6 +119,30 @@ function problemMessage(problem: Problem | undefined, status: number): string {
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  if ((init?.method ?? 'GET').toUpperCase() !== 'GET') return fetchJson<T>(path, init)
+
+  const controller = new AbortController()
+  const callerSignal = init?.signal
+  const abortFromCaller = () => controller.abort(callerSignal?.reason)
+  if (callerSignal?.aborted) abortFromCaller()
+  else callerSignal?.addEventListener('abort', abortFromCaller, { once: true })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new ApiError('读取数据超过 20 秒，请检查网络连接后重试。', 408, 'READ_TIMEOUT'))
+      controller.abort()
+    }, 20_000)
+  })
+  try {
+    // Race the entire JSON read so stalled response bodies also have a deadline.
+    return await Promise.race([fetchJson<T>(path, { ...init, signal: controller.signal }), deadline])
+  } finally {
+    clearTimeout(timer)
+    callerSignal?.removeEventListener('abort', abortFromCaller)
+  }
+}
+
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: 'same-origin',
     ...init,
@@ -362,6 +394,9 @@ export const api = {
   getPersonalBankTransactions: () =>
     requestJson<PersonalBankTransactionsResponse>('/api/v1/personal-finance/bank-transactions'),
 
+  getPersonalFinanceSummary: () =>
+    requestJson<PersonalFinanceSummary>('/api/v1/personal-finance/summary'),
+
   reviewPersonalBankStatement: ({ statement, decision, reason, csrfToken }: {
     statement: PersonalBankStatement
     decision: 'CONFIRMED' | 'REJECTED'
@@ -404,6 +439,42 @@ export const api = {
       body: JSON.stringify({
         expected_revision: statement.review_revision,
         decision,
+        reason,
+      }),
+    },
+  ),
+
+  getCompanyTransactionClassifications: () =>
+    requestJson<CompanyTransactionClassificationsResponse>(
+      '/api/v1/company-transaction-classifications',
+    ),
+
+  reviewCompanyTransactionClassification: ({
+    transaction,
+    categoryCode,
+    reportingItemCode,
+    reason,
+    csrfToken,
+  }: {
+    transaction: CompanyTransactionClassification
+    categoryCode: CompanyTransactionCategory
+    reportingItemCode: CompanyOperatingFeeReportingItem | null
+    reason: string
+    csrfToken: string
+  }) => requestJson<CompanyTransactionClassificationReviewReceipt>(
+    `/api/v1/company-transaction-classifications/${encodeURIComponent(transaction.transaction_ref)}/reviews`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': createOperationId(),
+        'X-CSRF-Token': csrfToken,
+      },
+      body: JSON.stringify({
+        entity_ref: transaction.entity_ref,
+        expected_revision: transaction.revision,
+        category_code: categoryCode,
+        reporting_item_code: reportingItemCode,
         reason,
       }),
     },
@@ -506,7 +577,7 @@ export const api = {
     corrections?: CandidateCorrections
     conflictResolution?: string
     csrfToken: string
-  }) => requestDecision<{ candidate: ApiCandidate; event: ReviewEvent }>(
+  }) => requestDecision<{ candidate: ApiCandidate; event: ReviewEvent; events?: ReviewEvent[] }>(
     `candidate:${candidate.id}`,
     `/api/v1/candidates/${encodeURIComponent(candidate.id)}/decisions`,
     {
@@ -554,6 +625,10 @@ export const api = {
     },
     body: JSON.stringify({ expected_revision: expectedRevision }),
   }),
+  getMonthlyReview: (accountingMonth: string) =>
+    requestJson<import('./types').MonthlyReview>(
+      `/api/v1/monthly-reconciliation-reviews/${encodeURIComponent(accountingMonth)}`,
+    ),
 
   listConnections: async () => {
     const response = await requestJson<{ items: ConnectionStatus[] }>('/api/v1/connections')
@@ -563,11 +638,31 @@ export const api = {
   getPayrollStatus: () =>
     requestJson<PayrollReadResponse<PayrollStatusData>>('/api/v1/payroll/status'),
 
+  getPayrollDatabaseWorkbench: (payPeriod: string) =>
+    requestJson<PayrollDatabaseWorkbench>(
+      `/api/v1/payroll/workbench/${encodeURIComponent(payPeriod)}`,
+    ),
+
+  getLegacyReconciliationSources: () =>
+    requestJson<import('./types').LegacyReconciliationSourceList>(
+      '/api/v1/reconciliation-legacy/sources',
+    ),
+
+  getLegacyReconciliationMonth: (sourceRef: string, accountingMonth: string) =>
+    requestJson<import('./types').LegacyReconciliationMonth>(
+      `/api/v1/reconciliation-legacy/${encodeURIComponent(sourceRef)}/${encodeURIComponent(accountingMonth)}`,
+    ),
+
   getPayrollTestWorkspace: () =>
     requestJson<PayrollTestWorkspaceReadResponse>('/api/v1/payroll/test-workspace'),
 
   getPayrollLegacyWorkspace: () =>
     requestJson<PayrollLegacyWorkspaceReadResponse>('/api/v1/payroll/legacy-workspace'),
+
+  getPayrollDisbursementRecords: (payPeriod: string) =>
+    requestJson<PayrollReadResponse<PayrollDisbursementRecordPage>>(
+      `/api/v1/payroll/disbursement-records/${encodeURIComponent(payPeriod)}`,
+    ),
 
   runPayrollLegacyCommand: ({ action, expectedRevision, payload, csrfToken }: {
     action: PayrollLegacyAction

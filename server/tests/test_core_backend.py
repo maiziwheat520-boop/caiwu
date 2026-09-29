@@ -33,6 +33,7 @@ EVIDENCE_ID = "20000000-0000-4000-8000-000000000003"
 ENTITY_ID = "10000000-0000-4000-8000-000000000001"
 STATEMENT_ID = "70000000-0000-4000-8000-000000000007"
 SECOND_STATEMENT_ID = "70000000-0000-4000-8000-000000000009"
+COMPANY_TRANSACTION_ID = "90000000-0000-4000-8000-000000000009"
 
 
 def _decode_assertion(value: str) -> dict[str, object]:
@@ -417,6 +418,61 @@ def core_company_report_composition(basis: str) -> dict[str, object]:
             }
         ],
     }
+
+
+def core_company_transaction_classification_summary() -> dict[str, object]:
+    return {
+        "contract_version": "ledgerbridge.company-transaction-classification-summary.v2",
+        "items": [{
+            "entity_ref": ENTITY_ID,
+            "from_date": "2026-01-01",
+            "to_date_exclusive": "2026-09-01",
+            "confirmed_count": 3,
+            "pending_count": 1,
+            "confirmed_gross_minor": 1000000,
+            "categories": [
+                {
+                    "category_code": "BANK_INTEREST",
+                    "reporting_item_code": None,
+                    "reporting_item_label": None,
+                    "cashflow_role": "OPERATING_INCOME",
+                    "transaction_count": 1,
+                    "inflow_minor": 100000,
+                    "outflow_minor": 0,
+                    "net_minor": 100000,
+                    "gross_minor": 100000,
+                    "transaction_share_ppm": 333333,
+                    "gross_share_ppm": 100000,
+                },
+                {
+                    "category_code": "OPERATING_FEE",
+                    "reporting_item_code": "BANK_FEES",
+                    "reporting_item_label": "银行手续费",
+                    "cashflow_role": "OPERATING_EXPENSE",
+                    "transaction_count": 1,
+                    "inflow_minor": 0,
+                    "outflow_minor": 100000,
+                    "net_minor": -100000,
+                    "gross_minor": 100000,
+                    "transaction_share_ppm": 333333,
+                    "gross_share_ppm": 100000,
+                },
+                {
+                    "category_code": "RELATED_PARTY_CURRENT",
+                    "reporting_item_code": None,
+                    "reporting_item_label": None,
+                    "cashflow_role": "NON_OPERATING",
+                    "transaction_count": 1,
+                    "inflow_minor": 600000,
+                    "outflow_minor": 200000,
+                    "net_minor": 400000,
+                    "gross_minor": 800000,
+                    "transaction_share_ppm": 333334,
+                    "gross_share_ppm": 800000,
+                },
+            ],
+        }],
+    }
 def core_original_reconciliation() -> dict[str, object]:
     columns = [
         {
@@ -529,7 +585,7 @@ def core_original_reconciliation() -> dict[str, object]:
 
 def company_reports_bff() -> dict[str, object]:
     return {
-        "contract_version": "ledgerbridge.company-reports-bff.v2",
+        "contract_version": "ledgerbridge.company-reports-bff.v3",
         "from_month": "2026-01",
         "to_month": "2026-08",
         "posted_ledger_status": "AVAILABLE",
@@ -538,6 +594,13 @@ def company_reports_bff() -> dict[str, object]:
             core_company_report_composition(basis)
             for basis in ("CONFIRMED_CANDIDATE", "POSTED_LEDGER")
         ],
+        "transaction_classifications": {
+            **core_company_transaction_classification_summary(),
+            "items": [{
+                **core_company_transaction_classification_summary()["items"][0],
+                "company_name": "演示公司",
+            }],
+        },
     }
 
 
@@ -668,10 +731,49 @@ class FakeCoreClient:
                 if f"basis={value}" in path
             )
             return self.company_report_composition_payloads[basis]
+        if path.startswith("/internal/v1/company-transaction-classification-summary?"):
+            return core_company_transaction_classification_summary()
         if path.startswith("/internal/v1/personal-finance?"):
             return self.personal_finance_payload
         if path.startswith("/internal/v1/original-reconciliations/"):
             return core_original_reconciliation()
+        if path.startswith("/internal/v1/cash-reconciliations/"):
+            return {
+                "contract_version": "ledgerbridge.cash-reconciliation.v2",
+                "accounting_month": "2026-08",
+                "rules": [],
+                "rows": [
+                    {
+                        "rule_key": "stored-reporting-item",
+                        "flow_kind": "CURRENT",
+                        "business_unit_label": "authorized-scope",
+                        "item_label": "stored-classification",
+                        "source_kind": "BANK_TRANSACTION",
+                        "source_ref": "stored-reporting-item",
+                        "transaction_count": 1,
+                        "amount_minor": 3600,
+                        "facts": [
+                            {
+                                "fact_ref": "fact-1",
+                                "occurred_on": "2026-08-01",
+                                "amount_minor": 3600,
+                            }
+                        ],
+                    }
+                ],
+                "issues": [],
+                "eligible_fact_count": 1,
+                "matched_fact_count": 1,
+                "unmatched_fact_count": 0,
+                "conflicted_fact_count": 0,
+                "issue_count": 0,
+                "issues_truncated": False,
+                "totals": {
+                    "income_minor": 0,
+                    "expense_minor": 0,
+                    "current_minor": 3600,
+                },
+            }
         raise AssertionError(f"unexpected Core path: {path}")
 
     def evidence(self, path: str) -> dict[str, object]:
@@ -735,6 +837,56 @@ class ClassificationCoreClient(FakeCoreClient):
             assert headers is not None
             self.calls.append((method, path, body, dict(headers or {})))
             return core_classification_batch_receipt(str(headers["Idempotency-Key"]))
+        return super().json(method, path, body=body, headers=headers)
+
+
+class CompanyTransactionClassificationCoreClient(FakeCoreClient):
+    reporting_item_code: str | None = "RELATED_PARTY_CURRENT.OTHER"
+    reporting_item_revision: int | None = 1
+
+    def json(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        if method == "GET" and path == "/internal/v1/company-transaction-classifications?status=PENDING":
+            self.calls.append((method, path, body, dict(headers or {})))
+            return {
+                "contract_version": "ledgerbridge.company-transaction-classification.v1",
+                "items": [{
+                    "transaction_ref": COMPANY_TRANSACTION_ID,
+                    "entity_ref": ENTITY_ID,
+                    "occurred_at": "2026-08-03T10:30:00+08:00",
+                    "amount_minor": 120000,
+                    "currency": "CNY",
+                    "counterparty_name": "待确认对方",
+                    "transaction_name": "转账",
+                    "status": "PENDING",
+                    "category_code": None,
+                    "cashflow_role": None,
+                    "revision": 1,
+                    "source": "AUTO_RULE",
+                    "rule_version": "company-transaction-rules.v1",
+                }],
+            }
+        review_path = f"/internal/v1/company-transaction-classifications/{COMPANY_TRANSACTION_ID}/reviews"
+        if method == "POST" and path == review_path:
+            self.calls.append((method, path, body, dict(headers or {})))
+            assert body is not None
+            request = json.loads(body)
+            return {
+                "contract_version": "ledgerbridge.company-transaction-classification-review.v1",
+                "transaction_ref": COMPANY_TRANSACTION_ID,
+                "status": "CONFIRMED",
+                "category_code": request["category_code"],
+                "reporting_item_code": self.reporting_item_code,
+                "reporting_item_revision": self.reporting_item_revision,
+                "revision": 2,
+                "created": True,
+            }
         return super().json(method, path, body=body, headers=headers)
 
 
@@ -861,6 +1013,9 @@ def build_state(
     client: FakeCoreClient,
     *,
     company_report_client: FakeCoreClient | None | object = ...,
+    cash_reconciliation_client: FakeCoreClient | None | object = ...,
+    company_bank_review_client: FakeCoreClient | None = None,
+    company_bank_statement_mappings: tuple[tuple[str, str, str], ...] = (),
     evidence_unlock_path: str | None = None,
     personal_finance_enabled: bool = True,
     personal_finance_statement_refs: tuple[str, ...] | None = None,
@@ -871,6 +1026,13 @@ def build_state(
         company_report_client=(
             client if company_report_client is ... else company_report_client
         ),  # type: ignore[arg-type]
+        cash_reconciliation_client=(
+            client
+            if cash_reconciliation_client is ...
+            else cash_reconciliation_client
+        ),  # type: ignore[arg-type]
+        company_bank_review_client=company_bank_review_client,  # type: ignore[arg-type]
+        company_bank_statement_mappings=company_bank_statement_mappings,
         assertion_key=ASSERTION_KEY,
         assertion_issuer="ledgerbridge-web-test",
         assertion_audience="ledgerbridge-core-test",
@@ -895,6 +1057,57 @@ def build_state(
 
 
 class CoreBackedAdapterTests(unittest.TestCase):
+    def test_candidate_detail_reads_one_candidate_by_reference(self) -> None:
+        client = FakeCoreClient()
+        state = build_state(
+            client,
+            candidate_business_unit_refs=("unit-demo-a", "unit-demo-b"),
+        )
+
+        detail = state.candidate_detail(CANDIDATE_ID)
+
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["id"], CANDIDATE_ID)  # type: ignore[index]
+        requested_paths = [path for method, path, *_ in client.calls if method == "GET"]
+        self.assertIn(f"/internal/v1/candidates/{CANDIDATE_ID}", requested_paths)
+        # Reading one candidate must not page through the whole collection.
+        self.assertFalse(
+            [path for path in requested_paths if path.startswith("/internal/v1/candidates?")]
+        )
+
+    def test_candidate_detail_reports_a_candidate_core_will_not_show(self) -> None:
+        class NotFoundClient(FakeCoreClient):
+            def json(self, method: str, path: str, **kwargs: object) -> dict[str, object]:
+                if path.startswith(f"/internal/v1/candidates/{CANDIDATE_ID}"):
+                    self.calls.append((method, path, None, {}))
+                    raise CoreBackendError(404, {"code": "RESOURCE_NOT_FOUND"})
+                return super().json(method, path, **kwargs)  # type: ignore[arg-type]
+
+        state = build_state(
+            NotFoundClient(),
+            candidate_business_unit_refs=("unit-demo-a",),
+        )
+
+        self.assertIsNone(state.candidate_detail(CANDIDATE_ID))
+
+    def test_candidate_detail_reuses_the_candidate_loaded_for_the_page(self) -> None:
+        client = FakeCoreClient()
+        state = build_state(
+            client,
+            candidate_business_unit_refs=("unit-demo-a", "unit-demo-b"),
+        )
+        state.list_candidates(status="PENDING", month=None, cursor=None)
+        client.calls.clear()
+
+        detail = state.candidate_detail(CANDIDATE_ID)
+
+        self.assertIsNotNone(detail)
+        requested_paths = [path for method, path, *_ in client.calls if method == "GET"]
+        self.assertEqual(
+            requested_paths,
+            [f"/internal/v1/candidate-events?candidate_ref={CANDIDATE_ID}"],
+        )
+
     def test_candidates_page_across_each_explicitly_allowed_business_unit(self) -> None:
         client = FakeCoreClient()
         state = build_state(
@@ -1688,7 +1901,7 @@ class CoreBackedAdapterTests(unittest.TestCase):
 
         self.assertEqual(report, company_reports_bff())
         self.assertEqual(
-            client.calls[-5:],
+            client.calls[-6:],
             [
                 (
                     "GET",
@@ -1706,7 +1919,13 @@ class CoreBackedAdapterTests(unittest.TestCase):
                     {},
                 )
                 for basis in ("CONFIRMED_CANDIDATE", "POSTED_LEDGER")
-            ],
+            ]
+            + [(
+                "GET",
+                "/internal/v1/company-transaction-classification-summary?from_date=2026-01-01&to_date_exclusive=2026-09-01",
+                None,
+                {},
+            )],
         )
 
     def test_company_reports_use_only_the_dedicated_read_only_client(self) -> None:
@@ -1727,7 +1946,143 @@ class CoreBackedAdapterTests(unittest.TestCase):
             ("GET", "/internal/v1/candidates?business_unit=unit-demo-a"),
         )
         self.assertEqual(len(primary_client.calls), 1)
-        self.assertEqual(len(report_client.calls), 5)
+        self.assertEqual(len(report_client.calls), 6)
+
+    def test_company_classification_reads_and_reviews_use_only_the_dedicated_review_client(self) -> None:
+        primary_client = FakeCoreClient()
+        review_client = CompanyTransactionClassificationCoreClient()
+        state = build_state(
+            primary_client,
+            company_bank_review_client=review_client,
+            company_bank_statement_mappings=tuple(
+                (f"70000000-0000-4000-8000-00000000000{ordinal}", ENTITY_ID, "演示公司")
+                for ordinal in range(1, 7)
+            ),
+        )
+
+        page = state.company_transaction_classifications()
+        operation_id = str(uuid.uuid4())
+        status, receipt = state.review_company_transaction_classification(
+            COMPANY_TRANSACTION_ID,
+            operation_id,
+            {
+                "entity_ref": ENTITY_ID,
+                "expected_revision": 1,
+                "category_code": "RELATED_PARTY_CURRENT",
+                "reporting_item_code": None,
+                "reason": "人工逐笔确认往来款",
+            },
+        )
+
+        self.assertEqual(page["items"][0]["company_name"], "演示公司")  # type: ignore[index]
+        self.assertEqual(status, 200)
+        self.assertEqual(receipt["category_code"], "RELATED_PARTY_CURRENT")
+        self.assertEqual(receipt["reporting_item_code"], "RELATED_PARTY_CURRENT.OTHER")
+        self.assertEqual(receipt["reporting_item_revision"], 1)
+        self.assertEqual(primary_client.calls, [])
+        method, path, body, headers = review_client.calls[-1]
+        self.assertEqual(method, "POST")
+        self.assertEqual(
+            path,
+            f"/internal/v1/company-transaction-classifications/{COMPANY_TRANSACTION_ID}/reviews",
+        )
+        self.assertEqual(headers["Idempotency-Key"], operation_id)
+        self.assertEqual(json.loads(body or b"{}") ["entity_ref"], ENTITY_ID)
+        claims = _decode_assertion(headers["X-LedgerBridge-User-Assertion"])
+        self.assertEqual(
+            claims["workload_principal"],
+            "workload:ledgerbridge-company-bank-review",
+        )
+        self.assertEqual(claims["resource_ref"], COMPANY_TRANSACTION_ID)
+        self.assertEqual(claims["expected_revision"], 1)
+
+    def test_company_classification_review_rejects_an_incomplete_reporting_item_pair(self) -> None:
+        review_client = CompanyTransactionClassificationCoreClient()
+        review_client.reporting_item_revision = None
+        state = build_state(
+            FakeCoreClient(),
+            company_bank_review_client=review_client,
+            company_bank_statement_mappings=((
+                "70000000-0000-4000-8000-000000000001",
+                ENTITY_ID,
+                "演示公司",
+            ),),
+        )
+
+        with self.assertRaises(CoreBackendError) as raised:
+            state.review_company_transaction_classification(
+                COMPANY_TRANSACTION_ID,
+                str(uuid.uuid4()),
+                {
+                    "entity_ref": ENTITY_ID,
+                    "expected_revision": 1,
+                    "category_code": "RELATED_PARTY_CURRENT",
+                    "reporting_item_code": None,
+                    "reason": "人工逐笔确认往来款",
+                },
+            )
+
+        self.assertEqual(raised.exception.payload["code"], "CORE_CONTRACT_INVALID")
+
+    def test_company_classification_review_accepts_the_core_reporting_item_text_contract(self) -> None:
+        review_client = CompanyTransactionClassificationCoreClient()
+        review_client.reporting_item_code = " RELATED_PARTY_CURRENT.OTHER "
+        state = build_state(
+            FakeCoreClient(),
+            company_bank_review_client=review_client,
+            company_bank_statement_mappings=((
+                "70000000-0000-4000-8000-000000000001",
+                ENTITY_ID,
+                "演示公司",
+            ),),
+        )
+
+        status, receipt = state.review_company_transaction_classification(
+            COMPANY_TRANSACTION_ID,
+            str(uuid.uuid4()),
+            {
+                "entity_ref": ENTITY_ID,
+                "expected_revision": 1,
+                "category_code": "RELATED_PARTY_CURRENT",
+                "reporting_item_code": None,
+                "reason": "人工逐笔确认往来款",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(receipt["reporting_item_code"], " RELATED_PARTY_CURRENT.OTHER ")
+
+    def test_company_classification_forwards_the_shared_operating_fee_detail(self) -> None:
+        review_client = CompanyTransactionClassificationCoreClient()
+        review_client.reporting_item_code = "TAX"
+        state = build_state(
+            FakeCoreClient(),
+            company_bank_review_client=review_client,
+            company_bank_statement_mappings=((
+                "70000000-0000-4000-8000-000000000001",
+                ENTITY_ID,
+                "另一家公司",
+            ),),
+        )
+
+        status, receipt = state.review_company_transaction_classification(
+            COMPANY_TRANSACTION_ID,
+            str(uuid.uuid4()),
+            {
+                "entity_ref": ENTITY_ID,
+                "expected_revision": 1,
+                "category_code": "OPERATING_FEE",
+                "reporting_item_code": "TAX",
+                "reason": "人工核对税费缴款",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(receipt["reporting_item_code"], "TAX")
+        self.assertEqual(
+            json.loads(review_client.calls[-1][2] or b"{}") ["reporting_item_code"],
+            "TAX",
+        )
 
     def test_company_reports_are_unavailable_without_the_dedicated_client(self) -> None:
         primary_client = FakeCoreClient()
@@ -2594,8 +2949,8 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 self.assertEqual(company_reports, company_reports_bff())
                 self.assertEqual(
                     client.calls[-1][1],
-                    "/internal/v1/company-report-composition?"
-                    "from_month=2026-01&to_month=2026-08&basis=POSTED_LEDGER",
+                    "/internal/v1/company-transaction-classification-summary?"
+                    "from_date=2026-01-01&to_date_exclusive=2026-09-01",
                 )
 
                 forwarded_call_count = len(client.calls)
@@ -2646,6 +3001,61 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=2)
 
+    def test_core_backed_bff_accepts_its_multi_unit_continuation_cursor(self) -> None:
+        client = FakeCoreClient()
+        client.candidate_next_cursor = "a" * 468
+        state = build_state(
+            client,
+            candidate_business_unit_refs=("unit-demo-a", "review-2026-alipay-annual"),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "index.html").write_text("<main>review</main>", encoding="utf-8")
+            server = create_server(
+                "127.0.0.1",
+                0,
+                temp_dir,
+                state=state,
+                auth_manager=FakeAuthManager(),  # type: ignore[arg-type]
+                mode="core-backed",
+                trusted_proxy_cidrs="127.0.0.1/32",
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_port}"
+                cookie = f"{COOKIE_NAME}=session-token"
+                first_request = urllib.request.Request(
+                    f"{base_url}/api/v1/candidates",
+                    headers={"Cookie": cookie},
+                )
+                with urllib.request.urlopen(first_request, timeout=2) as response:
+                    first_page = json.load(response)
+
+                wrapped_cursor = first_page["next_cursor"]
+                self.assertGreater(len(wrapped_cursor), 512)
+                continuation_request = urllib.request.Request(
+                    f"{base_url}/api/v1/candidates?cursor={wrapped_cursor}",
+                    headers={"Cookie": cookie},
+                )
+                with urllib.request.urlopen(continuation_request, timeout=2) as response:
+                    continuation_page = json.load(response)
+
+                self.assertEqual(response.status, 200)
+                self.assertEqual(continuation_page["items"][0]["source_channel"], "outlook")
+                self.assertIn(f"cursor={client.candidate_next_cursor}", client.calls[-1][1])
+
+                oversized_request = urllib.request.Request(
+                    f"{base_url}/api/v1/candidates?cursor={'a' * 1025}",
+                    headers={"Cookie": cookie},
+                )
+                with self.assertRaises(urllib.error.HTTPError) as rejected:
+                    urllib.request.urlopen(oversized_request, timeout=2)
+                self.assertEqual(rejected.exception.code, 400)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
     def test_core_backed_bff_serves_original_reconciliation_and_rejects_cross_scope(self) -> None:
         client = FakeCoreClient()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2690,6 +3100,103 @@ class CoreBackedAdapterTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=2)
+
+    def test_core_backed_bff_serves_scoped_cash_reconciliation_v2(self) -> None:
+        primary_client = FakeCoreClient()
+        reconciliation_client = FakeCoreClient()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "index.html").write_text("<main>review</main>", encoding="utf-8")
+            server = create_server(
+                "127.0.0.1",
+                0,
+                temp_dir,
+                state=build_state(
+                    primary_client,
+                    cash_reconciliation_client=reconciliation_client,
+                ),
+                auth_manager=FakeAuthManager(),  # type: ignore[arg-type]
+                mode="core-backed",
+                trusted_proxy_cidrs="127.0.0.1/32",
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_port}/api/v1/cash-reconciliations/2026-08",
+                    headers={"Cookie": f"{COOKIE_NAME}=session-token"},
+                )
+                with urllib.request.urlopen(request, timeout=2) as response:
+                    projection = json.load(response)
+                    self.assertEqual(response.headers["Cache-Control"], "no-store")
+                self.assertEqual(
+                    projection["contract_version"],
+                    "ledgerbridge.cash-reconciliation.v2",
+                )
+                self.assertEqual(projection["eligible_fact_count"], 1)
+                self.assertEqual(projection["matched_fact_count"], 1)
+                self.assertEqual(projection["totals"]["current_minor"], 3600)
+                self.assertEqual(projection["rows"][0]["item_label"], "stored-classification")
+                self.assertIn(
+                    "/internal/v1/cash-reconciliations/2026-08",
+                    reconciliation_client.calls[-1][1],
+                )
+                self.assertEqual(primary_client.calls, [])
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_cash_reconciliation_is_unavailable_without_dedicated_client(self) -> None:
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(
+                FakeCoreClient(),
+                cash_reconciliation_client=None,
+            ).cash_reconciliation("2026-09")
+
+        self.assertEqual(raised.exception.status, 503)
+        self.assertEqual(
+            raised.exception.payload["code"],
+            "CASH_RECONCILIATION_UNAVAILABLE",
+        )
+
+    def test_legacy_archive_uses_only_dedicated_reconciliation_client(self) -> None:
+        class ArchiveClient(FakeCoreClient):
+            def json(self, method: str, path: str, **kwargs: object) -> dict[str, object]:
+                self.calls.append((method, path, None, {}))
+                if path.endswith("/sources"):
+                    return {
+                        "contract_version": "ledgerbridge.reconciliation-legacy-sources.v1",
+                        "sources": [],
+                    }
+                return {
+                    "contract_version": "ledgerbridge.reconciliation-legacy-month.v1",
+                    "source_ref": "99999999-9999-4999-8999-999999999999",
+                    "period": "2024-01",
+                    "cells": [],
+                }
+
+        primary = FakeCoreClient()
+        archive_client = ArchiveClient()
+        state = build_state(primary, cash_reconciliation_client=archive_client)
+
+        self.assertEqual(state.legacy_reconciliation_sources()["sources"], [])
+        self.assertEqual(
+            state.legacy_reconciliation_month(
+                "99999999-9999-4999-8999-999999999999", "2024-01"
+            )["period"],
+            "2024-01",
+        )
+        self.assertEqual(primary.calls, [])
+        self.assertEqual(len(archive_client.calls), 2)
+
+    def test_legacy_archive_fails_closed_without_dedicated_client(self) -> None:
+        state = build_state(FakeCoreClient(), cash_reconciliation_client=None)
+        with self.assertRaises(CoreBackendError) as raised:
+            state.legacy_reconciliation_sources()
+        self.assertEqual(raised.exception.status, 503)
+        self.assertEqual(
+            raised.exception.payload["code"], "LEGACY_RECONCILIATION_UNAVAILABLE"
+        )
 
     def test_core_backed_mode_rejects_sqlite_business_facts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2859,5 +3366,146 @@ class CoreBackedUnlockBffTests(unittest.TestCase):
         self.assertEqual(self.client.unlock_calls, 1)
 
 
+class TwoEventDecisionTests(unittest.TestCase):
+    """A decision that corrects and confirms produces two events, not one.
+
+    Core emits the correction or conflict resolution first and the plain
+    confirm second. The BFF used to forward only the last one, so the audit
+    timeline lost the reviewer's own resolution text and field changes until
+    the page was reloaded.
+    """
+
+    def test_every_event_the_decision_produced_is_forwarded(self) -> None:
+        resolve = core_event()
+        resolve["operation_id"] = "60000000-0000-4000-8000-0000000000aa"
+        resolve["action"] = "RESOLVE_CONFLICT"
+        resolve["from_status"] = "CONFLICTED"
+        resolve["to_status"] = "PENDING"
+        resolve["resolved_conflicts"] = [
+            {"conflict_ref": "conflict-1", "resolution": "以银行回单为准"}
+        ]
+        confirm = core_event()
+
+        class TwoEventClient(FakeCoreClient):
+            def json(self, method: str, path: str, **kwargs: object) -> dict[str, object]:
+                if method == "POST" and "/decisions" in path:
+                    self.calls.append((method, path, None, {}))
+                    return {
+                        "contract_version": "ledgerbridge.candidate-decision.v1",
+                        "operation_id": "60000000-0000-4000-8000-0000000000ff",
+                        "replayed": False,
+                        "candidate": core_candidate(status="CONFIRMED", revision=3),
+                        "events": [resolve, confirm],
+                    }
+                return super().json(method, path, **kwargs)  # type: ignore[arg-type]
+
+        status, payload = build_state(TwoEventClient()).append_decision(
+            CANDIDATE_ID,
+            str(uuid.uuid4()),
+            {
+                "decision": "RESOLVE_CONFLICT",
+                "expected_revision": 1,
+                "reason": "以银行回单为准",
+                "conflict_resolution": "以银行回单为准",
+            },
+        )
+
+        self.assertEqual(status, 200, payload)
+        events = payload["events"]
+        self.assertIsInstance(events, list)
+        self.assertEqual(len(events), 2)
+        # The resolution the reviewer typed lives on the first event only.
+        self.assertEqual(events[0]["conflict_resolution"], "以银行回单为准")  # type: ignore[index]
+        self.assertIsNone(events[1]["conflict_resolution"])  # type: ignore[index]
+        # The single-event field stays for the confirm, as before.
+        self.assertEqual(payload["event"], events[-1])  # type: ignore[index]
+
+    def test_malformed_first_event_returns_a_contract_problem(self) -> None:
+        class InvalidEventClient(FakeCoreClient):
+            def json(self, method: str, path: str, **kwargs: object) -> dict[str, object]:
+                if method == "POST" and "/decisions" in path:
+                    malformed = core_event()
+                    malformed["to_revision"] = "not-a-revision"
+                    return {
+                        "candidate": core_candidate(status="CONFIRMED", revision=3),
+                        "events": [malformed, core_event()],
+                    }
+                return super().json(method, path, **kwargs)  # type: ignore[arg-type]
+
+        status, payload = build_state(InvalidEventClient()).append_decision(
+            CANDIDATE_ID, str(uuid.uuid4()),
+            {"decision": "CONFIRM", "expected_revision": 1, "reason": "checked"},
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["code"], "CORE_CONTRACT_INVALID")
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+def core_learned_rule(**overrides: object) -> dict[str, object]:
+    rule: dict[str, object] = {
+        "contract_version": "ledgerbridge.learned-classification-rule.v1",
+        "rule_ref": "rule_0f9a2c",
+        "revision": 1,
+        "status": "ACTIVE",
+        "group_ref": CLASSIFICATION_GROUP_REF,
+        "conditions": core_classification_group()["conditions"],
+        "business_unit_ref": "unit-demo-a",
+        "category_code": "SETTLEMENT",
+        "source_candidate_ref": CANDIDATE_ID,
+        "source_decision_operation_id": "60000000-0000-4000-8000-000000000009",
+        "effective_from": "2026-08-24T10:00:00+08:00",
+        "created_at": "2026-08-24T10:00:00+08:00",
+        "effective_to": None,
+        "disabled_at": None,
+    }
+    rule.update(overrides)
+    return rule
+
+
+class LearnedClassificationRuleTests(unittest.TestCase):
+    """A learned rule must not be able to take the whole page down.
+
+    Core already accepts active_rules= in its group builder and would populate
+    this field; no call site passes one yet. The BFF used to reject the entire
+    response whenever the field was not null, so wiring learned rules up in
+    Core would have surfaced as an unexplained 503.
+    """
+
+    def _client(self, rule: object) -> ClassificationCoreClient:
+        class RuleClient(ClassificationCoreClient):
+            def json(self, method: str, path: str, **kwargs: object) -> dict[str, object]:
+                payload = super().json(method, path, **kwargs)  # type: ignore[arg-type]
+                if method == "GET" and path.endswith("candidate-classification-groups"):
+                    payload["items"][0]["active_rule"] = rule  # type: ignore[index]
+                return payload
+
+        return RuleClient()
+
+    def test_a_well_formed_rule_is_forwarded_instead_of_failing_the_page(self) -> None:
+        page = build_state(self._client(core_learned_rule())).candidate_classification_groups()
+
+        group = page["items"][0]  # type: ignore[index]
+        self.assertEqual(group["active_rule"]["rule_ref"], "rule_0f9a2c")  # type: ignore[index]
+        self.assertEqual(group["active_rule"]["status"], "ACTIVE")  # type: ignore[index]
+
+    def test_a_rule_for_another_group_is_still_refused(self) -> None:
+        rule = core_learned_rule(group_ref="cg_" + "0" * 32)
+        with self.assertRaises(CoreBackendError) as raised:
+            build_state(self._client(rule)).candidate_classification_groups()
+        self.assertEqual(raised.exception.status, 503)
+
+    def test_a_malformed_rule_is_still_refused(self) -> None:
+        for overrides in (
+            {"status": "RETIRED"},
+            {"revision": 0},
+            {"business_unit_ref": ""},
+            {"conditions": "not-an-object"},
+        ):
+            with self.subTest(overrides=overrides):
+                rule = core_learned_rule(**overrides)
+                with self.assertRaises(CoreBackendError) as raised:
+                    build_state(self._client(rule)).candidate_classification_groups()
+                self.assertEqual(raised.exception.status, 503)

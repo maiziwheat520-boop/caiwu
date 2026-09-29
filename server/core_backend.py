@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import (
     HTTPHandler,
     HTTPRedirectHandler,
@@ -29,6 +29,8 @@ from urllib.request import (
 
 MAX_JSON_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_EVIDENCE_RESPONSE_BYTES = 128 * 1024 * 1024
+CANDIDATE_DETAIL_CACHE_TTL_SECONDS = 60.0
+CANDIDATE_DETAIL_CACHE_MAX_ITEMS = 1_000
 JSON_SAFE_INTEGER = 9_007_199_254_740_991
 SAFE_HEADER_VALUE = re.compile(r"^[\x21-\x7e]+$")
 EVIDENCE_UNLOCK_CORE_PATH = "/internal/v1/evidence/unlocks"
@@ -38,10 +40,30 @@ LOCAL_SESSION_LIFETIME = timedelta(hours=12)
 EVIDENCE_UNLOCK_STATUSES = {"NOT_REQUIRED", "PASSWORD_REQUIRED", "UNLOCKED"}
 PAYROLL_STATUS_CORE_PATH = "/internal/v1/payroll/status"
 PAYROLL_TEST_WORKSPACES_CORE_PATH = "/internal/v1/payroll/test-workspaces"
+PAYROLL_DISBURSEMENT_RECORDS_CORE_PATH = re.compile(
+    r"^/internal/v1/payroll/disbursement-records/([0-9]{4}-(0[1-9]|1[0-2]))$"
+)
 PAYROLL_USER_ASSERTION_VERSION = "ledgerbridge.payroll-bff-user-assertion.v1"
 PAYROLL_RESOURCE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PAYROLL_PROJECTION_REVISION = re.compile(r"^[0-9a-f]{64}$")
 PAYROLL_PERIOD = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+# Mirrors Core's PAYROLL_TEST_CUTOFF_*: the test window is one cutoff, not a list
+# of the months that existed when it opened.
+PAYROLL_TEST_CUTOFF_MONTH = "2026-08"
+PAYROLL_TEST_CUTOFF_DATE = "2026-08-31"
+
+
+def _is_payroll_period(value: object) -> bool:
+    return isinstance(value, str) and PAYROLL_PERIOD.fullmatch(value) is not None
+PAYROLL_CANONICAL_ACCOUNT_ID = re.compile(r"^account_[0-9a-f]{24}$")
+PAYROLL_LEGACY_REVIEW_RULE_TYPES = frozenset(
+    {
+        "PAYMENT_CHANNEL_REQUIRED",
+        "SUPPORTING_MATERIAL_REQUIRED",
+        "HISTORY_CHANGE_REVIEW",
+    }
+)
+PAYROLL_LEGACY_REVIEW_RULE_SEVERITIES = frozenset({"BLOCKING", "REVIEW"})
 PAYROLL_TEST_MATERIAL_TYPES = frozenset(
     {
         "PAYROLL_SHEET",
@@ -87,7 +109,14 @@ PAYROLL_COMMAND_ROLES = {
 }
 ACCOUNTING_DIMENSIONS_CORE_PATH = "/internal/v1/accounting-dimensions"
 CLASSIFICATION_GROUPS_CORE_PATH = "/internal/v1/candidate-classification-groups"
+COMPANY_TRANSACTION_CLASSIFICATIONS_CORE_PATH = (
+    "/internal/v1/company-transaction-classifications"
+)
+COMPANY_TRANSACTION_CLASSIFICATION_SUMMARY_CORE_PATH = (
+    "/internal/v1/company-transaction-classification-summary"
+)
 PERSONAL_FINANCE_CORE_PATH = "/internal/v1/personal-finance"
+PERSONAL_FINANCE_SUMMARY_CORE_PATH = "/internal/v1/personal-finance-summary"
 COMPANY_BANK_REVIEW_WORKLOAD_PRINCIPAL = "workload:ledgerbridge-company-bank-review"
 CLASSIFICATION_GROUP_REF = re.compile(r"^cg_[0-9a-f]{32}$")
 LOCAL_RULE_SUGGESTIONS_CORE_PATH = "/internal/v1/local/rule-suggestions"
@@ -302,6 +331,7 @@ class CoreBackedState:
         client: CoreHttpClient,
         *,
         company_report_client: CoreHttpClient | None = None,
+        cash_reconciliation_client: CoreHttpClient | None = None,
         company_bank_review_client: CoreHttpClient | None = None,
         company_bank_statement_mappings: tuple[tuple[str, str, str], ...] = (),
         assertion_key: bytes,
@@ -332,6 +362,7 @@ class CoreBackedState:
             raise ValueError("Core policy and authentication generations must be positive")
         self.client = client
         self.company_report_client = company_report_client
+        self.cash_reconciliation_client = cash_reconciliation_client
         self.company_bank_review_client = company_bank_review_client
         self.assertion_key = assertion_key
         self.assertion_issuer = _bounded(assertion_issuer)
@@ -378,8 +409,8 @@ class CoreBackedState:
             self.personal_finance_statement_refs
         ):
             raise ValueError("personal statement refs must be unique")
-        if company_bank_statement_mappings and len(company_bank_statement_mappings) != 6:
-            raise ValueError("exactly six company bank statements must be configured")
+        if len(company_bank_statement_mappings) > 32:
+            raise ValueError("at most 32 company bank statements may be configured")
         normalized_company_statements: list[tuple[str, str, str]] = []
         for statement_ref, company_ref, company_name in company_bank_statement_mappings:
             canonical_name = _bounded(company_name, maximum=200)
@@ -441,6 +472,7 @@ class CoreBackedState:
         self.session_id = secrets.token_urlsafe(32) if local_session else ""
         self.csrf_token = secrets.token_urlsafe(32) if local_session else ""
         self.session_expires_at = datetime.now(timezone.utc) + LOCAL_SESSION_LIFETIME
+        self._candidate_detail_cache: dict[str, tuple[float, dict[str, object]]] = {}
 
     def session_active(self) -> bool:
         """Whether the local session is live, renewing it when it is.
@@ -492,6 +524,15 @@ class CoreBackedState:
         items = payload.get("items")
         if not isinstance(items, list):
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        now = time.monotonic()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            candidate_ref = item.get("candidate_ref")
+            if isinstance(candidate_ref, str):
+                self._candidate_detail_cache[candidate_ref] = (now, deepcopy(item))
+        if len(self._candidate_detail_cache) > CANDIDATE_DETAIL_CACHE_MAX_ITEMS:
+            self._evict_oldest_candidate_details()
         next_core_cursor = payload.get("next_cursor")
         if next_core_cursor is not None and not isinstance(next_core_cursor, str):
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
@@ -508,6 +549,16 @@ class CoreBackedState:
             "items": [_candidate_from_core(item) for item in items],
             "next_cursor": next_cursor,
         }
+
+    def _evict_oldest_candidate_details(self) -> None:
+        excess = len(self._candidate_detail_cache) - CANDIDATE_DETAIL_CACHE_MAX_ITEMS
+        if excess <= 0:
+            return
+        oldest = sorted(
+            self._candidate_detail_cache.items(), key=lambda entry: entry[1][0]
+        )[:excess]
+        for candidate_ref, _ in oldest:
+            self._candidate_detail_cache.pop(candidate_ref, None)
 
     def _candidate_cursor(self, cursor: str | None) -> tuple[int, str | None]:
         if cursor is None:
@@ -540,12 +591,31 @@ class CoreBackedState:
 
     def candidate_detail(self, candidate_id: str) -> dict[str, object] | None:
         candidate_ref = str(uuid.UUID(candidate_id))
-        try:
-            payload = self.client.json("GET", f"/internal/v1/candidates/{candidate_ref}")
-        except CoreBackendError as error:
-            if error.status == 404:
+        cached = self._candidate_detail_cache.get(candidate_ref)
+        payload: dict[str, object] | None = None
+        if cached is not None:
+            cached_at, cached_payload = cached
+            if time.monotonic() - cached_at <= CANDIDATE_DETAIL_CACHE_TTL_SECONDS:
+                payload = deepcopy(cached_payload)
+            else:
+                self._candidate_detail_cache.pop(candidate_ref, None)
+        if payload is None:
+            # Core resolves one candidate under object scope; scanning the whole
+            # collection here was only ever a workaround for its multi-scope
+            # pagination failing closed.
+            try:
+                payload = self.client.json(
+                    "GET", f"/internal/v1/candidates/{quote(candidate_ref, safe='')}"
+                )
+            except CoreBackendError as error:
+                if error.status != 404:
+                    raise
                 return None
-            raise
+            if not isinstance(payload, dict) or payload.get("candidate_ref") != candidate_ref:
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+            self._candidate_detail_cache[candidate_ref] = (time.monotonic(), deepcopy(payload))
+            if len(self._candidate_detail_cache) > CANDIDATE_DETAIL_CACHE_MAX_ITEMS:
+                self._evict_oldest_candidate_details()
         events = self.client.json(
             "GET",
             f"/internal/v1/candidate-events?{urlencode({'candidate_ref': candidate_ref})}",
@@ -858,14 +928,83 @@ class CoreBackedState:
                 layer_by_basis[basis],
             )
             compositions.append(composition)
+        summary_query = urlencode(
+            {
+                "from_date": f"{from_month}-01",
+                "to_date_exclusive": _month_after(to_month),
+            }
+        )
+        classification_summary = _company_transaction_classification_summary_from_core(
+            client.json(
+                "GET",
+                f"{COMPANY_TRANSACTION_CLASSIFICATION_SUMMARY_CORE_PATH}?{summary_query}",
+            ),
+            expected_from_date=f"{from_month}-01",
+            expected_to_date_exclusive=_month_after(to_month),
+        )
+        report_companies = {
+            str(item["company_ref"]): str(item["company_name"])
+            for item in layers[0]["items"]
+            if isinstance(item, dict)
+        }
+        if {str(item["entity_ref"]) for item in classification_summary["items"]} != set(
+            report_companies
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        for item in classification_summary["items"]:
+            item["company_name"] = report_companies[str(item["entity_ref"])]
         return {
-            "contract_version": "ledgerbridge.company-reports-bff.v2",
+            "contract_version": "ledgerbridge.company-reports-bff.v3",
             "from_month": from_month,
             "to_month": to_month,
             "posted_ledger_status": posted_ledger_status,
             "layers": layers,
             "compositions": compositions,
+            "transaction_classifications": classification_summary,
         }
+
+    def personal_finance_summary(self) -> dict[str, object]:
+        """The personal finance totals, computed beside the facts they read.
+
+        The page used to page the whole candidate collection into the browser
+        to work these out. Core answers in one read, and this boundary still
+        checks the shape rather than trusting it.
+        """
+        payload = self.client.json("GET", PERSONAL_FINANCE_SUMMARY_CORE_PATH)
+        if not isinstance(payload, dict):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        if payload.get("contract_version") != "ledgerbridge.personal-finance-summary.v1":
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        for field in (
+            "candidate_total",
+            "pending_total",
+            "entry_total",
+            "income_minor",
+            "expense_minor",
+            "net_minor",
+            "income_entry_count",
+            "expense_entry_count",
+            "evidence_count",
+            "excluded_count",
+            "deduplicated_count",
+        ):
+            value = payload.get(field)
+            if type(value) is not int or abs(value) > JSON_SAFE_INTEGER:
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        for field, maximum in (
+            ("pending_preview", 4),
+            ("unassigned_entries", 1000),
+            ("category_shares", 200),
+            ("monthly_totals", 200),
+        ):
+            rows = payload.get(field)
+            if not isinstance(rows, list) or len(rows) > maximum:
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+            if any(not isinstance(row, dict) for row in rows):
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        if payload["income_minor"] - payload["expense_minor"] != payload["net_minor"]:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        return deepcopy(payload)
 
     def personal_bank_transactions(self) -> dict[str, object]:
         if (
@@ -973,6 +1112,73 @@ class CoreBackedState:
             "statements": statements,
         }
 
+    def company_transaction_classifications(self) -> dict[str, object]:
+        if self.company_bank_review_client is None:
+            raise CoreBackendError(
+                503, _problem(503, "COMPANY_CLASSIFICATION_REVIEW_UNAVAILABLE")
+            )
+        payload = self.company_bank_review_client.json(
+            "GET", f"{COMPANY_TRANSACTION_CLASSIFICATIONS_CORE_PATH}?status=PENDING"
+        )
+        page = _company_transaction_classifications_from_core(payload)
+        company_names: dict[str, str] = {}
+        for _, company_ref, company_name in self.company_bank_statement_mappings:
+            existing = company_names.setdefault(company_ref, company_name)
+            if existing != company_name:
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        for item in page["items"]:
+            company_name = company_names.get(str(item["entity_ref"]))
+            if company_name is None:
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+            item["company_name"] = company_name
+        return page
+
+    def review_company_transaction_classification(
+        self,
+        transaction_ref: str,
+        idempotency_key: str,
+        request: dict[str, object],
+    ) -> tuple[int, dict[str, object]]:
+        try:
+            canonical_ref = str(uuid.UUID(transaction_ref))
+            operation_id = str(uuid.UUID(idempotency_key))
+            entity_ref = str(uuid.UUID(str(request.get("entity_ref"))))
+        except (TypeError, ValueError):
+            return 422, _problem(422, "INVALID_COMPANY_CLASSIFICATION_REVIEW")
+        company_refs = {item[1] for item in self.company_bank_statement_mappings}
+        if self.company_bank_review_client is None or entity_ref not in company_refs:
+            return 404, _problem(404, "COMPANY_TRANSACTION_NOT_FOUND")
+        revision = request.get("expected_revision")
+        if type(revision) is not int:
+            return 422, _problem(422, "INVALID_COMPANY_CLASSIFICATION_REVIEW")
+        path = f"{COMPANY_TRANSACTION_CLASSIFICATIONS_CORE_PATH}/{canonical_ref}/reviews"
+        body = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        assertion = self._resource_user_assertion(
+            path=path,
+            body=body,
+            resource_ref=canonical_ref,
+            operation_id=operation_id,
+            expected_revision=revision,
+            workload_principal=COMPANY_BANK_REVIEW_WORKLOAD_PRINCIPAL,
+        )
+        try:
+            payload = self.company_bank_review_client.json(
+                "POST",
+                path,
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": operation_id,
+                    "X-LedgerBridge-User-Assertion": assertion,
+                },
+            )
+        except CoreBackendError as error:
+            return error.status, error.payload
+        return 200, _company_transaction_classification_receipt_from_core(
+            payload,
+            transaction_ref=canonical_ref,
+        )
+
     def review_company_bank_statement(
         self,
         statement_ref: str,
@@ -1066,9 +1272,18 @@ class CoreBackedState:
         events = payload.get("events")
         if not isinstance(candidate, dict) or not isinstance(events, list) or not events:
             return 503, _problem(503, "CORE_CONTRACT_INVALID")
+        # Core returns one event for a plain confirm or ignore, and two when a
+        # decision both corrects and confirms: the first carries the field
+        # changes and the conflict resolution, the second is the confirm.
+        # Forwarding only the last one dropped what the reviewer actually did.
+        try:
+            projected = [_event_from_core(event) for event in events]
+        except (CoreBackendError, TypeError, ValueError, OverflowError):
+            return 503, _problem(503, "CORE_CONTRACT_INVALID")
         return 200, {
             "candidate": _candidate_from_core(candidate),
-            "event": _event_from_core(events[-1]),
+            "event": projected[-1],
+            "events": projected,
         }
 
     def evidence(self, evidence_id: str) -> dict[str, object]:
@@ -1200,11 +1415,16 @@ class CoreBackedState:
         )
 
     def cash_reconciliation(self, month: str) -> dict[str, object]:
-        payload = self.client.json(
+        if self.cash_reconciliation_client is None:
+            raise CoreBackendError(
+                503,
+                _problem(503, "CASH_RECONCILIATION_UNAVAILABLE"),
+            )
+        payload = self.cash_reconciliation_client.json(
             "GET",
             f"/internal/v1/cash-reconciliations/{month}",
         )
-        if payload.get("contract_version") != "ledgerbridge.cash-reconciliation.v1":
+        if payload.get("contract_version") != "ledgerbridge.cash-reconciliation.v2":
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
         return payload
 
@@ -1457,7 +1677,7 @@ class CoreBackedState:
             "schema_version": "payroll-test-workspace-create-request/v1",
             "test_batch_id": self.payroll_test_batch_id,
             "expected_store_revision": self.payroll_test_workspace_expected_store_revision,
-            "cutoff_date": "2026-08-31",
+            "cutoff_date": PAYROLL_TEST_CUTOFF_DATE,
             "idempotency_key": operation_id,
         }
         body = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -1627,6 +1847,121 @@ class CoreBackedState:
         _payroll_available_evidence_ids(payload)
         return payload
 
+    def payroll_disbursement_records(
+        self,
+        session_token: str,
+        session_subject: str,
+        pay_period: str,
+    ) -> dict[str, object]:
+        if PAYROLL_PERIOD.fullmatch(pay_period) is None:
+            raise CoreBackendError(400, _problem(400, "INVALID_PAYROLL_PERIOD"))
+        path = f"/internal/v1/payroll/disbursement-records/{pay_period}"
+        return self._payroll_read(
+            session_token=session_token,
+            session_subject=session_subject,
+            action="payroll.disbursement-records.read",
+            path=path,
+            resource_ref=f"payroll-disbursement-records:{pay_period}",
+        )
+
+    def payroll_workbench(
+        self,
+        session_token: str,
+        session_subject: str,
+        pay_period: str,
+    ) -> dict[str, object]:
+        if PAYROLL_PERIOD.fullmatch(pay_period) is None:
+            raise CoreBackendError(400, _problem(400, "INVALID_PAYROLL_PERIOD"))
+        path = f"/internal/v1/payroll/workbench/{self.entity_ref}/{pay_period}"
+        assertion = self._payroll_user_assertion(
+            session_token=session_token,
+            session_subject=session_subject,
+            action="payroll.workbench.read",
+            method="GET",
+            path=path,
+            body=b"",
+            resource_ref=pay_period,
+        )
+        payload = self.client.json(
+            "GET", path, headers={"X-LedgerBridge-User-Assertion": assertion}
+        )
+        expected_keys = {
+            "contract_version", "entity_ref", "batch_ref", "batch_version_ref",
+            "pay_period", "reconciliation_month", "revision", "status",
+            "rules_version", "content_sha256", "line_count", "net_amount_minor",
+            "cash_amount_minor", "supplemental_amount_minor", "bank_amount_minor",
+            "lines", "issues",
+        }
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != expected_keys
+            or payload.get("contract_version") != "ledgerbridge.payroll-workbench.v1"
+            or payload.get("entity_ref") != self.entity_ref
+            or payload.get("pay_period") != pay_period
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        lines = payload.get("lines")
+        if not isinstance(lines, list) or len(lines) > 10_000:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        line_keys = {
+            "line_ref", "employee_ref", "employee_name", "employee_type", "location",
+            "job_group", "attendance_days", "payment_channel", "payee_name",
+            "account_masked", "memo", "net_amount_minor", "cash_amount_minor",
+            "supplemental_amount_minor", "bank_amount_minor",
+        }
+        for line in lines:
+            if not isinstance(line, dict) or set(line) != line_keys:
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+            net, cash, supplemental, bank = (
+                line[key] for key in (
+                    "net_amount_minor", "cash_amount_minor", "supplemental_amount_minor",
+                    "bank_amount_minor",
+                )
+            )
+            if (
+                not all(type(value) is int and value >= 0 for value in (net, cash, supplemental, bank))
+                or cash + bank != net
+                or supplemental > bank
+            ):
+                raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        if payload.get("line_count") != len(lines) or any(
+            payload.get(key) != sum(line[key] for line in lines)
+            for key in (
+                "net_amount_minor", "cash_amount_minor", "supplemental_amount_minor",
+                "bank_amount_minor",
+            )
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        return payload
+
+    def legacy_reconciliation_sources(self) -> dict[str, object]:
+        if self.cash_reconciliation_client is None:
+            raise CoreBackendError(503, _problem(503, "LEGACY_RECONCILIATION_UNAVAILABLE"))
+        payload = self.cash_reconciliation_client.json(
+            "GET", "/internal/v1/reconciliation-legacy/sources"
+        )
+        if (
+            payload.get("contract_version") != "ledgerbridge.reconciliation-legacy-sources.v1"
+            or not isinstance(payload.get("sources"), list)
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        return payload
+
+    def legacy_reconciliation_month(self, source_ref: str, month: str) -> dict[str, object]:
+        if self.cash_reconciliation_client is None:
+            raise CoreBackendError(503, _problem(503, "LEGACY_RECONCILIATION_UNAVAILABLE"))
+        payload = self.cash_reconciliation_client.json(
+            "GET", f"/internal/v1/reconciliation-legacy/{source_ref}/{month}"
+        )
+        if (
+            payload.get("contract_version") != "ledgerbridge.reconciliation-legacy-month.v1"
+            or payload.get("source_ref") != source_ref
+            or payload.get("period") != month
+            or not isinstance(payload.get("cells"), list)
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        return payload
+
     def payroll_batch_command(
         self,
         *,
@@ -1781,7 +2116,13 @@ class CoreBackedState:
             expected_contract_version="ledgerbridge.payroll-read.v1",
             expected_entity_ref=self.entity_ref,
         )
-        if path != PAYROLL_STATUS_CORE_PATH:
+        disbursement_records_match = PAYROLL_DISBURSEMENT_RECORDS_CORE_PATH.fullmatch(path)
+        if disbursement_records_match is not None:
+            _validate_payroll_disbursement_records(
+                payload["data"],
+                pay_period=disbursement_records_match.group(1),
+            )
+        elif path != PAYROLL_STATUS_CORE_PATH:
             _validate_payroll_view_data(
                 payload["data"],
                 path=path,
@@ -2132,7 +2473,7 @@ def _classification_groups_from_core(
             or any(block not in rule_blocks for block in blocks)
             or len(blocks) != len(set(blocks))
             or (raw_group.get("rule_learning_eligible") is True) != (not blocks)
-            or active_rule is not None
+            or not _learned_rule_is_valid(active_rule, group_ref=group_ref)
         ):
             raise invalid
         groups.append(deepcopy(raw_group))
@@ -2292,6 +2633,54 @@ def _classification_batch_receipt_from_core(
     }
 
 
+def _learned_rule_is_valid(value: object, *, group_ref: str) -> bool:
+    """A learned rule is optional; when present it must be the documented shape.
+
+    Core has never emitted one, but the field is part of the contract, so
+    checking it is what keeps a future Core release from arriving as an
+    unexplained outage rather than as a rule the workbench can show.
+    """
+    if value is None:
+        return True
+    if not isinstance(value, dict):
+        return False
+    required = {
+        "rule_ref",
+        "revision",
+        "status",
+        "group_ref",
+        "conditions",
+        "business_unit_ref",
+        "category_code",
+        "source_candidate_ref",
+        "source_decision_operation_id",
+        "effective_from",
+        "created_at",
+    }
+    if not required.issubset(value):
+        return False
+    if value.get("group_ref") != group_ref:
+        return False
+    if value.get("status") not in {"ACTIVE", "DISABLED"}:
+        return False
+    if type(value.get("revision")) is not int or value["revision"] < 1:
+        return False
+    for field in ("business_unit_ref", "category_code"):
+        text = value.get(field)
+        if not isinstance(text, str) or not 1 <= len(text) <= 100:
+            return False
+    for field in ("rule_ref", "source_candidate_ref", "source_decision_operation_id"):
+        if not isinstance(value.get(field), str) or not value[field]:
+            return False
+    for field in ("effective_from", "created_at"):
+        if not isinstance(value.get(field), str) or not value[field]:
+            return False
+    for field in ("effective_to", "disabled_at"):
+        if field in value and value[field] is not None and not isinstance(value[field], str):
+            return False
+    return isinstance(value.get("conditions"), dict)
+
+
 def _ordered_unique_codes(value: object, *, maximum: int = 6) -> bool:
     return (
         isinstance(value, list)
@@ -2325,6 +2714,320 @@ def sqlite_contains_business_facts(path: str | Path) -> bool:
             ).fetchone()[0]:
                 return True
     return False
+
+
+_COMPANY_TRANSACTION_CATEGORIES = frozenset(
+    {
+        "PLATFORM_ROOM_REVENUE",
+        "RELATED_PARTY_CURRENT",
+        "PAYROLL",
+        "FINANCING",
+        "BOTTLED_WATER",
+        "INTERNAL_TRANSFER",
+        "RENT",
+        "RENTAL_INCOME",
+        "BANK_INTEREST",
+        "LINEN_LAUNDRY",
+        "OPERATING_FEE",
+    }
+)
+_COMPANY_TRANSACTION_CATEGORY_ROLES = {
+    "PLATFORM_ROOM_REVENUE": "OPERATING_INCOME",
+    "BANK_INTEREST": "OPERATING_INCOME",
+    "RENTAL_INCOME": "OPERATING_INCOME",
+    "PAYROLL": "OPERATING_EXPENSE",
+    "BOTTLED_WATER": "OPERATING_EXPENSE",
+    "LINEN_LAUNDRY": "OPERATING_EXPENSE",
+    "RENT": "OPERATING_EXPENSE",
+    "OPERATING_FEE": "OPERATING_EXPENSE",
+    "RELATED_PARTY_CURRENT": "NON_OPERATING",
+    "FINANCING": "NON_OPERATING",
+    "INTERNAL_TRANSFER": "NON_OPERATING",
+}
+
+
+def _month_after(month: str) -> str:
+    year, value = (int(part) for part in month.split("-"))
+    if value == 12:
+        return f"{year + 1:04d}-01-01"
+    return f"{year:04d}-{value + 1:02d}-01"
+
+
+def _company_transaction_classifications_from_core(
+    payload: dict[str, object],
+) -> dict[str, object]:
+    invalid = CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    if (
+        set(payload) != {"contract_version", "items"}
+        or payload.get("contract_version")
+        != "ledgerbridge.company-transaction-classification.v1"
+        or not isinstance(payload.get("items"), list)
+        or len(payload["items"]) > 200  # type: ignore[arg-type]
+    ):
+        raise invalid
+    items = [
+        _company_transaction_classification_item_from_core(item, pending_only=True)
+        for item in payload["items"]  # type: ignore[union-attr]
+    ]
+    refs = [str(item["transaction_ref"]) for item in items]
+    if len(refs) != len(set(refs)):
+        raise invalid
+    return {
+        "contract_version": "ledgerbridge.company-transaction-classifications-bff.v1",
+        "items": items,
+    }
+
+
+def _company_transaction_classification_item_from_core(
+    value: object,
+    *,
+    pending_only: bool,
+) -> dict[str, object]:
+    invalid = CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    required = {
+        "transaction_ref",
+        "entity_ref",
+        "occurred_at",
+        "amount_minor",
+        "currency",
+        "counterparty_name",
+        "transaction_name",
+        "status",
+        "category_code",
+        "cashflow_role",
+        "revision",
+        "source",
+        "rule_version",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise invalid
+    status = value.get("status")
+    category = value.get("category_code")
+    role = value.get("cashflow_role")
+    if (
+        status not in {"PENDING", "CONFIRMED"}
+        or pending_only
+        and status != "PENDING"
+        or (status == "PENDING" and (category is not None or role is not None))
+        or (
+            status == "CONFIRMED"
+            and (
+                category not in _COMPANY_TRANSACTION_CATEGORIES
+                or role != _COMPANY_TRANSACTION_CATEGORY_ROLES.get(str(category))
+            )
+        )
+    ):
+        raise invalid
+    occurred_at = value.get("occurred_at")
+    try:
+        parsed_time = datetime.fromisoformat(str(occurred_at).replace("Z", "+00:00"))
+    except ValueError as error:
+        raise invalid from error
+    counterparty = value.get("counterparty_name")
+    if (
+        parsed_time.tzinfo is None
+        or not isinstance(occurred_at, str)
+        or value.get("currency") != "CNY"
+        or type(value.get("amount_minor")) is not int
+        or abs(int(value["amount_minor"])) > JSON_SAFE_INTEGER
+        or counterparty is not None
+        and (not isinstance(counterparty, str) or len(counterparty) > 300)
+        or not isinstance(value.get("transaction_name"), str)
+        or not 1 <= len(str(value["transaction_name"])) <= 300
+        or type(value.get("revision")) is not int
+        or not 1 <= int(value["revision"]) <= JSON_SAFE_INTEGER
+        or value.get("source") not in {"AUTO_RULE", "HUMAN_REVIEW"}
+        or not isinstance(value.get("rule_version"), str)
+        or not 1 <= len(str(value["rule_version"])) <= 100
+    ):
+        raise invalid
+    return {
+        **value,
+        "transaction_ref": _company_report_uuid(value["transaction_ref"]),
+        "entity_ref": _company_report_uuid(value["entity_ref"]),
+    }
+
+
+def _company_transaction_classification_summary_from_core(
+    payload: dict[str, object],
+    *,
+    expected_from_date: str,
+    expected_to_date_exclusive: str,
+) -> dict[str, object]:
+    invalid = CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    if (
+        set(payload) != {"contract_version", "items"}
+        or payload.get("contract_version")
+        != "ledgerbridge.company-transaction-classification-summary.v2"
+        or not isinstance(payload.get("items"), list)
+        or not 1 <= len(payload["items"]) <= 50  # type: ignore[arg-type]
+    ):
+        raise invalid
+    items: list[dict[str, object]] = []
+    for raw in payload["items"]:  # type: ignore[union-attr]
+        if not isinstance(raw, dict) or set(raw) != {
+            "entity_ref",
+            "from_date",
+            "to_date_exclusive",
+            "confirmed_count",
+            "pending_count",
+            "confirmed_gross_minor",
+            "categories",
+        }:
+            raise invalid
+        categories = raw.get("categories")
+        if not isinstance(categories, list) or len(categories) > 100:
+            raise invalid
+        safe_categories: list[dict[str, object]] = []
+        for category in categories:
+            if not isinstance(category, dict) or set(category) != {
+                "category_code",
+                "reporting_item_code",
+                "reporting_item_label",
+                "cashflow_role",
+                "transaction_count",
+                "inflow_minor",
+                "outflow_minor",
+                "net_minor",
+                "gross_minor",
+                "transaction_share_ppm",
+                "gross_share_ppm",
+            }:
+                raise invalid
+            code = category.get("category_code")
+            reporting_item_code = category.get("reporting_item_code")
+            reporting_item_label = category.get("reporting_item_label")
+            has_reporting_item = (
+                isinstance(reporting_item_code, str)
+                and 1 <= len(reporting_item_code) <= 100
+                and reporting_item_code == reporting_item_code.strip()
+                and isinstance(reporting_item_label, str)
+                and 1 <= len(reporting_item_label) <= 300
+                and reporting_item_label == reporting_item_label.strip()
+            )
+            numeric = {
+                key: _company_report_integer(category.get(key), nonnegative=key != "net_minor")
+                for key in (
+                    "transaction_count",
+                    "inflow_minor",
+                    "outflow_minor",
+                    "net_minor",
+                    "gross_minor",
+                    "transaction_share_ppm",
+                    "gross_share_ppm",
+                )
+            }
+            if (
+                code not in _COMPANY_TRANSACTION_CATEGORIES
+                or (code == "OPERATING_FEE") is not has_reporting_item
+                or (
+                    code != "OPERATING_FEE"
+                    and (reporting_item_code is not None or reporting_item_label is not None)
+                )
+                or category.get("cashflow_role")
+                != _COMPANY_TRANSACTION_CATEGORY_ROLES.get(str(code))
+                or numeric["net_minor"]
+                != numeric["inflow_minor"] - numeric["outflow_minor"]
+                or numeric["gross_minor"]
+                != numeric["inflow_minor"] + numeric["outflow_minor"]
+                or numeric["transaction_share_ppm"] > 1_000_000
+                or numeric["gross_share_ppm"] > 1_000_000
+            ):
+                raise invalid
+            safe_categories.append({**category, **numeric})
+        category_keys = [
+            (str(item["category_code"]), str(item["reporting_item_code"] or ""))
+            for item in safe_categories
+        ]
+        confirmed_count = _company_report_integer(
+            raw.get("confirmed_count"), nonnegative=True
+        )
+        confirmed_gross = _company_report_integer(
+            raw.get("confirmed_gross_minor"), nonnegative=True
+        )
+        from_date = _company_report_text(raw.get("from_date"), maximum=10)
+        to_date_exclusive = _company_report_text(
+            raw.get("to_date_exclusive"), maximum=10
+        )
+        if (
+            category_keys != sorted(category_keys)
+            or len(category_keys) != len(set(category_keys))
+            or from_date != expected_from_date
+            or to_date_exclusive != expected_to_date_exclusive
+            or confirmed_count
+            != sum(int(item["transaction_count"]) for item in safe_categories)
+            or confirmed_gross != sum(int(item["gross_minor"]) for item in safe_categories)
+        ):
+            raise invalid
+        items.append(
+            {
+                "entity_ref": _company_report_uuid(raw["entity_ref"]),
+                "from_date": from_date,
+                "to_date_exclusive": to_date_exclusive,
+                "confirmed_count": confirmed_count,
+                "pending_count": _company_report_integer(
+                    raw.get("pending_count"), nonnegative=True
+                ),
+                "confirmed_gross_minor": confirmed_gross,
+                "categories": safe_categories,
+            }
+        )
+    refs = [str(item["entity_ref"]) for item in items]
+    if refs != sorted(refs) or len(refs) != len(set(refs)):
+        raise invalid
+    return {
+        "contract_version": payload["contract_version"],
+        "items": items,
+    }
+
+
+def _company_transaction_classification_receipt_from_core(
+    payload: dict[str, object],
+    *,
+    transaction_ref: str,
+) -> dict[str, object]:
+    invalid = CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    if set(payload) != {
+        "contract_version",
+        "transaction_ref",
+        "status",
+        "category_code",
+        "reporting_item_code",
+        "reporting_item_revision",
+        "revision",
+        "created",
+    }:
+        raise invalid
+    category = payload.get("category_code")
+    reporting_item_code = payload.get("reporting_item_code")
+    reporting_item_revision = payload.get("reporting_item_revision")
+    if (
+        payload.get("contract_version")
+        != "ledgerbridge.company-transaction-classification-review.v1"
+        or payload.get("transaction_ref") != transaction_ref
+        or payload.get("status") != "CONFIRMED"
+        or category not in _COMPANY_TRANSACTION_CATEGORIES
+        or (reporting_item_code is None) != (reporting_item_revision is None)
+        or (
+            reporting_item_code is not None
+            and (
+                not isinstance(reporting_item_code, str)
+                or not 1 <= len(reporting_item_code) <= 100
+            )
+        )
+        or (
+            reporting_item_revision is not None
+            and (
+                type(reporting_item_revision) is not int
+                or not 1 <= reporting_item_revision <= JSON_SAFE_INTEGER
+            )
+        )
+        or type(payload.get("revision")) is not int
+        or int(payload["revision"]) < 2
+        or type(payload.get("created")) is not bool
+    ):
+        raise invalid
+    return payload
 
 
 _COMPANY_REPORT_BASES = (
@@ -3916,7 +4619,7 @@ def _validate_payroll_test_workspace_payload(
         or data.get("data_scope") != "TEST_ONLY"
         or data.get("test_batch_id") != expected_batch_id
         or data.get("company_id") != company_id
-        or data.get("cutoff_date") != "2026-08-31"
+        or data.get("cutoff_date") != PAYROLL_TEST_CUTOFF_DATE
         or type(data.get("workspace_revision")) is not int
         or int(data["workspace_revision"]) < 1
         or int(data["workspace_revision"]) > 9_007_199_254_740_991
@@ -3973,7 +4676,11 @@ def _validate_payroll_test_workspace_payload(
         routing_status = material.get("routing_status")
         if (
             routing_status != "AUTO_TEST"
-            or material_type != "PAYROLL_SUMMARY" and period not in {"2026-07", "2026-08"}
+            or material_type != "PAYROLL_SUMMARY"
+            and (
+                not _is_payroll_period(period)
+                or str(period) > PAYROLL_TEST_CUTOFF_MONTH
+            )
         ):
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
         count_key = {
@@ -4178,7 +4885,7 @@ def _validate_payroll_input_preview_data(
         or data.get("test_batch_id") != expected_batch_id
         or data.get("company_id") != expected_company_id
         or data.get("material_id") != expected_material_id
-        or data.get("period") not in {"2026-07", "2026-08"}
+        or not _is_payroll_period(data.get("period"))
         or data.get("material_type") not in projected_types
         or data.get("detected_material_type") not in detected_types
         or data.get("status") not in {"READY_FOR_REVIEW", "NEEDS_HUMAN_REVIEW"}
@@ -4409,20 +5116,55 @@ def _validate_payroll_legacy_workspace_data(
         or not isinstance(active_period, str)
         or PAYROLL_PERIOD.fullmatch(active_period) is None
         or not isinstance(rules, dict)
-        or set(rules) != {"revision", "employees"}
+        or not {"revision", "employees"}.issubset(rules)
+        or set(rules) - {"revision", "employees", "review_rules"}
         or type(rules.get("revision")) is not int
         or not 0 <= int(rules["revision"]) <= JSON_SAFE_INTEGER
         or not isinstance(rules.get("employees"), list)
         or not isinstance(batches, list)
-        or not batches
         or not isinstance(events, list)
     ):
         raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
-    batch_fields = {
+    review_rules = rules.get("review_rules", [])
+    if (
+        not isinstance(review_rules, list)
+        or len(review_rules) > len(PAYROLL_LEGACY_REVIEW_RULE_TYPES)
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    review_rule_ids: set[str] = set()
+    review_rule_types: set[str] = set()
+    review_rule_fields = {
+        "rule_id", "name", "rule_type", "enabled", "severity", "threshold_cents"
+    }
+    for rule in review_rules:
+        if not isinstance(rule, dict) or set(rule) != review_rule_fields:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        rule_id = rule.get("rule_id")
+        name = rule.get("name")
+        rule_type = rule.get("rule_type")
+        threshold = rule.get("threshold_cents")
+        if (
+            not _payroll_identifier(rule_id)
+            or rule_id in review_rule_ids
+            or not isinstance(name, str)
+            or not name.strip()
+            or name != name.strip()
+            or len(name) > 120
+            or rule_type not in PAYROLL_LEGACY_REVIEW_RULE_TYPES
+            or rule_type in review_rule_types
+            or type(rule.get("enabled")) is not bool
+            or rule.get("severity") not in PAYROLL_LEGACY_REVIEW_RULE_SEVERITIES
+            or type(threshold) is not int
+            or not 0 <= int(threshold) <= JSON_SAFE_INTEGER
+            or (rule_type != "HISTORY_CHANGE_REVIEW" and threshold != 0)
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        review_rule_ids.add(str(rule_id))
+        review_rule_types.add(str(rule_type))
+    required_batch_fields = {
         "batch_id",
         "period",
         "revision",
-        "main_material_id",
         "supporting_material_ids",
         "lines",
         "adjustments",
@@ -4433,9 +5175,14 @@ def _validate_payroll_legacy_workspace_data(
         "pending_items",
         "checks",
     }
+    allowed_batch_fields = required_batch_fields | {"main_material_id"}
     periods: set[str] = set()
     for batch in batches:
-        if not isinstance(batch, dict) or set(batch) != batch_fields:
+        if (
+            not isinstance(batch, dict)
+            or not required_batch_fields.issubset(batch)
+            or bool(set(batch) - allowed_batch_fields)
+        ):
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
         period = batch.get("period")
         lines = batch.get("lines")
@@ -4447,7 +5194,10 @@ def _validate_payroll_legacy_workspace_data(
             or period in periods
             or type(batch.get("revision")) is not int
             or not 1 <= int(batch["revision"]) <= JSON_SAFE_INTEGER
-            or not _payroll_identifier(batch.get("main_material_id"))
+            or (
+                "main_material_id" in batch
+                and not _payroll_identifier(batch.get("main_material_id"))
+            )
             or not isinstance(supporting, dict)
             or any(not _payroll_identifier(item) for item in supporting.values())
             or not isinstance(lines, list)
@@ -4467,15 +5217,14 @@ def _validate_payroll_legacy_workspace_data(
                 not isinstance(line, dict)
                 or line.get("company_id") != expected_company_id
                 or not _payroll_identifier(line.get("employee_id"))
-                or not _payroll_identifier(line.get("account_id"))
-                or sum(character.isdigit() for character in str(line.get("account_id"))) >= 12
+                or not _payroll_account_identifier(line.get("account_id"))
                 or not isinstance(line.get("account_masked"), str)
                 or re.fullmatch(r"\*{4}(?:\d{4}|\?{4})", str(line["account_masked"])) is None
                 or type(line.get("source_row")) is not int
                 or int(line["source_row"]) < 1
             ):
                 raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
-    if active_period not in periods:
+    if periods and active_period not in periods:
         raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
     for sequence, event in enumerate(events, start=1):
         if not isinstance(event, dict) or event.get("sequence") != sequence:
@@ -4688,7 +5437,7 @@ def _validate_payroll_test_workspace_command_payload(
             or PAYROLL_PERIOD.fullmatch(period) is None
             or material.get("material_type") not in PAYROLL_TEST_MATERIAL_TYPES
             or routing_status != "AUTO_TEST"
-            or period not in {"2026-07", "2026-08"}
+            or period > PAYROLL_TEST_CUTOFF_MONTH
             or material.get("payable") is not False
             or material.get("submission_supported") is not False
         ):
@@ -4845,6 +5594,143 @@ def _validate_payroll_view_data(
         _validate_payroll_batches(value, company_id=company_id)
     else:
         _validate_payroll_verification(value, company_id=company_id)
+    _reject_unsafe_payroll_values(value)
+
+
+def _validate_payroll_disbursement_records(
+    value: object,
+    *,
+    pay_period: str,
+) -> None:
+    fields = {
+        "schema_version",
+        "pay_period",
+        "source_artifact_count",
+        "record_count",
+        "unmatched_count",
+        "records",
+        "payable",
+        "submission_supported",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    records = value.get("records")
+    if (
+        value.get("schema_version") != "ledgerbridge.payroll-disbursement-records.v1"
+        or value.get("pay_period") != pay_period
+        or PAYROLL_PERIOD.fullmatch(pay_period) is None
+        or not isinstance(records, list)
+        or len(records) > 500
+        or value.get("record_count") != len(records)
+        or value.get("unmatched_count") != len(records)
+        or value.get("payable") is not False
+        or value.get("submission_supported") is not False
+    ):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+    record_fields = {
+        "record_ref",
+        "entity_ref",
+        "company_name",
+        "pay_period",
+        "occurred_at",
+        "actual_amount_minor",
+        "direction",
+        "currency",
+        "source_channel",
+        "source_system",
+        "source_artifact_ref",
+        "source_statement_ref",
+        "source_row_number",
+        "ingested_at",
+        "managed_account_ref",
+        "disbursement_account_masked",
+        "counterparty_name",
+        "counterparty_account_masked",
+        "transaction_name",
+        "classification_revision",
+        "classification_source",
+        "classification_rule_version",
+        "period_assignment_source",
+        "period_assignment_rule_version",
+        "parse_status",
+        "link_status",
+        "payable",
+        "submission_supported",
+    }
+    artifacts: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict) or set(record) != record_fields:
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        try:
+            uuid_fields = (
+                "record_ref",
+                "entity_ref",
+                "source_artifact_ref",
+                "source_statement_ref",
+                "managed_account_ref",
+            )
+            valid_uuids = all(
+                str(uuid.UUID(str(record[field]))) == str(record[field]).lower()
+                for field in uuid_fields
+            )
+            timestamps = [
+                datetime.fromisoformat(str(record[field]).replace("Z", "+00:00"))
+                for field in ("occurred_at", "ingested_at")
+            ]
+        except (KeyError, TypeError, ValueError):
+            valid_uuids = False
+            timestamps = []
+        counterparty_name = record.get("counterparty_name")
+        counterparty_account = record.get("counterparty_account_masked")
+        if (
+            not valid_uuids
+            or len(timestamps) != 2
+            or any(item.tzinfo is None or item.utcoffset() is None for item in timestamps)
+            or record.get("pay_period") != pay_period
+            or not isinstance(record.get("company_name"), str)
+            or not str(record["company_name"]).strip()
+            or len(str(record["company_name"])) > 200
+            or type(record.get("actual_amount_minor")) is not int
+            or not 0 <= int(record["actual_amount_minor"]) <= JSON_SAFE_INTEGER
+            or record.get("direction") not in {"OUTFLOW", "INFLOW", "ZERO"}
+            or record.get("currency") != "CNY"
+            or record.get("source_channel") not in {"MYBANK", "BOC", "BANK"}
+            or not isinstance(record.get("source_system"), str)
+            or not 1 <= len(str(record["source_system"])) <= 64
+            or type(record.get("source_row_number")) is not int
+            or not 1 <= int(record["source_row_number"]) <= JSON_SAFE_INTEGER
+            or re.fullmatch(r"\*{4}[0-9]{4,8}", str(record.get("disbursement_account_masked")))
+            is None
+            or (counterparty_name is not None and (
+                not isinstance(counterparty_name, str) or len(counterparty_name) > 300
+            ))
+            or (counterparty_account is not None and (
+                not isinstance(counterparty_account, str)
+                or re.fullmatch(r"\*{4}[0-9]{4}", counterparty_account) is None
+            ))
+            or not isinstance(record.get("transaction_name"), str)
+            or not 1 <= len(str(record["transaction_name"])) <= 300
+            or type(record.get("classification_revision")) is not int
+            or not 1 <= int(record["classification_revision"]) <= JSON_SAFE_INTEGER
+            or record.get("classification_source") not in {
+                "AUTO_RULE",
+                "HUMAN_REVIEW",
+                "BACKFILL",
+            }
+            or not isinstance(record.get("classification_rule_version"), str)
+            or not 1 <= len(str(record["classification_rule_version"])) <= 100
+            or record.get("period_assignment_source") != "NEXT_MONTH_RULE"
+            or record.get("period_assignment_rule_version")
+            != "payroll-next-month-disbursement.2026-09.v1"
+            or record.get("parse_status") != "PARSED"
+            or record.get("link_status") not in {"UNMATCHED", "UNSUPPORTED_DIRECTION"}
+            or record.get("payable") is not False
+            or record.get("submission_supported") is not False
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        artifacts.add(str(record["source_artifact_ref"]))
+    if value.get("source_artifact_count") != len(artifacts):
+        raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
     _reject_unsafe_payroll_values(value)
 
 
@@ -5089,6 +5975,16 @@ def _validate_payroll_command_receipt_data(
 
 def _payroll_identifier(value: object) -> bool:
     return isinstance(value, str) and PAYROLL_RESOURCE_REF.fullmatch(value) is not None
+
+
+def _payroll_account_identifier(value: object) -> bool:
+    return (
+        _payroll_identifier(value)
+        and (
+            PAYROLL_CANONICAL_ACCOUNT_ID.fullmatch(str(value)) is not None
+            or sum(character.isdigit() for character in str(value)) < 12
+        )
+    )
 
 
 def _reject_unsafe_payroll_values(value: object) -> None:

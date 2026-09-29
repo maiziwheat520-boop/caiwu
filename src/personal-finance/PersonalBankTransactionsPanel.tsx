@@ -4,6 +4,8 @@ import { Badge, Button } from '@radix-ui/themes'
 import { ArrowsClockwise, Bank, CaretDown, CaretUp, CloudArrowDown, CloudArrowUp, Database, MagnifyingGlass, Warning } from '@phosphor-icons/react'
 import { api, minorToMajor } from '../api'
 import type { PersonalBankStatement, PersonalBankTransaction, PersonalBankTransactionsResponse } from '../types'
+import { DateInput } from '../shared/TemporalControls'
+import { previousBusinessMonth } from '../shared/monthPolicy'
 import { presentPersonalBankTransaction } from './personalBankPresentation'
 
 const currency = new Intl.NumberFormat('zh-CN', {
@@ -108,8 +110,11 @@ function PersonalBankFacts({ data, csrfToken, reviewBusy, setReviewBusy, reload 
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [accountFilter, setAccountFilter] = useState('all')
   const [directionFilter, setDirectionFilter] = useState<'all' | 'income' | 'expense'>('all')
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
+  const [dateFrom, setDateFrom] = useState(() => `${previousBusinessMonth()}-01`)
+  const [dateTo, setDateTo] = useState(() => {
+    const [year, month] = previousBusinessMonth().split('-').map(Number)
+    return new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10)
+  })
   const [query, setQuery] = useState('')
   const [visibleCount, setVisibleCount] = useState(transactionPageSize)
   const summary = data.summary
@@ -162,7 +167,7 @@ function PersonalBankFacts({ data, csrfToken, reviewBusy, setReviewBusy, reload 
       <div className="personal-bank-details-entry">
         <div>
           <strong>银行流水明细</strong>
-          <span>按账户、日期、收支方向或交易对象查询，不在个人财务首屏默认展开。</span>
+          <span>明细默认业务上月；上方为全部已导入账单汇总。可按账户、日期、方向查询，或清空筛选查看历史。</span>
         </div>
         <Button
           aria-controls="personal-bank-transaction-details"
@@ -202,20 +207,28 @@ function PersonalBankFacts({ data, csrfToken, reviewBusy, setReviewBusy, reload 
                 <option value="expense">仅流出</option>
               </select>
             </label>
-            <label>
-              <span>开始日期</span>
-              <input aria-label="流水开始日期" max={dateTo || periodEnd} min={periodStart} type="date" value={dateFrom} onChange={(event) => {
+            <DateInput
+              label="开始日期"
+              aria-label="流水开始日期"
+              max={dateTo || periodEnd}
+              min={periodStart}
+              value={dateFrom}
+              onChange={(event) => {
                 setDateFrom(event.target.value)
                 setVisibleCount(transactionPageSize)
-              }} />
-            </label>
-            <label>
-              <span>结束日期</span>
-              <input aria-label="流水结束日期" max={periodEnd} min={dateFrom || periodStart} type="date" value={dateTo} onChange={(event) => {
+              }}
+            />
+            <DateInput
+              label="结束日期"
+              aria-label="流水结束日期"
+              max={periodEnd}
+              min={dateFrom || periodStart}
+              value={dateTo}
+              onChange={(event) => {
                 setDateTo(event.target.value)
                 setVisibleCount(transactionPageSize)
-              }} />
-            </label>
+              }}
+            />
             <label className="personal-bank-query-field">
               <span>交易对象或关键词</span>
               <div><MagnifyingGlass size={15} /><input aria-label="搜索银行流水" placeholder="搜索对手方、银行或交易类型" value={query} onChange={(event) => {

@@ -488,19 +488,76 @@ export type CompanyReportCategorySlice = {
   fact_count: number
 }
 
-export type CashReconciliation = {
-  contract_version: 'ledgerbridge.cash-reconciliation.v1'
+export type MonthlyReview = {
+  authority: 'NON_AUTHORITATIVE_REFERENCE'
+  contract_version: 'ledgerbridge.monthly-review.v1'
   accounting_month: string
+  revision: string
+  confirmed_on: string
+  production_posted: false
+  policy: {
+    expense_basis: 'ACTUAL_PAYMENT_MONTH'; income_basis: 'SCREENSHOT_SETTLEMENT_PERIOD'
+    legacy_payroll_through: string; workbench_payroll_from: string; workbench_status: 'NOT_CONNECTED'
+  }
+  adjustments: Array<{ id: string; label: string; month: string; amount_minor: number; balance_effect_minor: number; cash_effect_minor: 0; status: 'PENDING_ENTRY'; note: string }>
+  bridges: Array<{ id: string; label: string; month: string; amount_minor: number; balance_effect_minor: number; cash_effect_minor: 0; status: 'PENDING_BRIDGE'; note: string }>
+  pending: Array<{ id: string; label: string; month: string; amount_minor: number; status: 'AWAITING_PAYMENT' | 'PENDING_ENTRY'; note: string }>
+  historical_payroll: Array<{ period: string; total_minor: number; stores: Array<{ label: string; amount_minor: number | null }> }>
+  backtest: Array<{ month: string; label: string; original_minor: number | null; matched_minor: number | null; difference_minor: number | null; status: string; note: string }>
+  accepted_exceptions: Array<{ id: string; label: string; note: string; status: 'ACCEPTED_OPEN' }>
+}
+
+export type WorkbookDraft = {
+  id: string
+  accounting_month: string
+  input_revision: number
+  status: 'NEEDS_REVIEW' | 'VERIFIED' | 'FAILED'
+  verification: unknown | null
+  monitor_url: string
+  output_sha256: string | null
+  verification_detail: string
+}
+
+export type CashReconciliation = {
+  contract_version: 'ledgerbridge.cash-reconciliation.v2'
+  accounting_month: string
+  rules: Array<{
+    rule_key: string
+    source_kind: 'BANK_TRANSACTION' | 'CANDIDATE'
+    source_ref: string
+    flow_kind: 'INCOME' | 'EXPENSE' | 'CURRENT'
+    business_unit_label: string
+    item_label: string
+    match_pattern: string
+    amount_direction: 'CREDIT' | 'DEBIT' | 'ANY'
+    effective_from: string
+    effective_to: string | null
+  }>
   rows: Array<{
     rule_key: string
     flow_kind: 'INCOME' | 'EXPENSE' | 'CURRENT'
     business_unit_label: string
     item_label: string
-    source_kind: 'BANK_TRANSACTION' | 'CANDIDATE'
+    source_kind: 'BANK_TRANSACTION' | 'CANDIDATE' | 'ADJUSTMENT'
+    source_ref: string
     transaction_count: number
     amount_minor: number
     facts: Array<{ fact_ref: string; occurred_on: string; amount_minor: number }>
   }>
+  issues: Array<{
+    issue_kind: 'UNMATCHED' | 'MULTIPLE_RULES'
+    source_kind: 'BANK_TRANSACTION' | 'CANDIDATE'
+    fact_ref: string
+    occurred_on: string
+    amount_minor: number
+    matched_rule_keys: string[]
+  }>
+  eligible_fact_count: number
+  matched_fact_count: number
+  unmatched_fact_count: number
+  conflicted_fact_count: number
+  issue_count: number
+  issues_truncated: boolean
   totals: { income_minor: number; expense_minor: number; current_minor: number }
 }
 
@@ -536,12 +593,108 @@ export type CompanyReportCompositionLayer = {
 }
 
 export type CompanyReportsResponse = {
-  contract_version: 'ledgerbridge.company-reports-bff.v1' | 'ledgerbridge.company-reports-bff.v2'
+  contract_version: 'ledgerbridge.company-reports-bff.v1' | 'ledgerbridge.company-reports-bff.v2' | 'ledgerbridge.company-reports-bff.v3'
   from_month: string
   to_month: string
   posted_ledger_status: 'AVAILABLE' | 'UNAVAILABLE'
   layers: CompanyReportLayer[]
   compositions?: CompanyReportCompositionLayer[]
+  transaction_classifications?: CompanyTransactionClassificationSummaryPage
+}
+
+export type CompanyTransactionCategory =
+  | 'PLATFORM_ROOM_REVENUE'
+  | 'RELATED_PARTY_CURRENT'
+  | 'PAYROLL'
+  | 'FINANCING'
+  | 'BOTTLED_WATER'
+  | 'INTERNAL_TRANSFER'
+  | 'RENT'
+  | 'RENTAL_INCOME'
+  | 'BANK_INTEREST'
+  | 'LINEN_LAUNDRY'
+  | 'OPERATING_FEE'
+
+export type CompanyOperatingFeeReportingItem =
+  | 'BANK_FEES'
+  | 'SOCIAL_SECURITY'
+  | 'TAX'
+  | 'INSURANCE'
+  | 'DISINFECTION'
+  | 'ELEVATOR'
+  | 'FIRE_SAFETY'
+  | 'FRESH_FOOD'
+  | 'MOONCAKE'
+  | 'HOTEL_TECH'
+  | 'HOTEL_SUPPLIES'
+  | 'OPERATING_FEE'
+
+export type CompanyTransactionCashflowRole =
+  | 'OPERATING_INCOME'
+  | 'OPERATING_EXPENSE'
+  | 'NON_OPERATING'
+
+export type CompanyTransactionClassification = {
+  transaction_ref: string
+  entity_ref: string
+  company_name: string
+  occurred_at: string
+  amount_minor: number
+  currency: 'CNY'
+  counterparty_name: string | null
+  transaction_name: string
+  status: 'PENDING'
+  category_code: null
+  cashflow_role: null
+  revision: number
+  source: 'AUTO_RULE'
+  rule_version: string
+}
+
+export type CompanyTransactionClassificationsResponse = {
+  contract_version: 'ledgerbridge.company-transaction-classifications-bff.v1'
+  items: CompanyTransactionClassification[]
+}
+
+export type CompanyTransactionCategorySummary = {
+  category_code: CompanyTransactionCategory
+  reporting_item_code: string | null
+  reporting_item_label: string | null
+  cashflow_role: CompanyTransactionCashflowRole
+  transaction_count: number
+  inflow_minor: number
+  outflow_minor: number
+  net_minor: number
+  gross_minor: number
+  transaction_share_ppm: number
+  gross_share_ppm: number
+}
+
+export type CompanyTransactionClassificationSummary = {
+  entity_ref: string
+  company_name: string
+  from_date: string
+  to_date_exclusive: string
+  confirmed_count: number
+  pending_count: number
+  confirmed_gross_minor: number
+  categories: CompanyTransactionCategorySummary[]
+}
+
+export type CompanyTransactionClassificationSummaryPage = {
+  contract_version: 'ledgerbridge.company-transaction-classification-summary.v2'
+  items: CompanyTransactionClassificationSummary[]
+}
+
+export type CompanyTransactionClassificationReviewReceipt = {
+  contract_version: 'ledgerbridge.company-transaction-classification-review.v1'
+  transaction_ref: string
+  status: 'CONFIRMED'
+  category_code: CompanyTransactionCategory
+  reporting_item_code: string | null
+  reporting_item_revision: number | null
+  revision: number
+  created: boolean
 }
 
 export type PersonalBankTransaction = {
@@ -663,14 +816,6 @@ export type OriginalReconciliation = {
   }>
 }
 
-export type WorkbookDraft = {
-  id: string
-  accounting_month: string
-  input_revision: number
-  status: 'QUEUED' | 'BUILDING' | 'NEEDS_REVIEW' | 'VERIFIED' | 'FAILED'
-  verification: 'LIBREOFFICE_VERIFIED' | null
-}
-
 export type ConnectionId =
   | 'hermes_ingress'
   | 'ledgerbridge_core'
@@ -697,11 +842,89 @@ export type Notice = {
   message: string
 }
 
+export type PayrollDatabaseWorkbench = {
+  contract_version: 'ledgerbridge.payroll-workbench.v1'
+  entity_ref: string
+  batch_ref: string
+  batch_version_ref: string
+  pay_period: string
+  reconciliation_month: string
+  revision: number
+  status: 'DRAFT' | 'LOCKED' | 'SUPERSEDED'
+  rules_version: string
+  content_sha256: string | null
+  line_count: number
+  net_amount_minor: number
+  cash_amount_minor: number
+  supplemental_amount_minor: number
+  bank_amount_minor: number
+  lines: {
+    line_ref: string
+    employee_ref: string
+    employee_name: string
+    employee_type: 'REGULAR' | 'TEMPORARY'
+    location: string
+    job_group: string | null
+    attendance_days: string | null
+    payment_channel: 'MYBANK' | 'BOC' | 'WECHAT' | 'CASH'
+    payee_name: string | null
+    account_masked: string | null
+    memo: string
+    net_amount_minor: number
+    cash_amount_minor: number
+    supplemental_amount_minor: number
+    bank_amount_minor: number
+  }[]
+  issues: { issue_code: string; message: string; line_ref: string | null; resolved: boolean }[]
+}
+
 export type PayrollReadResponse<T> = {
   contract_version: 'ledgerbridge.payroll-read.v1'
   entity_ref: string
   company_id: string
   data: T
+}
+
+export type PayrollDisbursementSourceRecord = {
+  record_ref: string
+  entity_ref: string
+  company_name: string
+  pay_period: string
+  occurred_at: string
+  actual_amount_minor: number
+  direction: 'OUTFLOW' | 'INFLOW' | 'ZERO'
+  currency: 'CNY'
+  source_channel: 'MYBANK' | 'BOC' | 'BANK'
+  source_system: string
+  source_artifact_ref: string
+  source_statement_ref: string
+  source_row_number: number
+  ingested_at: string
+  managed_account_ref: string
+  disbursement_account_masked: string
+  counterparty_name: string | null
+  counterparty_account_masked: string | null
+  transaction_name: string
+  classification_revision: number
+  classification_source: 'AUTO_RULE' | 'HUMAN_REVIEW' | 'BACKFILL'
+  classification_rule_version: string
+  period_assignment_source: 'NEXT_MONTH_RULE'
+  period_assignment_rule_version: 'payroll-next-month-disbursement.2026-09.v1'
+  parse_status: 'PARSED'
+  link_status: 'UNMATCHED' | 'UNSUPPORTED_DIRECTION'
+  payable: false
+  submission_supported: false
+}
+
+export type PayrollDisbursementRecordPage = {
+  schema_version: 'ledgerbridge.payroll-disbursement-records.v1'
+  pay_period: string
+  source_artifact_count: number
+  record_count: number
+  unmatched_count: number
+  records: PayrollDisbursementSourceRecord[]
+  payable: false
+  submission_supported: false
 }
 
 export type PayrollTestRoutingStatus = 'AUTO_TEST' | 'REVIEW_REQUIRED' | 'DATE_UNKNOWN'
@@ -819,7 +1042,8 @@ export type PayrollInputMaterialPreview = {
   test_batch_id: string
   company_id: string
   material_id: string
-  period: '2026-07' | '2026-08'
+  /** Any YYYY-MM the provider returns; the test window is a cutoff, not a fixed pair. */
+  period: string
   material_type: 'ATTENDANCE_SHEET' | 'AUNT_ATTENDANCE_SHEET' | 'REVIEW_STATISTICS' | 'ADJUSTMENT_SOURCE'
   detected_material_type: 'ATTENDANCE_SHEET' | 'AUNT_ATTENDANCE_SHEET' | 'REVIEW_STATISTICS' | 'UNRECOGNIZED'
   canonical_name: string
@@ -1323,4 +1547,78 @@ export type PayrollCommandResult = {
       occurred_at: string
     }
   }
+}
+
+export type PersonalFinanceEntry = {
+  candidate_ref: string
+  short_id: string
+  business_unit_label: string
+  category_label: string
+  accounting_month: string | null
+  summary: string
+  cashflow_minor: number
+  date: string
+  transaction_type: string
+  counterparty: string
+  source_kind: 'PLATFORM' | 'BANK'
+  scope_status: 'PERSONAL' | 'UNASSIGNED'
+}
+
+export type PersonalFinancePendingCandidate = {
+  candidate_ref: string
+  short_id: string
+  business_unit_label: string
+  category_label: string
+  accounting_month: string | null
+  summary: string
+  status: CandidateStatus
+}
+
+/** Built by Core from the candidates it holds; the browser no longer derives it. */
+export type PersonalFinanceSummary = {
+  contract_version: 'ledgerbridge.personal-finance-summary.v1'
+  candidate_total: number
+  pending_total: number
+  pending_preview: PersonalFinancePendingCandidate[]
+  entry_total: number
+  income_minor: number
+  expense_minor: number
+  net_minor: number
+  income_entry_count: number
+  expense_entry_count: number
+  evidence_count: number
+  excluded_count: number
+  deduplicated_count: number
+  unassigned_entries: PersonalFinanceEntry[]
+  category_shares: Array<{ category: string; amount_minor: number; basis_points: number }>
+  monthly_totals: Array<{ month: string; income_minor: number; expense_minor: number; net_minor: number }>
+}
+
+export type LegacyReconciliationSourceList = {
+  contract_version: 'ledgerbridge.reconciliation-legacy-sources.v1'
+  sources: Array<{
+    source_ref: string
+    source_sha256: string
+    imported_at: string
+    periods: string[]
+  }>
+}
+
+export type LegacyReconciliationMonth = {
+  contract_version: 'ledgerbridge.reconciliation-legacy-month.v1'
+  source_ref: string
+  source_sha256: string
+  imported_at: string
+  period: string
+  sheet_name: string
+  row_count: number
+  cell_count: number
+  content_sha256: string
+  cells: Array<{
+    address: string
+    type: string
+    value: string | null
+    cached_type: string | null
+    cached_value: string | null
+  }>
 }
