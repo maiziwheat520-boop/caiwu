@@ -25,6 +25,8 @@ BOC_COMPANY_CSV_PDF = "20260906_0051"
 # 0052 adds a column to reporting_category and rebinds two existing function
 # bodies; it registers no new object.
 REPORTING_CATEGORY_NATURE = "20260913_0052"
+WORKBENCH = "20260929_0053"
+LEGACY_ARCHIVE = "20260929_0054"
 CORRECTION_FUNCTION = ("internal_import", "correct_company_transaction_reporting_item")
 STAGES = (
     PRODUCTION,
@@ -153,10 +155,14 @@ def test_finance_release_has_one_unambiguous_migration_path() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
         revisions = list(scripts.walk_revisions())
-        assert scripts.get_heads() == [REPORTING_CATEGORY_NATURE]
+        assert scripts.get_heads() == [LEGACY_ARCHIVE]
     assert len({item.revision for item in revisions}) == len(revisions)
-    release_path = list(scripts.iterate_revisions(REPORTING_CATEGORY_NATURE, "20260904_0045"))
-    assert [item.revision for item in release_path] == list(reversed(STAGES))
+    release_path = list(scripts.iterate_revisions(LEGACY_ARCHIVE, "20260904_0045"))
+    assert [item.revision for item in release_path] == [
+        LEGACY_ARCHIVE,
+        WORKBENCH,
+        *reversed(STAGES),
+    ]
     assert all(item.dependencies is None for item in release_path)
 
 

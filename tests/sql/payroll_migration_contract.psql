@@ -1,0 +1,119 @@
+-- Synthetic PostgreSQL 15 contract probe for migration 20260929_0053.
+-- Run only against a disposable database; the transaction intentionally rolls back.
+BEGIN;
+
+INSERT INTO public.entity(id)
+VALUES ('11111111-1111-4111-8111-111111111111');
+
+INSERT INTO payroll.employee(
+    employee_ref, entity_ref, employee_code, display_name, employee_type
+) VALUES (
+    '22222222-2222-4222-8222-222222222222',
+    '11111111-1111-4111-8111-111111111111',
+    'employee-001', 'Synthetic Employee', 'REGULAR'
+);
+
+INSERT INTO payroll.payee_account(
+    payee_account_ref, entity_ref, employee_ref, payee_name, account_number
+) VALUES (
+    '33333333-3333-4333-8333-333333333333',
+    '11111111-1111-4111-8111-111111111111',
+    '22222222-2222-4222-8222-222222222222',
+    'Synthetic Payee', '6222000012345678'
+);
+
+INSERT INTO payroll.batch(
+    batch_ref, entity_ref, company_id, pay_period, created_by
+) VALUES (
+    '44444444-4444-4444-8444-444444444444',
+    '11111111-1111-4111-8111-111111111111',
+    'synthetic-company', '2026-08', 'synthetic-actor'
+);
+
+INSERT INTO payroll.batch_version(
+    batch_version_ref, batch_ref, revision, rules_version,
+    reconciliation_month, created_by
+) VALUES (
+    '55555555-5555-4555-8555-555555555555',
+    '44444444-4444-4444-8444-444444444444',
+    1, 'synthetic-rules-v1', '2026-08', 'synthetic-actor'
+);
+
+INSERT INTO payroll.line(
+    line_ref, batch_version_ref, employee_ref, employee_name,
+    employee_type, location, job_group, attendance_days,
+    payment_channel, payee_account_ref, payee_name, account_number,
+    memo, net_amount_minor, cash_amount_minor, supplemental_amount_minor
+) VALUES (
+    '66666666-6666-4666-8666-666666666666',
+    '55555555-5555-4555-8555-555555555555',
+    '22222222-2222-4222-8222-222222222222',
+    'Synthetic Employee', 'REGULAR', '星汇', 'Front Desk', '31',
+    'MYBANK', '33333333-3333-4333-8333-333333333333',
+    'Synthetic Payee', '6222000012345678',
+    'August wages', 100000, 20000, 10000
+);
+
+INSERT INTO payroll.component(line_ref, ordinal, component_code, amount_minor)
+VALUES ('66666666-6666-4666-8666-666666666666', 0, 'BASE', 100000);
+
+UPDATE payroll.batch_version
+   SET status = 'LOCKED',
+       content_sha256 = decode(repeat('a', 64), 'hex'),
+       locked_at = CURRENT_TIMESTAMP,
+       locked_by = 'synthetic-actor'
+ WHERE batch_version_ref = '55555555-5555-4555-8555-555555555555';
+
+DO $probe$
+BEGIN
+    BEGIN
+        UPDATE payroll.line SET cash_amount_minor = 1000
+         WHERE line_ref = '66666666-6666-4666-8666-666666666666';
+        RAISE EXCEPTION 'locked line mutation was accepted';
+    EXCEPTION WHEN integrity_constraint_violation THEN
+        NULL;
+    END;
+    BEGIN
+        UPDATE payroll.payee_account SET payee_name = 'Changed'
+         WHERE payee_account_ref = '33333333-3333-4333-8333-333333333333';
+        RAISE EXCEPTION 'payee account mutation was accepted';
+    EXCEPTION WHEN integrity_constraint_violation THEN
+        NULL;
+    END;
+    BEGIN
+        INSERT INTO payroll.fixed_remittance_snapshot(
+            batch_version_ref, payee_name, account_number, amount_minor, memo
+        ) VALUES (
+            '55555555-5555-4555-8555-555555555555',
+            'Synthetic Fixed', '6222000099999999', 10000, 'Fixed'
+        );
+        RAISE EXCEPTION 'locked fixed remittance mutation was accepted';
+    EXCEPTION WHEN integrity_constraint_violation THEN
+        NULL;
+    END;
+    IF has_table_privilege('ledgerbridge_api', 'payroll.line', 'SELECT') THEN
+        RAISE EXCEPTION 'API can read raw payroll lines';
+    END IF;
+    IF NOT has_table_privilege('ledgerbridge_api', 'payroll.workbench_line', 'SELECT') THEN
+        RAISE EXCEPTION 'API cannot read masked payroll lines';
+    END IF;
+    IF has_table_privilege('ledgerbridge_api', 'payroll.payee_account', 'SELECT') THEN
+        RAISE EXCEPTION 'API can read raw account numbers';
+    END IF;
+    IF NOT has_table_privilege('ledgerbridge_worker', 'payroll.line', 'INSERT') THEN
+        RAISE EXCEPTION 'worker cannot write payroll lines';
+    END IF;
+END
+$probe$;
+
+INSERT INTO payroll.export_receipt(
+    batch_version_ref, export_group, filename, content_sha256,
+    row_count, total_amount_minor, exported_by
+) VALUES (
+    '55555555-5555-4555-8555-555555555555',
+    '星汇', 'synthetic.xls', decode(repeat('b', 64), 'hex'),
+    1, 70000, 'synthetic-actor'
+);
+
+SELECT 'payroll_migration_contract_passed' AS result;
+ROLLBACK;

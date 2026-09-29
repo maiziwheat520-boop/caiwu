@@ -43,6 +43,7 @@ PayrollAction = Literal[
     "payroll.test_workspace.clear",
     "payroll.test_workspace.legacy.read",
     "payroll.test_workspace.legacy.command",
+    "payroll.workbench.read",
 ]
 
 
