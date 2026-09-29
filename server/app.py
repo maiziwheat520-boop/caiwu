@@ -65,6 +65,9 @@ CLASSIFICATION_BATCH_PATH = re.compile(
 RECONCILIATION_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)$")
 ORIGINAL_RECONCILIATION_PATH = re.compile(r"^/api/v1/original-reconciliations/([^/]+)$")
 CASH_RECONCILIATION_PATH = re.compile(r"^/api/v1/cash-reconciliations/([^/]+)$")
+LEGACY_RECONCILIATION_MONTH_PATH = re.compile(
+    r"^/api/v1/reconciliation-legacy/([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})/([0-9]{4}-(?:0[1-9]|1[0-2]))$"
+)
 DRAFT_CREATE_PATH = re.compile(r"^/api/v1/reconciliations/([^/]+)/drafts$")
 DRAFT_PATH = re.compile(r"^/api/v1/workbook-drafts/([0-9a-f-]{36})$")
 EVIDENCE_PATH = re.compile(r"^/api/v1/evidence/([0-9a-f-]{36})/content$")
@@ -1579,6 +1582,27 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 self._send_json(503, _problem(503, "CASH_RECONCILIATION_UNAVAILABLE", "流水自动生成尚未连接"))
                 return
             self._send_json(200, read_projection(month), headers={"Cache-Control": "no-store"})
+            return
+        if path == "/api/v1/reconciliation-legacy/sources":
+            if query:
+                self._send_json(400, _problem(400, "INVALID_LEGACY_RECONCILIATION_QUERY", "历史对账来源查询参数无效"))
+                return
+            read_sources = getattr(state, "legacy_reconciliation_sources", None)
+            if read_sources is None:
+                self._send_json(503, _problem(503, "LEGACY_RECONCILIATION_UNAVAILABLE", "历史对账来源尚未连接"))
+                return
+            self._send_json(200, read_sources(), headers={"Cache-Control": "no-store"})
+            return
+        match = LEGACY_RECONCILIATION_MONTH_PATH.fullmatch(path)
+        if match:
+            if query:
+                self._send_json(400, _problem(400, "INVALID_LEGACY_RECONCILIATION_QUERY", "历史对账月份查询参数无效"))
+                return
+            read_month = getattr(state, "legacy_reconciliation_month", None)
+            if read_month is None:
+                self._send_json(503, _problem(503, "LEGACY_RECONCILIATION_UNAVAILABLE", "历史对账月份尚未连接"))
+                return
+            self._send_json(200, read_month(match.group(1), match.group(2)), headers={"Cache-Control": "no-store"})
             return
         match = DRAFT_PATH.fullmatch(path)
         if match:

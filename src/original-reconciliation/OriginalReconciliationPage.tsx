@@ -19,6 +19,7 @@ import { MonthInput } from '../shared/TemporalControls'
 import './OriginalReconciliationPage.css'
 import { groupCashRows, cashSourceLabel } from './groupCashRows'
 import { MonthlyReviewPanel } from './MonthlyReviewPanel'
+import { LegacyReconciliationPanel } from './LegacyReconciliationPanel'
 import { previousBusinessMonth } from '../shared/monthPolicy'
 import {
   currentAccountCounterpartyNote,
@@ -174,6 +175,8 @@ export function OriginalReconciliationPage({ onNavigate }: {
           <span>每月默认处理上月数据，可选择其他月份；不移动原始收付款日期。仅覆盖已导入、已授权的流水，不代表材料齐全或整表结清。</span>
         </div>
       </section>
+
+      <LegacyReconciliationPanel month={selectedMonth} />
 
       <section className="reconciliation-overview" aria-label="本月对账概览">
         <div className="reconciliation-overview-status">

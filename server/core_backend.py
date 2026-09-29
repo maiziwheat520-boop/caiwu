@@ -1791,6 +1791,34 @@ class CoreBackedState:
             raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
         return payload
 
+    def legacy_reconciliation_sources(self) -> dict[str, object]:
+        if self.cash_reconciliation_client is None:
+            raise CoreBackendError(503, _problem(503, "LEGACY_RECONCILIATION_UNAVAILABLE"))
+        payload = self.cash_reconciliation_client.json(
+            "GET", "/internal/v1/reconciliation-legacy/sources"
+        )
+        if (
+            payload.get("contract_version") != "ledgerbridge.reconciliation-legacy-sources.v1"
+            or not isinstance(payload.get("sources"), list)
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        return payload
+
+    def legacy_reconciliation_month(self, source_ref: str, month: str) -> dict[str, object]:
+        if self.cash_reconciliation_client is None:
+            raise CoreBackendError(503, _problem(503, "LEGACY_RECONCILIATION_UNAVAILABLE"))
+        payload = self.cash_reconciliation_client.json(
+            "GET", f"/internal/v1/reconciliation-legacy/{source_ref}/{month}"
+        )
+        if (
+            payload.get("contract_version") != "ledgerbridge.reconciliation-legacy-month.v1"
+            or payload.get("source_ref") != source_ref
+            or payload.get("period") != month
+            or not isinstance(payload.get("cells"), list)
+        ):
+            raise CoreBackendError(503, _problem(503, "CORE_CONTRACT_INVALID"))
+        return payload
+
     def payroll_batch_command(
         self,
         *,

@@ -1531,3 +1531,32 @@ export type PersonalFinanceSummary = {
   category_shares: Array<{ category: string; amount_minor: number; basis_points: number }>
   monthly_totals: Array<{ month: string; income_minor: number; expense_minor: number; net_minor: number }>
 }
+
+export type LegacyReconciliationSourceList = {
+  contract_version: 'ledgerbridge.reconciliation-legacy-sources.v1'
+  sources: Array<{
+    source_ref: string
+    source_sha256: string
+    imported_at: string
+    periods: string[]
+  }>
+}
+
+export type LegacyReconciliationMonth = {
+  contract_version: 'ledgerbridge.reconciliation-legacy-month.v1'
+  source_ref: string
+  source_sha256: string
+  imported_at: string
+  period: string
+  sheet_name: string
+  row_count: number
+  cell_count: number
+  content_sha256: string
+  cells: Array<{
+    address: string
+    type: string
+    value: string | null
+    cached_type: string | null
+    cached_value: string | null
+  }>
+}

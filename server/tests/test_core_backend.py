@@ -3064,6 +3064,45 @@ class CoreBackedAdapterTests(unittest.TestCase):
             "CASH_RECONCILIATION_UNAVAILABLE",
         )
 
+    def test_legacy_archive_uses_only_dedicated_reconciliation_client(self) -> None:
+        class ArchiveClient(FakeCoreClient):
+            def json(self, method: str, path: str, **kwargs: object) -> dict[str, object]:
+                self.calls.append((method, path, None, {}))
+                if path.endswith("/sources"):
+                    return {
+                        "contract_version": "ledgerbridge.reconciliation-legacy-sources.v1",
+                        "sources": [],
+                    }
+                return {
+                    "contract_version": "ledgerbridge.reconciliation-legacy-month.v1",
+                    "source_ref": "99999999-9999-4999-8999-999999999999",
+                    "period": "2024-01",
+                    "cells": [],
+                }
+
+        primary = FakeCoreClient()
+        archive_client = ArchiveClient()
+        state = build_state(primary, cash_reconciliation_client=archive_client)
+
+        self.assertEqual(state.legacy_reconciliation_sources()["sources"], [])
+        self.assertEqual(
+            state.legacy_reconciliation_month(
+                "99999999-9999-4999-8999-999999999999", "2024-01"
+            )["period"],
+            "2024-01",
+        )
+        self.assertEqual(primary.calls, [])
+        self.assertEqual(len(archive_client.calls), 2)
+
+    def test_legacy_archive_fails_closed_without_dedicated_client(self) -> None:
+        state = build_state(FakeCoreClient(), cash_reconciliation_client=None)
+        with self.assertRaises(CoreBackendError) as raised:
+            state.legacy_reconciliation_sources()
+        self.assertEqual(raised.exception.status, 503)
+        self.assertEqual(
+            raised.exception.payload["code"], "LEGACY_RECONCILIATION_UNAVAILABLE"
+        )
+
     def test_core_backed_mode_rejects_sqlite_business_facts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir, "web.sqlite3")

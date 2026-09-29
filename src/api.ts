@@ -548,6 +548,16 @@ export const api = {
       `/api/v1/payroll/workbench/${encodeURIComponent(payPeriod)}`,
     ),
 
+  getLegacyReconciliationSources: () =>
+    requestJson<import('./types').LegacyReconciliationSourceList>(
+      '/api/v1/reconciliation-legacy/sources',
+    ),
+
+  getLegacyReconciliationMonth: (sourceRef: string, accountingMonth: string) =>
+    requestJson<import('./types').LegacyReconciliationMonth>(
+      `/api/v1/reconciliation-legacy/${encodeURIComponent(sourceRef)}/${encodeURIComponent(accountingMonth)}`,
+    ),
+
   getPayrollTestWorkspace: () =>
     requestJson<PayrollTestWorkspaceReadResponse>('/api/v1/payroll/test-workspace'),
 
