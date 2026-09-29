@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
@@ -40,6 +41,56 @@ class LegacyReconciliationPreflight:
     bridge_amount_minor: int
     adjustments: tuple[LegacyAdjustment, ...]
     checks: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyWorkbookPreflight:
+    """Inventory every monthly sheet without accepting a partial migration."""
+
+    source_sha256: str
+    periods: tuple[str, ...]
+    accepted: tuple[LegacyReconciliationPreflight, ...]
+    blocked: tuple[tuple[str, str], ...]
+
+    @property
+    def ready_for_import(self) -> bool:
+        return bool(self.periods) and not self.blocked
+
+
+def preflight_legacy_reconciliation_workbook(
+    workbook_path: str | Path,
+) -> LegacyWorkbookPreflight:
+    """Read-only inventory; callers must reject the whole source if any month fails."""
+
+    path = Path(workbook_path)
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        names = tuple(name for name in workbook.sheetnames if _PERIOD.fullmatch(name.strip()))
+    finally:
+        workbook.close()
+    accepted: list[LegacyReconciliationPreflight] = []
+    blocked: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for name in names:
+        period = _period(name)
+        if period in seen:
+            blocked.append((name, "同一月份有多个工作表"))
+            continue
+        seen.add(period)
+        try:
+            accepted.append(preflight_legacy_reconciliation(path, name))
+        except LegacyReconciliationError as exc:
+            blocked.append((name, str(exc)))
+    return LegacyWorkbookPreflight(
+        source_sha256=digest.hexdigest(),
+        periods=tuple(_period(name) for name in names),
+        accepted=tuple(accepted),
+        blocked=tuple(blocked),
+    )
 
 
 def _period(sheet_name: str) -> str:
@@ -117,9 +168,7 @@ def preflight_legacy_reconciliation(
             if (value := sheet[f"{column}{row}"].value) is not None
         )
         if bridge != closing:
-            raise LegacyReconciliationError(
-                f"期末桥接不平: 计算 {bridge} 分, 表内 {closing} 分"
-            )
+            raise LegacyReconciliationError(f"期末桥接不平: 计算 {bridge} 分, 表内 {closing} 分")
 
         adjustments = _read_adjustments(sheet, period)
         history_row = _find_row(sheet, "历史差错调整", column=4, start=opening_row)

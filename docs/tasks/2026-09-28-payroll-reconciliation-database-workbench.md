@@ -129,3 +129,16 @@ workbook.
 - This is a migration-level probe, not an end-to-end release gate. A full Alembic chain,
   database-backed service test, encrypted backup/isolated restore, complete browser write path,
   and production verification remain required before release.
+
+## 2026-09-29 full-workbook inventory
+
+- Added a read-only, source-digested inventory over every monthly sheet. It treats any failed
+  period or duplicate month as a block on importing the entire workbook; it does not import a
+  subset as though the migration were complete.
+- On the current hotel reconciliation workbook, 42 monthly sheets were found. Only 2026-08
+  passed the existing detailed parser; the other 41 use historical layouts that the parser does
+  not yet recognize. This is a code/contract coverage gap, not evidence that those months are
+  financially wrong. No workbook or production database was changed.
+- The replacement remains unfit for formal data migration or release. Historical sheet layouts,
+  row-level source identity, reconciliation mapping, and the payroll write/calculation workflow
+  must be completed and verified before the high-risk release gate can start.

@@ -8,6 +8,7 @@ import pytest
 from ledgerbridge.reconciliation_legacy_xlsx import (
     LegacyReconciliationError,
     preflight_legacy_reconciliation,
+    preflight_legacy_reconciliation_workbook,
 )
 
 
@@ -81,3 +82,33 @@ def test_preflight_rejects_an_unbalanced_closing(tmp_path: Path) -> None:
 
     with pytest.raises(LegacyReconciliationError, match="期末桥接不平"):
         preflight_legacy_reconciliation(path, "26.8")
+
+
+def test_workbook_preflight_blocks_partial_history(tmp_path: Path) -> None:
+    path = tmp_path / "reconciliation.xlsx"
+    _workbook(path)
+    workbook = openpyxl.load_workbook(path)
+    workbook.create_sheet("26.7")
+    workbook.save(path)
+
+    result = preflight_legacy_reconciliation_workbook(path)
+
+    assert len(result.source_sha256) == 64
+    assert set(result.periods) == {"2026-07", "2026-08"}
+    assert len(result.accepted) == 1
+    assert result.blocked[0][0] == "26.7"
+    assert not result.ready_for_import
+
+
+def test_workbook_preflight_rejects_duplicate_months(tmp_path: Path) -> None:
+    path = tmp_path / "reconciliation.xlsx"
+    _workbook(path)
+    workbook = openpyxl.load_workbook(path)
+    workbook.copy_worksheet(workbook["26.8"]).title = "26.08"
+    workbook.save(path)
+
+    result = preflight_legacy_reconciliation_workbook(path)
+
+    assert len(result.accepted) == 1
+    assert result.blocked == (("26.08", "同一月份有多个工作表"),)
+    assert not result.ready_for_import
