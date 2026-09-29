@@ -161,7 +161,7 @@ def extract_legacy_archive_bytes(source_bytes: bytes, filename: str) -> Archived
 
 
 class DatabaseLegacyArchiveStore:
-    """Worker-role adapter; the caller owns one all-or-nothing transaction."""
+    """Migration-owner adapter; the caller owns one all-or-nothing transaction."""
 
     def __init__(self, session: Session) -> None:
         self._session = session

@@ -1,4 +1,4 @@
-"""One-time, worker-role import of an original reconciliation workbook from stdin.
+"""One-time, migration-owner import of an original reconciliation workbook from stdin.
 
 The operator must complete encrypted backup and isolated restore before running
 this command in production. No source bytes or cell values are written to logs.
@@ -13,14 +13,29 @@ import sys
 from uuid import UUID
 
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 
-from ledgerbridge.config import get_settings
+from ledgerbridge.config import Settings, get_settings
 from ledgerbridge.db import get_session_factory
 from ledgerbridge.reconciliation_legacy_archive import (
     DatabaseLegacyArchiveStore,
     LegacyArchiveError,
     extract_legacy_archive_bytes,
 )
+
+
+def migration_database_url(settings: Settings) -> str:
+    """Keep the one-time import separate from long-lived worker credentials."""
+    database_url = settings.database_url
+    if settings.runtime_role != "migrate" or database_url is None:
+        raise LegacyArchiveError("历史对账导入必须使用迁移专用数据库身份")
+    try:
+        username = make_url(database_url).username
+    except (TypeError, ValueError) as exc:
+        raise LegacyArchiveError("历史对账迁移数据库地址无效") from exc
+    if username != "ledgerbridge_owner":
+        raise LegacyArchiveError("历史对账导入必须使用迁移专用数据库身份")
+    return database_url
 
 
 def main() -> int:
@@ -49,7 +64,7 @@ def main() -> int:
         raise LegacyArchiveError("来源文件与操作员确认的摘要不一致")
     archive = extract_legacy_archive_bytes(source_bytes, args.filename)
     settings = get_settings()
-    factory = get_session_factory(settings.resolved_worker_database_url())
+    factory = get_session_factory(migration_database_url(settings))
     with factory() as session, session.begin():
         source_ref = DatabaseLegacyArchiveStore(session).persist(
             entity_ref=args.entity_ref,

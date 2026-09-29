@@ -2585,13 +2585,15 @@ def _new_schema_inventory_sql(schema: str) -> str:
         f"'{table}', (SELECT count(*) FROM {schema}.{table})"
         for table in _NEW_SCHEMA_TABLES[schema]
     )
+    content_digests = ", ".join(
+        f"'{table}', (SELECT encode(digest(coalesce(string_agg(to_jsonb(t)::text, "
+        f"E'\\n' ORDER BY to_jsonb(t)::text), ''), 'sha256'), 'hex') "
+        f"FROM {schema}.{table} t)"
+        for table in _NEW_SCHEMA_TABLES[schema]
+    )
+    content_hash = f"encode(digest(jsonb_build_object({content_digests})::text, 'sha256'), 'hex')"
     if schema == "payroll":
         integrity = "0"
-        content_hash = (
-            "(SELECT encode(digest(coalesce(string_agg(to_jsonb(p)::text, E'\\n' "
-            "ORDER BY p.payee_account_ref), ''), 'sha256'), 'hex') "
-            "FROM payroll.payee_account p)"
-        )
     else:
         integrity = (
             "((SELECT count(*) FROM reconciliation_legacy.source s "
@@ -2600,12 +2602,6 @@ def _new_schema_inventory_sql(schema: str) -> str:
             "WHERE sh.source_ref = s.source_ref)) + "
             "(SELECT count(*) FROM reconciliation_legacy.sheet "
             "WHERE cell_count <> jsonb_array_length(cells)))"
-        )
-        content_hash = (
-            "(SELECT encode(digest(coalesce(string_agg("
-            "encode(digest(s.source_bytes, 'sha256'), 'hex') || ':' || "
-            "encode(s.source_sha256, 'hex'), E'\\n' ORDER BY s.source_ref), ''), "
-            "'sha256'), 'hex') FROM reconciliation_legacy.source s)"
         )
     return f"""
 SELECT jsonb_build_object(
