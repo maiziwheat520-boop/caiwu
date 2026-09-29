@@ -69,6 +69,7 @@ from ledgerbridge.original_reconciliation_routes import (
 from ledgerbridge.payroll_workbench_routes import router as payroll_workbench_router
 from ledgerbridge.personal_finance_routes import router as personal_finance_router
 from ledgerbridge.production_mtls import verify_configured_mtls_principal
+from ledgerbridge.reconciliation_legacy_routes import router as reconciliation_legacy_router
 from ledgerbridge.review_service import ReviewConflict, ReviewNotFound, ReviewService
 from ledgerbridge.secure_spool import EncryptedSpool
 from ledgerbridge.text import contains_unstorable_text
@@ -108,6 +109,7 @@ app.include_router(internal_payroll_router)
 app.include_router(original_reconciliation_router)
 app.include_router(cash_reconciliation_router)
 app.include_router(payroll_workbench_router)
+app.include_router(reconciliation_legacy_router)
 
 
 class UploadReadTimeoutError(TimeoutError):

@@ -142,3 +142,39 @@ workbook.
 - The replacement remains unfit for formal data migration or release. Historical sheet layouts,
   row-level source identity, reconciliation mapping, and the payroll write/calculation workflow
   must be completed and verified before the high-risk release gate can start.
+
+## 2026-09-29 revised historical-data contract (D-043)
+
+- The user explicitly changed the historical migration scope: save original workbook data for
+  website lookup; do not require every old period to be recalculated or re-matched before import.
+  This supersedes the all-period interpreted preflight gate for the archival path only. Existing
+  normalized reconciliation remains a separate, verified view.
+- Migration 0052 adds append-only source bytes and per-month typed cell snapshots. The adapter
+  stores formula text and saved cached result separately and rejects duplicate periods. Reimport
+  with the same digest is idempotent; the importer verifies a caller-provided source digest and
+  commits all months in one transaction. The Core API sees only the month view, never source bytes.
+- Website reads require the dedicated `reconciliation:read` identity to cover every
+  entity-and-business-unit pair in the archived workbook's declared scope. The BFF uses its dedicated reconciliation client and
+  the page labels historical values as original data, not new reconciled results.
+- Current source read-only extraction: 42 monthly sheets, 6,414 nonempty cells, 191,073 original
+  bytes. The isolated PostgreSQL 15 ACL/immutability probe for 0052 passed and was removed. This
+  is not a production import or full Alembic upgrade/restore rehearsal. Payroll calculations and
+  the write/lock/download path remain incomplete; do not claim full D-042 completion.
+
+## 2026-09-29 source replacement and release hold (D-044)
+
+- The user identified Claude's local LedgerBridge ledger as the new finance data source and
+  authorized a fresh VM103 database on ordinary unencrypted storage. The old LUKS volume is no
+  longer a dependency; it is **not yet deleted**, and no production database has been changed.
+  The local encrypted backup from 2026-09-13 has a matching SHA-256, a prior passed isolated
+  restore report, and a usable local GPG secret key. Live restore on VM103 is still pending.
+- The local-mode Core branch has distinct migrations `20260906_0051` and `20260913_0052`, which
+  collide numerically with this payroll branch's draft `0051` and archive draft `0052`. An
+  integration owner must rebase/renumber the schema chain before any deployment.
+- Independent review found that the first archive draft checked entity grants but ignored
+  business-unit grants. It now records scoped pairs, checks referenced units at import, and
+  fail-closes website reads without every pair. Concurrent reimport uses conflict-and-readback.
+  These repairs require fresh PostgreSQL and restore tests.
+- The 0052 archive revision is deliberately **excluded** from backup_restore's release allowlist
+  until its source/sheet rows, privileges and immutability triggers are included in a verified
+  restore inventory. Do not deploy or import it in production before that gate is complete.

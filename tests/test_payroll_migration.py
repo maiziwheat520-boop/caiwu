@@ -15,8 +15,7 @@ REVISION = "20260928_0051"
 
 def _sql() -> str:
     path = (
-        Path(__file__).resolve().parents[1]
-        / "alembic/versions/20260928_0051_payroll_workbench.py"
+        Path(__file__).resolve().parents[1] / "alembic/versions/20260928_0051_payroll_workbench.py"
     )
     spec = importlib.util.spec_from_file_location("payroll_workbench_migration", path)
     assert spec is not None and spec.loader is not None
@@ -25,10 +24,15 @@ def _sql() -> str:
     return str(module._UPGRADE_SQL)
 
 
-def test_payroll_workbench_is_the_single_migration_head() -> None:
+def test_payroll_workbench_remains_in_the_single_migration_chain() -> None:
     config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
-    assert ScriptDirectory.from_config(config).get_heads() == [REVISION]
+    scripts = ScriptDirectory.from_config(config)
+    assert scripts.get_heads() == ["20260929_0052"]
+    assert scripts.get_revision("20260929_0052").down_revision == REVISION
     assert REVISION in MYBANK_CUTOVER_SCHEMA_REVISIONS
+    # The archive is intentionally not releasable until its restore inventory
+    # and isolated recovery gate cover source bytes, cells and access controls.
+    assert "20260929_0052" not in MYBANK_CUTOVER_SCHEMA_REVISIONS
 
 
 def test_payroll_schema_keeps_locked_versions_and_receipts_immutable() -> None:
